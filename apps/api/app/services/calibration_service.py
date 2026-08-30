@@ -26,11 +26,14 @@ WHY A MISMATCH IS AN ABSENCE AND NOT A FAILURE
     `not_calibrated`, because the second would send somebody to fix a Judge that
     may be fine.
 
-WHAT THE MISMATCH LOG SAYS, AND WHAT IT DELIBERATELY DOES NOT
-    Both identities' model and prompt version, and nothing else. Two identities
-    differing only on `reasoning_effort` therefore print the same four values, and
-    the line says a mismatch happened without showing which field moved. The
-    record on either side carries the whole identity for anyone who needs it.
+WHAT THE MISMATCH LOG SAYS
+    All three fields of both identities, so the line shows WHICH ONE moved. It
+    carried model and prompt version only until slice 2, and `reasoning_effort`
+    is the third field of the key: two identities differing on effort alone
+    printed four identical values under a warning that said they differed, which
+    reads as a bug in the loader rather than a change in the Judge. Decision #34
+    prices the Judge floor at effort `none` and re-measures any increase, so
+    effort moving on its own is a case this project expects to see.
 
 Rung: `app.services` may import `app.domain`, `app.core`, `app.models` and
 `app.utils`. This module imports the standard library, structlog and
@@ -93,8 +96,10 @@ def load_calibration_status(
         log.warning(
             "calibration_identity_mismatch",
             run_model=identity.model,
+            run_reasoning_effort=identity.reasoning_effort,
             run_prompt_version=identity.prompt_version,
             artifact_model=stored.model if stored else None,
+            artifact_reasoning_effort=stored.reasoning_effort if stored else None,
             artifact_prompt_version=stored.prompt_version if stored else None,
         )
         return CalibrationStatus.absent("identity_mismatch")

@@ -263,9 +263,28 @@ class TestTheMismatchLog:
         assert entry["artifact_model"] == "gpt-5.6-luna"
         assert entry["artifact_prompt_version"] == "ragas-0.4.1"
 
-    def test_the_mismatch_log_carries_those_four_fields_and_no_others(self, tmp_path):
+    def test_the_line_shows_which_field_moved_when_only_the_effort_did(self, tmp_path):
+        """The whole reason effort is on the line. It carried model and prompt
+        version only, so a Judge re-priced from `none` to `low` logged four
+        identical values under a warning that said the two differed."""
+        artifact = _write(
+            tmp_path / "calibration.json", _calibrated(_identity(reasoning_effort="none"))
+        )
+
+        with structlog.testing.capture_logs() as logs:
+            load_calibration_status(artifact, _identity(reasoning_effort="low"))
+
+        entry = _one_event(logs, "calibration_identity_mismatch")
+        assert entry["run_reasoning_effort"] == "low"
+        assert entry["artifact_reasoning_effort"] == "none"
+        assert entry["run_model"] == entry["artifact_model"]
+        assert entry["run_prompt_version"] == entry["artifact_prompt_version"]
+
+    def test_the_mismatch_log_carries_those_six_fields_and_no_others(self, tmp_path):
         """Pinned, because the line is written for an operator and every extra
-        field is one more thing to read past."""
+        field is one more thing to read past. Six is both identities whole: model,
+        effort and prompt version are the three the calibration key groups on, and
+        a line short of one of them cannot say which Judge moved."""
         artifact = _write(tmp_path / "calibration.json", _calibrated(_identity()))
 
         with structlog.testing.capture_logs() as logs:
@@ -276,8 +295,10 @@ class TestTheMismatchLog:
             "event",
             "log_level",
             "run_model",
+            "run_reasoning_effort",
             "run_prompt_version",
             "artifact_model",
+            "artifact_reasoning_effort",
             "artifact_prompt_version",
         }
 

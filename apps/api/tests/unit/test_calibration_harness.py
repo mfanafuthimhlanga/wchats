@@ -25,11 +25,14 @@ No network, no ANTHROPIC_API_KEY, no judge call: `judge_fn` is injected into
 compute_correlation() and `readiness()` is local by construction.
 """
 
+import datetime
 import json
 import pathlib
 
 import pytest
 
+from app.domain.judge_identity import JudgeIdentity
+from app.services.calibration_service import load_calibration_status
 from tests.evals.calibration import compute_correlation as cc
 
 # ---------------------------------------------------------------------------
@@ -1657,3 +1660,275 @@ class TestTheEmitterRefusesAnEmptySheet:
         assert code == cc.EXIT_SETUP_ERROR
         assert not cc.HUMAN_SCORES_PASS2_CSV.exists()
         assert any("0 of 0" in m for m in messages), messages
+
+
+# ---------------------------------------------------------------------------
+# The artifact a run leaves behind (ticket #53, slice 2)
+# ---------------------------------------------------------------------------
+
+
+def _artifact_identity(**overrides) -> JudgeIdentity:
+    fields = {
+        "model": "gpt-5.6-luna",
+        "reasoning_effort": "none",
+        "prompt_version": "ragas-0.4.1",
+    }
+    fields.update(overrides)
+    return JudgeIdentity(**fields)
+
+
+#: Two dimensions, so a test can give them different Judges. `_FOUR_ROWS` is one
+#: dimension four times and cannot express a run with two Judges in it.
+_TWO_DIMENSIONS = [
+    ("S-101", "grounding_fidelity", "1"),
+    ("S-102", "grounding_fidelity", "2"),
+    ("S-103", "escalation_accuracy", "4"),
+    ("S-104", "escalation_accuracy", "5"),
+]
+
+_PERFECT = {"S-101": 1, "S-102": 2, "S-103": 4, "S-104": 5}
+
+
+def _stored_payload(artifact: pathlib.Path) -> dict:
+    with artifact.open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+class TestEveryScoringRunLeavesARecord:
+    """The harness runs by hand behind `.dockerignore`, so its answer travels as
+    data. A run that measured something and wrote nothing down cannot be read by
+    the deploy path at all."""
+
+    def test_a_scoring_run_writes_the_artifact(
+        self, calibration_tree, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            cc, "JUDGE_IDENTITY_BY_DIMENSION", {"grounding_fidelity": _artifact_identity()}
+        )
+        calibration_tree(_FOUR_ROWS)
+        result = cc.compute_correlation(_judge_returning(_PERFECT))
+
+        artifact = cc.write_calibration_artifact(result, tmp_path / "calibration.json")
+
+        stored = _stored_payload(artifact)
+        assert stored["kappa"] == pytest.approx(1.0)
+        assert stored["pairs"] == 4
+        assert stored["harness_version"] == cc.HARNESS_VERSION
+        assert stored["judge_interval"]["usable"] is True
+
+    def test_a_setup_error_writes_a_record_saying_so(self, tmp_path, monkeypatch):
+        """The run that read nothing is the one an operator most needs a record of:
+        a stale artifact left in place would answer for a run that never happened."""
+        monkeypatch.setattr(cc, "HUMAN_SCORES_CSV", tmp_path / "nope.csv")
+        result = cc.compute_correlation(_judge_returning({}))
+        assert result["status"] == cc.STATUS_SETUP_ERROR
+
+        artifact = cc.write_calibration_artifact(result, tmp_path / "calibration.json")
+
+        stored = _stored_payload(artifact)
+        assert stored["status"] == cc.STATUS_SETUP_ERROR
+        assert stored["kappa"] is None
+        assert stored["labelled_at"] is None, "there is no sheet to take an mtime from"
+
+    def test_a_run_that_stopped_at_a_floor_still_writes_one(self, calibration_tree, tmp_path):
+        """Two rows cannot produce a correlation, and the record says exactly that
+        rather than being absent and reading as `no_artifact`."""
+        calibration_tree(_FOUR_ROWS[:2])
+        result = cc.compute_correlation(_judge_returning({"S-101": 1, "S-102": 2}))
+
+        artifact = cc.write_calibration_artifact(result, tmp_path / "calibration.json")
+
+        stored = _stored_payload(artifact)
+        assert stored["status"] == cc.STATUS_NOT_CALIBRATED_YET
+        assert stored["beats_chance"] is None, "the run reached no gate"
+        assert stored["pairs"] == 2
+
+    def test_the_second_run_overwrites_the_first(self, calibration_tree, tmp_path):
+        """Unlike the second-pass sheet, which refuses. That sheet holds labels only
+        the owner can produce; this holds one run's reading of them, and the latest
+        reading is the one a deploy should act on."""
+        target = tmp_path / "calibration.json"
+        calibration_tree(_FOUR_ROWS)
+        cc.write_calibration_artifact(
+            cc.compute_correlation(_judge_returning(_PERFECT)), target
+        )
+
+        calibration_tree(_FOUR_ROWS[:2])
+        cc.write_calibration_artifact(
+            cc.compute_correlation(_judge_returning({"S-101": 1, "S-102": 2})), target
+        )
+
+        assert _stored_payload(target)["pairs"] == 2
+
+    def test_the_labelled_at_stamp_comes_off_the_sheet(
+        self, calibration_tree, tmp_path, monkeypatch
+    ):
+        """Nothing in the sheet records when a row was labelled, so the mtime is the
+        only honest answer and the harness may not invent a better one."""
+        monkeypatch.setattr(
+            cc, "JUDGE_IDENTITY_BY_DIMENSION", {"grounding_fidelity": _artifact_identity()}
+        )
+        csv_path = calibration_tree(_FOUR_ROWS)
+        result = cc.compute_correlation(_judge_returning(_PERFECT))
+
+        artifact = cc.write_calibration_artifact(result, tmp_path / "calibration.json")
+
+        stamp = _stored_payload(artifact)["labelled_at"]
+        assert stamp is not None
+        assert datetime.datetime.fromisoformat(stamp) == datetime.datetime.fromtimestamp(
+            csv_path.stat().st_mtime, datetime.UTC
+        )
+
+
+class TestTheRunsThatMeasureNothingWriteNothing:
+    """`--check` makes no judge call and `--emit-second-pass` writes a sheet. An
+    artifact from either would answer the deploy path for a measurement neither
+    of them made."""
+
+    def test_check_writes_no_artifact(self, calibration_tree, tmp_path, monkeypatch, capsys):
+        calibration_tree(_FOUR_ROWS)
+        target = tmp_path / "calibration.json"
+        monkeypatch.setattr(cc, "CALIBRATION_ARTIFACT_JSON", target)
+
+        cc.main(["--check"])
+
+        capsys.readouterr()
+        assert not target.exists()
+
+    def test_emit_second_pass_writes_no_artifact(
+        self, calibration_tree, tmp_path, monkeypatch, capsys
+    ):
+        calibration_tree(_FOUR_ROWS, second_pass=None)
+        target = tmp_path / "calibration.json"
+        monkeypatch.setattr(cc, "CALIBRATION_ARTIFACT_JSON", target)
+
+        assert cc.main(["--emit-second-pass"]) == cc.EXIT_SECOND_PASS_EMITTED
+
+        capsys.readouterr()
+        assert not target.exists()
+
+    def test_a_run_writes_one_through_main(
+        self, calibration_tree, tmp_path, monkeypatch, capsys
+    ):
+        """The wiring, driven end to end. The judge is injected at its module so no
+        call leaves the machine."""
+        monkeypatch.setattr(
+            cc, "JUDGE_IDENTITY_BY_DIMENSION", {"grounding_fidelity": _artifact_identity()}
+        )
+        calibration_tree(_FOUR_ROWS)
+        target = tmp_path / "calibration.json"
+        monkeypatch.setattr(cc, "CALIBRATION_ARTIFACT_JSON", target)
+        monkeypatch.setattr(
+            "tests.evals.judge.judge", _judge_returning(_PERFECT), raising=True
+        )
+
+        cc.main([])
+
+        capsys.readouterr()
+        assert _stored_payload(target)["pairs"] == 4
+
+
+class TestTheArtifactIsReadBackByTheApp:
+    """Criterion 3, the writer half. What the harness writes is what
+    `load_calibration_status` returns, or the two halves have drifted."""
+
+    def test_the_written_file_loads_as_the_record_that_was_written(
+        self, calibration_tree, tmp_path, monkeypatch
+    ):
+        identity = _artifact_identity()
+        monkeypatch.setattr(
+            cc, "JUDGE_IDENTITY_BY_DIMENSION", {"grounding_fidelity": identity}
+        )
+        calibration_tree(_FOUR_ROWS)
+        result = cc.compute_correlation(_judge_returning(_PERFECT))
+        artifact = cc.write_calibration_artifact(result, tmp_path / "calibration.json")
+
+        loaded = load_calibration_status(artifact, identity)
+
+        assert loaded == cc.calibration_record(result)
+        assert loaded.calibrated is True
+        assert loaded.judge_identity == identity
+
+    def test_a_run_with_one_judge_across_both_dimensions_can_be_calibrated(
+        self, calibration_tree, tmp_path, monkeypatch
+    ):
+        """The control for the test below: nothing else about the run differs."""
+        identity = _artifact_identity()
+        monkeypatch.setattr(
+            cc,
+            "JUDGE_IDENTITY_BY_DIMENSION",
+            {"grounding_fidelity": identity, "escalation_accuracy": identity},
+        )
+        calibration_tree(_TWO_DIMENSIONS)
+        result = cc.compute_correlation(_judge_returning(_PERFECT))
+        assert result["status"] == cc.STATUS_CALIBRATED
+
+        artifact = cc.write_calibration_artifact(result, tmp_path / "calibration.json")
+
+        stored = _stored_payload(artifact)
+        assert stored["status"] == cc.STATUS_CALIBRATED
+        assert stored["judge_identity"]["model"] == "gpt-5.6-luna"
+
+    def test_two_judges_in_one_run_can_never_be_calibrated(
+        self, calibration_tree, tmp_path, monkeypatch
+    ):
+        """The gate passed and the record still refuses. A kappa pooled across two
+        Judges is a number about neither of them, and a deploy acting on it would
+        be shipping on a Judge nobody measured."""
+        monkeypatch.setattr(
+            cc,
+            "JUDGE_IDENTITY_BY_DIMENSION",
+            {
+                "grounding_fidelity": _artifact_identity(),
+                "escalation_accuracy": _artifact_identity(reasoning_effort="low"),
+            },
+        )
+        calibration_tree(_TWO_DIMENSIONS)
+        result = cc.compute_correlation(_judge_returning(_PERFECT))
+        assert result["status"] == cc.STATUS_CALIBRATED, "the harness's own verdict"
+
+        artifact = cc.write_calibration_artifact(result, tmp_path / "calibration.json")
+
+        stored = _stored_payload(artifact)
+        assert stored["judge_identity"] is None
+        assert stored["status"] == cc.STATUS_NOT_CALIBRATED_YET
+        assert stored["reason"] == "no_single_judge_identity"
+        assert cc.calibration_record(result).calibrated is False
+
+    def test_a_dimension_with_no_named_judge_leaves_the_identity_absent(
+        self, calibration_tree, tmp_path
+    ):
+        """The state of this harness today: `JUDGE_IDENTITY_BY_DIMENSION` is empty
+        because its judge builds its own client at a model literal, asks for no
+        reasoning effort, and reads a rubric versioned nowhere."""
+        assert cc.JUDGE_IDENTITY_BY_DIMENSION == {}
+        calibration_tree(_FOUR_ROWS)
+        result = cc.compute_correlation(_judge_returning(_PERFECT))
+
+        artifact = cc.write_calibration_artifact(result, tmp_path / "calibration.json")
+
+        stored = _stored_payload(artifact)
+        assert stored["judge_identity"] is None
+        assert stored["status"] == cc.STATUS_NOT_CALIBRATED_YET
+        assert stored["reason"] == "no_single_judge_identity"
+        assert stored["harness_version"] == cc.HARNESS_VERSION, (
+            "the absence still says which run produced it"
+        )
+        assert stored["labelled_at"] is not None
+
+    def test_an_artifact_measured_against_another_judge_is_not_read_as_this_ones(
+        self, calibration_tree, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            cc, "JUDGE_IDENTITY_BY_DIMENSION", {"grounding_fidelity": _artifact_identity()}
+        )
+        calibration_tree(_FOUR_ROWS)
+        artifact = cc.write_calibration_artifact(
+            cc.compute_correlation(_judge_returning(_PERFECT)),
+            tmp_path / "calibration.json",
+        )
+
+        loaded = load_calibration_status(artifact, _artifact_identity(model="gpt-4o-legacy"))
+
+        assert loaded.calibrated is False
+        assert loaded.reason == "identity_mismatch"

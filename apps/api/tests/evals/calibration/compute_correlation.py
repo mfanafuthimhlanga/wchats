@@ -78,6 +78,14 @@ Requirements:
       Emit it with --emit-second-pass; it is what measures the ceiling
     - ANTHROPIC_API_KEY set in environment
 
+WHAT A RUN LEAVES BEHIND (ticket #53)
+    `calibration.json`, beside the sheets, holding this run's status, verdict
+    parts, intervals and counts as `app.domain.calibration_status` defines them.
+    Nothing on the deploy path can import this script, so its answer travels as
+    data. Every scoring run overwrites it, `setup_error` included, because the
+    latest reading is the one a deploy should act on. `--check` and
+    `--emit-second-pass` write no artifact: neither scores anything.
+
 Exit codes:
     0 (EXIT_CALIBRATED)         - both halves of the gate passed over
                                   >= MIN_PAIRS pairs
@@ -108,11 +116,14 @@ Exit codes:
 from __future__ import annotations
 
 import csv
+import dataclasses
+import datetime
 import json
 import os
 import pathlib
 import random
 import sys
+from typing import TYPE_CHECKING
 
 from tests.evals.calibration.agreement import (
     bootstrap_kappa,
@@ -122,6 +133,10 @@ from tests.evals.calibration.agreement import (
     human_ceiling,
     paired_difference,
 )
+
+if TYPE_CHECKING:
+    from app.domain.calibration_status import CalibrationStatus
+    from app.domain.judge_identity import JudgeIdentity
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -908,10 +923,12 @@ def compute_correlation(judge_fn) -> dict:
             "kappa": None,
             "judge_interval": None,
             "ceiling_interval": None,
+            "difference_interval": None,
             "gate": None,
             "matthews": None,
             "cells": None,
             "rho": None,
+            "scored_pairs": 0,
             "pairs": 0,
             "pair_rate": None,
             "attempted": 0,
@@ -926,10 +943,12 @@ def compute_correlation(judge_fn) -> dict:
             "kappa": None,
             "judge_interval": None,
             "ceiling_interval": None,
+            "difference_interval": None,
             "gate": None,
             "matthews": None,
             "cells": None,
             "rho": None,
+            "scored_pairs": 0,
             "pairs": 0,
             "pair_rate": None,
             "attempted": parsed["attempted"],
@@ -1026,10 +1045,12 @@ def compute_correlation(judge_fn) -> dict:
             "kappa": None,
             "judge_interval": None,
             "ceiling_interval": None,
+            "difference_interval": None,
             "gate": None,
             "matthews": None,
             "cells": cells,
             "rho": None,
+            "scored_pairs": 0,
             "pairs": pairs,
             "pair_rate": pair_rate,
             "attempted": parsed["attempted"],
@@ -1046,10 +1067,12 @@ def compute_correlation(judge_fn) -> dict:
             "kappa": None,
             "judge_interval": None,
             "ceiling_interval": None,
+            "difference_interval": None,
             "gate": None,
             "matthews": None,
             "cells": cells,
             "rho": None,
+            "scored_pairs": 0,
             "pairs": pairs,
             "pair_rate": pair_rate,
             "attempted": parsed["attempted"],
@@ -1321,6 +1344,131 @@ def emit_second_pass(path: pathlib.Path | None = None) -> tuple[int, list[str]]:
     ]
 
 
+# ---------------------------------------------------------------------------
+# The artifact — this run's answer, in the shape the app reads (ticket #53)
+# ---------------------------------------------------------------------------
+
+#: Which build of this script produced an artifact. Bumped BY HAND when the
+#: mapping onto `CalibrationStatus` changes what a field means, so a reader
+#: holding an older artifact can tell it was built under different rules. Not a
+#: checksum of this file and it must not become one: editing a print statement
+#: is not a change to the mapping.
+HARNESS_VERSION = "compute_correlation.py@1"
+
+#: Where a scoring run leaves its record: beside the sheets it read, which is
+#: the one directory this harness owns.
+CALIBRATION_ARTIFACT_JSON = CALIBRATION_DIR / "calibration.json"
+
+#: Which Judge scores each dimension, at the grain `JudgeIdentity` keys on.
+#:
+#: EMPTY, AND THAT IS THE FINDING RATHER THAN AN OMISSION. The judge this harness
+#: calls is `tests/evals/judge.py`. It builds its own `anthropic.Anthropic()`
+#: client at a model literal, asks for no reasoning effort, and reads a rubric
+#: authored in this repo and versioned nowhere. Two of the identity's three
+#: fields would have to be invented to fill a row in here, and an invented field
+#: widens the key until two different Judges group under one figure.
+#:
+#: The five dimensions this harness scores are also not the four Ragas metrics
+#: `eval_service.judge_identity_for` maps. They are the AI-SPEC 5.2 rubric names
+#: in `tests/evals/judge.py:JUDGE_RUBRICS`; that function takes `METRIC_KEYS` and
+#: raises KeyError on every one of them. Nothing in this repo joins the two
+#: vocabularies, and a table that joined them here would assert an equivalence
+#: nobody measured.
+#:
+#: So every artifact this harness writes today carries `judge_identity: null`
+#: and, by the record's own rule, can never say `calibrated`. The day this judge
+#: moves onto `app.core.model_client`, this table is the one place that changes.
+JUDGE_IDENTITY_BY_DIMENSION: dict[str, JudgeIdentity] = {}
+
+
+def judge_identity_for_run(result: dict) -> JudgeIdentity | None:
+    """The one Judge every dimension in this run names, or None.
+
+    None when two dimensions name different Judges, None when any of them names
+    none, and None when the run reached no rows at all. Picking the first of
+    several would report the Judge behind one dimension as the Judge behind the
+    whole figure, which is the rule `eval_service.run_judge_identity` already
+    applies to an eval run's records.
+    """
+    identities = {
+        JUDGE_IDENTITY_BY_DIMENSION.get(entry["dimension"])
+        for entry in result.get("table") or []
+    }
+    if len(identities) == 1:
+        return identities.pop()
+    return None
+
+
+def labelled_at() -> str | None:
+    """When the sheet this figure covers was last written, as ISO 8601 UTC.
+
+    The sheet's mtime, because no column in it records when a row was labelled
+    and the harness may not invent a date. None when there is no sheet, which is
+    the `setup_error` case. Section 9 of
+    `.dev/reference/260818-llm-eval-fundamentals.md` reads alignment decay off
+    this field, so a stale figure can be seen to be stale.
+    """
+    try:
+        stamp = HUMAN_SCORES_CSV.stat().st_mtime
+    except OSError:
+        return None
+    return datetime.datetime.fromtimestamp(stamp, datetime.UTC).isoformat()
+
+
+def calibration_record(result: dict) -> CalibrationStatus:
+    """This run, as `app.domain.calibration_status` holds it.
+
+    ONE JUDGEMENT LIVES HERE AND IT IS NAMED. A run whose dimensions name no
+    single Judge leaves the absence and its reason rather than the figure, even
+    when the gate passed, because a kappa with no Judge attached is a number
+    about a judge nobody can name. A deploy reading it sees
+    `no_single_judge_identity`, which says what to fix.
+
+    Every other status is written as the harness reached it, `setup_error`
+    included: a run that could not read its own inputs states a fact about the
+    inputs, not about any Judge, and `judge_identity: null` on that record is
+    honest rather than disqualifying.
+    """
+    from app.domain.calibration_status import CalibrationStatus  # noqa: PLC0415
+
+    identity = judge_identity_for_run(result)
+    if identity is None and result["status"] == STATUS_CALIBRATED:
+        # Built through `absent`, so the reason token is checked against the set
+        # the loader stamps rather than spelled here, and then stamped with which
+        # harness produced the absence and which sheet it read.
+        return dataclasses.replace(
+            CalibrationStatus.absent("no_single_judge_identity"),
+            labelled_at=labelled_at(),
+            harness_version=HARNESS_VERSION,
+        )
+    return CalibrationStatus.from_harness(
+        result,
+        status=result["status"],
+        judge_identity=identity,
+        labelled_at=labelled_at(),
+        harness_version=HARNESS_VERSION,
+    )
+
+
+def write_calibration_artifact(result: dict, path: pathlib.Path) -> pathlib.Path:
+    """Leave this run's record at `path`, overwriting whatever was there.
+
+    IT OVERWRITES, where the second-pass sheet refuses to. That sheet holds
+    labels only the owner can produce; this file holds one run's reading of them,
+    and a run that kept the older file would let a judge that has since regressed
+    go on reporting the figure it earned last week.
+
+    JSON, indented and key-sorted, so two runs produce a diff a person can read.
+    The path is a parameter rather than the module constant so a test can send an
+    artifact somewhere other than the tree the owner labelled.
+    """
+    path.write_text(
+        json.dumps(calibration_record(result).payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return path
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns the exit code rather than calling sys.exit."""
     args = sys.argv[1:] if argv is None else argv
@@ -1347,6 +1495,14 @@ def main(argv: list[str] | None = None) -> int:
     from tests.evals.judge import judge  # noqa: PLC0415
 
     result = compute_correlation(judge)
+
+    # Before the report, so a run that dies formatting its own output still
+    # leaves the record. An OSError here is a disk problem rather than a judge
+    # problem, and it may not cost the operator the report they paid for.
+    try:
+        write_calibration_artifact(result, CALIBRATION_ARTIFACT_JSON)
+    except OSError as exc:
+        print(f"Could not write {CALIBRATION_ARTIFACT_JSON.name}: {exc}\n")
 
     print(
         f"Calibration run - {result['valid']} scored / {result['attempted']} rows present\n"
