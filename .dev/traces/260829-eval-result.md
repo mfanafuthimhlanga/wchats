@@ -420,3 +420,179 @@ and everything in `judge_record.py` are all under `-C 15 -L 60 -a 11`.
   than reading `binary_verdict` off the row. Slice 3, criterion 1, closes #26.
 - `deployment_service`, `alert_service` and `digest_service` still run their own
   `AVG`/`COUNT` over `eval_results`. Slice 4.
+
+## Slice 3, the routes read the record
+
+Two commits: the list route with its tests (`bc2c917`, closes #26), the results route
+with its tests and the admin type change (`8720ff5`).
+
+### Files
+
+- `apps/api/app/api/v1/evals.py`. `_LIST_EVAL_RUNS_SQL` selects `er.result` and
+  aggregates nothing; `_LIST_EVAL_RUNS_PRE_0022_SQL` is the fallback;
+  `_LIST_EVAL_RUN_DATASETS_SQL` and `_gate_thresholds` are gone. New:
+  `_unmeasured_metrics`, `_metrics_of`, `_dataset_block` (rewritten to take an
+  `EvalResult`), `_run_level_metrics`, `_record_of`, `_eval_run_block`,
+  `_fetch_eval_runs`, `_judge_reading`, `_fetch_run_results`,
+  `_GET_RUN_RESULTS_PRE_0023_SQL`, `RESULT_PRESENT` / `RESULT_ABSENT`.
+- `apps/api/app/services/eval_service.py`. Docstring only: the
+  `summarise_run_validity` note about the route's duplicate SQL, and the
+  requested/served rule beside `AGENT_DEPENDENT_DIMENSIONS`.
+- `apps/api/scripts/gates.py`. Both route pins lowered.
+- `apps/admin/app/agents/[id]/page.tsx`, `apps/admin/app/agents/[id]/eval/page.tsx`.
+  `scenario_count: number | null`, plus a `scenarioCount()` helper on the agent page.
+- Tests: `tests/unit/test_eval_routes.py`, 32 to 42.
+
+### The number the record does not hold
+
+**The four run-level averages have no source, and the route does not compute one.**
+`EvalResult` stores a `Measurement` per dataset per metric and deliberately no pooled
+mean. `.dev/reference/260818-llm-eval-fundamentals.md` section 11 forbids a pooled rate
+outright, and `summarise_run_validity`'s docstring says the same thing in the code: a
+golden mean and an exploratory mean answer different questions, and one number over both
+moves whenever the exploratory draw moves while looking like a quality change.
+
+So the route reports a run-level `metrics` block only when there is nothing to pool:
+exactly one dataset scored a row. Then that dataset's measurements ARE the run's, copied
+through verbatim, and `metrics_dataset` names it. When both halves scored, the four
+metrics read unmeasured, `metrics_dataset` is null, and the numbers stay under `datasets`.
+Every number in the response is lifted, never averaged.
+
+This is a selection, not an arithmetic, and it is stated in the response so no reader can
+mistake a dataset's number for a run's. It degrades to unknown, never to a fabricated
+zero. What it costs: **a tenant with a designated golden set now gets no run-level number
+at all**, and the admin's eval-page chart plots `aggregate_scores`, which reads 0.0 for an
+unmeasured metric. On today's ordinary tenant (no golden rows designated, exploratory
+scores everything) the chart is unaffected. On a golden-set tenant the chart would flatten
+to zero, and the fix is a console that plots the two halves as two series. That is a UI
+change, out of this slice's scope, and it is open work.
+
+`datasets.unattributed` has the same shape of gap and is reported as nulls.
+`summarise_run_validity` counts result rows whose scenario no longer exists;
+`EvalResult` stores no such field. The route used to recount them in its own SQL. Nulls
+say the response cannot answer; a zero would assert the run had none.
+
+### Decisions
+
+**A recordless run reports `result: "absent"` with null counts.** Three states reach it,
+all reading the same way to the console: a tenant DB predating tenant migration 0022, a
+run that died before `write_eval_result`, and a stored payload that fails
+`EvalResult.from_payload` on the way out. The log says which. Zero was the alternative
+and it is indistinguishable from a run that attempted nothing.
+
+**The list route falls back rather than failing on a pre-0022 tenant.** The wide SELECT
+raises `UndefinedColumn` before returning a row, so `_fetch_eval_runs` catches exactly
+that and runs the narrow query, appending None per row. Only `UndefinedColumn` degrades;
+`test_a_genuine_query_failure_is_not_swallowed_as_a_missing_column` pins a connection
+failure surfacing. The same pattern covers pre-0023 rows on the results route.
+
+**The per-scenario verdict keeps None-first ordering.** Any NULL `binary_verdict` on a
+gated metric gives `passed: null`, even when the other gated verdict is False. Kleene
+conjunction would give False there and is arguably sharper, but None is the shipped
+contract, the admin renders it as a fail either way (`s.passed ? 'pass' : 'fail'`), and
+changing verdicts was not this slice's job.
+
+**Gatedness still comes from `GATED_METRIC_KEYS`, not from the row.** A row's
+`threshold IS NULL` cannot be read as "ungated": every pre-0023 row has NULL there, so
+deriving the gated set per row would make `all([])` true and pass every legacy scenario.
+`test_eval_service.py::test_the_route_reads_the_same_gate_the_writer_stored` pins every
+entry in the tuple to a non-None `threshold_for`.
+
+**`build_eval_run_config`'s judge pair stays, and now says what it is.** Config holds the
+judge the run REQUESTED at insert; the record holds the identity that SERVED
+(`EvalResult.judge_identity`, `served_model`, and the per-call identity on every judge
+row). No reader in the routes presents the config pair as served. The full statement went
+beside `AGENT_DEPENDENT_DIMENSIONS` at module scope rather than into the function
+docstring, because the docstring lives inside a lizard length pin and documentation is not
+a reason to raise one.
+
+### Admin readers found
+
+Two files read these routes, and neither reads `metrics`, `datasets`,
+`scored_scenario_count` or the ledger's per-dataset split:
+
+- `apps/admin/app/agents/[id]/eval/page.tsx` typed `scenario_count: number` (unused on the
+  page) and plots `aggregate_scores` through `.toFixed(2)`. It reads `passed: boolean` per
+  scenario. Only the type changed.
+- `apps/admin/app/agents/[id]/page.tsx` typed `scenario_count: number` and renders it twice,
+  through `pluralize()` in the section head and as a channel readout. Both now go through
+  `scenarioCount()`, which says "no record" for null, and the readout falls back to "n/a".
+
+`aggregate_scores` stays `number` on both sides. It is the numeric compatibility
+projection the module docstring has always called a lie, and making it nullable is the
+frontend change this slice is not.
+
+### Observed
+
+Suites, one foreground run:
+
+```
+test_eval_routes test_eval_run_rates test_eval_service test_eval_task
+test_eval_result_type test_eval_agent_invocation test_promote_trace
+test_judge_record_type                                  388 passed in 50.39s
+```
+
+`test_eval_run_rates.py` is not a route test. It drives `tests/evals/run_evals.py`'s
+deterministic collector and was named in the slice brief as one; it is run here because it
+was named, and it passes.
+
+Gates, `scripts/gates.py static`, passed in 8.7s:
+
+```
+ruff: clean against the 0 pinned baseline violation(s)
+Contracts: 3 kept, 0 broken
+complexity: clean against the 115 pinned function(s)
+source assertions: clean against the 44 pinned file(s), 113 site(s)
+```
+
+Lizard, both pins lowered:
+
+```
+      49     13    288      2      87 list_eval_runs@403-489@app/api/v1/evals.py
+      51     17    373      3      98 get_eval_run_results@575-672@app/api/v1/evals.py
+```
+
+`list_eval_runs` 25 CCN / 160 length becomes 13 / 87; `get_eval_run_results` 20 / 104
+becomes 17 / 98. Neither pin was raised. `build_eval_run_config` and
+`summarise_run_validity` each grew on docstring lines alone and were trimmed back under
+their existing pins rather than repinned.
+
+`npx tsc --noEmit` in `apps/admin`, exit 0, no errors. No install was needed:
+`node_modules` and `node_modules/typescript` were present and tsc resolved every import,
+so `pnpm install --frozen-lockfile` was never run.
+
+Mutation, the list route joining `eval_results` and counting `scenario_id` again:
+
+```
+MUTATION APPLIED: list_eval_runs joins eval_results and counts scenario_id again
+FAILED test_eval_routes.py::TestListEvalRuns::test_the_numbers_survive_every_result_row_being_deleted
+FAILED test_eval_routes.py::TestListEvalRuns::test_the_list_query_aggregates_nothing
+2 failed, 35 deselected in 32.47s
+
+test_the_numbers_survive_every_result_row_being_deleted:
+    E       IndexError: list index out of range
+    tests\unit\test_eval_routes.py:529: IndexError
+```
+
+The IndexError is the point. With the join back, the runs query names `eval_results`, the
+fake returns the empty table for it, and `response.json()["eval_runs"][0]` has nothing to
+index: every run vanished from the console because the result rows were deleted.
+
+Restored with `git checkout HEAD -- app/api/v1/evals.py`:
+
+```
+37 passed in 32.84s
+```
+
+### Open, carried forward
+
+- **A golden-set tenant now has no run-level metric number.** The console has to plot
+  `datasets.golden` and `datasets.exploratory` as two series, or read `metrics` only when
+  `metrics_dataset` is set. Until it does, `aggregate_scores` reads 0.0 for such a tenant
+  and that is the fabricated-collapse reading the module docstring warns about. Frontend
+  work, and it needs an issue.
+- **`EvalResult` carries no `unattributed` count**, so the list route reports nulls for it.
+  Either the record grows the field or the response drops the key. A decision for
+  whoever touches the record next.
+- `deployment_service`, `alert_service` and `digest_service` still run their own
+  `AVG`/`COUNT` over `eval_results`. Slice 4.
