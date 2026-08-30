@@ -73,7 +73,7 @@ def _calibrated(identity: JudgeIdentity) -> CalibrationStatus:
         pairs=30,
         attempted=34,
         valid=32,
-        labelled_at="2026-08-29T10:15:00+00:00",
+        labels_made_at="2026-08-29T10:15:00+00:00",
         harness_version="compute_correlation-2026-08-29",
     )
 

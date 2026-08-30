@@ -1398,7 +1398,7 @@ def judge_identity_for_run(result: dict) -> JudgeIdentity | None:
     return None
 
 
-def labelled_at() -> str | None:
+def labels_made_at() -> str | None:
     """When the sheet this figure covers was last written, as ISO 8601 UTC.
 
     The sheet's mtime, because no column in it records when a row was labelled
@@ -1447,7 +1447,7 @@ def calibration_record(result: dict) -> CalibrationStatus:
                 result,
                 status=STATUS_NOT_CALIBRATED_YET,
                 judge_identity=None,
-                labelled_at=labelled_at(),
+                labels_made_at=labels_made_at(),
                 harness_version=HARNESS_VERSION,
             ),
             reason="no_single_judge_identity",
@@ -1456,7 +1456,7 @@ def calibration_record(result: dict) -> CalibrationStatus:
         result,
         status=result["status"],
         judge_identity=identity,
-        labelled_at=labelled_at(),
+        labels_made_at=labels_made_at(),
         harness_version=HARNESS_VERSION,
     )
 
@@ -1467,7 +1467,7 @@ def written_at() -> str:
     On the record rather than derived from the file's mtime, because a file gets
     copied, restored and checked out and its mtime moves with all three, while
     the sentence "this reading was taken at" belongs to the run that took it.
-    `labelled_at` dates the labels and this one dates the reading of them, and a
+    `labels_made_at` dates the labels and this one dates the reading of them, and a
     gap between the two is the alignment decay section 9 of
     `.dev/reference/260818-llm-eval-fundamentals.md` is about.
     """
@@ -1499,7 +1499,7 @@ def write_harness_raised(path: pathlib.Path, exc: BaseException) -> None:
         record = CalibrationStatus(
             status=STATUS_SETUP_ERROR,
             reason=f"harness_raised:{type(exc).__name__}",
-            labelled_at=labelled_at(),
+            labels_made_at=labels_made_at(),
             harness_version=HARNESS_VERSION,
             written_at=written_at(),
         )

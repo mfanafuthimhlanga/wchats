@@ -51,7 +51,7 @@ ZERO IS A MEASUREMENT AND NONE IS AN ABSENCE
     the mapping reads is refused rather than defaulted. A zero standing in for an
     absent count reports a measurement nobody made.
 
-    `status`, `judge_identity`, `labelled_at` and `harness_version` are passed
+    `status`, `judge_identity`, `labels_made_at` and `harness_version` are passed
     in. None of the four is in the result dict, and the caller is the only thing
     that knows them.
 
@@ -298,7 +298,7 @@ def _require_members(record: CalibrationStatus) -> None:
             f"CalibrationStatus takes one of {', '.join(CALIBRATION_STATUSES)}, "
             f"got {record.status!r}"
         )
-    for name in ("reason", "labelled_at", "harness_version", "written_at"):
+    for name in ("reason", "labels_made_at", "harness_version", "written_at"):
         _require_optional_text(name, getattr(record, name))
     if record.judge_identity is not None and not isinstance(
         record.judge_identity, JudgeIdentity
@@ -512,9 +512,16 @@ class CalibrationStatus:
                               denominator, and never smaller than scored_pairs.
         attempted:            rows the sheet held.
         valid:                rows that parsed.
-        labelled_at:          ISO timestamp of the labelling the figure covers,
+        labels_made_at:       ISO timestamp of the labelling the figure covers,
                               or None. Section 9's alignment decay is read off
                               this, so a stale figure can be seen to be stale.
+                              This name matches no entry in
+                              `test_label_provenance.py`'s `LABEL_COLUMNS`,
+                              and that is on purpose. Those name
+                              `eval_scenarios` provenance, which no module
+                              under `app/services/`, `app/worker/` or
+                              `scripts/` may mention. This field is the
+                              calibration sheet's mtime.
         harness_version:      which build of the harness produced it. None when
                               no harness produced this record, which is every
                               record `absent` builds.
@@ -522,7 +529,7 @@ class CalibrationStatus:
                               The writer sets it and nothing else does, so two
                               runs are distinguishable even when they measured
                               the same rows to the same figures. None on a record
-                              that was never written to disk. `labelled_at` dates
+                              that was never written to disk. `labels_made_at` dates
                               the labels and this one dates the reading of them.
         artifact_version:     which construction rules built it.
 
@@ -547,7 +554,7 @@ class CalibrationStatus:
     pairs: int = 0
     attempted: int = 0
     valid: int = 0
-    labelled_at: str | None = None
+    labels_made_at: str | None = None
     harness_version: str | None = None
     written_at: str | None = None
     artifact_version: int = ARTIFACT_VERSION
@@ -594,7 +601,7 @@ class CalibrationStatus:
         *,
         status: str,
         judge_identity: JudgeIdentity | None,
-        labelled_at: str | None,
+        labels_made_at: str | None,
         harness_version: str | None,
     ) -> CalibrationStatus:
         """One harness result dict, mapped onto this record a key at a time.
@@ -613,7 +620,7 @@ class CalibrationStatus:
                              over a Judge nobody can name is not a calibrated
                              record and the writer is what knows which case it is.
             judge_identity:  the one Judge the run scored with, or None.
-            labelled_at:     when the sheet the figure covers was last labelled.
+            labels_made_at:  when the sheet the figure covers was last labelled.
             harness_version: which build of the harness produced it.
 
         Raises:
@@ -643,7 +650,7 @@ class CalibrationStatus:
             pairs=_harness_key(result, "pairs", "result"),
             attempted=_harness_key(result, "attempted", "result"),
             valid=_harness_key(result, "valid", "result"),
-            labelled_at=labelled_at,
+            labels_made_at=labels_made_at,
             harness_version=harness_version,
         )
 
@@ -660,7 +667,7 @@ class CalibrationStatus:
             {"status", "reason", "judge_identity", "judge_interval",
              "ceiling_interval", "difference_interval", "beats_chance",
              "ceiling_beats_chance", "reaches_ceiling", "kappa", "matthews",
-             "scored_pairs", "pairs", "attempted", "valid", "labelled_at",
+             "scored_pairs", "pairs", "attempted", "valid", "labels_made_at",
              "harness_version", "written_at", "artifact_version"} where
             `judge_identity` is {"model", "reasoning_effort", "prompt_version"}
             or None and each interval is {"low", "high", "point", "usable"} or
@@ -688,7 +695,7 @@ class CalibrationStatus:
             "pairs": self.pairs,
             "attempted": self.attempted,
             "valid": self.valid,
-            "labelled_at": self.labelled_at,
+            "labels_made_at": self.labels_made_at,
             "harness_version": self.harness_version,
             "written_at": self.written_at,
             "artifact_version": self.artifact_version,
@@ -757,7 +764,7 @@ def _stored_fields(payload: Mapping) -> dict:
         "pairs": _required_key(payload, "pairs"),
         "attempted": _required_key(payload, "attempted"),
         "valid": _required_key(payload, "valid"),
-        "labelled_at": _required_key(payload, "labelled_at"),
+        "labels_made_at": _required_key(payload, "labels_made_at"),
         "harness_version": _required_key(payload, "harness_version"),
         "written_at": _required_key(payload, "written_at"),
         "artifact_version": _stored_artifact_version(payload),

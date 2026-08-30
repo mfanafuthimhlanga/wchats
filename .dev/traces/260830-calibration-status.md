@@ -569,6 +569,13 @@ sheet through `main([])` and back out through `load_calibration_status`, and saw
 `test_a_verdict_only_sheet_calibrates_end_to_end_and_the_app_reads_it` is that pin, and
 it takes the harness file to 100.
 
+`test_label_provenance.py::TestR3TheModelWritersCannotWrite::test_no_model_driven_module_names_a_label_column_at_all` then caught the record's date
+field. `labelled_at` is one of `eval_scenarios`' three label-provenance columns and no
+module under `app/services/`, `app/worker/`, `scripts/` or `_runlogs/` may name one in
+any syntax, so the field is `labels_made_at` from this commit on. Slices 1 to 3 above
+call it by its first name. The allowlist was the other way out and it would have widened
+the guard to buy a spelling.
+
 ### The four-key artifact, and what a reader's defaults cost
 
 The finding the pass turns on. `from_payload` defaulted every count to 0 and every figure
@@ -731,5 +738,5 @@ Restored, `99 passed in 53.54s`.
   absolute and a test pins that, so the two agree today. A caller passing a relative path
   would log a relative one.
 - **`written_at` is not on the deploy summary.** `SUMMARY_KEYS` stays at eleven and
-  `labelled_at` is the date a deploy report can act on. Ticket 17 reads the record itself
-  if it needs the write time.
+  `labels_made_at` is the date a deploy report can act on. Ticket 17 reads the record
+  itself if it needs the write time.

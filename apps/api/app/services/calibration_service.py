@@ -226,7 +226,7 @@ def _judge_absence(
 #: What the deploy summary carries out of a record, and nothing else. The three
 #: verdict parts, `difference_interval`, `attempted`, `valid`, `written_at` and
 #: `artifact_version` stay off it. The orchestrator narrates the status and the
-#: reason, `labelled_at` is the date a reader of a deploy report can act on, and
+#: reason, `labels_made_at` is the date a reader of a deploy report can act on, and
 #: ticket 17's refusal reads the record itself rather than this dict.
 #: `tests/unit/test_calibration_service.py` pins the key set.
 SUMMARY_KEYS = (
@@ -239,7 +239,7 @@ SUMMARY_KEYS = (
     "matthews",
     "scored_pairs",
     "pairs",
-    "labelled_at",
+    "labels_made_at",
     "harness_version",
 )
 
@@ -263,7 +263,7 @@ def summary_of(status: CalibrationStatus) -> dict:
     Returns:
         {"status", "reason", "judge_identity", "judge_interval",
          "ceiling_interval", "kappa", "matthews", "scored_pairs", "pairs",
-         "labelled_at", "harness_version"}, where `judge_identity` is
+         "labels_made_at", "harness_version"}, where `judge_identity` is
         {"model", "reasoning_effort", "prompt_version"} or None and each
         interval is {"low", "high", "point", "usable"} or None.
     """

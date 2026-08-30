@@ -1809,7 +1809,7 @@ class TestEveryScoringRunLeavesARecord:
         stored = _stored_payload(artifact)
         assert stored["status"] == cc.STATUS_SETUP_ERROR
         assert stored["kappa"] is None
-        assert stored["labelled_at"] is None, "there is no sheet to take an mtime from"
+        assert stored["labels_made_at"] is None, "there is no sheet to take an mtime from"
 
     def test_a_run_that_stopped_at_a_floor_still_writes_one(self, calibration_tree, tmp_path):
         """Two rows cannot produce a correlation, and the record says exactly that
@@ -1841,7 +1841,7 @@ class TestEveryScoringRunLeavesARecord:
 
         assert _stored_payload(target)["pairs"] == 2
 
-    def test_the_labelled_at_stamp_comes_off_the_sheet(self, calibration_tree, tmp_path):
+    def test_the_labels_made_at_stamp_comes_off_the_sheet(self, calibration_tree, tmp_path):
         """Nothing in the sheet records when a row was labelled, so the mtime is the
         only honest answer and the harness may not invent a better one."""
         csv_path = calibration_tree(_FOUR_ROWS)
@@ -1851,7 +1851,7 @@ class TestEveryScoringRunLeavesARecord:
 
         artifact = cc.write_calibration_artifact(result, tmp_path / "calibration.json")
 
-        stamp = _stored_payload(artifact)["labelled_at"]
+        stamp = _stored_payload(artifact)["labels_made_at"]
         assert stamp is not None
         assert datetime.datetime.fromisoformat(stamp) == datetime.datetime.fromtimestamp(
             csv_path.stat().st_mtime, datetime.UTC
@@ -2015,7 +2015,7 @@ class TestTheArtifactIsReadBackByTheApp:
             "pairs",
             "attempted",
             "valid",
-            "labelled_at",
+            "labels_made_at",
             "harness_version",
             "written_at",
             "artifact_version",
@@ -2163,7 +2163,7 @@ class TestTheArtifactIsReadBackByTheApp:
         assert stored["harness_version"] == cc.HARNESS_VERSION, (
             "the absence still says which run produced it"
         )
-        assert stored["labelled_at"] is not None
+        assert stored["labels_made_at"] is not None
 
     def test_an_artifact_measured_against_another_judge_is_not_read_as_this_ones(
         self, calibration_tree, tmp_path

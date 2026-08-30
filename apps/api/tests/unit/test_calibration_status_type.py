@@ -67,7 +67,7 @@ PAYLOAD_KEYS = [
     "pairs",
     "attempted",
     "valid",
-    "labelled_at",
+    "labels_made_at",
     "harness_version",
     "written_at",
     "artifact_version",
@@ -103,7 +103,7 @@ def _calibrated(**overrides) -> CalibrationStatus:
         "pairs": 30,
         "attempted": 34,
         "valid": 32,
-        "labelled_at": "2026-08-29T10:15:00+00:00",
+        "labels_made_at": "2026-08-29T10:15:00+00:00",
         "harness_version": "compute_correlation-2026-08-29",
     }
     fields.update(overrides)
@@ -373,12 +373,12 @@ class TestTheStoredArtifactCarriesEveryKey:
     def test_a_null_where_the_field_is_optional_is_read_as_the_absence(self):
         """Null and absent are different facts. This is the one that is data."""
         payload = CalibrationStatus.absent("no_artifact").payload
-        assert payload["kappa"] is None and payload["labelled_at"] is None
+        assert payload["kappa"] is None and payload["labels_made_at"] is None
 
         record = CalibrationStatus.from_payload(payload)
 
         assert record.kappa is None
-        assert record.labelled_at is None
+        assert record.labels_made_at is None
         assert record.reason == "no_artifact"
 
     def test_a_null_count_is_refused(self):
@@ -492,7 +492,7 @@ def _from_harness(result, **overrides) -> CalibrationStatus:
     fields = {
         "status": STATUS_CALIBRATED,
         "judge_identity": _identity(),
-        "labelled_at": "2026-08-29T10:15:00+00:00",
+        "labels_made_at": "2026-08-29T10:15:00+00:00",
         "harness_version": "compute_correlation.py@1",
     }
     fields.update(overrides)
@@ -527,7 +527,7 @@ class TestFromHarnessMapsEveryKey:
 
         assert record.status == STATUS_NOT_CALIBRATED_YET
         assert record.judge_identity == _identity()
-        assert record.labelled_at == "2026-08-29T10:15:00+00:00"
+        assert record.labels_made_at == "2026-08-29T10:15:00+00:00"
         assert record.harness_version == "compute_correlation.py@1"
 
     def test_the_status_is_the_callers_and_not_the_result_dicts(self):

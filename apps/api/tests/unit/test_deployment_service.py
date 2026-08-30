@@ -3007,7 +3007,7 @@ def _calibrated_for(identity: JudgeIdentity) -> CalibrationStatus:
         pairs=30,
         attempted=34,
         valid=32,
-        labelled_at="2026-08-29T10:15:00+00:00",
+        labels_made_at="2026-08-29T10:15:00+00:00",
         harness_version="compute_correlation-2026-08-29",
     )
 
@@ -3072,7 +3072,7 @@ class TestTheCalibrationBlock:
         assert calibration["matthews"] == pytest.approx(0.64)
         assert calibration["scored_pairs"] == 24
         assert calibration["pairs"] == 30
-        assert calibration["labelled_at"] == "2026-08-29T10:15:00+00:00"
+        assert calibration["labels_made_at"] == "2026-08-29T10:15:00+00:00"
         assert calibration["harness_version"] == "compute_correlation-2026-08-29"
 
     def test_the_loader_is_asked_about_the_judge_the_run_used(self):
