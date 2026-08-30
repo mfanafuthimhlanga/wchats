@@ -590,7 +590,7 @@ Restored with `git checkout HEAD -- app/api/v1/evals.py`:
   `datasets.golden` and `datasets.exploratory` as two series, or read `metrics` only when
   `metrics_dataset` is set. Until it does, `aggregate_scores` reads 0.0 for such a tenant
   and that is the fabricated-collapse reading the module docstring warns about. Frontend
-  work, and it needs an issue.
+  work, opened as #119.
 - **`EvalResult` carries no `unattributed` count**, so the list route reports nulls for it.
   Either the record grows the field or the response drops the key. A decision for
   whoever touches the record next.
