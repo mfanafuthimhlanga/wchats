@@ -81,13 +81,18 @@ never raises.
 | path | reason | logged |
 |---|---|---|
 | `identity` is None | `no_single_judge_identity` | no |
-| file missing | `no_artifact` | no |
+| file missing | `no_artifact` | no, superseded below |
 | unreadable, or not JSON | `unreadable` | `calibration_artifact_unreadable` |
 | `from_payload` refuses | `invalid` | `calibration_artifact_invalid` |
 | identity differs | `identity_mismatch` | `calibration_identity_mismatch` |
 
 A missing artifact logs nothing. It is the normal state of a container, and a warning per
 deploy summary trains an operator to ignore the log.
+**Superseded by F6 in the review pass**: the path logs `calibration_artifact_absent` at
+INFO carrying the path it opened and `parent_exists`. A container with no calibration
+directory is healthy and a path with a typo in it is a setting nobody has read since it
+was typed, and `no_artifact` said the same thing about both. INFO rather than a warning,
+for the reason above.
 
 The mismatch line carries four fields and no others, pinned by a test:
 `run_model`, `run_prompt_version`, `artifact_model`, `artifact_prompt_version`.
@@ -500,15 +505,18 @@ Everything slices 1 and 2 left open, and where it belongs now.
   not exist and every deploy summary reads `not_calibrated_yet` / `no_artifact`. That is
   the correct reading, and it stays until a calibration run against a nameable Judge
   exists.
-- `JUDGE_IDENTITY_BY_DIMENSION` is empty, so every artifact this harness writes today
-  carries `judge_identity: null` and `no_single_judge_identity`. `tests/evals/judge.py`
-  builds its own client at a model literal, requests no reasoning effort and reads a
-  rubric versioned nowhere, so two of the identity's three fields would have to be
-  invented. The table is the one place that changes when the judge moves onto
-  `app.core.model_client`.
-- `judge_identity_for_run` reads `result["table"]`, which lists every row the run
-  touched, so a dimension whose rows all errored still refuses the run a single identity.
-  Deliberate, and it stops mattering once the table above is filled.
+- No table supplies an identity any more. The review pass deleted
+  `JUDGE_IDENTITY_BY_DIMENSION`, and `judge()` reports its own identity beside every
+  verdict. Every artifact this harness writes today still carries `judge_identity: null`
+  and `no_single_judge_identity`, because `judge_identity()` returns None:
+  `tests/evals/judge.py` builds its own client at a model literal, sends no reasoning
+  effort and reads a rubric versioned nowhere, so two of the identity's three fields
+  would have to be invented. `judge_identity()` is the one place that changes when the
+  judge moves onto `app.core.model_client`.
+- `judge_identity_for_run` reads scored rows only, the ones carrying a truthy
+  `judge_verdict`. A row whose scenario would not load, whose judge errored, or that a
+  PII deflection excluded contributed nothing to the kappa, so the Judge behind it does
+  not describe the figure.
 
 **#54, the refusal.**
 
@@ -542,7 +550,7 @@ apps/api/tests/evals/judge.py                    judge() reports its own identit
 apps/api/tests/evals/calibration/compute_correlation.py
                                                  the identity comes off the rows, the atomic
                                                  write, main guards the run
-apps/api/tests/unit/test_calibration_status_type.py   +22 tests, 110 in the file
+apps/api/tests/unit/test_calibration_status_type.py   89 collected, all of them new here
 apps/api/tests/unit/test_calibration_service.py       +12 tests, 41 in the file
 apps/api/tests/unit/test_calibration_harness.py       +11 tests, 99 in the file
 apps/api/tests/unit/test_deployment_service.py        +1 test
@@ -550,6 +558,16 @@ apps/api/tests/unit/test_deployment_service.py        +1 test
 
 Four commits. `174384a` the stored shape, `1db1bd0` the loader and the prompt, `67f9913`
 the observed identity and the writer, and the prose pass.
+
+That row read `+22 tests, 110 in the file` and both numbers were wrong. `pytest --co -q`
+collects 89 at `f3fa8f3`, and the file does not exist on `main`, so the delta is the whole
+file and not one pass's share of it.
+
+A separate verifier ran criterion 3's third condition by hand in scratch, a verdict-only
+sheet through `main([])` and back out through `load_calibration_status`, and saw
+`calibrated 4 0` then `calibrated None True`. The repo pinned none of it.
+`test_a_verdict_only_sheet_calibrates_end_to_end_and_the_app_reads_it` is that pin, and
+it takes the harness file to 100.
 
 ### The four-key artifact, and what a reader's defaults cost
 

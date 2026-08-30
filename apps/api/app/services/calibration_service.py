@@ -197,8 +197,8 @@ def _judge_absence(
     calls cannot be named at the grain `JudgeIdentity` keys on (#58). Reading
     that through the mismatch branch reported "measured on another Judge" over a
     file that measured nobody, and logged three None fields beside three real
-    ones. The two send an owner to different work: one to run the harness against
-    a nameable Judge, the other to find out what moved.
+    ones. The two send an owner to different work. `artifact_names_no_judge`
+    asks for a run against a nameable Judge, `identity_mismatch` asks what moved.
     """
     if stored is None:
         log.warning(

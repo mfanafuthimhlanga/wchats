@@ -2180,3 +2180,37 @@ class TestTheArtifactIsReadBackByTheApp:
 
         assert loaded.calibrated is False
         assert loaded.reason == "identity_mismatch"
+
+    def test_a_verdict_only_sheet_calibrates_end_to_end_and_the_app_reads_it(
+        self, calibration_tree, monkeypatch, capsys
+    ):
+        """Both halves of criterion 3, over the sheet the owner is actually asked for.
+
+        The harness's printed guidance asks for the binary column and leaves the
+        1-5 score optional, so the intended run has `scored_pairs == 0`. Every
+        other test that drives `main` here fills both columns. F1, a TypeError in
+        `main` on a row carrying no score, and the floor that counted
+        `scored_pairs` where it meant `pairs` were both defects only this shape
+        reaches, and a person found both of them by hand.
+        """
+        identity = _artifact_identity()
+        calibration_tree(_FOUR_ROWS, with_scores=False)
+        monkeypatch.setattr(
+            "tests.evals.judge.judge",
+            _judge_returning(_PERFECT, identity=identity),
+            raising=True,
+        )
+
+        exit_code = cc.main([])
+
+        capsys.readouterr()
+        assert exit_code == cc.EXIT_CALIBRATED
+        stored = _stored_payload(cc.CALIBRATION_ARTIFACT_JSON)
+        assert stored["status"] == cc.STATUS_CALIBRATED
+        assert stored["pairs"] >= 1
+        assert stored["scored_pairs"] == 0, "the sheet carries no 1-5 score"
+
+        loaded = load_calibration_status(cc.CALIBRATION_ARTIFACT_JSON, identity)
+
+        assert loaded.calibrated is True
+        assert loaded.reason is None
