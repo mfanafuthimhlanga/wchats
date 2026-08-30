@@ -123,16 +123,19 @@ from app.services.eval_service import (
     EVAL_RUN_IDEMPOTENCY_SLACK_S,
     EXPLORATORY_SAMPLE_SIZE,
     VERIFIED_QA_PROMOTION_DECISION,
+    build_eval_result,
     build_eval_run_config,
     dataset_composition,
     dataset_of,
     insert_eval_run,
     invocation_provenance,
+    read_run_ledger,
     run_ragas_eval,
     summarise_agent_invocation,
     summarise_run_validity,
     update_eval_run_config,
     update_eval_run_status,
+    write_eval_result,
     write_eval_results,
 )
 from app.services.scenario_service import (
@@ -143,6 +146,24 @@ from app.services.scenario_service import (
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
+
+#: `run_ragas_eval`'s return shape for a run that scored nothing, which is what
+#: the below-measurement-floor branch substitutes rather than calling the judge.
+#:
+#: `judge_records` is the key `write_eval_results` takes, and it is a different
+#: grain from `scores`. One JudgeRecord is one (scenario, metric) decision
+#: carrying its threshold, its verdict, its Judge and the ledger bucket that paid
+#: for it; one `scores` row is one scenario carrying four numbers, which is what
+#: `summarise_run_validity` counts. Both come out of `run_ragas_eval` built from
+#: the same attributed rows. Rebuilding either at the call site would put a
+#: second derivation between the number this task reports and the row it writes,
+#: which is the defect #51 removes one grain up.
+#:
+#: Copied with `dict()` at every use, so a branch cannot mutate the shared shape.
+_NOTHING_SCORED = {
+    "scores": [], "judge_records": [],
+    "sent": 0, "returned": 0, "unattributed": 0,
+}
 
 
 def _run_ledger(tenant_id: str, agent_id: str, run_id: str, conn_str: str) -> LedgerContext:
@@ -196,6 +217,36 @@ def _agent_turn_timeout_s() -> int:
     from app.worker.tasks.runtime.agent import AGENT_TURN_TIMEOUT_S  # noqa: PLC0415
 
     return AGENT_TURN_TIMEOUT_S
+
+
+def _failure_of(exc: BaseException) -> tuple[str, str]:
+    """One failed turn's class and what this build says about it (#25). Pure.
+
+    THE MESSAGE IS COMPOSED HERE, NEVER COPIED OFF THE EXCEPTION. Two things
+    forced that. `str(TimeoutError())` is the empty string, so eval run
+    29754ceb's two timeouts logged `error= error_type=TimeoutError` and said
+    nothing about what ran out of what; and `eval_runs.result` is jsonb the
+    owner reads back, which is the boundary #96 keeps raw provider text off.
+    A phrase this module chose cannot carry a customer's words, a connection
+    string or a stack frame across it.
+
+    A timeout gets the one fact its class cannot carry, the budget it exceeded.
+    Every other class gets its own name and nothing more, which says as much as
+    the exception's text was ever trusted to say in a stored row.
+
+    Args:
+        exc: whatever the agent turn raised.
+
+    Returns:
+        (error_type, message). The first counts into `Invocation.failed` and the
+        run's error histogram; the second reaches `eval_runs.result`.
+    """
+    name = type(exc).__name__
+    if isinstance(exc, TimeoutError):
+        # asyncio.TimeoutError IS TimeoutError from 3.11, so the wait_for in
+        # _drive_eval_turn and a provider's own timeout land on one branch.
+        return name, f"agent turn exceeded {_agent_turn_timeout_s()}s"
+    return name, name
 
 
 # ---------------------------------------------------------------------------
@@ -455,9 +506,7 @@ def _invoke_agent_for_scenarios(
 
     invocable = scenarios[:AGENT_INVOCATION_MAX_CALLS_PER_RUN]
     skipped = scenarios[AGENT_INVOCATION_MAX_CALLS_PER_RUN:]
-    skipped_golden = sum(
-        1 for s in skipped if dataset_of(s.get("dataset")) == DATASET_GOLDEN
-    )
+    skipped_golden = sum(1 for s in skipped if dataset_of(s.get("dataset")) == DATASET_GOLDEN)
     if skipped:
         log.warning(
             "run_eval_suite.invocation_ceiling_reached",
@@ -495,6 +544,7 @@ def _invoke_agent_for_scenarios(
                 "responded": False,
                 "scorable": False,
                 "error": None,
+                "error_message": None,
                 "retrieve_calls": 0,
                 "retrieve_at_cap": False,
                 "retrieve_unparsed": 0,
@@ -515,9 +565,9 @@ def _invoke_agent_for_scenarios(
                 # tests/evals/calibration/compute_correlation.py:485 learned
                 # about a judge that errors, applied one layer earlier. A zero
                 # here would move every metric with the turn's failure rate
-                # rather than with the agent's behaviour, and it would
-                # do it in the direction that looks like a quality regression.
-                record["error"] = type(exc).__name__
+                # rather than the agent's behaviour, in the direction that reads
+                # as a quality regression. The message is composed, not copied.
+                record["error"], record["error_message"] = _failure_of(exc)
                 log.warning(
                     "run_eval_suite.scenario_invocation_failed",
                     agent_id=agent_id,
@@ -664,6 +714,55 @@ def run_eval_suite_beat(self) -> dict:
     return {"dispatched": dispatched}
 
 
+def _run_report(
+    result,
+    *,
+    provenance: dict,
+    invocation: dict,
+    composition: dict,
+    dataset_column_available: bool,
+    config_recorded: bool,
+    invocation_recorded: bool,
+    result_recorded: bool,
+) -> dict:
+    """What a completed run returns: the record, plus what the record does not hold. Pure.
+
+    `result.payload` first, so every number a caller reads is the one stored on
+    `eval_runs.result` rather than a second arithmetic that agrees with it today.
+    The keys after it are the ones that describe the RUN rather than its
+    measurement, and each says something no reader can derive:
+
+      * `scenario_count` is the record's `attempted`, the same number the
+        console's `scenario_count` is. It was `len(valid_scenarios)` here and
+        `record.attempted` there, one key with two meanings on two screens.
+      * `dataset_column_available` False means the tenant predates migration
+        0014, not that it holds no golden rows.
+      * `promoted` is a literal 0 and `promotion_enabled` is what tells it apart
+        from an enabled run that promoted nothing (no promotion writer exists).
+      * `agent_invoked` is the gate-facing conjunction, and `agent_invocation` is
+        the whole observation beside it, carrying the rates and the bounds the
+        run ran under that the record's counters do not.
+      * `config_recorded`, `invocation_recorded` and `result_recorded` are False
+        when a write did not land. Each failure leaves the run claiming LESS
+        than it did, which is the direction that costs a blocked deploy rather
+        than a shipped tautology.
+    """
+    return {
+        **result.payload,
+        "scenario_count": result.attempted,
+        "dataset_column_available": dataset_column_available,
+        "golden_set_present": composition["golden_set_present"],
+        "promoted": 0,
+        "config_recorded": config_recorded,
+        "promotion_enabled": VERIFIED_QA_PROMOTION_DECISION["enabled"],
+        "promotion_disabled_reason": VERIFIED_QA_PROMOTION_DECISION["reason"],
+        "agent_invoked": provenance["agent_invoked"],
+        "agent_invocation": invocation,
+        "invocation_recorded": invocation_recorded,
+        "result_recorded": result_recorded,
+    }
+
+
 # ---------------------------------------------------------------------------
 # EVL-02 / EVL-03 / EVL-05: run_eval_suite — per-agent eval run (D-10 LOCKED)
 # ---------------------------------------------------------------------------
@@ -726,9 +825,9 @@ def run_eval_suite(self, agent_id: str) -> dict:
     is the live downstream consumer, and the earlier analysis stopped at
     verified_qa, which has no caller. The chain:
 
-        this task -> write_eval_results -> eval_results on PRODUCTION
-        deployment_service._fetch_eval_summary_sync: AVG(score) GROUP BY metric,
-            filtered on eval_run_id and NOTHING else -> `pass_rates`
+        this task -> build_eval_result -> eval_runs.result on PRODUCTION
+        deployment_service._fetch_eval_summary_sync lifts that record, per
+            dataset, pooling nothing (#51 slice 4) -> `pass_rates`
         run_deployment_checklist puts eval_summary on the orchestrator payload
         the orchestrator applies "all eval metrics >= 0.85" (ship) and
             "[0.70, 0.85)" (warn) — prose in _DEPLOYMENT_SYSTEM_PROMPT
@@ -753,11 +852,12 @@ def run_eval_suite(self, agent_id: str) -> dict:
         agent_id: UUID string of the agent to evaluate.
 
     Returns:
-        {"run_id", "scenario_count", "attempted", "valid", "scored", "datasets",
-         "dataset_column_available", "golden_set_present", "promoted",
-         "config_recorded", "promotion_enabled", "promotion_disabled_reason",
-         "agent_invoked", "agent_invocation",
-         "invocation_recorded"}                                  on success.
+        On success, `EvalResult.payload` (#51) plus "scenario_count", the
+        record's `attempted` under the console's name for it, and the keys the
+        record does not carry: "dataset_column_available", "golden_set_present",
+        "promoted", "config_recorded", "promotion_enabled",
+        "promotion_disabled_reason", "agent_invoked", "agent_invocation",
+        "invocation_recorded", "result_recorded". Every number is the record's.
         {"status": "already_running"}                            on idempotent skip.
         {"status": "no_scenarios", "run_id", "run_recorded", "attempted",
          "valid", "scored", "dataset_column_available"}          when nothing was
@@ -1121,29 +1221,29 @@ def run_eval_suite(self, agent_id: str) -> dict:
         # `agent_invocation.status` was 'unknown' for a below-floor run and the
         # run scored anyway: 2 surviving rows out of 40 produced 2x4 eval_results
         # rows, update_eval_run_status marked it 'complete', and
-        # deployment_service._fetch_eval_summary_sync built a non-empty
-        # pass_rates from them and returned EVAL_SIGNAL_MEASURED. The 'unknown'
+        # deployment_service._fetch_eval_summary_sync averaged them into a
+        # non-empty pass_rates and returned EVAL_SIGNAL_MEASURED. The 'unknown'
         # lived in a config key that nothing outside this module reads, so
         # everything a consumer actually reads reported a pass over two
         # observations. Before P2 that state was unreachable — every fetched row
         # was always 'scored'.
         #
-        # The deploy gate learning to read `agent_invoked` is P3. Until it does,
-        # the refusal has to be here, where the observation is: no eval_results
-        # rows means _fetch_eval_summary_sync finds an empty pass_rates and
-        # returns EVAL_SIGNAL_NO_VALID_SCORES, which apply_signal_evidence_gate
-        # already refuses. Fail-closed with the machinery that exists rather than
-        # a window in which the plan's "reports unknown, never pass" is true of
-        # one key and false of the run.
+        # The deploy gate reads `agent_invoked` since P3 and refuses on it.
+        # The refusal stays here as well, where the observation is: a record
+        # whose metrics are all unmeasured reaches _fetch_eval_summary_sync as
+        # EVAL_SIGNAL_NO_VALID_SCORES, and a gated metric measured on no dataset
+        # is refused by _quality_evidence_warning (#51 slice 4). Two floors under
+        # one hole, because the plan's "reports unknown, never pass" has to be
+        # true of the run and not only of one key.
         #
         # The run still ends terminally and still carries its whole invocation
         # observation, so "this run measured too little" stays readable — it is
         # the SCORES that are withheld, not the record.
         # ------------------------------------------------------------------
-        # Annotated, because the two branches below assign different literal
-        # types and the join would otherwise be dict[str, object] — which makes
-        # `results["scores"]` an `object` that write_eval_results and
-        # summarise_run_validity both reject.
+        # Annotated, because the two branches assign different literal types and
+        # the join would otherwise be dict[str, object], which makes both
+        # `results["scores"]` and `results["judge_records"]` an `object` that
+        # summarise_run_validity and write_eval_results reject.
         results: dict
         if invocation["status"] != AGENT_INVOCATION_MEASURED:
             log.warning(
@@ -1164,16 +1264,16 @@ def run_eval_suite(self, agent_id: str) -> dict:
                 ),
             )
             update_eval_run_status(run_id, "complete", finished_at=True, conn_str=conn_str)
-            results = {"scores": [], "means": {}, "sent": 0, "returned": 0, "unattributed": 0}
+            results = dict(_NOTHING_SCORED)
         else:
             # No connection string is passed: scoring reads nothing. It scores the
             # AGENT'S responses against the contexts the AGENT retrieved, and each
             # judge call bills this run through the recorder.
             results = run_ragas_eval(scored_scenarios, _run_ledger(tenant_id, agent_id, run_id, conn_str))
 
-            # Observations about the run land on PRODUCTION, which is the whole
-            # point of the split: the branch below is about to be destroyed.
-            write_eval_results(run_id, results["scores"], conn_str)
+            # Observations land on PRODUCTION because the branch below is about
+            # to be destroyed, and it is the JUDGE RECORDS that go, not `scores`.
+            write_eval_results(run_id, results["judge_records"], conn_str)
             update_eval_run_status(
                 run_id, "complete", finished_at=True, conn_str=conn_str
             )
@@ -1185,14 +1285,35 @@ def run_eval_suite(self, agent_id: str) -> dict:
         # only one of the two numbers cannot say which happened.
         validity = summarise_run_validity(scenarios, results["scores"])
 
+        # THE RUN'S NUMBERS, DERIVED ONCE (#51). What stood here was forty-nine
+        # lines of hand-assembled dict, and it was the third derivation of one
+        # run's figures: api/v1/evals.py recomputes them with COUNT/AVG and
+        # deployment_service._fetch_eval_summary_sync recomputes them again, and
+        # nothing held the three to each other. The record is built from the two
+        # summaries above and stored on the run, and `_run_report` returns its
+        # payload, so this task cannot report a number the row does not hold.
+        #
+        # The ledger read is what lets a run say what it cost, and it fails soft:
+        # no rows means the cost is unknown, never that the run was free.
+        result = build_eval_result(
+            run_id=run_id,
+            agent_id=agent_id,
+            prompt_version_id=attribution["prompt_version_id"],
+            validity=validity,
+            invocation=invocation,
+            ledger=read_run_ledger(run_id, conn_str),
+            scenarios=scenarios,
+            judge_records=results["judge_records"],
+        )
+        result_recorded = write_eval_result(run_id, result, conn_str)
+
         log.info(
             "run_eval_suite.complete",
             agent_id=agent_id,
             run_id=run_id,
-            scenario_count=len(valid_scenarios),
-            attempted=validity["attempted"],
-            valid=validity["valid"],
-            scored=validity["scored"],
+            attempted=result.attempted,
+            valid=result.valid,
+            scored=result.scored,
             golden_valid=validity["datasets"][DATASET_GOLDEN]["valid"],
             golden_set_present=composition["golden_set_present"],
             dataset_column_available=dataset_column_available,
@@ -1204,56 +1325,19 @@ def run_eval_suite(self, agent_id: str) -> dict:
             invocation_responded=invocation["responded"],
             invocation_attempted=invocation["attempted"],
             invocation_recorded=invocation_recorded,
+            result_recorded=result_recorded,
+            cost_measured=result.cost.measured,
         )
-        return {
-            "run_id": run_id,
-            # Legacy alias for `valid`, kept so an existing reader does not
-            # silently change meaning. New readers take the triple below.
-            "scenario_count": len(valid_scenarios),
-            # The triple. `valid` is the denominator; a rate computed against
-            # `attempted` understates and one computed without a denominator at
-            # all is not a measurement.
-            "attempted": validity["attempted"],
-            "valid": validity["valid"],
-            "scored": validity["scored"],
-            # Per dataset, never averaged together — a golden score and an
-            # exploratory score answer different questions. Each metric carries
-            # {value, measured, observations}; value is null exactly when
-            # measured is false, which is 'unknown', not zero.
-            "datasets": validity["datasets"],
-            # WHICH rows this run covered, and whether the tenant DB could even
-            # tell us. False for dataset_column_available means the tenant
-            # predates migration 0014 — not that it has no golden rows.
-            "dataset_column_available": dataset_column_available,
-            "golden_set_present": composition["golden_set_present"],
-            # Always 0. A literal, not a result. No promotion writer exists
-            # in this build, and behind that sits the decision flag. The key is kept
-            # so a caller reading it sees the zero rather than a missing key it
-            # might treat as "not measured". `promotion_enabled` below is what
-            # distinguishes this zero from an ENABLED run that promoted nothing.
-            "promoted": 0,
-            "config_recorded": config_recorded,
-            # THE FLAG TRAVELS WITH THE PROSE. `promoted: 0` and a reason string
-            # are what a run reported before D6, and neither is machine-readable
-            # as a policy: 0 is also what an ENABLED run that promoted nothing
-            # reports, and a reader cannot tell "promotion is off" from "nothing
-            # qualified" without parsing English. Since D6 the two are genuinely
-            # different — the system can now produce a label that would qualify —
-            # so the boolean is stated beside the count it explains.
-            "promotion_enabled": VERIFIED_QA_PROMOTION_DECISION["enabled"],
-            "promotion_disabled_reason": VERIFIED_QA_PROMOTION_DECISION["reason"],
-            # --- audit D1: did this run measure the agent? ------------------
-            # The gate-facing conjunction (the agent produced the scored
-            # responses AND enough rows answered to be a measurement), and
-            # beside it the observation it was derived from, so "invoked but
-            # below the floor" and "never invoked" stay different claims.
-            "agent_invoked": provenance["agent_invoked"],
-            "agent_invocation": invocation,
-            # False means the run's config could not be patched — the row still
-            # reads agent_invoked=false and the deploy gate will refuse it. A
-            # measurement lost, in the fail-closed direction.
-            "invocation_recorded": invocation_recorded,
-        }
+        return _run_report(
+            result,
+            provenance=provenance,
+            invocation=invocation,
+            composition=composition,
+            dataset_column_available=dataset_column_available,
+            config_recorded=config_recorded,
+            invocation_recorded=invocation_recorded,
+            result_recorded=result_recorded,
+        )
 
     except Exception as exc:
         log.error(

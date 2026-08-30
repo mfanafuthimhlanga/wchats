@@ -16,46 +16,69 @@ Architecture:
       FastAPI event loop (D-30 pattern — same as validators.py).
     - POST /trigger dispatches Celery task and returns 202 immediately — eval is async.
 
-Unmeasured is not zero
-----------------------
-`run_ragas_eval` emits None for a metric whose judge call produced no valid
-observation (a NaN — a judge outage, a parse failure), `write_eval_results`
-writes that faithfully as NULL, and the AVG below is NULL when a run has no
-valid observation for a metric at all. Both routes used to render that NULL as
-0.0, which put a fabricated total-quality-collapse directly beside yesterday's
-0.94 and made an unmeasured run indistinguishable from a measured catastrophe.
-The owner's rational response to a 0.00 is to roll back a healthy agent.
+These routes compute nothing (#51 slice 3)
+------------------------------------------
+Both routes used to derive a run's figures a second time, in SQL, over
+`eval_results`. `list_eval_runs` ran COUNT(DISTINCT scenario_id) and four AVGs;
+a companion query re-split the same rows into golden and exploratory; and
+`get_eval_run_results` re-reached each scenario's verdict by comparing scores to
+today's settings. The run itself had already computed every one of those figures
+and written them down, so the console and the task were two arithmetics over one
+run, free to disagree.
 
-So every metric now travels with the fact of its own measurement:
+#26 is what that disagreement looked like from the console: the route reported
+18 scenarios while the task reported 20 attempted. Neither was wrong about its
+own question. COUNT(DISTINCT scenario_id) over `eval_results` counts the rows a
+judge SCORED; the task counted the rows the selector FETCHED; and nothing in the
+response said which question its number answered.
 
-    aggregate_scores / scores  — NUMERIC COMPATIBILITY PROJECTION. Unmeasured
-        still reads 0.0 here, and it is a lie, retained for exactly one reason:
+Now every number here is lifted from one place:
+
+    eval_runs.result: the EvalResult the run wrote at the end of
+        `run_eval_suite` (migration 0022, `eval_service.write_eval_result`).
+        `scenario_count` is its `attempted`, `valid_scenario_count` its `valid`,
+        `scored_scenario_count` its `scored`, and every metric is a stored
+        `Measurement` copied through verbatim.
+    eval_results rows: read as stored, never aggregated. Each row carries the
+        `binary_verdict` the judge reached and the `threshold` it was reached
+        against (migration 0023), so a later change to the gate cannot restate a
+        verdict already written down.
+
+What the response says when a number does not exist:
+
+    result: "present" or "absent". Absent means the run has no record, which
+        covers a tenant DB predating migration 0022, a run that died before the
+        write, and a stored payload that broke a construction rule on the way
+        out. All three report null counts and unmeasured metrics. Zero is never
+        used for any of them.
+    metrics / metrics_dataset: per metric, {value, measured, observations},
+        and the name of the dataset they were lifted from. THE RECORD HOLDS NO
+        RUN-LEVEL MEAN, on purpose: a golden mean and an exploratory mean answer
+        different questions and one number over both moves whenever the
+        exploratory draw moves. So a run-level reading exists only when exactly
+        one dataset scored anything. When both did, `metrics_dataset` is null,
+        the four metrics read unmeasured, and the numbers are under `datasets`,
+        where the record keeps them apart.
+    aggregate_scores / scores: NUMERIC COMPATIBILITY PROJECTION. Unmeasured
+        reads 0.0 here, and it is a lie, retained for exactly one reason:
         apps/admin types these fields `number` and calls `.toFixed(2)` on them
         (agents/[id]/eval/page.tsx:291) and plots them (`:184`), so a null would
-        throw on the eval page for every tenant — every run that predates this
-        phase has no eval_results rows at all. Making that surface render an
-        absent measurement is a frontend change and this branch is apps/api
-        only. DO NOT read these for quality; read `metrics`.
-    metrics                    — the honest one: per metric, {value, measured}.
-        value is null exactly when measured is false.
-    scenario_count / scored_scenario_count — attempted, and the VALID
-        denominator. A pass rate without its denominator must not be
-        constructible from this response.
-    passed                     — tri-state. None when a gated metric was not
-        measured: unknown is neither a pass nor a fail. A client that cannot
-        read null degrades to "not passed", which fails closed.
-    datasets                   — the same run split into its golden half (fixed,
-        run in full every night, comparable across runs) and its exploratory
-        half (rotating). They are different measurements: averaging them
-        destroys the paired per-item comparison the golden set exists to make,
-        so they are aggregated separately and never summed here.
-        `datasets.available` is false when the tenant DB predates migration
-        0014, which is a different claim from "no golden rows were covered".
-        `datasets.unattributed` counts result rows whose scenario no longer
-        exists; they carry no metrics and belong to neither dataset, which is
-        the same rule eval_service.summarise_run_validity applies to the same
-        rows. The two used to disagree about them, giving one run two
-        denominators.
+        throw on the eval page. DO NOT read these for quality; read `metrics`.
+    passed: tri-state, and no longer computed here. It is the conjunction of
+        the `binary_verdict` values stored on the scenario's gated rows. None
+        when any of them is NULL, because unknown is neither a pass nor a fail.
+        A client that cannot read null degrades to "not passed", which fails
+        closed.
+    datasets: the record's per-dataset outcomes. The golden half is fixed, runs
+        in full every night and is comparable across runs; the exploratory half
+        rotates. Each carries its own three counts, its own four measurements,
+        and how its scored scenarios ended: passed, failed, or undecided by a
+        gated verdict. Those last three are the run's own count and add up to
+        `scored_scenario_count`, and nothing here re-reaches a verdict.
+        `datasets.available` is false exactly when the run has no record.
+        `datasets.unattributed` reports nulls, because the record does not carry
+        that count and inventing a zero for it would claim a run had no
+        unattributable rows when nobody asked.
 """
 
 from __future__ import annotations
@@ -69,16 +92,21 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_tenant
-from app.core.config import settings
 from app.core.database import get_async_db
 from app.core.security import fernet_decrypt
+from app.domain.eval_result import (
+    DatasetOutcome,
+    EvalResult,
+    InvalidEvalResult,
+    metrics_of,
+    run_level_metrics,
+    unmeasured_metrics,
+)
+from app.domain.judge_record import scenario_verdict
 from app.models.agent import Agent
 from app.models.tenant import Tenant
-from app.services.eval_service import (
-    DATASET_EXPLORATORY,
-    DATASET_GOLDEN,
-    EVAL_DATASETS,
-)
+from app.services.eval_service import EVAL_DATASETS
+from app.services.eval_service import GATED_METRIC_KEYS as EVAL_GATED_METRIC_KEYS
 from app.services.eval_service import METRIC_KEYS as EVAL_METRIC_KEYS
 from app.worker.tasks.runtime.eval import run_eval_suite
 
@@ -118,28 +146,31 @@ def _query_tenant_db_sync(conn_str: str, sql: str, params: dict) -> list[tuple]:
 # Route 1: GET /agents/{agent_id}/eval-runs — list runs with aggregate scores
 # ---------------------------------------------------------------------------
 
-# AVG ignores NULLs and is itself NULL when every input was NULL, which is
-# precisely the "no valid observation" signal — it is not fabricated here and
-# must not be fabricated in the response either. scored_scenario_count is the
-# VALID denominator beside the attempted count: a scenario is scored when it
-# produced at least one non-NULL score.
+# The run's own columns and the record it wrote. No aggregate, no join: the
+# arithmetic that used to sit here is the arithmetic `run_eval_suite` had already
+# done, and #26 is what running it twice looked like from the console.
 _LIST_EVAL_RUNS_SQL = """
     SELECT
         er.id,
         er.started_at,
         er.finished_at,
         er.status,
-        COUNT(DISTINCT res.scenario_id) AS scenario_count,
-        COUNT(DISTINCT res.scenario_id) FILTER (
-            WHERE res.score IS NOT NULL
-        ) AS scored_scenario_count,
-        AVG(CASE WHEN res.metric = 'faithfulness'      THEN res.score END) AS faithfulness,
-        AVG(CASE WHEN res.metric = 'answer_relevancy'  THEN res.score END) AS answer_relevancy,
-        AVG(CASE WHEN res.metric = 'context_precision' THEN res.score END) AS context_precision,
-        AVG(CASE WHEN res.metric = 'context_recall'    THEN res.score END) AS context_recall
+        er.result
     FROM eval_runs er
-    LEFT JOIN eval_results res ON res.eval_run_id = er.id
-    GROUP BY er.id, er.started_at, er.finished_at, er.status
+    ORDER BY er.started_at DESC
+    LIMIT 50
+"""
+
+# The pre-0022 shape, used only after the query above raises UndefinedColumn. A
+# tenant DB without `eval_runs.result` holds no record for any run on it, so the
+# same 50 runs come back and every one of them reports result "absent".
+_LIST_EVAL_RUNS_PRE_0022_SQL = """
+    SELECT
+        er.id,
+        er.started_at,
+        er.finished_at,
+        er.status
+    FROM eval_runs er
     ORDER BY er.started_at DESC
     LIMIT 50
 """
@@ -151,66 +182,13 @@ _LIST_EVAL_RUNS_SQL = """
 # waiting to happen.
 METRIC_KEYS = EVAL_METRIC_KEYS
 
-# The two metrics the promotion gate is defined over (D-21 LOCKED). Kept
-# separate from METRIC_KEYS because `passed` is a claim about these two only.
-GATED_METRIC_KEYS = ("faithfulness", "answer_relevancy")
+# The two metrics the promotion gate is defined over (D-21 LOCKED). Imported
+# beside `threshold_for`, which returns a number for exactly these two, rather
+# than restated: `deployment_service` counts verdicts over the same pair, and a
+# console that gates on faithfulness while a deploy gate reads three metrics is
+# the same shape of defect as audit D3's copied column name.
+GATED_METRIC_KEYS = EVAL_GATED_METRIC_KEYS
 
-# P2 — the golden/exploratory split, per run. A golden score and an exploratory
-# score are DIFFERENT MEASUREMENTS: the golden rows are fixed and run in full
-# every night, so consecutive runs are a paired per-item comparison, while the
-# exploratory sample rotates and its mean moves whenever the draw moves.
-# Averaging them destroys the paired comparison the golden set exists for, so
-# they are aggregated separately here and never combined into one number.
-#
-# The CASE mirrors eval_service.dataset_of() exactly — only the literal
-# 'golden' is golden, and NULL (every row predating migration 0014), '' and any
-# unrecognised value are exploratory, because membership of a curated set has to
-# be asserted rather than inherited. A COALESCE would leave an unexpected value
-# to open a third bucket the reader is not expecting.
-#
-# ONE RULE FOR AN UNATTRIBUTABLE ROW (P2 review). A result row whose scenario no
-# longer exists — a deleted scenario, or the synthetic id older builds of
-# run_ragas_eval minted when a scenario carried none — used to land in the
-# EXPLORATORY bucket here while eval_service.summarise_run_validity dropped it
-# from both. Both comments argued their case as the honest one and they
-# disagreed, so the same run had two denominators differing by exactly those
-# rows: the Celery return excluded them, this response counted them and let
-# their scores into the exploratory means. The rule is now the same in both
-# places and stated in both: an unattributable row is attributed to NEITHER
-# dataset and is counted separately, because "we scored something and cannot say
-# what it was about" is a third fact, not an exploratory measurement. The
-# `es.id IS NULL` arm is what the LEFT JOIN produces for exactly those rows.
-#
-# Bounded to the same 50 runs the list query returns — this is one extra round
-# trip on a route that already makes two, not a full-table aggregate.
-_LIST_EVAL_RUN_DATASETS_SQL = """
-    SELECT
-        res.eval_run_id,
-        CASE
-            WHEN es.id IS NULL THEN %(unattributed)s
-            WHEN es.dataset = %(golden)s THEN %(golden)s
-            ELSE %(exploratory)s
-        END AS dataset,
-        COUNT(DISTINCT res.scenario_id) AS scenario_count,
-        COUNT(DISTINCT res.scenario_id) FILTER (
-            WHERE res.score IS NOT NULL
-        ) AS scored_scenario_count,
-        AVG(CASE WHEN res.metric = 'faithfulness'      THEN res.score END) AS faithfulness,
-        AVG(CASE WHEN res.metric = 'answer_relevancy'  THEN res.score END) AS answer_relevancy,
-        AVG(CASE WHEN res.metric = 'context_precision' THEN res.score END) AS context_precision,
-        AVG(CASE WHEN res.metric = 'context_recall'    THEN res.score END) AS context_recall
-    FROM eval_results res
-    LEFT JOIN eval_scenarios es ON es.id::text = res.scenario_id
-    WHERE res.eval_run_id IN (
-        SELECT id FROM eval_runs ORDER BY started_at DESC LIMIT 50
-    )
-    GROUP BY res.eval_run_id,
-             CASE
-                 WHEN es.id IS NULL THEN %(unattributed)s
-                 WHEN es.dataset = %(golden)s THEN %(golden)s
-                 ELSE %(exploratory)s
-             END
-"""
 
 # OPS-12: ORRERY ledger — eval provenance (born-in-production vs authored counts).
 # provenance IS NULL rows predate provenance tracking (migration 0011) and are
@@ -228,50 +206,187 @@ _LEDGER_SQL = """
 
 
 # The third bucket. It is NOT an eval_service dataset and deliberately not in
-# EVAL_DATASETS: it is the count of result rows this run cannot attribute to any
-# scenario, reported so they do not vanish and kept out of both datasets so they
-# cannot be averaged into a measurement. Same rule, same name, as
-# summarise_run_validity's `unattributed`.
+# EVAL_DATASETS: it is the count of result rows a run cannot attribute to any
+# scenario, kept out of both datasets so they cannot be averaged into a
+# measurement. Same name as summarise_run_validity's `unattributed`, which is
+# where the count is still computed. `EvalResult` does not carry it, so this
+# route reports nulls rather than a zero nobody counted.
 DATASET_UNATTRIBUTED = "unattributed"
 
+#: What the run reports when it has a record, and when it has none.
+RESULT_PRESENT = "present"
+RESULT_ABSENT = "absent"
 
-def _dataset_block(per_dataset: dict[str, dict], available: bool) -> dict:
-    """Per-dataset aggregates for one run, with every dataset key always present.
+#: A dataset the record does not report. Counts are null, not zero: "this run
+#: covered no golden rows" and "this response cannot say" are different claims
+#: and a zero asserts the first about a question nobody asked.
+_UNREPORTED_DATASET = {
+    "scenario_count": None,
+    "valid_scenario_count": None,
+    "scored_scenario_count": None,
+    "scenarios_passed": None,
+    "scenarios_failed": None,
+    "scenarios_unmeasured": None,
+}
 
-    A dataset with no rows in this run reports zero counts and four unmeasured
-    metrics rather than being omitted. An absent key would have to be
-    interpreted, and the two available interpretations — "this run covered no
-    golden rows" and "this response does not carry that information" — are
-    exactly the pair `available` exists to separate.
 
-    `unattributed` carries counts only, with no metrics block: a mean over rows
-    whose scenario is unknown is a mean over an unknown denominator, and the
-    point of separating them is that they must not be readable as a score.
+def _rendered(metrics: dict) -> dict:
+    """Four Measurements as JSON, {value, measured, observations} each.
+
+    The observation count travels with every number, so a reader can see that a
+    0.91 came off four rows. `app.domain.eval_result` decides which Measurement
+    belongs to which key; this function only turns it into a response body.
     """
-    unattributed = per_dataset.get(
-        DATASET_UNATTRIBUTED, {"scenario_count": 0, "scored_scenario_count": 0}
-    )
+    return {metric: reading.payload for metric, reading in metrics.items()}
+
+
+def _unmeasured_metrics() -> dict:
+    """Four metrics, none of them read."""
+    return _rendered(unmeasured_metrics())
+
+
+def _metrics_of(outcome: DatasetOutcome) -> dict:
+    """One dataset's four metrics, copied out of the record unchanged."""
+    return _rendered(metrics_of(outcome))
+
+
+def _dataset_block(record: EvalResult | None) -> dict:
+    """The record's per-dataset outcomes, with every dataset key always present.
+
+    `available` is true exactly when the run has a record. A missing key would
+    have to be interpreted, and the two available readings, "this run covered
+    no golden rows" and "this response does not carry that information", are
+    exactly the pair the flag exists to separate.
+
+    `unattributed` carries no numbers. `summarise_run_validity` counts those
+    rows and `EvalResult` stores no such field, so this route has nothing to
+    read; computing one here from `eval_results` is the second derivation the
+    slice exists to remove.
+    """
+    outcomes = record.datasets if record is not None else {}
     return {
-        "available": available,
+        "available": record is not None,
         **{
-            name: per_dataset.get(
-                name,
+            name: (
                 {
-                    "scenario_count": 0,
-                    "scored_scenario_count": 0,
-                    "metrics": {
-                        metric: {"value": None, "measured": False}
-                        for metric in METRIC_KEYS
-                    },
-                },
+                    "scenario_count": outcomes[name].attempted,
+                    "valid_scenario_count": outcomes[name].valid,
+                    "scored_scenario_count": outcomes[name].scored,
+                    # How the scored scenarios ended, as the run counted them.
+                    # The three add up to scored_scenario_count.
+                    "scenarios_passed": outcomes[name].scenarios_passed,
+                    "scenarios_failed": outcomes[name].scenarios_failed,
+                    "scenarios_unmeasured": outcomes[name].scenarios_unmeasured,
+                    "metrics": _metrics_of(outcomes[name]),
+                }
+                if name in outcomes
+                else {**_UNREPORTED_DATASET, "metrics": _unmeasured_metrics()}
             )
             for name in EVAL_DATASETS
         },
         DATASET_UNATTRIBUTED: {
-            "scenario_count": unattributed["scenario_count"],
-            "scored_scenario_count": unattributed["scored_scenario_count"],
+            "scenario_count": None,
+            "scored_scenario_count": None,
         },
     }
+
+
+def _run_level_metrics(record: EvalResult | None) -> tuple[dict, str | None]:
+    """The run's four metrics as JSON, and the dataset they were lifted from.
+
+    `app.domain.eval_result.run_level_metrics` is the rule and carries the
+    reasoning: a run-level reading exists only when exactly one dataset scored a
+    row, because there is no pooled mean to fall back on. The deploy gate asks
+    the same function, so the console and the gate cannot name different
+    datasets.
+    """
+    metrics, dataset = run_level_metrics(record)
+    return _rendered(metrics), dataset
+
+
+def _record_of(run_id: str, payload) -> EvalResult | None:
+    """One run's stored record, or None when it has none that can be read.
+
+    `EvalResult.from_payload` decides whether the payload is readable and this
+    logs which run lost its numbers. The response then reports that ONE run as
+    recordless: an unreadable row costs its own run and no other, which is what
+    keeps a console listing fifty runs from going dark over one of them.
+    """
+    if payload is None:
+        return None
+    try:
+        return EvalResult.from_payload(payload)
+    except InvalidEvalResult as exc:
+        log.error(
+            "list_eval_runs.record_unreadable",
+            run_id=run_id,
+            error=str(exc),
+            detail="the stored record breaks a rule; the run reads as unmeasured",
+        )
+        return None
+
+
+def _eval_run_block(
+    run_id, started_at, finished_at, status, record: EvalResult | None
+) -> dict:
+    """One run as the console reads it. Every number comes off *record*.
+
+    The run's own columns (id, the two timestamps, status) come off the row
+    because they are the row's; nothing else does. A run with no record reports
+    null counts, unmeasured metrics and `result: "absent"`. Never a zero, and
+    never a figure recovered from `eval_results` behind the record's back.
+    """
+    metrics, metrics_dataset = _run_level_metrics(record)
+    return {
+        "id": str(run_id),
+        "started_at": started_at.isoformat() if started_at else None,
+        "finished_at": finished_at.isoformat() if finished_at else None,
+        "status": status,
+        "result": RESULT_ABSENT if record is None else RESULT_PRESENT,
+        # attempted, the valid denominator, and what actually scored. #26 was
+        # these three collapsed into two by a COUNT that answered a different
+        # question from the one the task had already answered.
+        "scenario_count": None if record is None else record.attempted,
+        "valid_scenario_count": None if record is None else record.valid,
+        "scored_scenario_count": None if record is None else record.scored,
+        # The honest reading. value is null exactly when measured is false.
+        "metrics": metrics,
+        "metrics_dataset": metrics_dataset,
+        # Numeric compatibility projection, see the module docstring.
+        # An unmeasured metric reads 0.0 here and that is not a score.
+        "aggregate_scores": {
+            metric: reading["value"] if reading["measured"] else 0.0
+            for metric, reading in metrics.items()
+        },
+        # The two measurements, kept apart. Never add them together: the golden
+        # set is fixed and paired across runs, the exploratory sample rotates,
+        # and one mean over both moves whenever the draw moves while looking
+        # like a quality change.
+        "datasets": _dataset_block(record),
+    }
+
+
+async def _fetch_eval_runs(conn_str: str) -> list[tuple]:
+    """The 50 most recent runs with their records, degrading to a pre-0022 tenant.
+
+    A tenant DB that predates migration 0022 has no `eval_runs.result` column at
+    all, so the wide SELECT raises UndefinedColumn before it returns a row. The
+    narrow one returns the same runs, and the None appended to each is the
+    truthful reading: no run on that tenant recorded what it measured.
+
+    Returns:
+        Five-column rows: (id, started_at, finished_at, status, result).
+    """
+    try:
+        return await asyncio.to_thread(
+            _query_tenant_db_sync, conn_str, _LIST_EVAL_RUNS_SQL, {}
+        )
+    except psycopg2.errors.UndefinedColumn:
+        log.info("list_eval_runs.result_column_absent")
+        rows = await asyncio.to_thread(
+            _query_tenant_db_sync, conn_str, _LIST_EVAL_RUNS_PRE_0022_SQL, {}
+        )
+        return [(*row, None) for row in rows]
 
 
 @router.get("/agents/{agent_id}/eval-runs")
@@ -287,15 +402,15 @@ async def list_eval_runs(
         Returns 404 for unknown agents or agents belonging to a different tenant.
 
     Response shape:
-        {"eval_runs": [{id, started_at, finished_at, status, scenario_count,
-                        scored_scenario_count, aggregate_scores, metrics,
-                        datasets}]}
+        {"eval_runs": [{id, started_at, finished_at, status, result,
+                        scenario_count, valid_scenario_count,
+                        scored_scenario_count, metrics, metrics_dataset,
+                        aggregate_scores, datasets}],
+         "ledger": {...}}
 
-    See the module docstring: `metrics` carries {value, measured} per metric and
-    is the one to read; `aggregate_scores` is the numeric projection the shipped
-    console still needs, in which an unmeasured metric reads 0.0. `datasets`
-    splits the same run into its golden and exploratory halves, which are
-    different measurements and must not be averaged together.
+    Every figure per run is the record's, read off `eval_runs.result`. See the
+    module docstring for what each field says when the record is absent and why
+    `metrics_dataset` can be null on a run that measured plenty.
     """
     # 1. Fetch agent from control DB (only metadata — not tenant DB)
     agent = await db.get(Agent, agent_id)
@@ -313,56 +428,15 @@ async def list_eval_runs(
     # 4. Decrypt connection string at runtime — never stored, never logged (T-02-01)
     conn_str = fernet_decrypt(agent.neon_connection_string)
 
-    # 5. Query tenant DB in a thread pool to avoid blocking the event loop
-    rows = await asyncio.to_thread(
-        _query_tenant_db_sync, conn_str, _LIST_EVAL_RUNS_SQL, {}
-    )
+    # 5. Query tenant DB in a thread pool to avoid blocking the event loop.
+    #    One round trip for the runs and their records; the golden/exploratory
+    #    breakdown used to cost a second one and now comes out of the record.
+    rows = await _fetch_eval_runs(conn_str)
 
-    # 5a. P2: the golden/exploratory breakdown, one extra round trip in the same
-    # pattern. A tenant DB that predates migration 0014 has no `dataset` column,
-    # and that is a DIFFERENT claim from "this tenant designated no golden rows"
-    # — `dataset_breakdown_available: false` says which one happened rather than
-    # letting an empty golden bucket assert the second.
-    dataset_rows: list[tuple] = []
-    dataset_breakdown_available = True
-    try:
-        dataset_rows = await asyncio.to_thread(
-            _query_tenant_db_sync,
-            conn_str,
-            _LIST_EVAL_RUN_DATASETS_SQL,
-            {
-                "golden": DATASET_GOLDEN,
-                "exploratory": DATASET_EXPLORATORY,
-                "unattributed": DATASET_UNATTRIBUTED,
-            },
-        )
-    except psycopg2.errors.UndefinedColumn:
-        dataset_breakdown_available = False
-        log.info(
-            "list_eval_runs.dataset_column_absent",
-            agent_id=str(agent_id),
-            tenant_id=str(tenant.id),
-        )
-
-    # run_id -> dataset -> aggregates
-    by_run: dict[str, dict[str, dict]] = {}
-    for row in dataset_rows:
-        run_key, dataset_name, scenario_count, scored_count, *metric_averages = row
-        by_run.setdefault(str(run_key), {})[dataset_name] = {
-            "scenario_count": int(scenario_count or 0),
-            "scored_scenario_count": int(scored_count or 0),
-            "metrics": {
-                metric: {
-                    "value": float(mean) if mean is not None else None,
-                    "measured": mean is not None,
-                }
-                for metric, mean in zip(METRIC_KEYS, metric_averages)
-            },
-        }
-
-    # 5b. OPS-12: ORRERY ledger — same tenant-DB round-trip pattern (asyncio.to_thread
-    # + _query_tenant_db_sync), computed in this same route so the eval-runs response
-    # is the single place the admin UI reads eval provenance from.
+    # 5b. OPS-12: ORRERY ledger, on the same tenant-DB round-trip pattern, in
+    # this same route so the eval-runs response is the single place the admin UI
+    # reads eval provenance from. It is a claim about the scenario table rather
+    # than about any run, so no record holds it.
     ledger_rows = await asyncio.to_thread(
         _query_tenant_db_sync, conn_str, _LEDGER_SQL, {}
     )
@@ -370,60 +444,28 @@ async def list_eval_runs(
         ledger_rows[0] if ledger_rows else (0, 0, 0)
     )
 
-    # 6. Build response matching the exact shape from RESEARCH.md §9, plus the
-    #    measurement record each metric now travels with.
-    eval_runs = []
-    for row in rows:
-        (
+    # 6. Render each run from its record.
+    eval_runs = [
+        _eval_run_block(
             run_id,
             started_at,
             finished_at,
             status,
-            scenario_count,
-            scored_scenario_count,
-            *metric_averages,
-        ) = row
-        means = dict(zip(METRIC_KEYS, metric_averages))
-        eval_runs.append(
-            {
-                "id": str(run_id),
-                "started_at": started_at.isoformat() if started_at else None,
-                "finished_at": finished_at.isoformat() if finished_at else None,
-                "status": status,
-                # attempted, and the valid denominator beside it
-                "scenario_count": int(scenario_count) if scenario_count else 0,
-                "scored_scenario_count": (
-                    int(scored_scenario_count) if scored_scenario_count else 0
-                ),
-                # The honest reading. value is null exactly when measured is false.
-                "metrics": {
-                    metric: {
-                        "value": float(mean) if mean is not None else None,
-                        "measured": mean is not None,
-                    }
-                    for metric, mean in means.items()
-                },
-                # Numeric compatibility projection — see the module docstring.
-                # An unmeasured metric reads 0.0 here and that is not a score.
-                "aggregate_scores": {
-                    metric: float(mean) if mean is not None else 0.0
-                    for metric, mean in means.items()
-                },
-                # The two measurements, kept apart. Never add them together:
-                # the golden set is fixed and paired across runs, the
-                # exploratory sample rotates, and one mean over both moves
-                # whenever the draw moves while looking like a quality change.
-                "datasets": _dataset_block(
-                    by_run.get(str(run_id), {}), dataset_breakdown_available
-                ),
-            }
+            _record_of(str(run_id), payload),
         )
+        for run_id, started_at, finished_at, status, payload in rows
+    ]
 
     log.info(
         "list_eval_runs.ok",
         agent_id=str(agent_id),
         tenant_id=str(tenant.id),
         run_count=len(eval_runs),
+        # A run with no record has no numbers at all, and that is visible here
+        # without anyone opening the response body.
+        recordless_run_count=sum(
+            1 for run in eval_runs if run["result"] == RESULT_ABSENT
+        ),
         born_in_production_count=int(born_in_production_count or 0),
         authored_count=int(authored_count or 0),
     )
@@ -441,7 +483,31 @@ async def list_eval_runs(
 # Route 2: GET /agents/{agent_id}/eval-runs/{run_id}/results — per-scenario results
 # ---------------------------------------------------------------------------
 
+# The judge rows as stored. `binary_verdict` is the decision the judge reached at
+# scoring time and `threshold` is the gate it was reached against (migration
+# 0023), both stamped by `write_eval_results`. Reading them instead of comparing
+# `score` to today's settings is what stops a later change to the gate restating
+# a verdict already written down.
 _GET_RUN_RESULTS_SQL = """
+    SELECT
+        res.scenario_id,
+        es.question,
+        es.source,
+        res.metric,
+        res.score,
+        res.binary_verdict,
+        res.threshold
+    FROM eval_results res
+    LEFT JOIN eval_scenarios es ON es.id::text = res.scenario_id
+    WHERE res.eval_run_id = %(run_id)s
+    ORDER BY res.scenario_id, res.metric
+"""
+
+# The pre-0023 shape, used only after the query above raises UndefinedColumn. A
+# row written before the verdict had a column of its own carries no verdict, so
+# every scenario on such a run reads `passed: null`, which is unknown and what a
+# run whose decisions were never recorded actually is.
+_GET_RUN_RESULTS_PRE_0023_SQL = """
     SELECT
         res.scenario_id,
         es.question,
@@ -453,6 +519,46 @@ _GET_RUN_RESULTS_SQL = """
     WHERE res.eval_run_id = %(run_id)s
     ORDER BY res.scenario_id, res.metric
 """
+
+#: A metric with no row on this run, or a row from before 0023. No score, no
+#: verdict, no gate.
+_NO_JUDGE_ROW = {"score": None, "measured": False, "verdict": None, "threshold": None}
+
+
+def _judge_reading(score, verdict, threshold) -> dict:
+    """One stored judge row, rendered without deciding anything.
+
+    `verdict` is None for an ungated metric (`threshold_for` gives
+    `context_precision` and `context_recall` no gate, so their rows carry none)
+    and None for a gated metric the judge produced no score for. Both mean the
+    same thing to a reader of `passed`: there is no decision here.
+    """
+    return {
+        "score": float(score) if score is not None else None,
+        "measured": score is not None,
+        "verdict": None if verdict is None else bool(verdict),
+        "threshold": float(threshold) if threshold is not None else None,
+    }
+
+
+async def _fetch_run_results(conn_str: str, run_id: str) -> list[tuple]:
+    """One run's judge rows, degrading to a tenant DB that predates 0023.
+
+    Returns:
+        Seven-column rows: (scenario_id, question, source, metric, score,
+        binary_verdict, threshold).
+    """
+    params = {"run_id": run_id}
+    try:
+        return await asyncio.to_thread(
+            _query_tenant_db_sync, conn_str, _GET_RUN_RESULTS_SQL, params
+        )
+    except psycopg2.errors.UndefinedColumn:
+        log.info("get_eval_run_results.verdict_columns_absent", run_id=run_id)
+        rows = await asyncio.to_thread(
+            _query_tenant_db_sync, conn_str, _GET_RUN_RESULTS_PRE_0023_SQL, params
+        )
+        return [(*row, None, None) for row in rows]
 
 
 @router.get("/agents/{agent_id}/eval-runs/{run_id}/results")
@@ -470,12 +576,20 @@ async def get_eval_run_results(
     Response shape:
         {"results": [{scenario_id, question, source, scores, metrics, passed}]}
 
-    passed = True when faithfulness >= EVAL_FAITHFULNESS_THRESHOLD AND
-    answer_relevancy >= EVAL_RELEVANCY_THRESHOLD (the 2-metric gate, D-21
-    LOCKED), False when a measured score misses it, and None when either gated
-    metric was never measured. That third state is the point: a judge outage
-    NULLs every score, and rendering those rows as passed=false reports a total
-    quality collapse for a run that measured nothing.
+    passed is the conjunction of the `binary_verdict` values stored on the
+    scenario's two gated rows (D-21 LOCKED). The route reaches no verdict of its
+    own: it used to re-compare every score to whatever the thresholds were at
+    request time, so a deployment that moved the gate silently restated the
+    verdicts of every run already scored against the old one.
+
+    None when either gated verdict is NULL, which covers a judge outage, a
+    metric with no row, and a run written before migration 0023 gave the verdict
+    a column. That third state is the point: rendering an absent decision as
+    passed=false reports a total quality collapse for a run that decided
+    nothing.
+
+    There is no run-level verdict here and this route never reported one. The
+    function that computes one is ticket 17's `decide()`.
     """
     # 1. Fetch agent and verify ownership (same as list_eval_runs)
     agent = await db.get(Agent, agent_id)
@@ -492,64 +606,47 @@ async def get_eval_run_results(
     conn_str = fernet_decrypt(agent.neon_connection_string)
 
     # 3. Query tenant DB in a thread pool
-    rows = await asyncio.to_thread(
-        _query_tenant_db_sync,
-        conn_str,
-        _GET_RUN_RESULTS_SQL,
-        {"run_id": str(run_id)},
-    )
+    rows = await _fetch_run_results(conn_str, str(run_id))
 
-    # 4. Group rows by scenario_id. Each row is:
-    #    (scenario_id, question, source, metric, score) — score may be NULL,
-    #    which means the judge produced no valid observation for that metric.
-    #    A metric with no row at all is equally unmeasured, so both start None.
+    # 4. Group rows by scenario_id, each row read exactly as it was written:
+    #    (scenario_id, question, source, metric, score, binary_verdict,
+    #    threshold). A metric with no row at all reads the same as a row the
+    #    judge scored nothing for, which is what both of them are. No reading.
     scenarios: dict[str, dict] = {}
-    for scenario_id, question, source, metric, score in rows:
+    for scenario_id, question, source, metric, score, verdict, threshold in rows:
         sid = str(scenario_id)
         if sid not in scenarios:
             scenarios[sid] = {
                 "scenario_id": sid,
                 "question": question or "",
                 "source": source or "generated",
-                "measured": {key: None for key in METRIC_KEYS},
+                "metrics": {key: dict(_NO_JUDGE_ROW) for key in METRIC_KEYS},
             }
-        if metric in scenarios[sid]["measured"] and score is not None:
-            scenarios[sid]["measured"][metric] = float(score)
-
-    # 5. Compute the passed flag over the two GATED metrics (D-21). Unknown is
-    #    neither a pass nor a fail: if either gated metric was not measured the
-    #    verdict is None, because "we did not measure it" must never be
-    #    rendered as "it failed" — that is what turns a judge outage into an
-    #    apparent quality collapse and an owner-initiated rollback.
-    results = []
-    for scen in scenarios.values():
-        measured = scen.pop("measured")
-        thresholds = {
-            "faithfulness": settings.EVAL_FAITHFULNESS_THRESHOLD,
-            "answer_relevancy": settings.EVAL_RELEVANCY_THRESHOLD,
-        }
-        if any(measured[key] is None for key in GATED_METRIC_KEYS):
-            passed = None
-        else:
-            passed = all(
-                measured[key] >= thresholds[key] for key in GATED_METRIC_KEYS
+        if metric in scenarios[sid]["metrics"]:
+            scenarios[sid]["metrics"][metric] = _judge_reading(
+                score, verdict, threshold
             )
-        results.append(
-            {
-                **scen,
-                # The honest reading — see the module docstring.
-                "metrics": {
-                    key: {"score": measured[key], "measured": measured[key] is not None}
-                    for key in METRIC_KEYS
-                },
-                # Numeric compatibility projection: unmeasured reads 0.0.
-                "scores": {
-                    key: measured[key] if measured[key] is not None else 0.0
-                    for key in METRIC_KEYS
-                },
-                "passed": passed,
-            }
-        )
+
+    # 5. `scenario_verdict` is the conjunction of the stored verdicts over the
+    #    two GATED metrics (D-21), and it is the rule the run counted its own
+    #    scenarios by, so this screen and the deploy gate describe one scenario
+    #    one way. A NULL verdict on either makes it None rather than False,
+    #    because "nobody decided" rendered as "it failed" turns a judge outage
+    #    into an apparent collapse and an owner-initiated rollback.
+    results = [
+        {
+            **scen,
+            # Numeric compatibility projection: unmeasured reads 0.0.
+            "scores": {
+                key: reading["score"] if reading["measured"] else 0.0
+                for key, reading in scen["metrics"].items()
+            },
+            "passed": scenario_verdict(
+                [scen["metrics"][k]["verdict"] for k in GATED_METRIC_KEYS]
+            ),
+        }
+        for scen in scenarios.values()
+    ]
 
     log.info(
         "get_eval_run_results.ok",
@@ -557,10 +654,10 @@ async def get_eval_run_results(
         run_id=str(run_id),
         tenant_id=str(tenant.id),
         scenario_count=len(results),
-        # The denominator, in the log too: a run whose scenarios are all
-        # unmeasured is a run that measured nothing, and it should be visible
-        # here without anyone opening the response body.
-        unmeasured_scenario_count=sum(1 for r in results if r["passed"] is None),
+        # The denominator, in the log too: a run whose scenarios all carry no
+        # verdict is a run that decided nothing, and it should be visible here
+        # without anyone opening the response body.
+        unverdicted_scenario_count=sum(1 for r in results if r["passed"] is None),
     )
     return {"results": results}
 

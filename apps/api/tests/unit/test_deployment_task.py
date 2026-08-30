@@ -484,23 +484,61 @@ def _measured_eval_signal():
     produced in production, and every one of these tests was silently asserting
     that an agent whose quality had never been measured could ship.
     """
-    return {
-        "eval_signal": "measured",
-        "signal_detail": None,
-        # D1/P3, and the same argument as `eval_signal` above one release later:
-        # from this release the gate refuses a 'measured' signal that does not
-        # record having invoked the agent, because until P2 the eval scored each
-        # scenario's own reference answer and every stored run is silent on the
-        # question. Omitting it here would downgrade every wiring test to
-        # 'block' and they would stop testing what their names say.
-        "agent_invoked": True,
-        "last_run_at": "2026-05-23T02:00:00",
-        "last_run_status": "complete",
-        "scenario_count": 30,
-        "scored_scenario_count": 30,
-        "pass_rates": {"faithfulness": 0.92, "answer_relevancy": 0.9},
-        "failing_scenarios": 0,
-    }
+    from app.domain.eval_result import (
+        Cost,
+        DatasetOutcome,
+        EvalResult,
+        Invocation,
+        Measurement,
+    )
+    from app.services.deployment_service import EVAL_SIGNAL_MEASURED, _eval_summary
+
+    # Built through the collector's own constructor since #51 slice 4. The
+    # hand-written dict this replaces had no `datasets` block at all, and the
+    # gate now refuses a 'measured' signal whose gated metrics were measured on
+    # no dataset, so the fixture would have downgraded every wiring test to
+    # 'block' while looking like a measurement, which is the same shape of
+    # mistake audit D3's `pass_rates: {}` was.
+    scored = DatasetOutcome(
+        attempted=30,
+        valid=30,
+        scored=30,
+        metrics={
+            "faithfulness": Measurement(value=0.92, observations=30, measured=True),
+            "answer_relevancy": Measurement(value=0.9, observations=30, measured=True),
+        },
+        # Both gates measured and cleared on all thirty. The three verdict
+        # counts add up to `scored` or the record refuses to be built.
+        scenarios_passed=30,
+    )
+    return _eval_summary(
+        EVAL_SIGNAL_MEASURED,
+        last_run_at="2026-05-23T02:00:00",
+        last_run_status="complete",
+        record=EvalResult(
+            run_id=str(uuid.uuid4()),
+            agent_id=str(uuid.uuid4()),
+            invocation=Invocation(
+                status="measured",
+                valid=30,
+                attempted=30,
+                responded=30,
+                scorable=30,
+                failed=0,
+                empty=0,
+            ),
+            datasets={"exploratory": scored},
+            requested_model="gpt-5.6-luna",
+            cost=Cost(
+                input_tokens=10, output_tokens=5, usd=0.01, zar=0.2, measured=True
+            ),
+        ),
+        # D1/P3, and the same argument as `eval_signal` one release later: the
+        # gate refuses a 'measured' signal that does not record having invoked
+        # the agent, because until P2 the eval scored each scenario's own
+        # reference answer and every stored run is silent on the question.
+        agent_invoked=True,
+    )
 
 
 def _measured_red_team_signal():

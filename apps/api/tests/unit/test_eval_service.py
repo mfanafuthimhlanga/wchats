@@ -47,6 +47,7 @@ import os
 import re
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -277,7 +278,6 @@ class TestRunRagasEval:
             assert result["scores"][0][metric] is not None, (
                 f"{metric} came back unknown against a metric that cannot fail here"
             )
-            assert result["means"][metric] is not None
 
     def test_built_metrics_are_instances_not_classes(self):
         """Every element of the metrics list is a constructed metric object,
@@ -397,7 +397,7 @@ class TestRunRagasEval:
         assert rows[0].served_model == "gpt-5.6-luna"
 
     def test_run_ragas_eval_empty_scenarios_returns_empty(self):
-        """run_ragas_eval returns empty scores/means when no valid scenarios given.
+        """run_ragas_eval returns no scores and no records when nothing is valid.
         No mocking needed — the early-exit path never touches Ragas internals.
         """
         from app.services.eval_service import run_ragas_eval
@@ -409,7 +409,8 @@ class TestRunRagasEval:
         )
 
         assert result["scores"] == []
-        assert result["means"]["faithfulness"] is None
+        assert result["judge_records"] == []
+        assert result["sent"] == 0
 
     def test_run_ragas_eval_uses_correct_import(self):
         """eval_service.py imports Ragas 0.4.x path (D-01 LOCKED regression guard).
@@ -519,7 +520,7 @@ class TestConnectTimeouts:
         [
             lambda svc: svc.write_eval_results(
                 "run-1",
-                [{"scenario_id": "s1", "faithfulness": 0.9}],
+                svc.build_judge_records([{"scenario_id": "s1", "faithfulness": 0.9}]),
                 "postgresql://production",
             ),
             lambda svc: svc.update_eval_run_status(
@@ -620,8 +621,10 @@ class TestPersistenceSplit:
 
         eval_service.write_eval_results(
             str(uuid.uuid4()),
-            [{"scenario_id": "s1", "faithfulness": 0.9, "answer_relevancy": 0.9,
-              "context_precision": 0.9, "context_recall": 0.9}],
+            eval_service.build_judge_records(
+                [{"scenario_id": "s1", "faithfulness": 0.9, "answer_relevancy": 0.9,
+                  "context_precision": 0.9, "context_recall": 0.9}]
+            ),
             "postgresql://production",
         )
 
@@ -646,26 +649,26 @@ class TestPersistenceSplit:
 
 
 # ---------------------------------------------------------------------------
-# The Judge behind each score (ticket #47)
+# The judge row: what it decided, and what it no longer repeats (#47, #51)
 # ---------------------------------------------------------------------------
 
 
-class TestJudgeIdentityLandsOnTheScore:
-    """Which Judge produced a score, recorded where #53 will read it.
+class TestTheJudgeRowCarriesItsOwnDecision:
+    """One eval_results row per (scenario, metric), deciding nothing at read time.
 
-    A calibration figure says how well one Judge agrees with a human, and three
-    things move that agreement: the model, the reasoning effort, and the prompt.
-    A score stored without them cannot be compared to the next one, and grouping
-    two efforts under the word "judge" averages two populations.
+    #47 put the Judge identity in `detail` beside the whole score row, so a
+    scenario's four rows each repeated all four of that scenario's scores. #51
+    criterion 2 takes the blob out and gives the row columns: the dimension, the
+    score, the verdict, the threshold that produced it, the Judge, and the
+    reference to the ledger rows that paid for it.
 
-    `eval_results` is where a judge's score lands, one row per (scenario,
-    metric), and `metric` is the judge dimension. So the identity goes in that
-    row's `detail`, which makes it retrievable per dimension per run out of one
-    column with no second table to join.
+    The verdict matters most. It used to be rebuilt in `api/v1/evals.py` from
+    today's `settings`, so raising a threshold restated every verdict already
+    written down.
     """
 
-    def _details(self, monkeypatch) -> dict[str, dict]:
-        """`detail` per metric, off a real write_eval_results call."""
+    def _rows(self, monkeypatch, score: dict | None = None) -> dict[str, dict]:
+        """The INSERT parameters per metric, off a real write_eval_results call."""
         from app.services import eval_service
 
         cursor = _RecordingCursor()
@@ -674,30 +677,25 @@ class TestJudgeIdentityLandsOnTheScore:
 
         eval_service.write_eval_results(
             str(uuid.uuid4()),
-            [{"scenario_id": "s1", "faithfulness": 0.9, "answer_relevancy": 0.8,
-              "context_precision": 0.7, "context_recall": 0.6}],
+            eval_service.build_judge_records([score or {
+                "scenario_id": "s1", "faithfulness": 0.95, "answer_relevancy": 0.8,
+                "context_precision": 0.7, "context_recall": 0.6,
+            }]),
             "postgresql://production",
         )
-        return {
-            params["metric"]: json.loads(params["detail"])
-            for _sql, params in cursor.executed
-        }
+        return {params["metric"]: params for _sql, params in cursor.executed}
 
-    def test_every_result_row_names_the_judge_that_scored_that_dimension(
-        self, monkeypatch
-    ):
-        """All three fields, on every dimension, in one place."""
+    # -- the identity ------------------------------------------------------
+
+    def test_every_row_names_the_judge_that_scored_that_dimension(self, monkeypatch):
+        """All three fields, on every dimension, in a column of its own now."""
         from app.services.eval_service import METRIC_KEYS
 
-        details = self._details(monkeypatch)
+        rows = self._rows(monkeypatch)
 
-        assert sorted(details) == sorted(METRIC_KEYS)
+        assert sorted(rows) == sorted(METRIC_KEYS)
         for metric in METRIC_KEYS:
-            identity = details[metric].get("judge_identity")
-            assert identity is not None, (
-                f"the {metric} row records no Judge, so a calibration figure "
-                "keyed on the identity has nothing to key on"
-            )
+            identity = json.loads(rows[metric]["judge_identity"])
             assert sorted(identity) == [
                 "model", "prompt_version", "reasoning_effort"
             ], f"the {metric} row's identity is {identity!r}"
@@ -714,10 +712,10 @@ class TestJudgeIdentityLandsOnTheScore:
         """
         from app.services.eval_service import METRIC_KEYS
 
-        details = self._details(monkeypatch)
+        rows = self._rows(monkeypatch)
 
         for metric in METRIC_KEYS:
-            identity = details[metric]["judge_identity"]
+            identity = json.loads(rows[metric]["judge_identity"])
             assert identity["model"] == "gpt-5.6-luna", (
                 f"the {metric} row records model {identity['model']!r}"
             )
@@ -735,24 +733,125 @@ class TestJudgeIdentityLandsOnTheScore:
 
         from app.services.eval_service import METRIC_KEYS
 
-        details = self._details(monkeypatch)
+        rows = self._rows(monkeypatch)
         expected = f"ragas-{importlib.metadata.version('ragas')}"
 
         for metric in METRIC_KEYS:
-            assert details[metric]["judge_identity"]["prompt_version"] == expected
+            identity = json.loads(rows[metric]["judge_identity"])
+            assert identity["prompt_version"] == expected
 
-    def test_the_score_row_survives_alongside_the_identity(self, monkeypatch):
-        """`detail` still carries what it always carried.
+    def test_a_route_with_no_effort_writes_no_judge_rather_than_a_partial_one(
+        self, monkeypatch
+    ):
+        """The fail-open path, observed rather than assumed.
 
-        Nothing reads this column today; #53 is its first reader. Replacing the
-        score row rather than extending it would silently change a shape a later
-        reader is entitled to.
+        Decision #34 priced the Judge floor at effort `none`, and every judge
+        route carries it today, so this branch is unreachable from the shipped
+        table. It exists because a route that dropped the effort would leave the
+        identity a field short, and two efforts filed under one key average two
+        populations. Writing NULL says the Judge is unknown, which is what it
+        would be, and it costs no scored run: the score, the verdict and the
+        threshold all still land.
         """
-        details = self._details(monkeypatch)
+        from app.core.model_client import ModelRoute
+        from app.services import eval_service
 
-        assert details["faithfulness"]["scenario_id"] == "s1"
-        assert details["faithfulness"]["faithfulness"] == 0.9
-        assert details["context_recall"]["context_recall"] == 0.6
+        monkeypatch.setattr(
+            eval_service,
+            "route_for",
+            lambda _purpose: ModelRoute("openai", "gpt-5.6-luna"),
+        )
+
+        assert eval_service.judge_identity_for("faithfulness") is None
+
+        row = self._rows(monkeypatch)["faithfulness"]
+        assert row["judge_identity"] is None
+        assert row["score"] == 0.95, "the score was lost along with the identity"
+        assert row["binary_verdict"] is True, "the verdict was lost with the identity"
+
+    # -- the verdict and its gate -----------------------------------------
+
+    def test_a_gated_metric_carries_its_threshold_and_its_verdict(self, monkeypatch):
+        from app.core.config import settings
+
+        rows = self._rows(monkeypatch)
+
+        assert rows["faithfulness"]["threshold"] == settings.EVAL_FAITHFULNESS_THRESHOLD
+        assert rows["faithfulness"]["binary_verdict"] is True
+        assert rows["answer_relevancy"]["threshold"] == settings.EVAL_RELEVANCY_THRESHOLD
+        assert rows["answer_relevancy"]["binary_verdict"] is False, (
+            "0.8 is below the 0.9 relevancy gate"
+        )
+
+    def test_an_ungated_metric_carries_neither_a_threshold_nor_a_verdict(
+        self, monkeypatch
+    ):
+        """context_precision and context_recall have no setting anywhere.
+
+        NULL on both columns, never a borrowed threshold and never False. A
+        reader aggregating verdicts would otherwise count two extra failures on
+        every scenario in the table.
+        """
+        rows = self._rows(monkeypatch)
+
+        for metric in ("context_precision", "context_recall"):
+            assert rows[metric]["threshold"] is None, f"{metric} was given a gate"
+            assert rows[metric]["binary_verdict"] is None, f"{metric} was given a verdict"
+
+    def test_an_unscored_metric_is_a_row_with_no_score_and_no_verdict(
+        self, monkeypatch
+    ):
+        """The judge returned nothing for one dimension. The row still exists.
+
+        Dropping it would make an unscored dimension indistinguishable from a
+        scenario nobody sent, and `summarise_run_validity`'s per-metric
+        observation counts would lose the denominator rather than show the hole.
+        """
+        rows = self._rows(monkeypatch, score={
+            "scenario_id": "s1", "faithfulness": None, "answer_relevancy": 0.95,
+            "context_precision": None, "context_recall": None,
+        })
+
+        assert len(rows) == 4, "an unscored metric lost its row"
+        assert rows["faithfulness"]["score"] is None
+        assert rows["faithfulness"]["binary_verdict"] is None, (
+            "an unscored gated metric read as a failed one"
+        )
+        assert rows["faithfulness"]["threshold"] is not None, (
+            "the gate the metric WOULD have been judged against is still recorded"
+        )
+        assert rows["answer_relevancy"]["binary_verdict"] is True
+
+    def test_the_verdict_is_the_comparison_and_not_a_copy_of_the_score(
+        self, monkeypatch
+    ):
+        """Both sides of the gate, through the writer rather than the type."""
+        assert self._rows(monkeypatch, score={
+            "scenario_id": "s1", "faithfulness": 0.89,
+        })["faithfulness"]["binary_verdict"] is False
+        assert self._rows(monkeypatch, score={
+            "scenario_id": "s1", "faithfulness": 0.90,
+        })["faithfulness"]["binary_verdict"] is True, (
+            "a score exactly on the gate must pass; the comparison is >="
+        )
+
+    # -- the ledger reference ---------------------------------------------
+
+    def test_every_row_names_the_ledger_bucket_that_paid_for_it(self, monkeypatch):
+        """The reference is (eval_run_id, ledger_purpose), per metric per run.
+
+        The ledger cannot go per scenario: `record_model_call` mints each row's
+        uuid inside itself, the hook that calls it fires under ragas' scoring
+        loop and sees no scenario, and one metric call leaves several rows. So
+        the row stores the bucket, and tenant migration 0023's column comment
+        says that is the grain.
+        """
+        from app.services.eval_service import JUDGE_PURPOSE_BY_METRIC, METRIC_KEYS
+
+        rows = self._rows(monkeypatch)
+
+        for metric in METRIC_KEYS:
+            assert rows[metric]["ledger_purpose"] == JUDGE_PURPOSE_BY_METRIC[metric]
 
     def test_each_metric_maps_to_a_purpose_the_routing_table_routes(self):
         """The map is built from the two tuples, not from a `judge_` prefix rule.
@@ -772,33 +871,109 @@ class TestJudgeIdentityLandsOnTheScore:
         for purpose in JUDGE_PURPOSE_BY_METRIC.values():
             assert purpose in PURPOSE_ROUTES
 
-    def test_a_route_with_no_effort_records_no_judge_rather_than_a_partial_one(
-        self, monkeypatch
-    ):
-        """The fail-open path, observed rather than assumed.
+    # -- the blob that is gone ---------------------------------------------
 
-        Decision #34 priced the Judge floor at effort `none`, and every judge
-        route carries it today, so this branch is unreachable from the shipped
-        table. It exists because a route that dropped the effort would leave the
-        identity a field short, and two efforts filed under one key average two
-        populations. Writing null says the Judge is unknown, which is what it
-        would be, and it costs no scored run.
+    def test_the_detail_blob_no_longer_carries_the_four_scores(self, monkeypatch):
+        """Criterion 2's other half, pinned as an absence.
+
+        Every row used to hold every metric of its scenario, so one number was
+        stored four times and three of the four copies on any row were not that
+        row's own. Nothing in the tree ever read the column; #53 was to be its
+        first reader, and it now has columns to group on instead.
         """
-        from app.core.model_client import ModelRoute
+        rows = self._rows(monkeypatch)
+
+        for metric, params in rows.items():
+            assert params["detail"] is None, (
+                f"the {metric} row still writes a detail blob: {params['detail']!r}"
+            )
+
+    def test_the_row_holds_only_its_own_dimensions_score(self, monkeypatch):
+        """The four scores were different. Each row carries exactly one of them."""
+        rows = self._rows(monkeypatch)
+
+        assert rows["faithfulness"]["score"] == 0.95
+        assert rows["answer_relevancy"]["score"] == 0.8
+        assert rows["context_precision"]["score"] == 0.7
+        assert rows["context_recall"]["score"] == 0.6
+
+    def test_the_writer_inserts_one_row_per_record_and_no_more(self, monkeypatch):
         from app.services import eval_service
+        from app.services.eval_service import METRIC_KEYS
 
-        monkeypatch.setattr(
-            eval_service,
-            "route_for",
-            lambda _purpose: ModelRoute("openai", "gpt-5.6-luna"),
-        )
+        cursor = _RecordingCursor()
+        connect, _conn = _recording_connect(cursor, [])
+        monkeypatch.setattr(eval_service.psycopg2, "connect", connect)
 
-        assert eval_service.judge_identity_for("faithfulness") is None
-        detail = eval_service.result_detail({"scenario_id": "s1"}, "faithfulness")
-        assert detail["judge_identity"] is None
-        assert detail["scenario_id"] == "s1", (
-            "the score row was lost along with the identity"
-        )
+        records = eval_service.build_judge_records([
+            {"scenario_id": "s1", "faithfulness": 0.9},
+            {"scenario_id": "s2", "faithfulness": 0.5},
+        ])
+        eval_service.write_eval_results("run-1", records, "postgresql://production")
+
+        assert len(records) == 2 * len(METRIC_KEYS)
+        assert len(cursor.executed) == len(records)
+        assert {params["scenario_id"] for _sql, params in cursor.executed} == {"s1", "s2"}
+
+
+class TestTheThresholdIsDefinedOnce:
+    """`threshold_for` is the one place the gate is named (#51 slice 2)."""
+
+    def test_only_the_two_gated_metrics_have_a_threshold(self):
+        from app.core.config import settings
+        from app.services.eval_service import threshold_for
+
+        assert threshold_for("faithfulness") == settings.EVAL_FAITHFULNESS_THRESHOLD
+        assert threshold_for("answer_relevancy") == settings.EVAL_RELEVANCY_THRESHOLD
+        assert threshold_for("context_precision") is None
+        assert threshold_for("context_recall") is None
+
+    def test_the_route_reads_the_same_gate_the_writer_stored(self):
+        """One definition, so a scenario's rendered verdict and its stored one agree.
+
+        `api/v1/evals.py` named the two settings itself until this slice. Slice 3
+        drops that recomputation and reads the stored verdict; until then the two
+        at least come from one function.
+        """
+        from app.api.v1.evals import GATED_METRIC_KEYS
+        from app.services.eval_service import threshold_for
+
+        for metric in GATED_METRIC_KEYS:
+            assert threshold_for(metric) is not None, (
+                f"{metric} is gated by the route and has no threshold to gate on"
+            )
+
+    def test_a_metric_with_no_setting_gets_none_rather_than_a_default(self):
+        """An unknown metric name is ungated, not gated at some fallback."""
+        from app.services.eval_service import threshold_for
+
+        assert threshold_for("some_metric_nobody_defined") is None
+
+
+class TestBuildJudgeRecords:
+    """The pairing of scored scenarios to judge rows, before any database."""
+
+    def test_four_records_per_scenario_in_metric_order(self):
+        from app.services.eval_service import METRIC_KEYS, build_judge_records
+
+        records = build_judge_records([{"scenario_id": "s1", "faithfulness": 0.9}])
+
+        assert [r.metric for r in records] == list(METRIC_KEYS)
+        assert all(r.scenario_id == "s1" for r in records)
+
+    def test_no_scores_makes_no_records(self):
+        from app.services.eval_service import build_judge_records
+
+        assert build_judge_records([]) == []
+
+    def test_a_scenario_the_judge_scored_on_one_dimension_still_gets_four_rows(self):
+        from app.services.eval_service import build_judge_records
+
+        records = build_judge_records([{"scenario_id": "s1", "faithfulness": 0.9}])
+
+        assert len(records) == 4
+        assert [r.score for r in records] == [0.9, None, None, None]
+
 
 
 # ---------------------------------------------------------------------------
@@ -1920,9 +2095,9 @@ class TestRunRagasEvalAttribution:
 
         assert result["scores"] == []
         assert result["unattributed"] == 5
-        assert result["means"]["faithfulness"] is None, (
-            "a mean over rows the run cannot place is a mean over an unknown "
-            "denominator"
+        assert result["judge_records"] == [], (
+            "a row the run cannot place scores no scenario, so it writes no "
+            "eval_results row and reaches no verdict"
         )
 
     def test_no_synthetic_scenario_id_is_ever_minted(self, monkeypatch):
@@ -1970,3 +2145,629 @@ class TestRunRagasEvalAttribution:
             "run_ragas_eval mints a scenario_id again — an unattributable score "
             "must be reported as unattributed, never given an invented identity"
         )
+
+
+# ---------------------------------------------------------------------------
+# The run record (#51 slice 1): build, write, read
+# ---------------------------------------------------------------------------
+
+
+def _validity_report(**overrides) -> dict:
+    """summarise_run_validity's shape, with golden measured and exploratory not.
+
+    The two datasets deliberately disagree. A record built from a report where
+    both halves read the same would pass while the builder pooled them, which is
+    the one thing the per-dataset split exists to prevent.
+    """
+    report = {
+        "attempted": 4,
+        "valid": 4,
+        "scored": 2,
+        "unattributed": 0,
+        "datasets": {
+            "golden": {
+                "attempted": 2,
+                "valid": 2,
+                "scored": 2,
+                "metrics": {
+                    "faithfulness": {"value": 0.8, "measured": True, "observations": 2},
+                    "answer_relevancy": {"value": 0.6, "measured": True, "observations": 2},
+                    "context_precision": {"value": 0.5, "measured": True, "observations": 2},
+                    "context_recall": {"value": 0.4, "measured": True, "observations": 2},
+                },
+            },
+            "exploratory": {
+                "attempted": 2,
+                "valid": 2,
+                "scored": 0,
+                "metrics": {
+                    metric: {"value": None, "measured": False, "observations": 0}
+                    for metric in (
+                        "faithfulness",
+                        "answer_relevancy",
+                        "context_precision",
+                        "context_recall",
+                    )
+                },
+            },
+        },
+    }
+    report.update(overrides)
+    return report
+
+
+#: The four rows the report above describes: two golden, two exploratory.
+#: `dataset_verdict_counts` reads the dataset off these, the same way
+#: `summarise_run_validity` does.
+_RECORD_SCENARIOS = [
+    {"id": "g1", "dataset": "golden", "reference_answer": "a"},
+    {"id": "g2", "dataset": "golden", "reference_answer": "a"},
+    {"id": "e1", "dataset": "exploratory", "reference_answer": "a"},
+    {"id": "e2", "dataset": "exploratory", "reference_answer": "a"},
+]
+
+
+def _record_judge_records(scores=None):
+    """The judge records for the two golden rows the report says scored.
+
+    Built through `build_judge_records`, so the verdicts are the ones the shipped
+    writer reaches. 0.8 faithfulness against a 0.90 gate is a FAILED scenario,
+    which is what the counts below say.
+    """
+    from app.services.eval_service import build_judge_records
+
+    return build_judge_records(
+        scores
+        if scores is not None
+        else [
+            {
+                "scenario_id": scenario_id,
+                "faithfulness": 0.8,
+                "answer_relevancy": 0.6,
+                "context_precision": 0.5,
+                "context_recall": 0.4,
+            }
+            for scenario_id in ("g1", "g2")
+        ]
+    )
+
+
+def _invocation_observation(**overrides) -> dict:
+    """summarise_agent_invocation's shape, built by the real summariser.
+
+    Built rather than typed, so this fixture can never hand the builder a shape
+    the production summariser does not produce.
+    """
+    from app.services.eval_service import summarise_agent_invocation
+
+    records = [
+        {
+            "scenario_id": f"s{i}",
+            "responded": True,
+            "scorable": True,
+            "error": None,
+            "retrieve_calls": 1,
+            "retrieve_at_cap": False,
+            "retrieve_unparsed": 0,
+            "retrieved_chunks": 1,
+            "side_effects": [],
+            "pii_detector": None,
+        }
+        for i in range(4)
+    ]
+    observation = summarise_agent_invocation(
+        records,
+        valid=4,
+        ceiling_skipped=0,
+        ceiling_skipped_golden=0,
+        per_turn_timeout_s=90,
+        audit_capture_char_cap=1800,
+        retrieved_context_chunk_char_cap=2000,
+    )
+    observation.update(overrides)
+    return observation
+
+
+def _built(**overrides):
+    from app.services.eval_service import build_eval_result
+
+    fields = {
+        "run_id": "3f3a1c66-0000-4000-8000-000000000051",
+        "agent_id": "3f3a1c66-0000-4000-8000-0000000000a9",
+        "prompt_version_id": "pv-1",
+        "validity": _validity_report(),
+        "invocation": _invocation_observation(),
+        "ledger": [],
+        "scenarios": _RECORD_SCENARIOS,
+        "judge_records": _record_judge_records(),
+    }
+    fields.update(overrides)
+    return build_eval_result(**fields)
+
+
+class TestBuildEvalResult:
+    """The one derivation, assembled from the two summaries the task holds."""
+
+    def test_each_dataset_carries_the_summarisers_own_numbers(self):
+        result = _built()
+        golden = result.datasets["golden"]
+        assert (golden.attempted, golden.valid, golden.scored) == (2, 2, 2)
+        assert golden.metrics["faithfulness"].value == 0.8
+        assert golden.metrics["faithfulness"].observations == 2
+
+    def test_the_two_datasets_are_never_pooled(self):
+        """A golden mean and an exploratory mean answer different questions."""
+        result = _built()
+        assert result.datasets["golden"].metrics["faithfulness"].measured is True
+        assert result.datasets["exploratory"].metrics["faithfulness"].measured is False
+        assert result.datasets["exploratory"].metrics["faithfulness"].value is None
+
+    def test_a_metric_over_nothing_stays_unmeasured_rather_than_zero(self):
+        """Criterion 4, carried from the summariser into the record unchanged."""
+        exploratory = _built().payload["datasets"]["exploratory"]["metrics"]
+        assert all(m == {"value": None, "measured": False, "observations": 0}
+                   for m in exploratory.values()), exploratory
+
+    def test_the_run_level_counts_are_the_summarisers_totals(self):
+        result = _built()
+        report = _validity_report()
+        assert (result.attempted, result.valid, result.scored) == (
+            report["attempted"],
+            report["valid"],
+            report["scored"],
+        )
+
+    def test_the_invocation_counters_come_from_the_observation(self):
+        observation = _invocation_observation()
+        invocation = _built(invocation=observation).invocation
+        for name in ("valid", "attempted", "responded", "scorable", "failed", "empty"):
+            assert getattr(invocation, name) == observation[name], name
+        assert invocation.status.value == observation["status"]
+
+    def test_a_failed_turn_reaches_the_record_with_its_message(self):
+        """#25. The builder carries the summariser's failure list, it does not
+        rebuild one: `failed` and `failures` come off the same walk, and the
+        record refuses to hold more of the second than the first."""
+        from app.services.eval_service import summarise_agent_invocation
+
+        records = [
+            {
+                "scenario_id": "s0",
+                "responded": False,
+                "scorable": False,
+                "error": "TimeoutError",
+                "error_message": "agent turn exceeded 90s",
+                "retrieve_calls": 0,
+                "retrieve_at_cap": False,
+                "retrieve_unparsed": 0,
+                "retrieved_chunks": 0,
+                "side_effects": [],
+                "pii_detector": None,
+            }
+        ]
+        observation = summarise_agent_invocation(
+            records,
+            valid=1,
+            ceiling_skipped=0,
+            ceiling_skipped_golden=0,
+            per_turn_timeout_s=90,
+            audit_capture_char_cap=1800,
+            retrieved_context_chunk_char_cap=2000,
+        )
+
+        result = _built(invocation=observation)
+
+        assert result.invocation.failed == 1
+        assert [(f.scenario_id, f.error_type, f.message) for f in result.failures] == [
+            ("s0", "TimeoutError", "agent turn exceeded 90s")
+        ]
+
+    def test_a_failed_turn_with_no_message_falls_back_to_its_class(self):
+        """Every caller outside `_invoke_agent_for_scenarios` produces this
+        shape, and the class name is exactly what the message rule gives a
+        non-timeout anyway. It is never a blank the record then refuses."""
+        from app.services.eval_service import _failure_report
+
+        errors, failures = _failure_report(
+            [{"scenario_id": "s0", "error": "ConnectionError"}]
+        )
+
+        assert errors == {"ConnectionError": 1}
+        assert failures == [
+            {
+                "scenario_id": "s0",
+                "error_type": "ConnectionError",
+                "message": "ConnectionError",
+            }
+        ]
+
+    def test_the_deflection_fields_reach_the_record(self):
+        """#103's three, which are how a fallen Faithfulness gets explained."""
+        observation = _invocation_observation(
+            responses_deflected=2,
+            scored_responses_deflected=1,
+            deflection_detectors={"email": 2},
+        )
+        invocation = _built(invocation=observation).invocation
+        assert invocation.responses_deflected == 2
+        assert invocation.scored_responses_deflected == 1
+        assert invocation.deflection_detectors == {"email": 2}
+
+    def test_an_empty_ledger_reads_as_an_unknown_cost(self):
+        cost = _built(ledger=[]).cost
+        assert cost.measured is False and cost.usd is None
+
+    def test_the_requested_model_is_the_one_the_routing_table_names(self):
+        from app.core.config import AGENT_TURN_MODEL
+
+        assert _built().requested_model == AGENT_TURN_MODEL
+
+    def test_the_context_proxy_version_is_stamped(self):
+        """#84. Two runs on different proxies are not comparable."""
+        from app.domain.eval_result import CONTEXT_PROXY_VERSION
+
+        assert _built().context_proxy_version == CONTEXT_PROXY_VERSION
+
+    def test_the_judge_identity_is_the_one_the_four_routes_agree_on(self):
+        from app.services.eval_service import judge_identity_for
+
+        assert _built().judge_identity == judge_identity_for("faithfulness")
+
+    def test_the_verdict_counts_reach_the_record_per_dataset(self):
+        """Both golden rows scored 0.8 against a 0.90 gate, so both failed."""
+        golden = _built().datasets["golden"]
+        assert (
+            golden.scenarios_passed,
+            golden.scenarios_failed,
+            golden.scenarios_unmeasured,
+        ) == (0, 2, 0)
+        assert golden.scenarios_failed + golden.scenarios_passed <= golden.scored
+
+    def test_a_dataset_that_scored_nothing_decided_nothing(self):
+        exploratory = _built().datasets["exploratory"]
+        assert exploratory.scored == 0
+        assert exploratory.scenarios_unmeasured == 0, (
+            "a dataset with no scored row has no undecided scenario either; "
+            "the three counts partition the scored ones"
+        )
+
+    def test_the_run_level_counts_are_the_sum_over_the_datasets(self):
+        result = _built()
+        assert result.scenarios_failed == 2
+        assert result.scenarios_passed == 0
+        assert result.scenarios_unmeasured == 0
+
+
+class TestDatasetVerdictCounts:
+    """The run counts its own scenarios, off the JudgeRecords it built (#51 F1).
+
+    `deployment_service` reached these two numbers with a `COUNT(*) FILTER` over
+    `eval_results` at deploy time, so the count moved when those rows did: with
+    the rows deleted it read nought failing over a run the record said scored
+    thirty, and the gate shipped on it.
+    """
+
+    def _counts(self, scores, scenarios=None):
+        from app.services.eval_service import dataset_verdict_counts
+
+        return dataset_verdict_counts(
+            scenarios if scenarios is not None else _RECORD_SCENARIOS,
+            _record_judge_records(scores),
+        )
+
+    def test_a_scenario_whose_gated_verdicts_all_hold_passed(self):
+        counts = self._counts(
+            [{"scenario_id": "g1", "faithfulness": 0.95, "answer_relevancy": 0.92}]
+        )
+        assert counts["golden"] == (1, 0, 0)
+
+    def test_one_false_gated_verdict_fails_the_scenario(self):
+        counts = self._counts(
+            [{"scenario_id": "g1", "faithfulness": 0.95, "answer_relevancy": 0.10}]
+        )
+        assert counts["golden"] == (0, 1, 0)
+
+    def test_a_missing_gated_score_is_unmeasured_and_beats_the_failure(self):
+        """One gate undecided and the other failed. Counted once, as unmeasured.
+
+        "Nobody decided" reported as "it failed" is what turns a judge outage
+        into an apparent quality collapse and an owner-initiated rollback.
+        """
+        counts = self._counts(
+            [
+                {
+                    "scenario_id": "g1",
+                    "faithfulness": None,
+                    "answer_relevancy": 0.10,
+                }
+            ]
+        )
+        assert counts["golden"] == (0, 0, 1)
+
+    def test_an_ungated_metric_alone_leaves_the_scenario_undecided(self):
+        """The judge returned context_precision and neither gated dimension.
+
+        `scored` counts this scenario and no gate decided it, which is the run
+        the deploy gate has to refuse rather than ship on nought failures.
+        """
+        counts = self._counts(
+            [{"scenario_id": "g1", "context_precision": 0.71}]
+        )
+        assert counts["golden"] == (0, 0, 1)
+
+    def test_a_scenario_the_judge_scored_nothing_for_is_counted_in_neither(self):
+        """It is not in `scored` either, so counting it would break the sum."""
+        counts = self._counts([{"scenario_id": "g1"}])
+        assert counts["golden"] == (0, 0, 0)
+
+    def test_a_scenario_that_belongs_to_no_fetched_row_joins_no_dataset(self):
+        """Same rule `summarise_run_validity` applies to an unattributed score."""
+        counts = self._counts(
+            [{"scenario_id": "ghost", "faithfulness": 0.95, "answer_relevancy": 0.95}]
+        )
+        assert counts == {"golden": (0, 0, 0), "exploratory": (0, 0, 0)}
+
+    def test_the_two_datasets_are_counted_apart(self):
+        counts = self._counts(
+            [
+                {"scenario_id": "g1", "faithfulness": 0.95, "answer_relevancy": 0.95},
+                {"scenario_id": "e1", "faithfulness": 0.10, "answer_relevancy": 0.95},
+            ]
+        )
+        assert counts["golden"] == (1, 0, 0)
+        assert counts["exploratory"] == (0, 1, 0)
+
+
+class TestRunJudgeIdentity:
+    """The run-level Judge is the one its records name (#51 F9).
+
+    It used to ask `route_for` again at record-build time, minutes after scoring
+    and through a different door from the one the scores came out of. A routing
+    change between the two would have stamped the record with a Judge that scored
+    nothing on this run.
+    """
+
+    def _identity(self, model="gpt-5.6-luna", effort="none"):
+        from app.domain.judge_identity import JUDGE_PROMPT_VERSION, JudgeIdentity
+
+        return JudgeIdentity(
+            model=model, reasoning_effort=effort, prompt_version=JUDGE_PROMPT_VERSION
+        )
+
+    def _records(self, *identities):
+        """One record per identity, on the golden rows `_RECORD_SCENARIOS` names.
+
+        The ids match, so a record built from these agrees with the validity
+        report about which scenarios were scored. Only faithfulness is scored, so
+        both scenarios read unmeasured, which is what the counts say.
+        """
+        from app.domain.judge_record import JudgeRecord
+
+        return [
+            JudgeRecord.scored(
+                scenario_id=scenario_id,
+                metric="faithfulness",
+                score=0.95,
+                threshold=0.9,
+                judge_identity=identity,
+            )
+            for scenario_id, identity in zip(("g1", "g2"), identities)
+        ]
+
+    def test_one_judge_across_the_records_is_the_runs_judge(self):
+        from app.services.eval_service import run_judge_identity
+
+        identity = self._identity()
+        assert run_judge_identity(self._records(identity, identity)) == identity
+
+    def test_two_judges_across_the_records_is_no_run_level_judge(self):
+        """A field that picked one would name the Judge behind half the scores."""
+        from app.services.eval_service import run_judge_identity
+
+        records = self._records(self._identity(), self._identity(effort="high"))
+        assert run_judge_identity(records) is None
+
+    def test_a_record_carrying_no_identity_is_no_run_level_judge(self):
+        from app.services.eval_service import run_judge_identity
+
+        assert run_judge_identity(self._records(self._identity(), None)) is None
+
+    def test_no_records_at_all_is_no_run_level_judge(self):
+        from app.services.eval_service import run_judge_identity
+
+        assert run_judge_identity([]) is None
+
+    def test_the_record_is_stamped_with_the_identity_its_records_carry(self):
+        """And not with whatever the routing table says at build time."""
+        identity = self._identity(model="a-judge-that-did-not-run")
+        built = _built(judge_records=self._records(identity, identity))
+        assert built.judge_identity == identity
+
+
+class TestServedAgentModel:
+    """What actually served the turns, when one thing did."""
+
+    def _call(self, **overrides):
+        from app.domain.model_call import ModelCall
+
+        fields = {
+            "purpose": "agent_turn",
+            "provider": "openai",
+            "requested_model": "gpt-5.6-luna",
+            "served_model": "gpt-5.6-luna-2026-08",
+            "model_source": "reported",
+            "input_tokens": 10,
+            "output_tokens": 2,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "at": datetime(2026, 8, 29, 10, 0, tzinfo=timezone.utc),
+            "tenant_id": "t-1",
+            "job_id": "run-1",
+        }
+        fields.update(overrides)
+        return ModelCall(**fields)
+
+    def test_one_agreeing_model_is_reported(self):
+        from app.services.eval_service import served_agent_model
+
+        assert served_agent_model([self._call(), self._call()]) == "gpt-5.6-luna-2026-08"
+
+    def test_a_ledger_of_judge_calls_alone_names_no_served_agent_model(self):
+        """The judges' served model is a different claim about a different call."""
+        from app.services.eval_service import served_agent_model
+
+        assert served_agent_model([self._call(purpose="judge_faithfulness")]) is None
+
+    def test_two_disagreeing_models_report_neither(self):
+        """A run served by two models has no single served model."""
+        from app.services.eval_service import served_agent_model
+
+        pair = [self._call(), self._call(served_model="gpt-5.6-luna-2026-09")]
+        assert served_agent_model(pair) is None
+
+    def test_an_empty_ledger_names_no_model(self):
+        from app.services.eval_service import served_agent_model
+
+        assert served_agent_model([]) is None
+
+
+class TestWriteAndReadEvalResult:
+    """The column write, and the read that refuses to invent a measurement."""
+
+    def _connect(self, monkeypatch, cursor, conn_strings=None):
+        from app.services import eval_service
+
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        connect, _ = _recording_connect(cursor, conn_strings if conn_strings is not None else [])
+        monkeypatch.setattr(eval_service.psycopg2, "connect", connect)
+        return conn
+
+    def test_the_record_is_written_to_production_as_jsonb(self, monkeypatch):
+        from app.services.eval_service import write_eval_result
+
+        cursor = _RecordingCursor()
+        conn_strings: list[str] = []
+        self._connect(monkeypatch, cursor, conn_strings)
+        result = _built()
+
+        assert write_eval_result("run-1", result, "postgresql://production") is True
+        sql, params = cursor.executed[0]
+        assert "UPDATE eval_runs" in sql and "result" in sql
+        assert json.loads(params["result"]) == result.payload
+        assert conn_strings == ["postgresql://production"], (
+            "the record is an observation about a run and belongs on production, "
+            "never on the eval branch the run deletes"
+        )
+
+    def test_a_tenant_without_the_column_reports_false_rather_than_raising(
+        self, monkeypatch
+    ):
+        """Migration 0022 arrives at provision time. A pre-0022 run still scores."""
+        from app.services.eval_service import write_eval_result
+
+        cursor = _RecordingCursor(
+            raise_on="UPDATE eval_runs",
+            exc=psycopg2.errors.UndefinedColumn("column result does not exist"),
+        )
+        self._connect(monkeypatch, cursor)
+
+        assert write_eval_result("run-1", _built(), "postgresql://production") is False
+
+    def test_a_failed_write_reports_false_rather_than_failing_a_scored_run(
+        self, monkeypatch
+    ):
+        from app.services import eval_service
+
+        def _boom(*args, **kwargs):
+            raise psycopg2.OperationalError("connection refused")
+
+        monkeypatch.setattr(eval_service.psycopg2, "connect", _boom)
+        assert eval_service.write_eval_result(
+            "run-1", _built(), "postgresql://production"
+        ) is False
+
+    def test_a_stored_record_round_trips_back_through_the_reader(self, monkeypatch):
+        from app.services.eval_service import read_eval_result
+
+        result = _built()
+        cursor = _RecordingCursor(fetchone_result=(result.payload,))
+        self._connect(monkeypatch, cursor)
+
+        assert read_eval_result("run-1", "postgresql://production") == result
+
+    def test_a_null_column_reads_as_no_record_rather_than_as_zero(self, monkeypatch):
+        from app.services.eval_service import read_eval_result
+
+        cursor = _RecordingCursor(fetchone_result=(None,))
+        self._connect(monkeypatch, cursor)
+
+        assert read_eval_result("run-1", "postgresql://production") is None
+
+    def test_a_run_that_does_not_exist_reads_as_no_record(self, monkeypatch):
+        from app.services.eval_service import read_eval_result
+
+        cursor = _RecordingCursor(fetchone_result=None)
+        self._connect(monkeypatch, cursor)
+
+        assert read_eval_result("run-1", "postgresql://production") is None
+
+    def test_a_tenant_without_the_column_reads_as_no_record(self, monkeypatch):
+        from app.services.eval_service import read_eval_result
+
+        cursor = _RecordingCursor(
+            raise_on="SELECT result",
+            exc=psycopg2.errors.UndefinedColumn("column result does not exist"),
+        )
+        self._connect(monkeypatch, cursor)
+
+        assert read_eval_result("run-1", "postgresql://production") is None
+
+    def test_a_stored_payload_that_breaks_a_rule_reads_as_unmeasured(self, monkeypatch):
+        """The reader returns None on it, so the caller reports no measurement."""
+        from app.services.eval_service import read_eval_result
+
+        payload = _built().payload
+        payload["datasets"]["exploratory"]["metrics"]["faithfulness"]["measured"] = True
+        cursor = _RecordingCursor(fetchone_result=(payload,))
+        self._connect(monkeypatch, cursor)
+
+        assert read_eval_result("run-1", "postgresql://production") is None
+
+
+class TestReadRunLedger:
+    """The run's own `model_calls` rows, and what an unreadable ledger means."""
+
+    def test_the_rows_come_back_as_records_keyed_by_the_writers_columns(
+        self, monkeypatch
+    ):
+        from app.core.model_client import _COLUMNS
+        from app.services import eval_service
+
+        row = (
+            "judge_faithfulness", "openai", "gpt-5.6-luna", "gpt-5.6-luna",
+            "reported", 100, 20, 0, 0,
+            datetime(2026, 8, 29, 10, 0, tzinfo=timezone.utc),
+            "t-1", "a-1", "run-1",
+        )
+        assert len(row) == len(_COLUMNS)
+        cursor = _RecordingCursor()
+        cursor.fetchall = lambda: [row]
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        monkeypatch.setattr(eval_service.psycopg2, "connect", lambda *a, **kw: conn)
+
+        calls = eval_service.read_run_ledger("run-1", "postgresql://production")
+        assert len(calls) == 1
+        assert calls[0].purpose == "judge_faithfulness"
+        assert calls[0].input_tokens == 100
+
+    def test_a_ledger_that_cannot_be_read_leaves_the_cost_unknown(self, monkeypatch):
+        """A scored run must not fail because its bill could not be added up."""
+        from app.services import eval_service
+
+        def _boom(*args, **kwargs):
+            raise psycopg2.OperationalError("connection refused")
+
+        monkeypatch.setattr(eval_service.psycopg2, "connect", _boom)
+        assert eval_service.read_run_ledger("run-1", "postgresql://production") == []

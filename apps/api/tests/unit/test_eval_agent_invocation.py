@@ -1775,7 +1775,7 @@ def task_wired(monkeypatch):
         "run_ragas_eval",
         lambda scenarios, ledger: (
             rec["scored"].append(list(scenarios))
-            or {"scores": [], "means": {}, "sent": 0, "returned": 0, "unattributed": 0}
+            or {"scores": [], "judge_records": [], "sent": 0, "returned": 0, "unattributed": 0}
         ),
     )
     monkeypatch.setattr(
@@ -1981,7 +1981,7 @@ def test_the_row_exists_before_the_first_turn_and_is_corrected_after_the_last(
         mod,
         "run_ragas_eval",
         lambda scenarios, ledger: order.append("score")
-        or {"scores": [], "means": {}, "sent": 0, "returned": 0, "unattributed": 0},
+        or {"scores": [], "judge_records": [], "sent": 0, "returned": 0, "unattributed": 0},
     )
 
     _run_task()
@@ -2087,3 +2087,121 @@ def test_a_deflection_is_still_a_response_and_still_reaches_the_scorer() -> None
         "a deflected answer was dropped from the scored set, which measures the "
         "firewall's hit rate by removing the rows it fired on"
     )
+
+
+# ---------------------------------------------------------------------------
+# #25. The invoker composes the failure message, it never copies one
+# ---------------------------------------------------------------------------
+
+#: An exception whose own text is unmistakable, so an assertion can look for it
+#: in the observation and expect not to find it.
+SENTINEL = "SENTINEL-customer-said-my-card-is-4111111111111111"
+
+
+class _LoudFailure(RuntimeError):
+    """`str()` returns what an owner-visible row may never carry."""
+
+    def __str__(self) -> str:
+        return SENTINEL
+
+
+def test_a_timed_out_turn_carries_the_budget_it_exceeded():
+    """#25. Eval run 29754ceb logged `error= error_type=TimeoutError` twice.
+
+    `str(TimeoutError())` is the empty string, so the class was the only thing
+    that survived the per-turn bound and nothing said what ran out of what. The
+    budget is the one fact the class cannot carry, so the invoker composes it.
+    """
+    from app.worker.tasks.runtime.agent import AGENT_TURN_TIMEOUT_S
+
+    scenarios = _scenarios(4)
+
+    def _turn_for(question):
+        if question == "Question 2?":
+            raise TimeoutError("SDK subprocess never answered")
+        return _turn(f"ANSWER to {question}")
+
+    _rows, summary, _calls = _invoke(scenarios, _turn_for)
+
+    assert summary["errors"] == {"TimeoutError": 1}
+    assert len(summary["failures"]) == 1, (
+        f"one turn raised and the run reported {len(summary['failures'])} failure(s)"
+    )
+    failure = summary["failures"][0]
+    assert failure["scenario_id"] == "s2", (
+        f"the failure names {failure['scenario_id']!r}, not the row that raised"
+    )
+    assert failure["error_type"] == "TimeoutError"
+    assert failure["message"] == f"agent turn exceeded {AGENT_TURN_TIMEOUT_S}s"
+    assert str(AGENT_TURN_TIMEOUT_S) in failure["message"], (
+        "the message carries no budget, so the observation says a turn timed "
+        "out and not what it timed out against"
+    )
+
+
+def test_a_failure_that_is_not_a_timeout_says_its_class_and_no_more():
+    """The exception's own text is what #96 keeps out of an owner-visible row,
+    and `eval_runs.result` is one. A class name is all a non-timeout ever gave.
+    """
+    scenarios = _scenarios(4)
+
+    def _turn_for(question):
+        if question == "Question 1?":
+            raise _LoudFailure()
+        return _turn(f"ANSWER to {question}")
+
+    _rows, summary, _calls = _invoke(scenarios, _turn_for)
+
+    failure = summary["failures"][0]
+    assert failure["error_type"] == "_LoudFailure"
+    assert failure["message"] == "_LoudFailure"
+
+
+def test_the_exceptions_own_text_reaches_no_field_of_the_observation():
+    """THE ANTI-TAUTOLOGY HALF, over the whole observation rather than one key.
+
+    Asserting `message == "_LoudFailure"` passes for a build that also files
+    `str(exc)` under some other name. This serialises everything the invoker
+    returns and looks for the exception's words anywhere in it, because the
+    observation is copied whole onto `eval_runs.config` and the record.
+    """
+    import json
+
+    scenarios = _scenarios(4)
+
+    def _turn_for(question):
+        if question == "Question 1?":
+            raise _LoudFailure()
+        return _turn(f"ANSWER to {question}")
+
+    rows, summary, _calls = _invoke(scenarios, _turn_for)
+
+    serialised = json.dumps({"summary": summary, "rows": rows}, default=str)
+    assert "_LoudFailure" in serialised, "the failure's class never reached the run"
+    assert SENTINEL not in serialised, (
+        "the exception's own text reached the observation the run stores, "
+        "which is the boundary #96 is about"
+    )
+
+
+def test_the_log_line_still_carries_the_exceptions_text():
+    """A log is not an owner-visible row, and it is where an operator debugging
+    a provider needs the raw string. The rule is about what gets STORED."""
+    scenarios = _scenarios(4)
+
+    def _turn_for(question):
+        if question == "Question 1?":
+            raise _LoudFailure()
+        return _turn(f"ANSWER to {question}")
+
+    with patch.object(mod.log, "warning") as warned:
+        _invoke(scenarios, _turn_for)
+
+    failed = [
+        call
+        for call in warned.call_args_list
+        if call.args and call.args[0] == "run_eval_suite.scenario_invocation_failed"
+    ]
+    assert len(failed) == 1, f"the failure logged {len(failed)} line(s)"
+    assert failed[0].kwargs["error"] == SENTINEL
+    assert failed[0].kwargs["error_type"] == "_LoudFailure"

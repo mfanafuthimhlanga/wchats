@@ -14,10 +14,61 @@ import structlog
 from sqlalchemy import text
 
 from app.core.model_client import LedgerContext, ledger_recorder
+from app.domain.eval_result import DATASET_EXPLORATORY, EVAL_DATASETS
 
 log = structlog.get_logger(__name__)
 
 HAIKU_MODEL = "claude-haiku-4-5"
+
+
+# WHY ALL FOUR WRITERS BELOW WRITE `exploratory` AND NONE WRITES `golden`.
+# A model chose the question on every path in this module: Haiku generates them,
+# the miner lifts them off flagged production traffic, and the provenance path
+# files them from a promoted trace or a contained red-team finding. The golden
+# set is the owner's own assertion, which #19 sizes at ten authored pairs before
+# a calibration may run, and a golden set that filled itself from generation
+# would be the old random sample wearing a stable name. No writer in the tree
+# designates a golden row today; the corpus ticket is where that path lands.
+
+
+class InvalidScenario(ValueError):
+    """A scenario row that would land without a dataset, refused before any INSERT.
+
+    A ValueError, so a caller already catching ValueError keeps catching it, the
+    same choice `InvalidEvalResult` and `InvalidModelCall` made.
+    """
+
+
+def _scenario_dataset(scenario: dict) -> str:
+    """Which dataset this row joins, refusing a row that does not say.
+
+    #27: every one of the twenty rows `generate_eval_suite_for_agent` wrote
+    carried `dataset = NULL`, both readers folded NULL to exploratory, and the
+    golden set was therefore 0 rows by construction while `summarise_run_validity`
+    reported `golden 0/0/0`. Nothing failed. The column was nullable and every
+    writer left it out, so the defect was invisible until a run reported a
+    calibration figure over a golden set nobody had ever populated.
+
+    The refusal is here rather than at the reader because a reader can only ever
+    guess, and `dataset_of`'s guess is the one that hid this for three weeks.
+
+    Args:
+        scenario: one scenario dict on its way to `eval_scenarios`.
+
+    Returns:
+        The row's dataset, one of EVAL_DATASETS.
+
+    Raises:
+        InvalidScenario: the row names no dataset, or names one nobody reports.
+    """
+    value = scenario.get("dataset")
+    if value not in EVAL_DATASETS:
+        raise InvalidScenario(
+            f"a scenario must name its dataset, one of {', '.join(EVAL_DATASETS)}, "
+            f"got {value!r}. A row that does not say joins the exploratory half by "
+            "default, which is how the golden set comes to be empty and measured."
+        )
+    return value
 
 # ---------------------------------------------------------------------------
 # SCENARIO_TOOL — forced structured output via tool_choice (D-12 / RESEARCH §5)
@@ -72,12 +123,11 @@ def generate_scenarios_from_chunks(chunks: list[dict], ledger: LedgerContext, n:
 
     Returns:
         List of dicts with keys question, reference_answer, scenario_category,
-        retrieved_contexts and source='generated'.
+        retrieved_contexts, source='generated' and dataset='exploratory'.
 
     Raises:
         ValueError: If no tool_use block is returned by the scenario generator.
     """
-    # Concatenate up to 5 chunk contents with "---" separators
     chunk_text = "\n\n---\n\n".join(f"CHUNK {i + 1}:\n{c['content']}" for i, c in enumerate(chunks[:5]))
     response = ledger.client("scenario_generation").messages.create(
         model=HAIKU_MODEL,
@@ -118,6 +168,7 @@ def generate_scenarios_from_chunks(chunks: list[dict], ledger: LedgerContext, n:
                     "scenario_category": s["scenario_category"],
                     "retrieved_contexts": chunk_contents,
                     "source": "generated",
+                    "dataset": DATASET_EXPLORATORY,
                 }
                 for s in raw_scenarios
             ]
@@ -134,27 +185,34 @@ def store_scenarios(scenarios: list[dict], tenant_conn_str: str) -> int:
     Args:
         scenarios: List of scenario dicts (from generate_scenarios_from_chunks or
                    mine_production_scenarios). Each must have: question,
-                   reference_answer, source. Optional: scenario_category,
+                   reference_answer, source, dataset. Optional: scenario_category,
                    retrieved_contexts, id.
         tenant_conn_str: Decrypted Neon connection string for the tenant DB.
 
     Returns:
         Number of rows actually inserted (ON CONFLICT rows are not counted).
+
+    Raises:
+        InvalidScenario: any row names no dataset. Every row is checked BEFORE
+            the connection opens, so a batch carrying one such row writes
+            nothing rather than half of itself (#27).
     """
     if not scenarios:
         return 0
+
+    datasets = [_scenario_dataset(s) for s in scenarios]
 
     conn = psycopg2.connect(tenant_conn_str, connect_timeout=5)
     inserted = 0
     try:
         with conn.cursor() as cur:
-            for s in scenarios:
+            for s, dataset in zip(scenarios, datasets, strict=True):
                 cur.execute(
                     """
                     INSERT INTO eval_scenarios
                       (id, source, question, reference_answer, retrieved_contexts,
-                       scenario_category, created_at)
-                    VALUES (%s, %s, %s, %s, %s::jsonb, %s, NOW())
+                       scenario_category, dataset, created_at)
+                    VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, NOW())
                     ON CONFLICT DO NOTHING
                     """,
                     (
@@ -164,6 +222,7 @@ def store_scenarios(scenarios: list[dict], tenant_conn_str: str) -> int:
                         s.get("reference_answer", ""),
                         json.dumps(s.get("retrieved_contexts", [])),
                         s.get("scenario_category"),
+                        dataset,
                     ),
                 )
                 inserted += cur.rowcount
@@ -282,7 +341,7 @@ def insert_provenance_scenario(
             idempotency pre-check on repeat promotion/file attempts.
 
     Returns:
-        The new scenario's UUID (str).
+        The new scenario's UUID (str). The row joins the exploratory dataset.
     """
     scenario_id = str(uuid.uuid4())
     with conn.cursor() as cur:
@@ -290,8 +349,8 @@ def insert_provenance_scenario(
             """
             INSERT INTO eval_scenarios
               (id, source, question, reference_answer, retrieved_contexts,
-               provenance, origin_trace_id, created_at)
-            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, NOW())
+               provenance, origin_trace_id, dataset, created_at)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, NOW())
             """,
             (
                 scenario_id,
@@ -301,6 +360,7 @@ def insert_provenance_scenario(
                 json.dumps(retrieved_contexts),
                 provenance,
                 origin_trace_id,
+                DATASET_EXPLORATORY,
             ),
         )
     return scenario_id
@@ -355,12 +415,11 @@ def mine_production_scenarios(
               (gatekeeper.complete / auditor.complete with fail/ungrounded/partial
               verdict) for the given agent_id within the lookback window.
               Extract distinct job_ids and the question from the payload.
-      Step 2: conversation_id is a task arg in validators.py — it is NOT emitted
-              in the job_events payload. We use the question extracted from the
-              payload directly (it IS emitted as part of verdict.model_dump() is
-              not included, but the question arg is passed separately and NOT
-              emitted). Since question is not in the emit payload either, we
-              fallback to fetching it via job → conversation linkage where available.
+      Step 2: neither conversation_id nor question reaches the job_events
+              payload. validators.py takes both as Celery task args and emits
+              verdict.model_dump() plus agent_id, so this step recovers the
+              question through the job's conversation linkage and drops any
+              flagged job whose conversation it cannot reach.
 
     Note: Mined scenarios have reference_answer='' because there is no ground truth
     for production failures. The run_eval_suite task filters scenarios with empty
@@ -375,7 +434,7 @@ def mine_production_scenarios(
         lookback_hours: Hours to look back for flagged events (default 168 = 7 days).
 
     Returns:
-        List of mined scenario dicts with source='mined', ready for store_scenarios().
+        List of mined scenario dicts, source='mined' and dataset='exploratory'.
     """
     # Step 1: Query control DB for flagged validation events for this agent
     # The job_events payload (from validators.py emit calls) contains:
@@ -451,6 +510,7 @@ def mine_production_scenarios(
                 "retrieved_contexts": [],
                 "source": "mined",
                 "scenario_category": "production_failure",
+                "dataset": DATASET_EXPLORATORY,
             }
         )
 

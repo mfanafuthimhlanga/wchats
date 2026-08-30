@@ -2,10 +2,18 @@
 digest_service — Weekly digest stats collection and email dispatch (M10 OPS-02).
 
 Collects four metrics per agent from the per-tenant Neon DB:
-  1. conversation_count   — conversations in the last 7 days (tenant DB)
-  2. faithfulness_score   — latest Ragas faithfulness from eval_results (tenant DB)
-  3. critical_red_team_count — count of critical findings from latest red_team_run (tenant DB)
-  4. escalation_count     — conversations flagged for escalation in last 7 days (tenant DB)
+  1. conversation_count      conversations in the last 7 days (tenant DB)
+  2. faithfulness_score      the latest finished run's own record (tenant DB)
+  3. critical_red_team_count critical findings on the latest red_team_run (tenant DB)
+  4. escalation_count        conversations flagged for escalation, last 7 days (tenant DB)
+
+WHERE "LATEST FAITHFULNESS" COMES FROM (#51 slice 4). It used to be
+`AVG(er.score)` over the latest complete run's `eval_results` rows, in this
+module's own copy of `alert_service`'s query, and it pooled the golden and
+exploratory halves into one mean. It is now lifted off `eval_runs.result`
+through `eval_service.latest_faithfulness`, the same rule the console route, the
+deploy gate and the alert read. The digest names the dataset it quotes, and says
+so when the run measured nothing.
 
 Email is plain-text, fire-and-forget (same pattern as escalation.py).
 Connection strings NEVER logged (CTL-08).
@@ -20,6 +28,7 @@ import psycopg2
 import structlog
 
 from app.core.config import settings
+from app.services.eval_service import latest_faithfulness
 
 log = structlog.get_logger(__name__)
 
@@ -36,7 +45,12 @@ def _collect_digest_stats(agent_id: str, conn_str: str, db) -> dict:
     """
     stats: dict = {
         "conversation_count": 0,
+        # None, never 0.0. A faithfulness of zero would be a catastrophic
+        # measurement; no faithfulness at all is the absence of one, and the
+        # email says "not measured" rather than printing a number nobody read.
         "faithfulness_score": None,
+        # Which half of the run the score belongs to, null when there is none.
+        "faithfulness_dataset": None,
         "critical_red_team_count": 0,
         "escalation_count": 0,
     }
@@ -45,26 +59,11 @@ def _collect_digest_stats(agent_id: str, conn_str: str, db) -> dict:
     try:
         conn = psycopg2.connect(conn_str, connect_timeout=10)
         try:
-            # --- Tenant DB: latest faithfulness from eval_results joined to eval_runs ---
+            # --- Tenant DB: the latest complete run's own faithfulness ---
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT AVG(er.score)
-                    FROM eval_results er
-                    JOIN eval_runs r ON er.eval_run_id = r.id
-                    WHERE r.kind = %s
-                      AND r.status = 'complete'
-                      AND er.metric = 'faithfulness'
-                      AND r.started_at = (
-                          SELECT MAX(started_at) FROM eval_runs
-                          WHERE kind = %s AND status = 'complete'
-                      )
-                    """,
-                    (f"m6:{agent_id}", f"m6:{agent_id}"),
-                )
-                row = cur.fetchone()
-                if row and row[0] is not None:
-                    stats["faithfulness_score"] = float(row[0])
+                value, dataset = latest_faithfulness(cur, agent_id)
+                stats["faithfulness_score"] = value
+                stats["faithfulness_dataset"] = dataset
 
             # --- Tenant DB: critical findings from latest red_team_run ---
             # Filter by kind = 'm7:{agent_id}' — no agent_id column in tenant schema
@@ -121,7 +120,17 @@ def send_digest_email(agent_name: str, agent_id: str, stats: dict) -> None:
         return
 
     faithfulness = stats.get("faithfulness_score")
-    faith_str = f"{faithfulness:.2f}" if faithfulness is not None else "no data"
+    dataset = stats.get("faithfulness_dataset")
+    # "not measured" rather than "no data": the run may well have happened and
+    # scored other dimensions. Naming the dataset matters because the golden set
+    # and the exploratory draw answer different questions, and a reader comparing
+    # this week's number to last week's needs to know they are the same question.
+    if faithfulness is None:
+        faith_str = "not measured"
+    elif dataset:
+        faith_str = f"{faithfulness:.2f} ({dataset} set)"
+    else:
+        faith_str = f"{faithfulness:.2f}"
 
     body = (
         f"Weekly Digest — {agent_name}\n"

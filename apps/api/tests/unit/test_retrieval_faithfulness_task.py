@@ -8,8 +8,9 @@ Tests:
     4. Sampling gate — random < rate dispatches the compute path.
     5. Sampling gate — random >= rate AND not auditor-flagged skips the compute path.
     6. Auditor-flag override — random >= rate but auditor-flagged still computes.
-    7. citation_coverage computed from citations/retrieve-call ratio; None when
-       nothing was retrieved (honest-empty-state, never fabricated 0.0).
+    7. citation_coverage computed from citations over the retrieve calls that
+       actually retrieved something; None when none did (honest-empty-state,
+       never fabricated 0.0).
     8. Task-level tests stub _compute_ragas_faithfulness so the gating and
        write logic is tested without a judge call.
     9. The Ragas 0.4.x scoring path itself, against the REAL ragas package
@@ -21,6 +22,7 @@ Patch targets are symbols imported into app.worker.tasks.runtime.retrieval_eval:
     - app.worker.tasks.runtime.retrieval_eval._check_existing_score
     - app.worker.tasks.runtime.retrieval_eval._is_auditor_flagged
     - app.worker.tasks.runtime.retrieval_eval._fetch_turn_context
+    - app.worker.tasks.runtime.retrieval_eval._fetch_retrieved_contexts
     - app.worker.tasks.runtime.retrieval_eval._fetch_last_user_message
     - app.worker.tasks.runtime.retrieval_eval._compute_ragas_faithfulness
     - app.worker.tasks.runtime.retrieval_eval._update_retrieval_metrics
@@ -30,6 +32,7 @@ Patch targets are symbols imported into app.worker.tasks.runtime.retrieval_eval:
 from __future__ import annotations
 
 import inspect
+import json
 from contextlib import contextmanager
 from unittest.mock import MagicMock
 
@@ -40,6 +43,19 @@ from tests.model_doubles import ledger
 
 _AGENT_ID = "agent-uuid"
 _JOB_ID = "job-uuid"
+_MESSAGE_ID = "assistant-msg-uuid"
+
+#: Two chunks as `tool_calls.retrieved_chunks` stores them: the judge rendering,
+#: content plus the provenance the agent saw (`_persisted_chunks` in agent.py).
+_CHUNK_A = (
+    "[source: ACME-HANDBOOK.pdf | section: Returns | chunk: c-1 | score: 0.91]\n"
+    "Unopened bags may be returned within 14 days of delivery."
+)
+_CHUNK_B = (
+    "[source: ACME-HANDBOOK.pdf | section: Refunds | chunk: c-2 | score: 0.78]\n"
+    "Refunds are issued to the original payment method."
+)
+_CITATION = {"document_name": "doc1", "section": "s1"}
 
 
 # ---------------------------------------------------------------------------
@@ -141,16 +157,32 @@ def test_no_retrieval_metrics_row_returns_early(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _patch_scoreable_turn(monkeypatch, citations=None, retrieve_contexts=None):
-    """Wire a has-row/not-yet-scored turn with a fetchable turn context."""
+def _patch_scoreable_turn(
+    monkeypatch, citations=None, contexts=None, measured=None, unmeasured=0
+):
+    """Wire a has-row/not-yet-scored turn whose `tool_calls` rows are already read.
+
+    `contexts` is the chunk list the tenant's `tool_calls.retrieved_chunks` gave
+    back. `measured` is how many retrieve CALLS produced it and defaults to one
+    call per chunk, which is the shape the old summary proxy could express and
+    keeps these tests comparing the same arithmetic. `unmeasured` is the calls
+    that recorded nothing, and no chunk of theirs exists to pass.
+    """
     monkeypatch.setattr(mod, "_check_existing_score", lambda conn_str, job_id: (False, True))
     monkeypatch.setattr(
         mod, "_fetch_turn_context",
         lambda db, job_id: (
             "response text with [CITATIONS] block",
-            citations if citations is not None else [{"document_name": "doc1", "section": "s1"}],
+            citations if citations is not None else [_CITATION],
             "conv-1",
-            retrieve_contexts if retrieve_contexts is not None else ["ctx chunk 1"],
+            _MESSAGE_ID,
+        ),
+    )
+    chunks = ["ctx chunk 1"] if contexts is None else contexts
+    monkeypatch.setattr(
+        mod, "_fetch_retrieved_contexts",
+        lambda conn_str, message_id: mod._TurnRetrieval(
+            tuple(chunks), len(chunks) if measured is None else measured, unmeasured
         ),
     )
     monkeypatch.setattr(mod, "_fetch_last_user_message", lambda conn_str, conv_id: "the question")
@@ -219,7 +251,7 @@ def test_citation_coverage_none_when_nothing_retrieved(monkeypatch):
     """No retrieve calls -> citation_coverage is None (honest-empty-state), not 0.0."""
     mock_db = _make_mock_db(_make_mock_agent())
     _patch_common(monkeypatch, mock_db)
-    updates = _patch_scoreable_turn(monkeypatch, citations=[], retrieve_contexts=[])
+    updates = _patch_scoreable_turn(monkeypatch, citations=[], contexts=[])
 
     # Force the sampled path so we reach the compute stage.
     monkeypatch.setattr(mod.settings, "RETRIEVAL_FAITHFULNESS_SAMPLE_RATE", 1.0)
@@ -228,8 +260,13 @@ def test_citation_coverage_none_when_nothing_retrieved(monkeypatch):
 
     result = mod.run_retrieval_faithfulness.run(_AGENT_ID, _JOB_ID)
 
-    # Both signals absent -> no_signal, no UPDATE issued.
-    assert result == {"status": "no_signal"}
+    # Both signals absent -> no_signal, no UPDATE issued. The two counts ride
+    # along on every status past the sampling gate (#81).
+    assert result == {
+        "status": "no_signal",
+        "retrieve_calls_measured": 0,
+        "retrieve_calls_unmeasured": 0,
+    }
     assert updates == []
 
 
@@ -240,7 +277,7 @@ def test_citation_coverage_ratio_capped_at_one(monkeypatch):
     updates = _patch_scoreable_turn(
         monkeypatch,
         citations=[{"document_name": "d1", "section": "s1"}] * 3,
-        retrieve_contexts=["ctx1", "ctx2"],
+        contexts=["ctx1", "ctx2"],
     )
     monkeypatch.setattr(mod.settings, "RETRIEVAL_FAITHFULNESS_SAMPLE_RATE", 1.0)
     monkeypatch.setattr(mod.random, "random", lambda: 0.0)
@@ -479,3 +516,276 @@ def test_the_judge_carries_no_thinking_parameter():
     assert llm.model == "gpt-5.6-luna", (
         f"the judge names model={llm.model!r} rather than the routed one"
     )
+
+
+# ---------------------------------------------------------------------------
+# The context is what the tool retrieved, not a summary of it (#81, #84)
+# ---------------------------------------------------------------------------
+
+
+def _fake_db_with_response(payload):
+    """A control DB whose only `agent.response` row carries `payload`."""
+    db = MagicMock()
+    db.execute.return_value.fetchone.return_value = (payload,)
+    return db
+
+
+def test_the_turn_context_carries_the_message_id_to_join_on():
+    """The join key replaced the proxy, and the second query went with it.
+
+    `db.execute` running once is the absence pin. A second call is the
+    `agent.tool_result` summary read, and #84 is that the summary's shape changed
+    under the scores at the #48 cutover without anything recording it.
+    """
+    db = _fake_db_with_response({
+        "text": "answer",
+        "citations": [_CITATION],
+        "conversation_id": "conv-1",
+        "message_id": "assistant-msg-1",
+    })
+
+    text, citations, conversation_id, message_id = mod._fetch_turn_context(db, _JOB_ID)
+
+    assert (text, citations, conversation_id) == ("answer", [_CITATION], "conv-1")
+    assert message_id == "assistant-msg-1"
+    assert db.execute.call_count == 1, (
+        "a second query is the agent.tool_result summary proxy still being read"
+    )
+
+
+def test_a_successful_retrieve_is_scored_against_its_chunks():
+    out = mod._read_retrieved_rows([([_CHUNK_A, _CHUNK_B],)])
+
+    assert out.contexts == (_CHUNK_A, _CHUNK_B)
+    assert (out.measured, out.unmeasured) == (1, 0)
+
+
+def test_a_null_retrieved_chunks_is_unmeasured_not_an_empty_context():
+    """The whole of #81 at the reader. An empty context makes every claim
+    unsupported, so scoring one would report the DoS guard as an ungrounded
+    answer."""
+    out = mod._read_retrieved_rows([(None,)])
+
+    assert out.contexts == ()
+    assert (out.measured, out.unmeasured) == (0, 1)
+
+
+def test_a_corpus_miss_is_a_measured_call():
+    """`[]` is an observation: a retrieve ran and the corpus matched nothing."""
+    out = mod._read_retrieved_rows([([],)])
+
+    assert (out.measured, out.unmeasured) == (1, 0)
+
+
+def test_null_and_a_corpus_miss_are_counted_apart():
+    """The property the column exists to preserve, one statement, one reader."""
+    miss = mod._read_retrieved_rows([([],)])
+    absent = mod._read_retrieved_rows([(None,)])
+
+    assert (miss.measured, miss.unmeasured) == (1, 0)
+    assert (absent.measured, absent.unmeasured) == (0, 1)
+
+
+def test_an_errored_retrieve_reaches_this_reader_as_unmeasured():
+    """The writer's error-flag check and this reader's NULL branch are one chain.
+
+    `_persisted_chunks` returns None for an errored retrieve, the column holds
+    SQL NULL, and this reader counts it unmeasured. Asserting the two halves meet
+    is the point: either alone is a guard with nothing on the other side of it.
+    """
+    from app.services.agent_loop import (
+        RETRIEVE_CHUNKS_KEY,
+        RETRIEVE_CHUNKS_PARSED,
+        RETRIEVE_CHUNKS_SOURCE_KEY,
+        RETRIEVE_JUDGE_CHUNKS_KEY,
+        RETRIEVE_RESULT_IS_ERROR_KEY,
+    )
+    from app.worker.tasks.runtime.agent import _persisted_chunks
+
+    errored = {
+        "tool_name": "retrieve",
+        "input": {"query": "return policy"},
+        "result": "Retrieve quota exceeded for this turn",
+        RETRIEVE_RESULT_IS_ERROR_KEY: True,
+        RETRIEVE_CHUNKS_SOURCE_KEY: RETRIEVE_CHUNKS_PARSED,
+        RETRIEVE_CHUNKS_KEY: [],
+        RETRIEVE_JUDGE_CHUNKS_KEY: [],
+    }
+    stored = _persisted_chunks(errored)
+
+    assert stored is None
+    out = mod._read_retrieved_rows([(stored,)])
+    assert out.contexts == (), "the refusal text reached the Judge as context"
+    assert (out.measured, out.unmeasured) == (0, 1)
+
+
+def test_a_json_string_column_value_still_decodes():
+    """psycopg2 hands back a list; a connection without the typecaster hands back
+    a str, and reporting every retrieve in the tenant as unmeasured would read as
+    a quiet run of unknowns rather than as the outage it is."""
+    out = mod._read_retrieved_rows([(json.dumps([_CHUNK_A]),)])
+
+    assert out.contexts == (_CHUNK_A,)
+    assert (out.measured, out.unmeasured) == (1, 0)
+
+
+def test_a_value_that_does_not_decode_to_a_list_is_unmeasured():
+    out = mod._read_retrieved_rows([("not json at all",), ({"chunks": []},)])
+
+    assert (out.measured, out.unmeasured) == (0, 2)
+
+
+def _tool_calls_conn(rows):
+    """psycopg2 connection double for the tool_calls read, recording its SQL.
+
+    The same MagicMock shape the route and collector tests drive their queries
+    through, so what is asserted is the statement that ran.
+    """
+    conn = MagicMock()
+    cursor = MagicMock()
+    cursor.__enter__ = MagicMock(return_value=cursor)
+    cursor.__exit__ = MagicMock(return_value=False)
+    cursor.fetchall.return_value = rows
+    conn.cursor.return_value = cursor
+    return conn
+
+
+def test_the_retrieve_rows_are_read_in_one_order_for_every_reader(monkeypatch):
+    """`created_at` alone does not order rows written in one transaction.
+
+    Postgres gives every row inserted in a transaction the same `now()`, and a
+    turn writes its retrieve calls together, so the sort fell through to the
+    heap's order and two reads of one turn could hand Ragas two different
+    documents. The row id breaks the tie.
+    """
+    conn = _tool_calls_conn([([_CHUNK_A],), ([_CHUNK_B],)])
+    monkeypatch.setattr(mod.psycopg2, "connect", lambda *a, **kw: conn)
+
+    out = mod._fetch_retrieved_contexts("postgresql://fake/tenant", "assistant-msg-1")
+
+    sql = conn.cursor.return_value.execute.call_args.args[0]
+    assert "ORDER BY created_at, id" in sql, (
+        "two rows sharing a timestamp have no order, so the contexts this "
+        "turn is scored over depend on what the heap returns"
+    )
+    assert conn.cursor.return_value.execute.call_args.args[1] == ("assistant-msg-1",)
+    assert out.contexts == (_CHUNK_A, _CHUNK_B)
+    assert (out.measured, out.unmeasured) == (2, 0)
+
+
+def test_the_retrieve_read_names_the_turn_and_the_tool(monkeypatch):
+    """Every retrieve call of ONE assistant message, and no other tool's rows."""
+    conn = _tool_calls_conn([])
+    monkeypatch.setattr(mod.psycopg2, "connect", lambda *a, **kw: conn)
+
+    mod._fetch_retrieved_contexts("postgresql://fake/tenant", "assistant-msg-1")
+
+    sql = conn.cursor.return_value.execute.call_args.args[0]
+    assert "FROM tool_calls WHERE message_id = %s" in sql
+    assert "tool_name = 'retrieve'" in sql
+
+
+def test_no_message_id_joins_to_nothing_and_opens_no_connection(monkeypatch):
+    """A payload without WIRE-05's id cannot name the turn's rows. It reports no
+    calls rather than guessing at how many there were."""
+    def _explode(*args, **kwargs):
+        raise AssertionError("connected to the tenant with nothing to join on")
+
+    monkeypatch.setattr(mod.psycopg2, "connect", _explode)
+
+    assert mod._fetch_retrieved_contexts("postgresql://fake/tenant", None) == (
+        mod._TurnRetrieval((), 0, 0)
+    )
+
+
+# ---------------------------------------------------------------------------
+# The unmeasured count travels with the verdict (#81)
+# ---------------------------------------------------------------------------
+
+
+def _run_sampled(monkeypatch):
+    """Force the sampled path and run the task."""
+    monkeypatch.setattr(mod.settings, "RETRIEVAL_FAITHFULNESS_SAMPLE_RATE", 1.0)
+    monkeypatch.setattr(mod.random, "random", lambda: 0.0)
+    return mod.run_retrieval_faithfulness.run(_AGENT_ID, _JOB_ID)
+
+
+def test_ragas_is_handed_the_persisted_chunks(monkeypatch):
+    """One string per chunk, the rendering the column stores."""
+    seen = {}
+    mock_db = _make_mock_db(_make_mock_agent())
+    _patch_common(monkeypatch, mock_db)
+    _patch_scoreable_turn(monkeypatch, contexts=[_CHUNK_A, _CHUNK_B], measured=1)
+    monkeypatch.setattr(
+        mod, "_compute_ragas_faithfulness", lambda **kw: seen.update(kw) or 0.5
+    )
+
+    result = _run_sampled(monkeypatch)
+
+    assert result["status"] == "scored"
+    assert seen["contexts"] == [_CHUNK_A, _CHUNK_B]
+
+
+def test_the_counts_travel_with_a_scored_verdict(monkeypatch):
+    mock_db = _make_mock_db(_make_mock_agent())
+    _patch_common(monkeypatch, mock_db)
+    _patch_scoreable_turn(
+        monkeypatch, contexts=[_CHUNK_A, _CHUNK_B], measured=2, unmeasured=1
+    )
+
+    result = _run_sampled(monkeypatch)
+
+    assert result["status"] == "scored"
+    assert result["retrieve_calls_measured"] == 2
+    assert result["retrieve_calls_unmeasured"] == 1
+
+
+def test_a_turn_whose_retrieves_all_errored_reads_unknown_not_clean(monkeypatch):
+    """The measurement rule, one turn wide: zero valid observations is unknown.
+
+    Three retrieve calls, none of them readable. Nothing is scored, nothing is
+    written, and the count says three rather than the status saying nothing at
+    all, which would read as a turn with no faithfulness problem.
+    """
+    mock_db = _make_mock_db(_make_mock_agent())
+    _patch_common(monkeypatch, mock_db)
+    updates = _patch_scoreable_turn(
+        monkeypatch, citations=[], contexts=[], measured=0, unmeasured=3
+    )
+    monkeypatch.setattr(mod, "_compute_ragas_faithfulness", lambda **kw: None)
+
+    result = _run_sampled(monkeypatch)
+
+    assert result["status"] == "no_signal"
+    assert result["retrieve_calls_measured"] == 0
+    assert result["retrieve_calls_unmeasured"] == 3
+    assert updates == [], "a turn nobody could measure wrote a score anyway"
+
+
+def test_citation_coverage_denominator_excludes_the_unreadable_calls(monkeypatch):
+    """One citation over two measured calls is 0.5. Counting the two errored ones
+    would make it 0.25 and report the turn as poorly cited because its guard
+    fired."""
+    mock_db = _make_mock_db(_make_mock_agent())
+    _patch_common(monkeypatch, mock_db)
+    updates = _patch_scoreable_turn(
+        monkeypatch,
+        citations=[_CITATION],
+        contexts=[_CHUNK_A, _CHUNK_B],
+        measured=2,
+        unmeasured=2,
+    )
+    monkeypatch.setattr(mod, "_compute_ragas_faithfulness", lambda **kw: None)
+
+    result = _run_sampled(monkeypatch)
+
+    assert result["citation_coverage"] == 0.5
+    assert updates[0][2] == 0.5
+
+
+def test_citation_coverage_is_none_when_no_call_was_measured():
+    assert mod._citation_coverage([_CITATION], 0) is None
+
+
+def test_citation_coverage_never_exceeds_one():
+    assert mod._citation_coverage([_CITATION] * 5, 2) == 1.0

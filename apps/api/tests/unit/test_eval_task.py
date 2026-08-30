@@ -24,12 +24,14 @@ from __future__ import annotations
 import inspect
 import json
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import httpx
 import psycopg2
 import pytest
 
+from app.services.eval_service import build_judge_records
 from app.worker.tasks.runtime import eval as mod
 
 # The canned Judge outputs and the embedding stand-in are borrowed rather than
@@ -115,6 +117,22 @@ def _make_sync_db_context(mock_db):
     return _ctx
 
 
+def _ragas_return(scores: list[dict], **extra) -> dict:
+    """What `run_ragas_eval` returns, with the judge records derived the real way.
+
+    `build_judge_records` is the shipped function, not a copy. A double that
+    invented its own pairing of scenarios to metrics would let `write_eval_results`
+    be exercised against rows the scorer never produces, and the pin that a
+    metric the judge did not score STILL gets a row would then be a pin on the
+    double.
+    """
+    return {
+        "scores": scores,
+        "judge_records": build_judge_records(scores),
+        **extra,
+    }
+
+
 @pytest.fixture
 def wired(monkeypatch):
     """run_eval_suite with every boundary doubled and every call recorded.
@@ -174,6 +192,12 @@ def wired(monkeypatch):
         "ragas": [],
         "results": [],
         "status": [],
+        # The EvalResult the task built and the connection it wrote it on (#51),
+        # plus the ledger rows the cost is read from. The ledger is a list a test
+        # can fill: empty is the honest default here, because no test in this
+        # module bills a real call and a cost over no rows is unknown, not zero.
+        "record": [],
+        "ledger": [],
     }
 
     # D1/P2: the agent invocation is doubled here so these tests keep testing
@@ -259,9 +283,24 @@ def wired(monkeypatch):
         # the property under test is that scoring is handed NO connection at
         # all, and that cannot be expressed by a signature that names one.
         rec["ragas"].append((args, kwargs))
-        return {"scores": [{"scenario_id": "s1"}], "means": {"faithfulness": 0.9}}
+        scores = [{"scenario_id": "s1"}]
+        # The records the real function derives from those scores, through
+        # the real deriver. A double inventing its own would let the writer
+        # be tested against a pairing the scorer never produces.
+        return {
+            "scores": scores,
+            "judge_records": build_judge_records(scores),
+        }
 
     monkeypatch.setattr(mod, "run_ragas_eval", _fake_ragas)
+    monkeypatch.setattr(mod, "read_run_ledger", lambda run_id, conn_str: rec["ledger"])
+    monkeypatch.setattr(
+        mod,
+        "write_eval_result",
+        lambda run_id, result, conn_str: (
+            rec["record"].append((run_id, result, conn_str)) or True
+        ),
+    )
     monkeypatch.setattr(
         mod,
         "write_eval_results",
@@ -676,18 +715,15 @@ class TestValidityDenominators:
         monkeypatch.setattr(
             mod,
             "run_ragas_eval",
-            lambda scenarios, ledger: {
-                "scores": [
-                    {
-                        "scenario_id": "g0000000-0000-0000-0000-000000000001",
-                        "faithfulness": 0.9,
-                        "answer_relevancy": 0.9,
-                        "context_precision": None,
-                        "context_recall": None,
-                    }
-                ],
-                "means": {},
-            },
+            lambda scenarios, ledger: _ragas_return([
+                {
+                    "scenario_id": "g0000000-0000-0000-0000-000000000001",
+                    "faithfulness": 0.9,
+                    "answer_relevancy": 0.9,
+                    "context_precision": None,
+                    "context_recall": None,
+                }
+            ]),
         )
 
         result = _run()
@@ -711,19 +747,16 @@ class TestValidityDenominators:
         monkeypatch.setattr(
             mod,
             "run_ragas_eval",
-            lambda scenarios, ledger: {
-                "scores": [
-                    {
-                        "scenario_id": s["id"],
-                        "faithfulness": None,
-                        "answer_relevancy": None,
-                        "context_precision": None,
-                        "context_recall": None,
-                    }
-                    for s in scenarios
-                ],
-                "means": {},
-            },
+            lambda scenarios, ledger: _ragas_return([
+                {
+                    "scenario_id": s["id"],
+                    "faithfulness": None,
+                    "answer_relevancy": None,
+                    "context_precision": None,
+                    "context_recall": None,
+                }
+                for s in scenarios
+            ]),
         )
 
         result = _run()
@@ -912,4 +945,411 @@ class TestJudgeCallsReachTheLedger:
             f"{len(inserts)} of {EXPECTED_JUDGE_CALLS} rows reached the database "
             "the recorder was bound to, and a recorder that writes some of them "
             "reads as a working ledger"
+        )
+
+
+# ---------------------------------------------------------------------------
+# #51. The run's numbers are one record, and the return dict is that record
+# ---------------------------------------------------------------------------
+
+
+#: Scores the fixture's four scenarios, golden high and exploratory low, so a
+#: builder that pooled the two datasets would produce a number neither half has.
+#: The golden mean is 0.8 and the exploratory mean 0.2; their pooled mean is 0.5,
+#: which no assertion below would accept.
+_GOLDEN_IDS = (
+    "g0000000-0000-0000-0000-000000000001",
+    "g0000000-0000-0000-0000-000000000002",
+)
+_EXPLORATORY_IDS = (
+    "11111111-1111-1111-1111-111111111111",
+    "22222222-2222-2222-2222-222222222222",
+)
+
+
+def _scored(scenario_id: str, value: float) -> dict:
+    return {
+        "scenario_id": scenario_id,
+        "faithfulness": value,
+        "answer_relevancy": value,
+        "context_precision": value,
+        "context_recall": value,
+    }
+
+
+@pytest.fixture
+def scored(wired, monkeypatch):
+    """`wired`, with Ragas returning real per-scenario numbers for all four rows."""
+    scores = [_scored(sid, 0.8) for sid in _GOLDEN_IDS]
+    scores += [_scored(sid, 0.2) for sid in _EXPLORATORY_IDS]
+
+    def _fake_ragas(*args, **kwargs):
+        wired["ragas"].append((args, kwargs))
+        return {
+            "scores": scores,
+            "judge_records": build_judge_records(scores),
+            "sent": 4, "returned": 4, "unattributed": 0,
+        }
+
+    monkeypatch.setattr(mod, "run_ragas_eval", _fake_ragas)
+    return wired
+
+
+class TestTheRunWritesItsRecord:
+    """The task builds one EvalResult and stores it. #51 slice 1."""
+
+    def test_the_record_lands_on_production(self, scored):
+        _run()
+
+        assert len(scored["record"]) == 1, (
+            f"the run wrote {len(scored['record'])} record(s); a completed run "
+            "writes exactly one"
+        )
+        run_id, _result, conn_str = scored["record"][0]
+        assert conn_str == PRODUCTION, (
+            "the record is an observation about a run and belongs on production"
+        )
+        assert run_id
+
+    def test_the_record_is_about_the_run_that_was_inserted(self, scored):
+        returned = _run()
+        run_id, result, _ = scored["record"][0]
+        assert run_id == returned["run_id"] == result.run_id
+
+    def test_the_per_dataset_numbers_are_the_summarisers_own(self, scored):
+        """0.8 golden and 0.2 exploratory, never a pooled 0.5."""
+        _run()
+        _, result, _ = scored["record"][0]
+
+        golden = result.datasets["golden"]
+        exploratory = result.datasets["exploratory"]
+        assert golden.metrics["faithfulness"].value == pytest.approx(0.8)
+        assert exploratory.metrics["faithfulness"].value == pytest.approx(0.2)
+        assert golden.metrics["faithfulness"].observations == 2
+        assert (golden.attempted, golden.valid, golden.scored) == (2, 2, 2)
+
+    def test_the_record_reports_both_datasets(self, scored):
+        """A dropped dataset is a run reporting half of what it measured."""
+        _run()
+        _, result, _ = scored["record"][0]
+        assert set(result.datasets) == {"golden", "exploratory"}
+
+    def test_the_return_dict_numbers_are_the_records_numbers(self, scored):
+        returned = _run()
+        _, result, _ = scored["record"][0]
+
+        assert returned["datasets"] == result.payload["datasets"]
+        assert returned["attempted"] == result.attempted
+        assert returned["valid"] == result.valid
+        assert returned["scored"] == result.scored
+        assert returned["invocation"] == result.invocation.payload
+        assert returned["cost"] == result.cost.payload
+        assert returned["served_model"] == result.served_model
+
+    def test_the_returned_scenario_count_is_the_records_attempted(self, scored):
+        """One key, one meaning (#51 F5).
+
+        The task returned `len(valid_scenarios)` under this name while the
+        console route returned `record.attempted` under it, so the same key on
+        the same run answered two questions and neither said which.
+        """
+        returned = _run()
+        _, result, _ = scored["record"][0]
+
+        assert returned["scenario_count"] == result.attempted
+        assert returned["scenario_count"] == returned["attempted"]
+
+    def test_the_return_dict_is_the_payload_plus_the_run_keys(self, scored):
+        """Every key of the record survives, and the run keys sit beside them."""
+        returned = _run()
+        _, result, _ = scored["record"][0]
+
+        assert set(result.payload) <= set(returned)
+        assert set(returned) - set(result.payload) == {
+            "scenario_count",
+            "dataset_column_available",
+            "golden_set_present",
+            "promoted",
+            "config_recorded",
+            "promotion_enabled",
+            "promotion_disabled_reason",
+            "agent_invoked",
+            "agent_invocation",
+            "invocation_recorded",
+            "result_recorded",
+        }
+
+    def test_the_context_proxy_version_is_stamped(self, scored):
+        """#84. Scores computed over different context proxies do not compare."""
+        from app.domain.eval_result import CONTEXT_PROXY_VERSION
+
+        returned = _run()
+        _, result, _ = scored["record"][0]
+        assert result.context_proxy_version == CONTEXT_PROXY_VERSION
+        assert returned["context_proxy_version"] == CONTEXT_PROXY_VERSION
+
+    def test_the_invocation_counters_are_the_observations(self, scored):
+        returned = _run()
+        _, result, _ = scored["record"][0]
+        observation = returned["agent_invocation"]
+
+        assert result.invocation.status.value == observation["status"]
+        for name in ("valid", "attempted", "responded", "scorable", "failed", "empty"):
+            assert getattr(result.invocation, name) == observation[name], name
+
+    def test_a_run_with_no_ledger_rows_reports_an_unknown_cost(self, scored):
+        """The ledger hook fails open, so no rows is unknown and never free."""
+        returned = _run()
+        assert returned["cost"] == {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "usd": None,
+            "zar": None,
+            "measured": False,
+        }
+
+    def _turn_row(self, **overrides):
+        from app.domain.model_call import ModelCall
+
+        fields = {
+            "purpose": "agent_turn",
+            "provider": "openai",
+            "requested_model": "gpt-5.6-luna",
+            "served_model": "gpt-5.6-luna",
+            "model_source": "reported",
+            "input_tokens": 400,
+            "output_tokens": 90,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "at": datetime(2026, 8, 29, 10, 0, tzinfo=timezone.utc),
+            "tenant_id": TENANT_ID,
+            "job_id": "the run this ledger belongs to",
+        }
+        fields.update(overrides)
+        return ModelCall(**fields)
+
+    def test_a_priced_run_reports_what_it_spent(self, scored):
+        scored["ledger"].append(self._turn_row())
+        returned = _run()
+
+        assert returned["cost"]["measured"] is True
+        assert returned["cost"]["input_tokens"] == 400
+        assert returned["cost"]["output_tokens"] == 90
+        assert returned["cost"]["usd"] > 0
+        assert returned["cost"]["zar"] > returned["cost"]["usd"]
+
+    def test_a_served_model_the_book_refuses_keeps_the_tokens_and_loses_the_money(
+        self, scored
+    ):
+        """The provider named a snapshot nobody priced. The tokens are still a fact."""
+        scored["ledger"].append(self._turn_row(served_model="gpt-5.6-luna-2026-08"))
+        returned = _run()
+
+        assert returned["cost"]["measured"] is True
+        assert returned["cost"]["input_tokens"] == 400
+        assert returned["cost"]["usd"] is None
+        assert returned["served_model"] == "gpt-5.6-luna-2026-08", (
+            "the served model is read off the run's own agent_turn rows, not "
+            "assumed from the model the routing table asked for"
+        )
+
+    def test_a_below_floor_run_records_an_unknown_invocation_and_no_scores(
+        self, wired, monkeypatch
+    ):
+        """The record has to be able to say a run measured too little.
+
+        The fail-closed branch writes no eval_results, so a run below the floor
+        would otherwise leave nothing on the row at all and read exactly like a
+        run that never happened.
+        """
+        def _thin_invoke(*, agent_id, conn_str, run_id, scenarios, prompt_version_id):
+            summary = mod.summarise_agent_invocation(
+                [
+                    {
+                        "scenario_id": s["id"],
+                        "responded": False,
+                        "scorable": False,
+                        "error": "TimeoutError",
+                        "retrieve_calls": 0,
+                        "retrieve_at_cap": False,
+                        "retrieve_unparsed": 0,
+                        "retrieved_chunks": 0,
+                        "side_effects": [],
+                    }
+                    for s in scenarios
+                ],
+                valid=len(scenarios),
+                ceiling_skipped=0,
+                ceiling_skipped_golden=0,
+                per_turn_timeout_s=90,
+                audit_capture_char_cap=1800,
+                retrieved_context_chunk_char_cap=2000,
+            )
+            return [], summary
+
+        monkeypatch.setattr(mod, "_invoke_agent_for_scenarios", _thin_invoke)
+        returned = _run()
+        _, result, _ = wired["record"][0]
+
+        assert result.invocation.status.value == "unknown"
+        assert result.invocation.failed == 4 and result.invocation.responded == 0
+        assert wired["results"] == [], "a run below the floor wrote scores"
+        assert all(
+            m["measured"] is False
+            for dataset in returned["datasets"].values()
+            for m in dataset["metrics"].values()
+        ), "a run that scored nothing reported a measured metric"
+
+    def test_a_record_that_cannot_be_stored_is_reported_rather_than_hidden(
+        self, wired, monkeypatch
+    ):
+        """A pre-0022 tenant still scores; the run says its record did not land."""
+        monkeypatch.setattr(mod, "write_eval_result", lambda *a, **kw: False)
+        assert _run()["result_recorded"] is False
+
+
+# ---------------------------------------------------------------------------
+# #25. A failed turn reaches the record with its class AND what happened
+# ---------------------------------------------------------------------------
+
+#: An exception whose own text is unmistakable, so an assertion can look for it
+#: in the stored record and expect not to find it.
+SENTINEL = "SENTINEL-customer-said-my-card-is-4111111111111111"
+
+
+def _invocation_record(scenario_id: str, **overrides) -> dict:
+    record = {
+        "scenario_id": scenario_id,
+        "responded": True,
+        "scorable": True,
+        "error": None,
+        "error_message": None,
+        "retrieve_calls": 1,
+        "retrieve_at_cap": False,
+        "retrieve_unparsed": 0,
+        "retrieved_chunks": 1,
+        "side_effects": [],
+    }
+    record.update(overrides)
+    return record
+
+
+@pytest.fixture
+def one_turn_timed_out(scored, monkeypatch):
+    """`scored`, with the first scenario's turn raising at the per-turn bound.
+
+    The summary comes from the real `summarise_agent_invocation`, so the fixture
+    cannot hand the task a shape production does not produce.
+    """
+    timeout_message = f"agent turn exceeded {mod._agent_turn_timeout_s()}s"
+
+    def _fake_invoke(*, agent_id, conn_str, run_id, scenarios, prompt_version_id):
+        failed, answered = scenarios[0], scenarios[1:]
+        rows = [
+            {
+                **s,
+                "agent_response": f"AGENT SAID: {s['question']}",
+                "retrieved_contexts": [f"CTX for {s['id']}"],
+            }
+            for s in answered
+        ]
+        records = [
+            _invocation_record(
+                failed["id"],
+                responded=False,
+                scorable=False,
+                error="TimeoutError",
+                error_message=timeout_message,
+                retrieve_calls=0,
+                retrieved_chunks=0,
+            )
+        ] + [_invocation_record(s["id"]) for s in answered]
+        summary = mod.summarise_agent_invocation(
+            records,
+            valid=len(scenarios),
+            ceiling_skipped=0,
+            ceiling_skipped_golden=0,
+            per_turn_timeout_s=mod._agent_turn_timeout_s(),
+            audit_capture_char_cap=1800,
+            retrieved_context_chunk_char_cap=2000,
+        )
+        return rows, summary
+
+    monkeypatch.setattr(mod, "_invoke_agent_for_scenarios", _fake_invoke)
+    scored["timeout_message"] = timeout_message
+    return scored
+
+
+class TestATimeoutReachesTheRecordWithItsMessage:
+    """#25. `run_eval_suite.scenario_invocation_failed ... error= error_type=
+    TimeoutError`, twice, in eval run 29754ceb.
+
+    `str(TimeoutError())` is the empty string. The type survived and the budget
+    did not, so the row said a turn raised and nothing about what ran out.
+    """
+
+    def test_the_record_names_the_row_that_timed_out(self, one_turn_timed_out):
+        _run()
+        _, result, _ = one_turn_timed_out["record"][0]
+
+        assert result.invocation.failed == 1
+        assert len(result.failures) == 1
+        failure = result.failures[0]
+        assert failure.error_type == "TimeoutError"
+        assert failure.scenario_id == _GOLDEN_IDS[0], (
+            f"the failure names {failure.scenario_id!r}, not the row that failed"
+        )
+
+    def test_the_message_names_the_budget_the_turn_exceeded(self, one_turn_timed_out):
+        """The one fact the exception's class cannot carry."""
+        _run()
+        _, result, _ = one_turn_timed_out["record"][0]
+
+        assert result.failures[0].message == one_turn_timed_out["timeout_message"]
+        assert str(mod._agent_turn_timeout_s()) in result.failures[0].message, (
+            "the message carries no budget, so the record says a turn timed out "
+            "and not what it timed out against"
+        )
+
+    def test_the_failure_survives_into_what_the_task_returns(self, one_turn_timed_out):
+        returned = _run()
+        _, result, _ = one_turn_timed_out["record"][0]
+
+        assert returned["failures"] == result.payload["failures"]
+        assert returned["failures"][0]["error_type"] == "TimeoutError"
+
+    def test_the_exceptions_own_text_is_absent_from_the_stored_record(
+        self, one_turn_timed_out, monkeypatch
+    ):
+        """THE ANTI-TAUTOLOGY HALF.
+
+        Asserting the message equals a fixed phrase passes just as well when a
+        build appends `str(exc)` to it. This drives the whole task with an
+        invoker whose `error_message` IS the exception's text, and looks for
+        that text in the serialised record. `eval_runs.result` is jsonb the
+        owner reads back, so a raw exception string landing there is #96's
+        class one table over.
+        """
+        import json
+
+        _run()
+        _, honest, _ = one_turn_timed_out["record"][0]
+        assert SENTINEL not in json.dumps(honest.payload)
+
+        # And the pin is worth something only if the sentinel CAN reach the row.
+        one_turn_timed_out["record"].clear()
+        real_summarise = mod.summarise_agent_invocation
+
+        def _leaking_summarise(records, **kwargs):
+            for record in records:
+                if record.get("error"):
+                    record["error_message"] = SENTINEL
+            return real_summarise(records, **kwargs)
+
+        monkeypatch.setattr(mod, "summarise_agent_invocation", _leaking_summarise)
+        _run()
+        _, leaked, _ = one_turn_timed_out["record"][0]
+        assert SENTINEL in json.dumps(leaked.payload), (
+            "the record dropped the message entirely, so the assertion above "
+            "would pass for a build that stores no message at all"
         )

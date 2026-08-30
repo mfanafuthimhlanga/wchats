@@ -5,6 +5,10 @@ De-xfailed in Phase 10-05. Tests cover:
     test_send_digest_email_calls_smtp   — send_digest_email calls smtplib.SMTP when configured
     test_digest_beat_skips_when_disabled — run_weekly_digest_beat returns {dispatched:0} when DIGEST_ENABLED=False
     test_digest_idempotency_within_7d   — run_weekly_digest skips if digest_runs row exists within 7 days
+
+TestDigestFaithfulnessReadsTheRecord.   #51 slice 4: the number is lifted off
+    `eval_runs.result` through `run_level_metrics`, the digest names the dataset
+    it quotes, and a run without a record prints "not measured".
 """
 
 import base64
@@ -118,3 +122,190 @@ def test_digest_idempotency_within_7d():
             mock_send.assert_not_called()
 
     assert result == {"status": "already_sent"}
+
+
+# ---------------------------------------------------------------------------
+# The record the two readers lift "latest faithfulness" off (#51 slice 4)
+# ---------------------------------------------------------------------------
+
+
+def _eval_record(datasets, *, attempted=30, valid=30, scored=30):
+    """An EvalResult whose datasets the caller chooses."""
+    from uuid import uuid4
+
+    from app.domain.eval_result import Cost, EvalResult, Invocation
+
+    return EvalResult(
+        run_id=str(uuid4()),
+        agent_id=str(uuid4()),
+        invocation=Invocation(
+            status="measured",
+            valid=valid,
+            attempted=valid,
+            responded=scored,
+            scorable=scored,
+            failed=valid - scored,
+            empty=0,
+        ),
+        datasets=datasets,
+        requested_model="gpt-5.6-luna",
+        cost=Cost(input_tokens=10, output_tokens=5, usd=0.01, zar=0.2, measured=True),
+    )
+
+
+def _scored(faithfulness, *, attempted=30, valid=30, scored=30):
+    """One dataset that measured faithfulness, or one that measured nothing.
+
+    Every scored scenario is UNMEASURED, because the only dimension this fixture
+    reports is faithfulness and a scenario needs both gated verdicts to pass or
+    fail. The three verdict counts have to add up to `scored` either way.
+    """
+    from app.domain.eval_result import DatasetOutcome, Measurement
+
+    metrics = {}
+    if faithfulness is not None:
+        metrics["faithfulness"] = Measurement(
+            value=faithfulness, observations=scored, measured=True
+        )
+    return DatasetOutcome(
+        attempted=attempted,
+        valid=valid,
+        scored=scored,
+        metrics=metrics,
+        scenarios_unmeasured=scored,
+    )
+
+
+def _run_row_conn(row, status="complete"):
+    """psycopg2 connection double answering the latest-FINISHED-run SELECT.
+
+    The row is (id, result, status). A caller handing over the first two gets a
+    complete run, which is what a test about a record wants; a test about a run
+    that did not complete says so with `status`.
+    """
+    if row is not None and len(row) == 2:
+        row = (*row, status)
+    conn = MagicMock()
+    cursor = MagicMock()
+    cursor.__enter__ = MagicMock(return_value=cursor)
+    cursor.__exit__ = MagicMock(return_value=False)
+    cursor.fetchone.return_value = row
+    cursor.fetchall.return_value = []
+    conn.cursor.return_value = cursor
+    return conn
+
+
+class TestDigestFaithfulnessReadsTheRecord:
+    """The digest reads the run's own record. No AVG anywhere in this module."""
+
+    def _stats(self, row, status="complete"):
+        from app.services.digest_service import _collect_digest_stats
+
+        conn = _run_row_conn(row, status)
+        run_row = row if row is None or len(row) == 3 else (*row, status)
+        conn.cursor.return_value.fetchone.side_effect = [run_row, None, (0,), (0,)]
+        with patch("app.services.digest_service.psycopg2.connect", return_value=conn):
+            stats = _collect_digest_stats(
+                agent_id="agent-1", conn_str="postgresql://test/tenant", db=MagicMock()
+            )
+        return stats, conn
+
+    def test_one_scoring_dataset_gives_its_number_and_names_it(self):
+        from uuid import uuid4
+
+        record = _eval_record({"exploratory": _scored(0.77)})
+        stats, conn = self._stats((str(uuid4()), record.payload))
+
+        assert stats["faithfulness_score"] == 0.77
+        assert stats["faithfulness_dataset"] == "exploratory"
+
+        sql = " ".join(
+            c.args[0] for c in conn.cursor.return_value.execute.call_args_list
+        )
+        assert "AVG(" not in sql, "the digest is averaging eval_results again"
+
+    def test_a_failed_latest_run_reads_as_unmeasured_not_an_older_number(self):
+        """The newest finished run failed and still carries a full record.
+
+        The query said `status = 'complete'`, so the digest reached past it to an
+        older run and mailed that older number as this week's. A run that did not
+        reach the end of its own body has no reading.
+        """
+        from uuid import uuid4
+
+        record = _eval_record({"exploratory": _scored(0.77)})
+        stats, _ = self._stats((str(uuid4()), record.payload), status="failed")
+
+        assert stats["faithfulness_score"] is None
+        assert stats["faithfulness_dataset"] is None
+
+    def test_the_digest_query_cannot_reach_back_past_a_failed_run(self):
+        """Where the reach-back is actually refused, on the digest's own path.
+
+        The test above hands its double one row and gets that row back, so it
+        would pass just as well against a query filtering `status = 'complete'`,
+        which on a real tenant skips the failed newest run and answers with an
+        older completed one. The predicate is the whole guard, and until now only
+        `test_alert_service.py` pinned it, over the other reader of the same SQL.
+        """
+        from uuid import uuid4
+
+        record = _eval_record({"exploratory": _scored(0.77)})
+        _, conn = self._stats((str(uuid4()), record.payload), status="failed")
+
+        sql = " ".join(
+            c.args[0] for c in conn.cursor.return_value.execute.call_args_list
+        )
+        assert "status <> 'running'" in sql
+        assert "status = 'complete'" not in sql, (
+            "filtering to complete runs in SQL reaches back past a failed run to "
+            "an older one and mails last week's number as this week's"
+        )
+
+    def test_a_run_without_a_record_reads_as_unmeasured(self):
+        """Not zero, and not last week's number. The email says so."""
+        from uuid import uuid4
+
+        from app.services.digest_service import send_digest_email
+
+        stats, _ = self._stats((str(uuid4()), None))
+        assert stats["faithfulness_score"] is None
+        assert stats["faithfulness_dataset"] is None
+
+        sent = {}
+        smtp = MagicMock()
+        instance = MagicMock()
+        smtp.return_value.__enter__ = MagicMock(return_value=instance)
+        smtp.return_value.__exit__ = MagicMock(return_value=False)
+        instance.sendmail.side_effect = lambda _f, _t, body: sent.update(body=body)
+
+        with patch("app.services.digest_service.smtplib.SMTP", smtp), patch.object(
+            __import__("app.core.config", fromlist=["settings"]).settings,
+            "SMTP_HOST",
+            "localhost",
+        ), patch.object(
+            __import__("app.core.config", fromlist=["settings"]).settings,
+            "SMTP_FROM",
+            "a@b.c",
+        ), patch.object(
+            __import__("app.core.config", fromlist=["settings"]).settings,
+            "OWNER_EMAIL",
+            "o@b.c",
+        ), patch.object(
+            __import__("app.core.config", fromlist=["settings"]).settings,
+            "DIGEST_ENABLED",
+            True,
+        ):
+            send_digest_email("Test", "agent-1", stats)
+
+        import email as _email
+
+        body = (
+            _email.message_from_string(sent["body"])
+            .get_payload(decode=True)
+            .decode()
+        )
+        assert "not measured" in body, (
+            "an unmeasured faithfulness printed as a number, or as nothing at "
+            "all, is a reading the run never produced"
+        )

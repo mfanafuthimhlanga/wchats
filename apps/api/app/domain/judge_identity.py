@@ -23,9 +23,9 @@ WHY reasoning_effort IS A STRING AND NOT AN ENUM
 
 WHAT IS NOT HERE
     No reader. Two writers stamp an identity beside the verdict it belongs to,
-    `eval_service` on `eval_results.detail` and `retrieval_eval` on
-    `retrieval_metrics.judge_identity`. #53 is the first thing to read either and
-    group by them.
+    `eval_service` on `eval_results.judge_identity` (tenant migration 0023) and
+    `retrieval_eval` on `retrieval_metrics.judge_identity` (0020). #53 is the
+    first thing to read either and group by them.
 
 Rung: `app.domain` imports the standard library, third-party packages and its
 domain siblings. This module imports the standard library only.

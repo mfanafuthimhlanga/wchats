@@ -96,10 +96,10 @@ CUSTOMER_TERMINAL_EVENTS = TERMINAL_EVENTS | {"agent.response", "agent.failed"}
 #
 # The split is PERSIST versus PUBLISH, not one payload. Every field keeps being
 # written to job_events, because server-side readers need them:
-# retrieval_eval._fetch_turn_context reads `summary` off the persisted
-# agent.tool_result rows as its retrieved-context proxy, and the tenant's
-# escalation email carries the real reason and context, because the tenant is the
-# data controller and the context is the point of the escalation. This map governs
+# retrieval_eval._fetch_turn_context reads `message_id` off the persisted
+# agent.response row to join the turn's tool_calls, and the tenant's escalation
+# email carries the real reason and context, because the tenant is the data
+# controller and the context is the point of the escalation. This map governs
 # only what leaves the process to an unauthenticated caller.
 #
 # FAIL CLOSED. An event type with no entry here publishes an EMPTY payload rather
@@ -119,8 +119,10 @@ PUBLIC_EVENT_FIELDS: dict[str, frozenset[str]] = {
     # its fallback path: BACKLOG 7.34 made the tenant DB copy authoritative, and a
     # capture without that DB is already recorded BLIND.
     "agent.tool_call": frozenset({"tool_name"}),
-    # `summary` is the first 200 characters of the tool result. Persisted for
-    # retrieval_eval, never published.
+    # `summary` is the first 200 characters of the tool result. Persisted as the
+    # turn's event trail, never published. #81 and #84 took away its one
+    # server-side reader: retrieval_eval scored it as retrieved context and reads
+    # the persisted chunks now.
     "agent.tool_result": frozenset({"tool_name"}),
     # EscalationPanel renders `reason` as visible text, so allowlisting it is not
     # enough on its own. PUBLIC_SCANNED_FIELDS puts it through the PII firewall.
