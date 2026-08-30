@@ -573,7 +573,7 @@ Three rules replace them.
   except `status`, the four counts and `artifact_version`.
 - **`calibrated` costs the harness's own rule whole.** All three parts of
   `calibration_verdict` True, both intervals present and `usable`, both coefficients
-  present, and `scored_pairs >= 1`. `agreement.py:415-490` returns
+  present, and `pairs >= 1`. `agreement.py:415-490` returns
   `ceiling_beats_chance: False` with `reaches_ceiling: None` and stops there, so reading
   two of three let a hand-written artifact claim a Judge that reached a ceiling nobody set.
 - **`artifact_version` is compared**, not stored. The constant is bumped when an older
@@ -581,16 +581,13 @@ Three rules replace them.
   was the accident the field exists to stop. A bool is refused before the comparison,
   because `True == 1` in Python.
 
-**`scored_pairs >= 1` is the one rule here that couples the record to how the sheet is
-filled, and it is worth naming.** `scored_pairs` counts rows carrying the OPTIONAL human
-1-5 score, and the harness's own printed guidance asks the owner to fill the binary column
-only. A calibrated run over a verdict-only sheet therefore has `scored_pairs` 0 and is now
-refused at construction, which surfaces as `harness_raised:InvalidCalibrationStatus` rather
-than as a record. The rule is still the right one for the reader, because
-`scored_pairs <= pairs` makes it the cheapest way to refuse a verdict over zero rows
-whichever count a hand-written file omits. If the first real labelling run fills verdicts
-only, this is the line that has to move, and the fix is a `pairs >= 1` rule beside it
-rather than dropping the count check.
+**The count floor is `pairs >= 1`, not `scored_pairs >= 1`.** The review pass first put the
+floor on `scored_pairs`, which counts rows carrying the OPTIONAL human 1-5 score, while the
+harness's own printed guidance asks the owner to fill the binary column only. A calibrated run
+over a verdict-only sheet would have been refused at construction as
+`harness_raised:InvalidCalibrationStatus`. `pairs` is the labelled rows kappa and Matthews are
+computed over, so the floor moved there (orchestrator, same day); `scored_pairs <= pairs` still
+holds, and a test now pins that a verdict-only sheet can be calibrated.
 
 ### The identity was asserted, and is now observed
 
@@ -712,9 +709,6 @@ Restored, `99 passed in 53.54s`.
 
 ### Open after the review pass
 
-- **`scored_pairs >= 1` is the rule most likely to need revisiting.** See the paragraph
-  above. Nothing holds this but this trace, so open an issue before the first real
-  labelling run.
 - **The `no_artifact` line logs `str(Path(path))`, not `Path.resolve()`.** The setting is
   absolute and a test pins that, so the two agree today. A caller passing a relative path
   would log a relative one.

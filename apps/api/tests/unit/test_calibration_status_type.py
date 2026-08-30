@@ -169,11 +169,16 @@ class TestConstruction:
         with pytest.raises(InvalidCalibrationStatus, match="ceiling_beats_chance"):
             _calibrated(ceiling_beats_chance=None)
 
-    def test_calibrated_over_no_scored_pairs_is_refused(self):
-        """`scored_pairs <= pairs` already holds, so one scored pair forces one
-        pair. A verdict over zero rows is refused whichever count is missing."""
-        with pytest.raises(InvalidCalibrationStatus, match="0 scored_pairs"):
-            _calibrated(scored_pairs=0)
+    def test_calibrated_over_no_labelled_pairs_is_refused(self):
+        """`pairs` is what kappa and Matthews are computed over. A verdict over
+        zero labelled rows is refused."""
+        with pytest.raises(InvalidCalibrationStatus, match="0 pairs"):
+            _calibrated(pairs=0, scored_pairs=0)
+
+    def test_a_verdict_only_sheet_can_still_be_calibrated(self):
+        """The harness asks the owner to fill the binary column only, so a
+        calibrated run may carry zero optional 1-5 scores beside its pairs."""
+        assert _calibrated(scored_pairs=0).calibrated is True
 
     def test_calibrated_with_no_kappa_is_refused(self):
         with pytest.raises(InvalidCalibrationStatus, match="no kappa"):

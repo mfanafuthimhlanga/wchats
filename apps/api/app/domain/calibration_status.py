@@ -379,10 +379,11 @@ def _require_calibrated_shows_its_working(record: CalibrationStatus) -> None:
     and every figure to None. Three verdict booleans are cheap to write by hand
     and the numbers behind them are not.
 
-    `scored_pairs >= 1` closes the count half on its own. `_require_counts`
-    already holds `scored_pairs <= pairs`, so one scored pair forces at least one
-    pair, and a verdict reported over zero rows is refused whichever count a
-    hand-written file left out.
+    `pairs >= 1` closes the count half. `pairs` is the labelled rows kappa and
+    Matthews are computed over, and the binary verdict column is the one the
+    harness asks the owner to fill. `scored_pairs` counts the optional 1-5
+    score beside it and may honestly be zero on a calibrated run, so it is not
+    the floor. `_require_counts` already holds `scored_pairs <= pairs`.
     """
     if record.status != STATUS_CALIBRATED:
         return
@@ -399,10 +400,10 @@ def _require_calibrated_shows_its_working(record: CalibrationStatus) -> None:
                 f"CalibrationStatus is calibrated with no {name}. The coefficient a "
                 "verdict was reached from is not optional on the record reporting it."
             )
-    if record.scored_pairs < 1:
+    if record.pairs < 1:
         raise InvalidCalibrationStatus(
-            "CalibrationStatus is calibrated over 0 scored_pairs. A judge that agreed "
-            "with a human over no rows agreed about nothing."
+            "CalibrationStatus is calibrated over 0 pairs. A judge that agreed "
+            "with a human over no labelled rows agreed about nothing."
         )
 
 
