@@ -33,6 +33,7 @@ import structlog
 from pydantic import BaseModel
 
 from app.core.model_client import LedgerContext, make_async_client, route_for
+from app.domain.red_team_finding import RedTeamFinding
 from app.domain.red_team_result import (
     RED_TEAM_VECTORS,
     VectorOutcome,
@@ -74,26 +75,20 @@ log = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class RedTeamFinding(BaseModel):
-    """A single security finding produced by a red-team agent."""
-
-    severity: Literal["low", "medium", "high", "critical"]
-    description: str
-    attack_vector: str          # one of: "prompt_injection", "data_leakage", "hallucination"
-    probe_message: str          # the exact probe text that triggered the finding
-    agent_response: str         # the deployed agent's response text
-    turn_count: int             # which turn in the attack sequence this finding came from
+# `RedTeamFinding` moved to app.domain.red_team_finding in ticket 15, so the
+# frozen RedTeamResult can hold one, and it is imported at the top of this file
+# under its shipped name. Every reader of `red_team_service.RedTeamFinding`
+# keeps reading it here, the same arrangement RED_TEAM_VECTORS got.
 
 
-class RedTeamResult(BaseModel):
-    """Aggregated result from a complete red team run across all three agents."""
-
-    run_id: str
-    findings: list[RedTeamFinding]
-    max_severity: str           # highest severity string across all findings, or "none" if no findings
-    deployment_blocked: bool    # True iff max_severity == "critical"
-    critical_count: int
-    high_count: int
+# A second `RedTeamResult`, a pydantic model carrying run_id, findings,
+# max_severity, deployment_blocked and two counts, stood here from M7 until
+# ticket 15. No app module ever constructed it: `run_red_team` computes those
+# same six values as loose locals and writes them straight to the columns, and
+# the two tests that exercised the class only checked that pydantic stores what
+# pydantic is handed. Ticket 15 gave the run a real record in
+# `app.domain.red_team_result`, so the name meant two different things in one
+# repo while one of them was dead. The dead one is gone.
 
 
 class SeverityVerdict(BaseModel):
@@ -576,10 +571,15 @@ def run_coverage(observations: list[VectorObservation] | None) -> dict:
 class VectorAttempts:
     """What ONE vector produced across its k independent attempts.
 
-    `findings` is every attempt's findings, concatenated, which is what the
-    caller's `all_findings` list and every storage path downstream already
-    expect. `outcome` is the same run seen as a measurement: how many attempts
-    ran, how many landed an attack, and the worst grade among them.
+    `findings` is every attempt's findings, concatenated. `outcome` is the same
+    attempts seen as a measurement: how many ran, how many landed an attack, and
+    the worst grade among them.
+
+    THE TWO ARE ONE READING OF ONE LIST, and `_attempt_every_vector` keeps them
+    that way. It extends `RedTeamResult.findings` with this `findings` and
+    appends this `outcome` as the run's row for the vector, on the same pass.
+    `RedTeamResult._require_findings_agree` refuses a record where the two came
+    from different places.
     """
 
     vector: str
@@ -1115,6 +1115,15 @@ def _classify_reported_findings(
     replaces: the per-vector default for a `report_finding` call that omitted
     `attack_vector` is the vector whose loop produced it.
     """
+    # EVERY KEY IS NAMED, never `RedTeamFinding(**raw)`. `raw` is the attacker
+    # model's tool input: `_TOOL_REPORT_FINDING` requires five keys and forbids
+    # nothing beside them, so a model that invents a sixth is routine.
+    # RedTeamFinding sets extra="forbid", and this function runs BELOW
+    # _run_attacker's `except` rather than inside it, so `**raw` would raise
+    # ValidationError straight past the runner, past run_vector_attempts, and
+    # into run_red_team's Step 5 handler, which marks the whole run failed. One
+    # invented key would cost seven vectors. Naming the six drops it here
+    # instead, on purpose, and keeps the probe and the response.
     findings: list[RedTeamFinding] = []
     for raw in session.raw_findings:
         attack_vector = raw.get("attack_vector") or session.attack_vector
