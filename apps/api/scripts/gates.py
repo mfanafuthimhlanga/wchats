@@ -154,7 +154,7 @@ LIZARD_BASELINE = {
     ("app/services/digest_service.py", "_collect_digest_stats"): (10, 71),
     ("app/services/eval_service.py", "build_eval_run_config"): (11, 207),
     ("app/services/eval_service.py", "insert_eval_run"): (4, 62),
-    ("app/services/eval_service.py", "run_ragas_eval"): (17, 164),
+    ("app/services/eval_service.py", "run_ragas_eval"): (11, 153),
     ("app/services/eval_service.py", "summarise_agent_invocation"): (31, 186),
     ("app/services/eval_service.py", "summarise_run_validity"): (17, 117),
     ("app/services/eval_service.py", "update_eval_run_config"): (4, 70),

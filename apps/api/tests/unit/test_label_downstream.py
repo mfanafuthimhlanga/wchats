@@ -284,7 +284,6 @@ def _wire(monkeypatch, *, exploratory_rows, silent_ids=(), scores_by_id=None):
         # file read as a missing key rather than as a wrong number.
         return {
             "scores": scores,
-            "means": {"faithfulness": 0.9},
             "judge_records": eval_service.build_judge_records(scores),
         }
 

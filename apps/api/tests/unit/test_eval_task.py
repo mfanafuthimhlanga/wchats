@@ -129,7 +129,6 @@ def _ragas_return(scores: list[dict], **extra) -> dict:
     return {
         "scores": scores,
         "judge_records": build_judge_records(scores),
-        "means": {},
         **extra,
     }
 
@@ -291,7 +290,6 @@ def wired(monkeypatch):
         return {
             "scores": scores,
             "judge_records": build_judge_records(scores),
-            "means": {"faithfulness": 0.9},
         }
 
     monkeypatch.setattr(mod, "run_ragas_eval", _fake_ragas)
@@ -990,7 +988,7 @@ def scored(wired, monkeypatch):
         return {
             "scores": scores,
             "judge_records": build_judge_records(scores),
-            "means": {}, "sent": 4, "returned": 4, "unattributed": 0,
+            "sent": 4, "returned": 4, "unattributed": 0,
         }
 
     monkeypatch.setattr(mod, "run_ragas_eval", _fake_ragas)

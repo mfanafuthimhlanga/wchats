@@ -146,8 +146,15 @@ def _scored(faithfulness, *, attempted=30, valid=30, scored=30):
     )
 
 
-def _run_row_conn(row):
-    """psycopg2 connection double answering the latest-complete-run SELECT."""
+def _run_row_conn(row, status="complete"):
+    """psycopg2 connection double answering the latest-FINISHED-run SELECT.
+
+    The row is (id, result, status). A caller handing over the first two gets a
+    complete run, which is what a test about a record wants; a test about a run
+    that did not complete says so with `status`.
+    """
+    if row is not None and len(row) == 2:
+        row = (*row, status)
     conn = MagicMock()
     cursor = MagicMock()
     cursor.__enter__ = MagicMock(return_value=cursor)
@@ -161,12 +168,12 @@ def _run_row_conn(row):
 class TestLatestFaithfulnessReadsTheRecord:
     """The alert reads the run's own record. No AVG anywhere in this module."""
 
-    def _read(self, row):
+    def _read(self, row, status="complete"):
         from app.services.alert_service import latest_faithfulness_reading
 
         with patch(
             "app.services.alert_service.psycopg2.connect",
-            return_value=_run_row_conn(row),
+            return_value=_run_row_conn(row, status),
         ):
             return latest_faithfulness_reading("agent-1", "postgresql://test/tenant")
 
@@ -191,6 +198,44 @@ class TestLatestFaithfulnessReadsTheRecord:
 
         assert self._read((str(uuid4()), None)) == (None, None)
 
+    def test_a_failed_latest_run_is_unmeasured_and_not_an_older_number(self):
+        """The newest finished run failed, and it carries a full record.
+
+        The query said `status = 'complete'`, so it reached back PAST this run to
+        an older one that completed and reported that older number as the agent's
+        current faithfulness. A run that did not reach the end of its own body
+        has no reading, and last week's reading is not this morning's.
+        """
+        from uuid import uuid4
+
+        record = _eval_record({"exploratory": _scored(0.42)})
+        assert self._read((str(uuid4()), record.payload), status="failed") == (
+            None,
+            None,
+        )
+
+    def test_the_latest_run_query_excludes_only_the_ones_in_flight(self):
+        """The same predicate the deploy collector selects on.
+
+        Two readers of "the latest run" that disagree about which run that is
+        will disagree about the agent, and only one of them will be looking at
+        the run the owner just watched fail.
+        """
+        from uuid import uuid4
+
+        from app.services.alert_service import latest_faithfulness_reading
+
+        conn = _run_row_conn((str(uuid4()), None))
+        with patch("app.services.alert_service.psycopg2.connect", return_value=conn):
+            latest_faithfulness_reading("agent-1", "postgresql://test/tenant")
+
+        sql = " ".join(c.args[0] for c in conn.cursor.return_value.execute.call_args_list)
+        assert "status <> 'running'" in sql
+        assert "status = 'complete'" not in sql, (
+            "filtering to complete runs in SQL reaches back past a failed run "
+            "to an older one and reports its number as the current reading"
+        )
+
     def test_the_query_selects_the_record_and_aggregates_nothing(self):
         """Read out of the SQL that ran. `AVG(er.score)` was the fourth
         derivation of a number the run had already computed."""
@@ -205,7 +250,7 @@ class TestLatestFaithfulnessReadsTheRecord:
         sql = " ".join(c.args[0] for c in conn.cursor.return_value.execute.call_args_list)
         assert "AVG(" not in sql, "the alert is averaging eval_results again"
         assert "eval_results" not in sql
-        assert "result FROM eval_runs" in sql
+        assert "result, status FROM eval_runs" in sql
 
     def test_a_two_dataset_run_has_no_number_to_alert_on(self):
         """The cost of refusing to pool, stated where it lands.

@@ -1185,18 +1185,24 @@ class TestGetEvalRunResults:
         }
 
     async def test_the_verdict_is_the_stored_one_and_not_a_fresh_comparison(self):
-        """A row scoring 0.99 against a stored verdict of False reads as False.
+        """A row scoring 0.9 against a stored verdict of False reads as False.
 
-        The proof that this route stopped deciding. Its old code compared every
-        score to whatever `settings` held at request time, so a deployment that
-        lowered the gate silently turned yesterday's failures into passes on a
-        page nobody re-ran. The row here was judged against a gate of 0.995 and
-        lost; today's gate would clear it, and the response still says False
-        because the run's decision is the run's.
+        The proof that this route stopped deciding, and the FIXTURE is half of
+        it. This row used to score 0.99 against a stored gate of 0.995, so a
+        route recomputing `score >= row.threshold` reached False as well and the
+        test passed under the defect it was written to catch. These numbers
+        disagree with every fresh comparison available: 0.9 clears the 0.7 stored
+        beside it and clears today's settings, and the response still says False.
+        The run's decision is the run's, and moving a gate afterwards does not
+        restate it.
+
+        `JudgeRecord` refuses this row on the way in, which is where a
+        disagreement between a verdict and its own numbers gets caught. The route
+        reads columns, so what it must do with one is report what is written.
         """
         scenario_id = str(uuid4())
         rows = [
-            (scenario_id, "Q?", "generated", "faithfulness", 0.99, False, 0.995),
+            (scenario_id, "Q?", "generated", "faithfulness", 0.9, False, 0.7),
             (scenario_id, "Q?", "generated", "answer_relevancy", 0.99, True, 0.90),
         ]
 
@@ -1207,8 +1213,29 @@ class TestGetEvalRunResults:
         )
         assert result["passed"] is False
         assert result["metrics"]["faithfulness"]["verdict"] is False
-        assert result["metrics"]["faithfulness"]["threshold"] == 0.995, (
+        assert result["metrics"]["faithfulness"]["threshold"] == 0.7, (
             "the gate the row was judged against travels with it"
+        )
+
+    async def test_a_gate_nobody_reached_is_unmeasured_and_not_a_failure(self):
+        """A score under its stored gate, and no verdict beside them.
+
+        Every fresh comparison says False here. The row says nothing, and nothing
+        is what the scenario reads, because a judge that scored the dimension and
+        never decided it is an outage rather than a quality collapse.
+        """
+        scenario_id = str(uuid4())
+        rows = [
+            (scenario_id, "Q?", "generated", "faithfulness", 0.5, None, 0.7),
+            (scenario_id, "Q?", "generated", "answer_relevancy", 0.99, True, 0.90),
+        ]
+
+        result = (await self._get_results(rows))["results"][0]
+
+        assert result["passed"] is None
+        assert result["metrics"]["faithfulness"]["verdict"] is None
+        assert result["metrics"]["faithfulness"]["measured"] is True, (
+            "the score exists; it is the decision that does not"
         )
 
     async def test_a_missing_verdict_on_a_gated_metric_is_never_a_pass(self):

@@ -635,6 +635,56 @@ def test_a_value_that_does_not_decode_to_a_list_is_unmeasured():
     assert (out.measured, out.unmeasured) == (0, 2)
 
 
+def _tool_calls_conn(rows):
+    """psycopg2 connection double for the tool_calls read, recording its SQL.
+
+    The same MagicMock shape the route and collector tests drive their queries
+    through, so what is asserted is the statement that ran.
+    """
+    conn = MagicMock()
+    cursor = MagicMock()
+    cursor.__enter__ = MagicMock(return_value=cursor)
+    cursor.__exit__ = MagicMock(return_value=False)
+    cursor.fetchall.return_value = rows
+    conn.cursor.return_value = cursor
+    return conn
+
+
+def test_the_retrieve_rows_are_read_in_one_order_for_every_reader(monkeypatch):
+    """`created_at` alone does not order rows written in one transaction.
+
+    Postgres gives every row inserted in a transaction the same `now()`, and a
+    turn writes its retrieve calls together, so the sort fell through to the
+    heap's order and two reads of one turn could hand Ragas two different
+    documents. The row id breaks the tie.
+    """
+    conn = _tool_calls_conn([([_CHUNK_A],), ([_CHUNK_B],)])
+    monkeypatch.setattr(mod.psycopg2, "connect", lambda *a, **kw: conn)
+
+    out = mod._fetch_retrieved_contexts("postgresql://fake/tenant", "assistant-msg-1")
+
+    sql = conn.cursor.return_value.execute.call_args.args[0]
+    assert "ORDER BY created_at, id" in sql, (
+        "two rows sharing a timestamp have no order, so the contexts this "
+        "turn is scored over depend on what the heap returns"
+    )
+    assert conn.cursor.return_value.execute.call_args.args[1] == ("assistant-msg-1",)
+    assert out.contexts == (_CHUNK_A, _CHUNK_B)
+    assert (out.measured, out.unmeasured) == (2, 0)
+
+
+def test_the_retrieve_read_names_the_turn_and_the_tool(monkeypatch):
+    """Every retrieve call of ONE assistant message, and no other tool's rows."""
+    conn = _tool_calls_conn([])
+    monkeypatch.setattr(mod.psycopg2, "connect", lambda *a, **kw: conn)
+
+    mod._fetch_retrieved_contexts("postgresql://fake/tenant", "assistant-msg-1")
+
+    sql = conn.cursor.return_value.execute.call_args.args[0]
+    assert "FROM tool_calls WHERE message_id = %s" in sql
+    assert "tool_name = 'retrieve'" in sql
+
+
 def test_no_message_id_joins_to_nothing_and_opens_no_connection(monkeypatch):
     """A payload without WIRE-05's id cannot name the turn's rows. It reports no
     calls rather than guessing at how many there were."""

@@ -176,8 +176,15 @@ def _scored(faithfulness, *, attempted=30, valid=30, scored=30):
     )
 
 
-def _run_row_conn(row):
-    """psycopg2 connection double answering the latest-complete-run SELECT."""
+def _run_row_conn(row, status="complete"):
+    """psycopg2 connection double answering the latest-FINISHED-run SELECT.
+
+    The row is (id, result, status). A caller handing over the first two gets a
+    complete run, which is what a test about a record wants; a test about a run
+    that did not complete says so with `status`.
+    """
+    if row is not None and len(row) == 2:
+        row = (*row, status)
     conn = MagicMock()
     cursor = MagicMock()
     cursor.__enter__ = MagicMock(return_value=cursor)
@@ -191,11 +198,12 @@ def _run_row_conn(row):
 class TestDigestFaithfulnessReadsTheRecord:
     """The digest reads the run's own record. No AVG anywhere in this module."""
 
-    def _stats(self, row):
+    def _stats(self, row, status="complete"):
         from app.services.digest_service import _collect_digest_stats
 
-        conn = _run_row_conn(row)
-        conn.cursor.return_value.fetchone.side_effect = [row, None, (0,), (0,)]
+        conn = _run_row_conn(row, status)
+        run_row = row if row is None or len(row) == 3 else (*row, status)
+        conn.cursor.return_value.fetchone.side_effect = [run_row, None, (0,), (0,)]
         with patch("app.services.digest_service.psycopg2.connect", return_value=conn):
             stats = _collect_digest_stats(
                 agent_id="agent-1", conn_str="postgresql://test/tenant", db=MagicMock()
@@ -215,6 +223,21 @@ class TestDigestFaithfulnessReadsTheRecord:
             c.args[0] for c in conn.cursor.return_value.execute.call_args_list
         )
         assert "AVG(" not in sql, "the digest is averaging eval_results again"
+
+    def test_a_failed_latest_run_reads_as_unmeasured_not_an_older_number(self):
+        """The newest finished run failed and still carries a full record.
+
+        The query said `status = 'complete'`, so the digest reached past it to an
+        older run and mailed that older number as this week's. A run that did not
+        reach the end of its own body has no reading.
+        """
+        from uuid import uuid4
+
+        record = _eval_record({"exploratory": _scored(0.77)})
+        stats, _ = self._stats((str(uuid4()), record.payload), status="failed")
+
+        assert stats["faithfulness_score"] is None
+        assert stats["faithfulness_dataset"] is None
 
     def test_a_run_without_a_record_reads_as_unmeasured(self):
         """Not zero, and not last week's number. The email says so."""

@@ -161,7 +161,7 @@ log = structlog.get_logger(__name__)
 #:
 #: Copied with `dict()` at every use, so a branch cannot mutate the shared shape.
 _NOTHING_SCORED = {
-    "scores": [], "judge_records": [], "means": {},
+    "scores": [], "judge_records": [],
     "sent": 0, "returned": 0, "unattributed": 0,
 }
 

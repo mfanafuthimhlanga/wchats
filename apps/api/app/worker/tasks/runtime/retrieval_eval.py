@@ -27,8 +27,9 @@ The Judge names itself (ticket #47, AC3):
     the row carries the model, the reasoning effort and the prompt version that
     produced it, in `retrieval_metrics.judge_identity` (tenant migration 0020).
     `eval_service` does the same for its four offline metrics, in
-    `eval_results.detail`. Each lands beside its own verdict, so a calibration
-    figure reads one place per verdict and joins nothing.
+    `eval_results.judge_identity` (tenant migration 0023; the four-score blob in
+    `detail` stopped being written with it). Each lands beside its own verdict,
+    so a calibration figure reads one place per verdict and joins nothing.
 
 What "retrieved context" means here (#81, #84):
     The chunks the retrieve tool handed the agent, read back from the tenant's
@@ -367,24 +368,36 @@ def _read_retrieved_rows(rows) -> _TurnRetrieval:
     return _TurnRetrieval(tuple(contexts), measured, unmeasured)
 
 
+#: One row per retrieve call the turn made, in ONE order for every reader.
+#:
+#: `created_at` alone is not an order. `tool_calls.created_at` defaults to
+#: `now()`, which is the TRANSACTION's clock in Postgres, so every row a turn
+#: writes in one transaction carries the same timestamp and the sort falls
+#: through to whatever the heap hands back. Two reads of one turn could then
+#: assemble the contexts in two orders and hand Ragas two different documents.
+#: `id` breaks the tie. It is a random uuid (alembic_tenant 0001), so it is a
+#: stable order rather than the call order, which is what a set of contexts
+#: needs: nothing downstream reads position, and everything downstream needs the
+#: same list twice.
+_RETRIEVED_CHUNKS_SQL = (
+    "SELECT retrieved_chunks FROM tool_calls WHERE message_id = %s"
+    " AND tool_name = 'retrieve' ORDER BY created_at, id"
+)
+
+
 def _fetch_retrieved_contexts(conn_str: str, message_id: str | None) -> _TurnRetrieval:
     """The chunks this turn retrieved, from the tenant's `tool_calls` rows.
 
-    One row per retrieve call the turn made, in the order it made them. An absent
-    `message_id` joins to nothing, so the turn reports zero calls either way
-    rather than guessing how many it made; the log line names the id so the
-    absence is visible.
+    An absent `message_id` joins to nothing, so the turn reports zero calls
+    either way rather than guessing how many it made; the log line names the id
+    so the absence is visible.
     """
     if not message_id:
         return _TurnRetrieval((), 0, 0)
     conn = psycopg2.connect(conn_str, connect_timeout=5)
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT retrieved_chunks FROM tool_calls WHERE message_id = %s"
-                " AND tool_name = 'retrieve' ORDER BY created_at",
-                (message_id,),
-            )
+            cur.execute(_RETRIEVED_CHUNKS_SQL, (message_id,))
             rows = cur.fetchall()
     finally:
         conn.close()
@@ -523,7 +536,9 @@ def _scored_report(
     a guess.
 
     Returns {} when the UPDATE fails, because a telemetry write must never fail
-    or retry an already-served turn (T-21-01-03). No numbers beats wrong ones.
+    or retry an already-served turn (T-21-01-03). The row keeps its NULL
+    faithfulness, so the next run of this task for the job scores the turn again
+    rather than skipping it as already measured.
     """
     identity_row = _identity_row(faithfulness)
     try:

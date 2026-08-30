@@ -278,7 +278,6 @@ class TestRunRagasEval:
             assert result["scores"][0][metric] is not None, (
                 f"{metric} came back unknown against a metric that cannot fail here"
             )
-            assert result["means"][metric] is not None
 
     def test_built_metrics_are_instances_not_classes(self):
         """Every element of the metrics list is a constructed metric object,
@@ -398,7 +397,7 @@ class TestRunRagasEval:
         assert rows[0].served_model == "gpt-5.6-luna"
 
     def test_run_ragas_eval_empty_scenarios_returns_empty(self):
-        """run_ragas_eval returns empty scores/means when no valid scenarios given.
+        """run_ragas_eval returns no scores and no records when nothing is valid.
         No mocking needed — the early-exit path never touches Ragas internals.
         """
         from app.services.eval_service import run_ragas_eval
@@ -410,7 +409,8 @@ class TestRunRagasEval:
         )
 
         assert result["scores"] == []
-        assert result["means"]["faithfulness"] is None
+        assert result["judge_records"] == []
+        assert result["sent"] == 0
 
     def test_run_ragas_eval_uses_correct_import(self):
         """eval_service.py imports Ragas 0.4.x path (D-01 LOCKED regression guard).
@@ -2095,9 +2095,9 @@ class TestRunRagasEvalAttribution:
 
         assert result["scores"] == []
         assert result["unattributed"] == 5
-        assert result["means"]["faithfulness"] is None, (
-            "a mean over rows the run cannot place is a mean over an unknown "
-            "denominator"
+        assert result["judge_records"] == [], (
+            "a row the run cannot place scores no scenario, so it writes no "
+            "eval_results row and reaches no verdict"
         )
 
     def test_no_synthetic_scenario_id_is_ever_minted(self, monkeypatch):

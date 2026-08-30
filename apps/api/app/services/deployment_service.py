@@ -37,7 +37,7 @@ from app.domain.eval_result import (
 )
 from app.domain.tool_def import ToolDefinition, tool
 from app.services.capability_service import canonical_envelope_hash
-from app.services.eval_service import GATED_METRIC_KEYS
+from app.services.eval_service import EVAL_RUN_STATUS_COMPLETE, GATED_METRIC_KEYS
 from app.services.tool_loop import run_tool_loop
 from app.services.transactional.enforcement import _parse_rate_limit
 
@@ -135,14 +135,9 @@ RED_TEAM_SIGNAL_UNAVAILABLE = "unavailable"
 SHIPPABLE_SIGNAL = "measured"
 
 # The one `eval_runs.status` that means "this run reached the end of its own
-# body". eval_service.update_eval_run_status writes exactly two terminal values
-# ('complete' at eval.py:1133/1146, 'failed' from _mark_failed_on_production),
-# and the collector's selector already excludes 'running'. Written as an
-# allow-list of one rather than a deny-list containing 'failed': a status this
-# code has not heard of must fail closed, which is the same reasoning the
-# selector's `status <> 'running'` uses in the other direction (unknown is
-# still terminal, so it must not shadow a good run).
-EVAL_RUN_STATUS_COMPLETE = "complete"
+# body", imported from the module that WRITES it. `latest_run_record` asks the
+# same question of the same column one module down, and two copies of the
+# allow-list is how one of them comes to admit a status the other refuses.
 
 
 # ---------------------------------------------------------------------------

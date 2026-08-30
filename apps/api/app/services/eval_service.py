@@ -1454,8 +1454,8 @@ def _placed_score_rows(
 def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
     """Run Ragas 0.4.x evaluation over a list of eval scenarios.
 
-    Builds an EvaluationDataset from the scenarios, calls evaluate() with
-    the four M6 metrics, and returns per-scenario scores plus per-metric means.
+    Builds an EvaluationDataset from the scenarios and scores it with the four
+    M6 metrics, per scenario and per (scenario, metric).
 
     D-02 LOCKED: Dataset field name is 'reference' (field was renamed in Ragas 0.4.x).
 
@@ -1487,7 +1487,7 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
         ledger: who every judge call is billed to, and where its row goes.
 
     Returns:
-        Dict with six keys:
+        Dict with five keys:
             "scores": list[dict] — one dict per ATTRIBUTED returned row (not per
                 input row: the judge may return fewer, and a row that cannot be
                 matched to the scenario it scored is dropped, never assigned by
@@ -1498,7 +1498,6 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
                 grain `eval_results` stores, four per scored scenario, each
                 carrying its threshold, its verdict, its Judge and its ledger
                 bucket. What `write_eval_results` writes.
-            "means": dict — per-metric mean over the attributed rows.
             "sent" / "returned" / "unattributed": the judge's own denominators.
                 `returned < sent` is a partial outage; `unattributed > 0` means rows came back that cannot be placed.
     """
@@ -1523,7 +1522,6 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
         return {
             "scores": [],
             "judge_records": [],
-            "means": {metric: None for metric in METRIC_KEYS},
             "sent": 0,
             "returned": 0,
             "unattributed": 0,
@@ -1564,17 +1562,11 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
         returned_rows, attribution, valid_scenarios, metric_columns
     )
 
-    # Per-metric means over the ATTRIBUTED rows only, for the same reason: a
-    # mean that includes an observation the run cannot place is a mean over a
-    # denominator the run does not have.
-    means = {}
-    for col in metric_columns:
-        values = [
-            v for v in (score.get(col) for score in score_rows)
-            if isinstance(v, (int, float))
-        ]
-        means[col] = (sum(values) / len(values)) if values else None  # type: ignore[assignment]
-
+    # NO RUN-LEVEL MEAN IS COMPUTED HERE. This used to return a `means` dict
+    # over the attributed rows and nothing in `app/` read it: the run's numbers
+    # are `summarise_run_validity`'s, which are per dataset, because a mean over
+    # the fixed golden rows and the rotating exploratory draw together moves
+    # whenever the draw moves while looking like a quality change.
     if unattributed:
         log.warning(
             "run_ragas_eval.unattributed_rows",
@@ -1593,8 +1585,6 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
         scenario_count=len(samples),
         returned=len(returned_rows),
         attributed=len(score_rows),
-        faithfulness_mean=means.get("faithfulness"),
-        answer_relevancy_mean=means.get("answer_relevancy"),
     )
 
     return {
@@ -1607,7 +1597,6 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
         # of them being rebuilt at the call site, so the task cannot write a row
         # that disagrees with the number it reports.
         "judge_records": build_judge_records(score_rows),
-        "means": means,
         # (sent, returned, unattributed) — the judge's own denominators. A run
         # that sent forty and got five back has measured five, and nothing
         # downstream can see that from `scores` alone.
@@ -1711,6 +1700,15 @@ def write_eval_results(
         eval_run_id=eval_run_id,
         rows_written=len(judge_records),
     )
+
+
+#: The one `eval_runs.status` that means "this run reached the end of its own
+#: body". This module writes exactly two terminal values, 'complete' here and
+#: 'failed' from `_mark_failed_on_production`, and both readers of the latest run
+#: exclude 'running' in SQL and then hold what is left to this one value. An
+#: allow-list of one rather than a deny-list containing 'failed', so a status
+#: nobody has heard of fails closed instead of being read as a measurement.
+EVAL_RUN_STATUS_COMPLETE = "complete"
 
 
 def update_eval_run_status(
@@ -2504,29 +2502,36 @@ def write_eval_result(run_id: str, result: EvalResult, conn_str: str) -> bool:
         return False
 
 
-#: The newest COMPLETE run for one agent, with its record. `status = 'complete'`
-#: rather than the newest row of any status: a run in flight has written nothing
-#: yet, and a run that failed did not reach the end of its own body, so neither
-#: has a reading to compare against. kind is 'm6:{agent_id}', so a second agent
-#: sharing a tenant DB cannot have its run read as this agent's.
-_LATEST_COMPLETE_RUN_SQL = (
-    "SELECT id, result FROM eval_runs "
-    "WHERE kind = %s AND status = 'complete' "
+#: The newest FINISHED run for one agent, with its record and its status.
+#:
+#: `status <> 'running'` and not `status = 'complete'`, which is the same
+#: predicate `deployment_service._LATEST_RUN_SQL` uses, and the difference is not
+#: cosmetic: filtering to complete runs in SQL reaches back PAST a failed latest
+#: run to an older one that has numbers, and reports the older number as the
+#: agent's current reading. A run in flight is excluded because it has written
+#: nothing yet. kind is 'm6:{agent_id}', so a second agent sharing a tenant DB
+#: cannot have its run read as this agent's.
+_LATEST_RUN_SQL = (
+    "SELECT id, result, status FROM eval_runs "
+    "WHERE kind = %s AND status <> 'running' "
     "ORDER BY started_at DESC LIMIT 1"
 )
 
 
 def latest_run_record(cur, agent_id: str) -> EvalResult | None:
-    """The newest complete run's own record, read through an existing cursor.
+    """The newest finished run's own record, read through an existing cursor.
 
-    None covers a tenant with no complete run, a run that wrote no record, and a
-    stored payload that breaks a construction rule on the way out. All three mean
-    the agent's most recent finished run recorded no measurement, which is
-    unknown and never a pass. The log says which.
+    None covers a tenant with no finished run, a latest run that did not
+    complete, a run that wrote no record, and a stored payload that breaks a
+    construction rule on the way out. All four mean the agent's most recent
+    finished run recorded no measurement it can be read for, which is unknown and
+    never a pass. The log says which.
 
-    IT NEVER REACHES BACK. A recordless latest run does not fall through to an
-    older run that has numbers; reading a missing measurement as the last one
-    that existed is reading missing data as passing data.
+    IT NEVER REACHES BACK, and the SQL is where that is enforced. A failed or
+    recordless latest run does not fall through to an older run that has numbers:
+    reading last week's measurement as this morning's is reading missing data as
+    passing data, and the alert this feeds would then compare a threshold against
+    a run that has been superseded twice.
 
     Takes a cursor rather than a dsn because `digest_service` reads three other
     things down the same connection. `read_eval_result` is the by-run-id twin.
@@ -2535,8 +2540,20 @@ def latest_run_record(cur, agent_id: str) -> EvalResult | None:
         cur: a live cursor on the PRODUCTION tenant DB.
         agent_id: the agent whose runs are keyed 'm6:{agent_id}'.
     """
-    cur.execute(_LATEST_COMPLETE_RUN_SQL, (f"m6:{agent_id}",))
+    cur.execute(_LATEST_RUN_SQL, (f"m6:{agent_id}",))
     row = cur.fetchone()
+    if row and row[2] != EVAL_RUN_STATUS_COMPLETE:
+        log.info(
+            "eval_service.latest_run_record.did_not_complete",
+            agent_id=agent_id,
+            run_id=str(row[0]),
+            run_status=row[2],
+            detail=(
+                "the newest finished run did not complete, so it has no reading "
+                "and an older run's is not this agent's current one"
+            ),
+        )
+        return None
     if not row or row[1] is None:
         log.info("eval_service.latest_run_record.absent", agent_id=agent_id)
         return None
