@@ -7,6 +7,15 @@ Evaluates two conditions per agent:
 
 Writes new Alert rows to control DB. Skips if active alert of same type exists.
 Sends plain-text email notification after each new alert (fire-and-forget).
+
+WHERE "LATEST FAITHFULNESS" COMES FROM (#51 slice 4). It used to be
+`AVG(er.score)` over the latest complete run's `eval_results` rows, joined here
+in this module's own SQL — a fourth derivation of a number the run had already
+computed, and one that pooled the golden and exploratory halves into a single
+mean. It is now lifted off `eval_runs.result`, the record `run_eval_suite`
+writes once at the end of its own body, through the same
+`run_level_metrics` rule the console route and the deploy gate read. Nothing
+here averages anything.
 """
 from __future__ import annotations
 
@@ -20,42 +29,42 @@ from sqlalchemy import text
 
 from app.core.config import settings
 from app.models.alert import Alert
+from app.services.eval_service import latest_faithfulness
 
 log = structlog.get_logger(__name__)
 
 
-def _get_latest_faithfulness(agent_id: str, conn_str: str) -> float | None:
-    """Fetch latest faithfulness score from the TENANT DB eval_results table.
+def latest_faithfulness_reading(
+    agent_id: str, conn_str: str
+) -> tuple[float | None, str | None]:
+    """The latest complete run's faithfulness and the dataset it belongs to.
 
-    Must query the tenant DB (not control DB) — eval_runs/eval_results only
-    exist in per-tenant Neon DBs. conn_str must NOT be logged (CTL-08).
+    `eval_service.latest_faithfulness` is the rule and carries the reasoning: the
+    number is lifted off `eval_runs.result` through `run_level_metrics`, never
+    averaged here, and a run whose two datasets both scored has no run-level
+    number to quote. This function only owns the connection.
+
+    (None, None) on any failure, because an alert that cannot read a measurement
+    must not invent one. Must query the tenant DB (not control DB) — eval_runs
+    only exists in per-tenant Neon DBs. conn_str must NOT be logged (CTL-08).
     """
     try:
         conn = psycopg2.connect(conn_str, connect_timeout=10)
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT AVG(er.score)
-                    FROM eval_results er
-                    JOIN eval_runs r ON er.eval_run_id = r.id
-                    WHERE r.kind = %s
-                      AND r.status = 'complete'
-                      AND er.metric = 'faithfulness'
-                      AND r.started_at = (
-                          SELECT MAX(started_at) FROM eval_runs
-                          WHERE kind = %s AND status = 'complete'
-                      )
-                    """,
-                    (f"m6:{agent_id}", f"m6:{agent_id}"),
-                )
-                row = cur.fetchone()
-                return float(row[0]) if row and row[0] is not None else None
+                return latest_faithfulness(cur, agent_id)
         finally:
             conn.close()
     except Exception as exc:
-        log.warning("alert_service.faithfulness_fetch_failed", agent_id=agent_id, error=str(exc))
-        return None
+        log.warning(
+            "alert_service.faithfulness_fetch_failed", agent_id=agent_id, error=str(exc)
+        )
+        return (None, None)
+
+
+def _get_latest_faithfulness(agent_id: str, conn_str: str) -> float | None:
+    """The number alone, for the caller that only compares it to a threshold."""
+    return latest_faithfulness_reading(agent_id, conn_str)[0]
 
 
 def _get_latest_critical_count(agent_id: str, conn_str: str) -> int:

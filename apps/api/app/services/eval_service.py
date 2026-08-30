@@ -100,6 +100,7 @@ from app.domain.eval_result import (
     Invocation,
     Measurement,
     cost_of_run,
+    run_level_metrics,
 )
 from app.domain.judge_identity import JUDGE_PROMPT_VERSION, JudgeIdentity
 from app.domain.judge_record import JudgeRecord
@@ -2366,6 +2367,94 @@ def write_eval_result(run_id: str, result: EvalResult, conn_str: str) -> bool:
             detail="the run's numbers live only in this task's return value",
         )
         return False
+
+
+#: The newest COMPLETE run for one agent, with its record. `status = 'complete'`
+#: rather than the newest row of any status: a run in flight has written nothing
+#: yet, and a run that failed did not reach the end of its own body, so neither
+#: has a reading to compare against. kind is 'm6:{agent_id}', so a second agent
+#: sharing a tenant DB cannot have its run read as this agent's.
+_LATEST_COMPLETE_RUN_SQL = (
+    "SELECT id, result FROM eval_runs "
+    "WHERE kind = %s AND status = 'complete' "
+    "ORDER BY started_at DESC LIMIT 1"
+)
+
+
+def latest_run_record(cur, agent_id: str) -> EvalResult | None:
+    """The newest complete run's own record, read through an existing cursor.
+
+    None covers a tenant with no complete run, a run that wrote no record, and a
+    stored payload that breaks a construction rule on the way out. All three mean
+    the agent's most recent finished run recorded no measurement, which is
+    unknown and never a pass. The log says which.
+
+    IT NEVER REACHES BACK. A recordless latest run does not fall through to an
+    older run that has numbers; reading a missing measurement as the last one
+    that existed is reading missing data as passing data.
+
+    Takes a cursor rather than a dsn because `digest_service` reads three other
+    things down the same connection. `read_eval_result` is the by-run-id twin.
+
+    Args:
+        cur: a live cursor on the PRODUCTION tenant DB.
+        agent_id: the agent whose runs are keyed 'm6:{agent_id}'.
+    """
+    cur.execute(_LATEST_COMPLETE_RUN_SQL, (f"m6:{agent_id}",))
+    row = cur.fetchone()
+    if not row or row[1] is None:
+        log.info("eval_service.latest_run_record.absent", agent_id=agent_id)
+        return None
+    try:
+        return EvalResult.from_payload(row[1])
+    except InvalidEvalResult as exc:
+        log.error(
+            "eval_service.latest_run_record.unreadable",
+            run_id=str(row[0]),
+            error=str(exc),
+            detail="the stored record breaks a rule; the run reads as unmeasured",
+        )
+        return None
+
+
+def latest_faithfulness(cur, agent_id: str) -> tuple[float | None, str | None]:
+    """The newest complete run's faithfulness, and the dataset it belongs to.
+
+    ONE DEFINITION FOR THE ALERT AND THE DIGEST. Both used to run their own
+    `AVG(er.score) ... WHERE er.metric = 'faithfulness'` join, two copies of one
+    query that also pooled the golden and exploratory halves into a single mean.
+    This lifts the number through `run_level_metrics`, the same rule the console
+    route and the deploy gate read, so the three cannot name different datasets.
+
+    (None, None) whenever there is no number: no complete run, no record, an
+    unreadable record, a run that measured no faithfulness, and a run whose two
+    datasets both scored. THE LAST ONE COSTS SOMETHING and it is deliberate. A
+    tenant with a designated golden set has two measurements of faithfulness and
+    no honest way to combine them, so neither reader has a run-level number and
+    the alert does not fire. Averaging them would produce a figure that moves
+    whenever the exploratory draw moves, and an alert that fires on the draw is
+    worse than one that does not fire. Open work, beside #119.
+
+    Args:
+        cur: a live cursor on the PRODUCTION tenant DB.
+        agent_id: the agent whose runs are keyed 'm6:{agent_id}'.
+    """
+    record = latest_run_record(cur, agent_id)
+    if record is None:
+        return (None, None)
+    metrics, dataset = run_level_metrics(record)
+    reading = metrics["faithfulness"]
+    if not reading.measured:
+        log.info(
+            "eval_service.latest_faithfulness.unmeasured",
+            agent_id=agent_id,
+            run_id=record.run_id,
+            scored_datasets=sorted(
+                name for name, outcome in record.datasets.items() if outcome.scored
+            ),
+        )
+        return (None, None)
+    return (reading.value, dataset)
 
 
 def read_eval_result(run_id: str, conn_str: str) -> EvalResult | None:
