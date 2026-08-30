@@ -199,6 +199,17 @@ EVAL_RESPONSE_SOURCE_NONE_SCORED = "no_response_scored"
 # that cannot influence a score when the run did not measure an invoked agent.
 # judge_model_id is deliberately NOT here: the judge does run, so a judge change
 # does move the numbers whatever the agent did.
+#
+# THAT PAIR IS THE JUDGE THE RUN REQUESTED, NEVER THE ONE THAT SERVED IT.
+# build_eval_run_config reads judge_model_id and judge_reasoning_effort off the
+# routing table before the first judge call, so they say which Judge the run
+# asked for. What answered is a separate observation and it lives on the record:
+# EvalResult carries `judge_identity` from the four routes when they agree and
+# `served_model` off the run's own ledger rows, and every eval_results row
+# carries the per-call identity behind its verdict (#51 slices 1 and 2). A
+# provider that silently serves a different model moves the scores without
+# moving this pair. NO READER MAY PRESENT THE CONFIG PAIR AS THE JUDGE THAT
+# SERVED; a reader that wants the served identity reads the record.
 AGENT_DEPENDENT_DIMENSIONS: list[str] = [
     "prompt_version_id",
     "model_id",
@@ -1744,6 +1755,8 @@ def build_eval_run_config(
     load-bearing: a tuple that records a dimension the measurement cannot see
     turns "two runs, one difference, identical scores" into a false finding of
     quality-neutrality — which is exactly what every pre-P2 run said.
+    `judge_model_id` / `judge_reasoning_effort` are the judge this run REQUESTED,
+    never the one that served it; AGENT_DEPENDENT_DIMENSIONS above says why.
 
     AT INSERT TIME THE HONEST ANSWER IS ALWAYS "NOT YET". This function runs
     before the first agent turn, because the eval_runs row is also the per-agent
@@ -1880,9 +1893,7 @@ def build_eval_run_config(
         # these scores are a function of it is a separate claim, carried by
         # agent_invoked / dimensions_not_exercised below.
         "model_id": AGENT_TURN_MODEL,
-        # A judge change moves every score without the agent changing at all, so
-        # both halves of its identity come off the routing table its clients are
-        # built from and the record cannot name a Judge the run did not use.
+        # REQUESTED, never served, off the routing table its clients are built from.
         "judge_model_id": route_for(JUDGE_PURPOSES[0]).model,
         "judge_reasoning_effort": route_for(JUDGE_PURPOSES[0]).reasoning_effort,
         "retrieval_config_hash": retrieval_config_hash,

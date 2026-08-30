@@ -18,12 +18,13 @@ Architecture:
 
 These routes compute nothing (#51 slice 3)
 ------------------------------------------
-`list_eval_runs` used to derive a run's figures a second time, in SQL, over
-`eval_results`: COUNT(DISTINCT scenario_id) and four AVGs, plus a companion
-query that re-split the same rows into golden and exploratory. The run itself
-had already computed every one of those figures and written them down, so the
-console and the task were two arithmetics over one run, free to disagree.
-(`get_eval_run_results` still recomputes its verdict. That is the next commit.)
+Both routes used to derive a run's figures a second time, in SQL, over
+`eval_results`. `list_eval_runs` ran COUNT(DISTINCT scenario_id) and four AVGs;
+a companion query re-split the same rows into golden and exploratory; and
+`get_eval_run_results` re-reached each scenario's verdict by comparing scores to
+today's settings. The run itself had already computed every one of those figures
+and written them down, so the console and the task were two arithmetics over one
+run, free to disagree.
 
 #26 is what that disagreement looked like from the console: the route reported
 18 scenarios while the task reported 20 attempted. Neither was wrong about its
@@ -38,6 +39,11 @@ Now every number here is lifted from one place:
         `scenario_count` is its `attempted`, `valid_scenario_count` its `valid`,
         `scored_scenario_count` its `scored`, and every metric is a stored
         `Measurement` copied through verbatim.
+    eval_results rows: read as stored, never aggregated. Each row carries the
+        `binary_verdict` the judge reached and the `threshold` it was reached
+        against (migration 0023), so a later change to the gate cannot restate a
+        verdict already written down.
+
 What the response says when a number does not exist:
 
     result: "present" or "absent". Absent means the run has no record, which
@@ -58,9 +64,11 @@ What the response says when a number does not exist:
         apps/admin types these fields `number` and calls `.toFixed(2)` on them
         (agents/[id]/eval/page.tsx:291) and plots them (`:184`), so a null would
         throw on the eval page. DO NOT read these for quality; read `metrics`.
-    passed: tri-state. None when a gated metric was not measured, because
-        unknown is neither a pass nor a fail. A client that cannot read null
-        degrades to "not passed", which fails closed.
+    passed: tri-state, and no longer computed here. It is the conjunction of
+        the `binary_verdict` values stored on the scenario's gated rows. None
+        when any of them is NULL, because unknown is neither a pass nor a fail.
+        A client that cannot read null degrades to "not passed", which fails
+        closed.
     datasets: the record's per-dataset outcomes. The golden half is fixed, runs
         in full every night and is comparable across runs; the exploratory half
         rotates. Each carries its own three counts and its own four
@@ -86,7 +94,7 @@ from app.core.security import fernet_decrypt
 from app.domain.eval_result import DatasetOutcome, EvalResult, InvalidEvalResult
 from app.models.agent import Agent
 from app.models.tenant import Tenant
-from app.services.eval_service import EVAL_DATASETS, threshold_for
+from app.services.eval_service import EVAL_DATASETS
 from app.services.eval_service import METRIC_KEYS as EVAL_METRIC_KEYS
 from app.worker.tasks.runtime.eval import run_eval_suite
 
@@ -164,23 +172,11 @@ METRIC_KEYS = EVAL_METRIC_KEYS
 
 # The two metrics the promotion gate is defined over (D-21 LOCKED). Kept
 # separate from METRIC_KEYS because `passed` is a claim about these two only.
+# The NUMBERS behind them are not read here at all any more, because each row
+# stores the threshold its verdict was reached against. Which metrics carry a
+# verdict is still this route's question, and `threshold_for` returns a number
+# for exactly these two. test_eval_service.py pins the pair together.
 GATED_METRIC_KEYS = ("faithfulness", "answer_relevancy")
-
-
-def _gate_thresholds() -> dict[str, float | None]:
-    """The gate each of the two metrics is judged against, from one definition.
-
-    `threshold_for` is the function `write_eval_results` calls to stamp
-    `eval_results.threshold` onto every row it writes (#51 slice 2). This route
-    named the two settings itself until then, so the number a scenario was
-    rendered against here was free to drift from the number the run that
-    produced it was judged against.
-
-    Slice 3 deletes this and reads the stored verdict off the row. Until it
-    does, the two comparisons at least come from one place. It is computed once
-    per request rather than once per scenario, which is also where it used to be.
-    """
-    return {key: threshold_for(key) for key in GATED_METRIC_KEYS}
 
 
 # OPS-12: ORRERY ledger — eval provenance (born-in-production vs authored counts).
@@ -497,7 +493,31 @@ async def list_eval_runs(
 # Route 2: GET /agents/{agent_id}/eval-runs/{run_id}/results — per-scenario results
 # ---------------------------------------------------------------------------
 
+# The judge rows as stored. `binary_verdict` is the decision the judge reached at
+# scoring time and `threshold` is the gate it was reached against (migration
+# 0023), both stamped by `write_eval_results`. Reading them instead of comparing
+# `score` to today's settings is what stops a later change to the gate restating
+# a verdict already written down.
 _GET_RUN_RESULTS_SQL = """
+    SELECT
+        res.scenario_id,
+        es.question,
+        es.source,
+        res.metric,
+        res.score,
+        res.binary_verdict,
+        res.threshold
+    FROM eval_results res
+    LEFT JOIN eval_scenarios es ON es.id::text = res.scenario_id
+    WHERE res.eval_run_id = %(run_id)s
+    ORDER BY res.scenario_id, res.metric
+"""
+
+# The pre-0023 shape, used only after the query above raises UndefinedColumn. A
+# row written before the verdict had a column of its own carries no verdict, so
+# every scenario on such a run reads `passed: null`, which is unknown and what a
+# run whose decisions were never recorded actually is.
+_GET_RUN_RESULTS_PRE_0023_SQL = """
     SELECT
         res.scenario_id,
         es.question,
@@ -509,6 +529,46 @@ _GET_RUN_RESULTS_SQL = """
     WHERE res.eval_run_id = %(run_id)s
     ORDER BY res.scenario_id, res.metric
 """
+
+#: A metric with no row on this run, or a row from before 0023. No score, no
+#: verdict, no gate.
+_NO_JUDGE_ROW = {"score": None, "measured": False, "verdict": None, "threshold": None}
+
+
+def _judge_reading(score, verdict, threshold) -> dict:
+    """One stored judge row, rendered without deciding anything.
+
+    `verdict` is None for an ungated metric (`threshold_for` gives
+    `context_precision` and `context_recall` no gate, so their rows carry none)
+    and None for a gated metric the judge produced no score for. Both mean the
+    same thing to a reader of `passed`: there is no decision here.
+    """
+    return {
+        "score": float(score) if score is not None else None,
+        "measured": score is not None,
+        "verdict": None if verdict is None else bool(verdict),
+        "threshold": float(threshold) if threshold is not None else None,
+    }
+
+
+async def _fetch_run_results(conn_str: str, run_id: str) -> list[tuple]:
+    """One run's judge rows, degrading to a tenant DB that predates 0023.
+
+    Returns:
+        Seven-column rows: (scenario_id, question, source, metric, score,
+        binary_verdict, threshold).
+    """
+    params = {"run_id": run_id}
+    try:
+        return await asyncio.to_thread(
+            _query_tenant_db_sync, conn_str, _GET_RUN_RESULTS_SQL, params
+        )
+    except psycopg2.errors.UndefinedColumn:
+        log.info("get_eval_run_results.verdict_columns_absent", run_id=run_id)
+        rows = await asyncio.to_thread(
+            _query_tenant_db_sync, conn_str, _GET_RUN_RESULTS_PRE_0023_SQL, params
+        )
+        return [(*row, None, None) for row in rows]
 
 
 @router.get("/agents/{agent_id}/eval-runs/{run_id}/results")
@@ -526,12 +586,20 @@ async def get_eval_run_results(
     Response shape:
         {"results": [{scenario_id, question, source, scores, metrics, passed}]}
 
-    passed = True when faithfulness >= EVAL_FAITHFULNESS_THRESHOLD AND
-    answer_relevancy >= EVAL_RELEVANCY_THRESHOLD (the 2-metric gate, D-21
-    LOCKED), False when a measured score misses it, and None when either gated
-    metric was never measured. That third state is the point: a judge outage
-    NULLs every score, and rendering those rows as passed=false reports a total
-    quality collapse for a run that measured nothing.
+    passed is the conjunction of the `binary_verdict` values stored on the
+    scenario's two gated rows (D-21 LOCKED). The route reaches no verdict of its
+    own: it used to re-compare every score to whatever the thresholds were at
+    request time, so a deployment that moved the gate silently restated the
+    verdicts of every run already scored against the old one.
+
+    None when either gated verdict is NULL, which covers a judge outage, a
+    metric with no row, and a run written before migration 0023 gave the verdict
+    a column. That third state is the point: rendering an absent decision as
+    passed=false reports a total quality collapse for a run that decided
+    nothing.
+
+    There is no run-level verdict here and this route never reported one. The
+    function that computes one is ticket 17's `decide()`.
     """
     # 1. Fetch agent and verify ownership (same as list_eval_runs)
     agent = await db.get(Agent, agent_id)
@@ -548,59 +616,45 @@ async def get_eval_run_results(
     conn_str = fernet_decrypt(agent.neon_connection_string)
 
     # 3. Query tenant DB in a thread pool
-    rows = await asyncio.to_thread(
-        _query_tenant_db_sync,
-        conn_str,
-        _GET_RUN_RESULTS_SQL,
-        {"run_id": str(run_id)},
-    )
+    rows = await _fetch_run_results(conn_str, str(run_id))
 
-    # 4. Group rows by scenario_id. Each row is:
-    #    (scenario_id, question, source, metric, score) — score may be NULL,
-    #    which means the judge produced no valid observation for that metric.
-    #    A metric with no row at all is equally unmeasured, so both start None.
+    # 4. Group rows by scenario_id, each row read exactly as it was written:
+    #    (scenario_id, question, source, metric, score, binary_verdict,
+    #    threshold). A metric with no row at all reads the same as a row the
+    #    judge scored nothing for, which is what both of them are. No reading.
     scenarios: dict[str, dict] = {}
-    for scenario_id, question, source, metric, score in rows:
+    for scenario_id, question, source, metric, score, verdict, threshold in rows:
         sid = str(scenario_id)
         if sid not in scenarios:
             scenarios[sid] = {
                 "scenario_id": sid,
                 "question": question or "",
                 "source": source or "generated",
-                "measured": {key: None for key in METRIC_KEYS},
+                "metrics": {key: dict(_NO_JUDGE_ROW) for key in METRIC_KEYS},
             }
-        if metric in scenarios[sid]["measured"] and score is not None:
-            scenarios[sid]["measured"][metric] = float(score)
-
-    # 5. Compute the passed flag over the two GATED metrics (D-21). Unknown is
-    #    neither a pass nor a fail: if either gated metric was not measured the
-    #    verdict is None, because "we did not measure it" must never be
-    #    rendered as "it failed" — that is what turns a judge outage into an
-    #    apparent quality collapse and an owner-initiated rollback.
-    results = []
-    thresholds = _gate_thresholds()
-    for scen in scenarios.values():
-        measured = scen.pop("measured")
-        if any(measured[key] is None for key in GATED_METRIC_KEYS):
-            passed = None
-        else:
-            passed = all(
-                measured[key] >= thresholds[key] for key in GATED_METRIC_KEYS
+        if metric in scenarios[sid]["metrics"]:
+            scenarios[sid]["metrics"][metric] = _judge_reading(
+                score, verdict, threshold
             )
+
+    # 5. The scenario's verdict is the conjunction of its stored ones over the
+    #    two GATED metrics (D-21). Unknown is neither a pass nor a fail: a NULL
+    #    verdict on either gated metric makes the scenario not passed and says
+    #    so with None, because "nobody decided" rendered as "it failed" is what
+    #    turns a judge outage into an apparent quality collapse and an
+    #    owner-initiated rollback.
+    results = []
+    for scen in scenarios.values():
+        verdicts = [scen["metrics"][key]["verdict"] for key in GATED_METRIC_KEYS]
         results.append(
             {
                 **scen,
-                # The honest reading — see the module docstring.
-                "metrics": {
-                    key: {"score": measured[key], "measured": measured[key] is not None}
-                    for key in METRIC_KEYS
-                },
                 # Numeric compatibility projection: unmeasured reads 0.0.
                 "scores": {
-                    key: measured[key] if measured[key] is not None else 0.0
-                    for key in METRIC_KEYS
+                    key: reading["score"] if reading["measured"] else 0.0
+                    for key, reading in scen["metrics"].items()
                 },
-                "passed": passed,
+                "passed": None if None in verdicts else all(verdicts),
             }
         )
 
@@ -610,10 +664,10 @@ async def get_eval_run_results(
         run_id=str(run_id),
         tenant_id=str(tenant.id),
         scenario_count=len(results),
-        # The denominator, in the log too: a run whose scenarios are all
-        # unmeasured is a run that measured nothing, and it should be visible
-        # here without anyone opening the response body.
-        unmeasured_scenario_count=sum(1 for r in results if r["passed"] is None),
+        # The denominator, in the log too: a run whose scenarios all carry no
+        # verdict is a run that decided nothing, and it should be visible here
+        # without anyone opening the response body.
+        unverdicted_scenario_count=sum(1 for r in results if r["passed"] is None),
     )
     return {"results": results}
 

@@ -8,7 +8,7 @@ Tests:
 
 Coverage:
     - Happy-path response shapes (RESEARCH.md §9)
-    - list_eval_runs reads the record and computes nothing (#51 slice 3)
+    - The routes read the record and the rows, and compute nothing (#51 slice 3)
     - Unmeasured vs measured-zero: no reading is 'unknown', never 0.0
     - IDOR prevention: 404 on agent not found, 404 on cross-tenant access
     - POST trigger: 202 on ready agent, 400 on non-ready agent, 404 on unknown agent
@@ -16,10 +16,10 @@ Coverage:
     - GET routes: asyncio.to_thread + psycopg2 path mocked correctly
     - Auth: 401/403 when X-API-Key header is missing (no dependency overrides)
 
-The fixtures build every record through `EvalResult`, so a payload these tests
-drive the route with is a payload `run_eval_suite` could have written. A
-hand-typed dict would let this module assert on a shape the writer cannot
-produce.
+The fixtures build every record through `EvalResult` and every verdict through
+`verdict_for`, so a payload these tests drive the route with is a payload
+`run_eval_suite` could have written. A hand-typed dict would let this module
+assert on a shape the writer cannot produce.
 """
 
 from datetime import datetime, timezone
@@ -39,10 +39,11 @@ from app.domain.eval_result import (
     InvocationStatus,
     Measurement,
 )
+from app.domain.judge_record import verdict_for
 from app.main import app
 from app.models.agent import Agent
 from app.models.tenant import Tenant
-from app.services.eval_service import METRIC_KEYS
+from app.services.eval_service import METRIC_KEYS, threshold_for
 
 # ---------------------------------------------------------------------------
 # Helper factories
@@ -230,14 +231,35 @@ def _fake_ledger_rows() -> list[tuple]:
     return [(3, 2, 15)]
 
 
+def _judge_row(scenario_id: str, metric: str, score: float | None) -> tuple:
+    """One `eval_results` row as `write_eval_results` stores it (migration 0023).
+
+    The verdict comes from `verdict_for` and the gate from `threshold_for`, the
+    same two functions the writer calls, so a row here carries the decision the
+    writer would have stamped rather than one this module invented. An ungated
+    metric gets no threshold and therefore no verdict.
+    """
+    threshold = threshold_for(metric)
+    return (
+        scenario_id,
+        "What is your return policy?",
+        "generated",
+        metric,
+        score,
+        verdict_for(score, threshold),
+        threshold,
+    )
+
+
 def _fake_eval_results_rows(run_id: str, scenario_id: str) -> list[tuple]:
-    """Rows for a single scenario with all four metrics."""
-    return [
-        (scenario_id, "What is your return policy?", "generated", "faithfulness", 0.95),
-        (scenario_id, "What is your return policy?", "generated", "answer_relevancy", 0.88),
-        (scenario_id, "What is your return policy?", "generated", "context_precision", 0.90),
-        (scenario_id, "What is your return policy?", "generated", "context_recall", 0.85),
-    ]
+    """Rows for a single scenario with all four metrics, all above their gate."""
+    scores = {
+        "faithfulness": 0.95,
+        "answer_relevancy": 0.88,
+        "context_precision": 0.90,
+        "context_recall": 0.85,
+    }
+    return [_judge_row(scenario_id, metric, scores[metric]) for metric in METRIC_KEYS]
 
 
 # ---------------------------------------------------------------------------
@@ -856,8 +878,8 @@ class TestGetEvalRunResults:
         assert abs(scores["faithfulness"] - 0.95) < 0.001
         assert abs(scores["answer_relevancy"] - 0.88) < 0.001
 
-    async def test_passed_flag_true_when_all_scores_above_threshold(self):
-        """passed=True when all four scores >= EVAL_FAITHFULNESS_THRESHOLD (0.90)."""
+    async def test_passed_flag_true_when_both_stored_verdicts_are_true(self):
+        """passed=True when both gated rows carry a True verdict."""
         fake_tenant = _make_fake_tenant()
         ready_agent = _make_ready_agent(fake_tenant)
         mock_db = _make_mock_db_returning_agent(ready_agent)
@@ -866,10 +888,10 @@ class TestGetEvalRunResults:
         scenario_id = str(uuid4())
         # All scores >= 0.90
         passing_rows = [
-            (scenario_id, "Q?", "generated", "faithfulness", 0.95),
-            (scenario_id, "Q?", "generated", "answer_relevancy", 0.92),
-            (scenario_id, "Q?", "generated", "context_precision", 0.91),
-            (scenario_id, "Q?", "generated", "context_recall", 0.90),
+            _judge_row(scenario_id, "faithfulness", 0.95),
+            _judge_row(scenario_id, "answer_relevancy", 0.92),
+            _judge_row(scenario_id, "context_precision", 0.91),
+            _judge_row(scenario_id, "context_recall", 0.90),
         ]
 
         app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
@@ -893,12 +915,12 @@ class TestGetEvalRunResults:
         body = response.json()
         assert body["results"][0]["passed"] is True
 
-    async def test_passed_flag_false_when_gated_score_below_threshold(self):
-        """passed=False when a GATED metric falls below its threshold.
+    async def test_passed_flag_false_when_a_gated_verdict_is_false(self):
+        """passed=False when a GATED metric's stored verdict is False.
 
         D-21 LOCKED gates on exactly two metrics, faithfulness AND
-        answer_relevancy.
-        Here answer_relevancy = 0.79 < EVAL_RELEVANCY_THRESHOLD (0.90).
+        answer_relevancy. Here answer_relevancy scored 0.79 and the writer
+        stamped verdict False against the threshold of the day.
         """
         fake_tenant = _make_fake_tenant()
         ready_agent = _make_ready_agent(fake_tenant)
@@ -908,10 +930,10 @@ class TestGetEvalRunResults:
         scenario_id = str(uuid4())
         # answer_relevancy = 0.79 — below threshold, and it IS part of the gate
         failing_rows = [
-            (scenario_id, "Q?", "generated", "faithfulness", 0.95),
-            (scenario_id, "Q?", "generated", "answer_relevancy", 0.79),
-            (scenario_id, "Q?", "generated", "context_precision", 0.91),
-            (scenario_id, "Q?", "generated", "context_recall", 0.93),
+            _judge_row(scenario_id, "faithfulness", 0.95),
+            _judge_row(scenario_id, "answer_relevancy", 0.79),
+            _judge_row(scenario_id, "context_precision", 0.91),
+            _judge_row(scenario_id, "context_recall", 0.93),
         ]
 
         app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
@@ -936,7 +958,7 @@ class TestGetEvalRunResults:
         assert body["results"][0]["passed"] is False
 
     async def test_passed_flag_ignores_ungated_metrics_below_threshold(self):
-        """passed stays True when only NON-gated metrics are below threshold.
+        """passed stays True when only NON-gated metrics are low.
 
         Pins the D-21 LOCKED contract: context_precision and context_recall are
         reported but deliberately NOT part of the promotion gate. A prior version
@@ -952,10 +974,10 @@ class TestGetEvalRunResults:
         scenario_id = str(uuid4())
         # Both gated metrics pass; both ungated metrics are well below threshold.
         rows = [
-            (scenario_id, "Q?", "generated", "faithfulness", 0.95),
-            (scenario_id, "Q?", "generated", "answer_relevancy", 0.92),
-            (scenario_id, "Q?", "generated", "context_precision", 0.41),
-            (scenario_id, "Q?", "generated", "context_recall", 0.39),
+            _judge_row(scenario_id, "faithfulness", 0.95),
+            _judge_row(scenario_id, "answer_relevancy", 0.92),
+            _judge_row(scenario_id, "context_precision", 0.41),
+            _judge_row(scenario_id, "context_recall", 0.39),
         ]
 
         app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
@@ -979,8 +1001,13 @@ class TestGetEvalRunResults:
         body = response.json()
         assert body["results"][0]["passed"] is True
 
-    async def _get_results(self, rows: list[tuple]) -> dict:
-        """Drive GET /eval-runs/{run_id}/results over *rows*."""
+    async def _get_results(self, rows: list[tuple], pre_0023: bool = False) -> dict:
+        """Drive GET /eval-runs/{run_id}/results over *rows*.
+
+        pre_0023 stands in for a tenant DB written before the verdict had a
+        column of its own: the wide SELECT raises UndefinedColumn and the narrow
+        one returns the same rows with their verdict and threshold stripped.
+        """
         fake_tenant = _make_fake_tenant()
         ready_agent = _make_ready_agent(fake_tenant)
         mock_db = _make_mock_db_returning_agent(ready_agent)
@@ -988,10 +1015,22 @@ class TestGetEvalRunResults:
         app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
         app.dependency_overrides[get_async_db] = lambda: mock_db
 
+        if pre_0023:
+            to_thread = AsyncMock(
+                side_effect=[
+                    psycopg2.errors.UndefinedColumn(
+                        "column res.binary_verdict does not exist"
+                    ),
+                    [row[:5] for row in rows],
+                ]
+            )
+        else:
+            to_thread = AsyncMock(return_value=rows)
+
         try:
             with (
                 patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://fake/db"),
-                patch("app.api.v1.evals.asyncio.to_thread", new=AsyncMock(return_value=rows)),
+                patch("app.api.v1.evals.asyncio.to_thread", new=to_thread),
             ):
                 async with AsyncClient(
                     transport=ASGITransport(app=app), base_url="http://test"
@@ -1014,12 +1053,7 @@ class TestGetEvalRunResults:
         nothing, which is the reading that gets a healthy agent rolled back.
         """
         scenario_id = str(uuid4())
-        rows = [
-            (scenario_id, "Q?", "generated", "faithfulness", None),
-            (scenario_id, "Q?", "generated", "answer_relevancy", None),
-            (scenario_id, "Q?", "generated", "context_precision", None),
-            (scenario_id, "Q?", "generated", "context_recall", None),
-        ]
+        rows = [_judge_row(scenario_id, metric, None) for metric in METRIC_KEYS]
 
         body = await self._get_results(rows)
         result = body["results"][0]
@@ -1027,7 +1061,12 @@ class TestGetEvalRunResults:
         assert result["passed"] is None, (
             "an unmeasured scenario was rendered as a failing one"
         )
-        assert result["metrics"]["faithfulness"] == {"score": None, "measured": False}
+        assert result["metrics"]["faithfulness"] == {
+            "score": None,
+            "measured": False,
+            "verdict": None,
+            "threshold": threshold_for("faithfulness"),
+        }
 
     async def test_a_gated_metric_that_is_missing_makes_the_verdict_unknown(self):
         """Half a measurement is not a verdict.
@@ -1038,8 +1077,8 @@ class TestGetEvalRunResults:
         """
         scenario_id = str(uuid4())
         rows = [
-            (scenario_id, "Q?", "generated", "faithfulness", 0.99),
-            (scenario_id, "Q?", "generated", "answer_relevancy", None),
+            _judge_row(scenario_id, "faithfulness", 0.99),
+            _judge_row(scenario_id, "answer_relevancy", None),
         ]
 
         body = await self._get_results(rows)
@@ -1054,15 +1093,116 @@ class TestGetEvalRunResults:
         fail OPEN on the one reading that should stop a deploy."""
         scenario_id = str(uuid4())
         rows = [
-            (scenario_id, "Q?", "generated", "faithfulness", 0.0),
-            (scenario_id, "Q?", "generated", "answer_relevancy", 0.0),
+            _judge_row(scenario_id, "faithfulness", 0.0),
+            _judge_row(scenario_id, "answer_relevancy", 0.0),
         ]
 
         body = await self._get_results(rows)
         result = body["results"][0]
 
         assert result["passed"] is False
-        assert result["metrics"]["faithfulness"] == {"score": 0.0, "measured": True}
+        assert result["metrics"]["faithfulness"] == {
+            "score": 0.0,
+            "measured": True,
+            "verdict": False,
+            "threshold": threshold_for("faithfulness"),
+        }
+
+    async def test_the_verdict_is_the_stored_one_and_not_a_fresh_comparison(self):
+        """A row scoring 0.99 against a stored verdict of False reads as False.
+
+        The proof that this route stopped deciding. Its old code compared every
+        score to whatever `settings` held at request time, so a deployment that
+        lowered the gate silently turned yesterday's failures into passes on a
+        page nobody re-ran. The row here was judged against a gate of 0.995 and
+        lost; today's gate would clear it, and the response still says False
+        because the run's decision is the run's.
+        """
+        scenario_id = str(uuid4())
+        rows = [
+            (scenario_id, "Q?", "generated", "faithfulness", 0.99, False, 0.995),
+            (scenario_id, "Q?", "generated", "answer_relevancy", 0.99, True, 0.90),
+        ]
+
+        result = (await self._get_results(rows))["results"][0]
+
+        assert threshold_for("faithfulness") < 0.99, (
+            "this test is only meaningful while today's gate would pass 0.99"
+        )
+        assert result["passed"] is False
+        assert result["metrics"]["faithfulness"]["verdict"] is False
+        assert result["metrics"]["faithfulness"]["threshold"] == 0.995, (
+            "the gate the row was judged against travels with it"
+        )
+
+    async def test_a_missing_verdict_on_a_gated_metric_is_never_a_pass(self):
+        """A score with no stored decision is not a decision.
+
+        The judge scored 0.99 and the writer stamped no verdict, which is a row
+        no rule in this system vouches for. Reading the score and deciding here
+        is the recomputation the slice removes, so the scenario reads unknown.
+        """
+        scenario_id = str(uuid4())
+        rows = [
+            (scenario_id, "Q?", "generated", "faithfulness", 0.99, None, None),
+            _judge_row(scenario_id, "answer_relevancy", 0.99),
+        ]
+
+        result = (await self._get_results(rows))["results"][0]
+
+        assert result["passed"] is None
+        assert result["metrics"]["faithfulness"]["measured"] is True
+        assert result["metrics"]["faithfulness"]["verdict"] is None
+
+    async def test_an_ungated_metric_carries_no_verdict_and_no_gate(self):
+        """context_precision and context_recall have no threshold anywhere (D-21).
+
+        Their rows carry none either, so the response reports none. Inventing a
+        gate for them would put two extra failures on every scenario for a
+        reader that aggregates verdicts.
+        """
+        scenario_id = str(uuid4())
+        result = (
+            await self._get_results(_fake_eval_results_rows(str(uuid4()), scenario_id))
+        )["results"][0]
+
+        for metric in ("context_precision", "context_recall"):
+            assert result["metrics"][metric]["verdict"] is None
+            assert result["metrics"][metric]["threshold"] is None
+            assert result["metrics"][metric]["measured"] is True, (
+                "an ungated metric is still measured; it just has nothing to clear"
+            )
+
+    async def test_pre_0023_rows_read_as_undecided_rather_than_failed(self):
+        """A run scored before the verdict had a column decided nothing on the record.
+
+        Its scores are still there and still reported. What is gone is any claim
+        about whether they cleared a gate, and a null verdict says that instead
+        of a False that would read as 30 failing scenarios.
+        """
+        scenario_id = str(uuid4())
+        rows = _fake_eval_results_rows(str(uuid4()), scenario_id)
+
+        result = (await self._get_results(rows, pre_0023=True))["results"][0]
+
+        assert result["passed"] is None
+        assert result["metrics"]["faithfulness"]["score"] == 0.95
+        assert result["metrics"]["faithfulness"]["verdict"] is None
+        assert result["metrics"]["faithfulness"]["threshold"] is None
+
+    async def test_the_results_query_selects_the_decision_and_computes_nothing(self):
+        """A source-level pin. Every test here mocks psycopg2 out, so the SQL
+        itself is the only evidence that the verdict is read rather than
+        reached."""
+        from app.api.v1.evals import _GET_RUN_RESULTS_SQL
+
+        assert "res.binary_verdict" in _GET_RUN_RESULTS_SQL
+        assert "res.threshold" in _GET_RUN_RESULTS_SQL
+        upper = _GET_RUN_RESULTS_SQL.upper()
+        for arithmetic in ("COUNT(", "AVG(", "CASE ", "SUM("):
+            assert arithmetic not in upper, (
+                f"{arithmetic.strip()} is back in the results query"
+            )
 
     async def test_returns_empty_results_when_no_rows(self):
         """Empty results list when no eval_results rows exist for the run."""

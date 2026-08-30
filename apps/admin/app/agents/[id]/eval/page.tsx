@@ -41,7 +41,10 @@ interface EvalRun {
   started_at: string
   finished_at: string | null
   status: 'running' | 'complete' | 'failed'
-  scenario_count: number
+  // Null when the run has no EvalResult record: a tenant DB predating tenant
+  // migration 0022, or a run that died before it wrote one. The API reports
+  // null rather than 0, because 0 reads as "this run attempted nothing".
+  scenario_count: number | null
   aggregate_scores: {
     faithfulness: number
     answer_relevancy: number

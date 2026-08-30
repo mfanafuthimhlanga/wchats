@@ -69,7 +69,10 @@ interface EvalRunSummary {
   started_at: string | null
   finished_at: string | null
   status: string
-  scenario_count: number
+  // Null when the run has no EvalResult record: a tenant DB predating tenant
+  // migration 0022, or a run that died before it wrote one. The API reports
+  // null rather than 0, because 0 reads as "this run attempted nothing".
+  scenario_count: number | null
   aggregate_scores: {
     faithfulness: number
     answer_relevancy: number
@@ -146,6 +149,15 @@ function formatDateTime(iso: string | null | undefined): string {
 // independent inline ternaries drifting apart.
 function pluralize(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? '' : 's'}`
+}
+
+// A run that wrote no EvalResult record reports scenario_count null (a tenant DB
+// predating tenant migration 0022, or a run that died before the write). "no
+// record" is the honest reading of that; 0 would say the run attempted nothing.
+function scenarioCount(run: EvalRunSummary): string {
+  return run.scenario_count === null
+    ? 'no record'
+    : pluralize(run.scenario_count, 'scenario')
 }
 
 // Maps the coarse `source` enum (D-13/D-16 LOCKED) to the Origin column copy.
@@ -521,8 +533,8 @@ export default function AgentOperationsRoom({
           <p className="mono head-count">
             {latestEvalRun
               ? latestEvalRun.started_at
-                ? `run ${formatDateTime(latestEvalRun.started_at)} · ${pluralize(latestEvalRun.scenario_count, 'scenario')}`
-                : pluralize(latestEvalRun.scenario_count, 'scenario')
+                ? `run ${formatDateTime(latestEvalRun.started_at)} · ${scenarioCount(latestEvalRun)}`
+                : scenarioCount(latestEvalRun)
               : 'no runs yet'}
           </p>
         </div>
@@ -539,7 +551,7 @@ export default function AgentOperationsRoom({
             <div className="chans">
               <div className="chan">
                 <span className="chan-name">scenarios</span>
-                <div className="chan-read"><span className="num chan-val">{latestEvalRun.scenario_count}</span></div>
+                <div className="chan-read"><span className="num chan-val">{latestEvalRun.scenario_count ?? 'n/a'}</span></div>
                 <p className="chan-thr">in this run</p>
               </div>
               <div className="chan">
