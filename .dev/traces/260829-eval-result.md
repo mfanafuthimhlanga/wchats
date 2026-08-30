@@ -1072,3 +1072,228 @@ they went.
 - **`generate_eval_suite` and the promote flow are untouched.** They call the
   writers this slice changed and need no edit, and neither has a test that drives
   a real row to the table.
+
+## Slice 6, the retrieval faithfulness proxy
+
+One commit, `280ff05`. Closes #81 and #84 on merge, not now: the keywords sit in a
+commit on a work branch, and GitHub acts on them when the branch reaches `main`.
+#26 and #27 are still open in the frontier for the same reason.
+
+### The plan offered two options. The evidence chose the first.
+
+The plan said keep the proxy and stamp a `context_source` on each
+`retrieval_metrics` row (migration 0024) UNLESS the live loop already populates
+`tool_calls.retrieved_chunks`. It does, so there is no migration in this slice and
+the proxy is gone instead.
+
+Four readings decided it, all in `app/worker/tasks/runtime/agent.py`:
+
+- **`:592`** the `tool_calls` INSERT names `retrieved_chunks` and passes
+  `_persisted_chunks(tc)`.
+- **`:1204`** the live turn calls `_persist_messages`, which commits inside itself.
+- **`:1243`** the terminal `agent.response` payload carries `message_id`, the
+  assistant message id `_persist_messages` just returned. That is the exact join
+  key for the turn's `tool_calls` rows, and it removes the reason the old proxy
+  existed: `messages` has no `job_id`, so `_fetch_last_user_message` correlates by
+  recency, and nobody had looked for an id that correlates exactly.
+- **`:1295`** the chain carrying this task is dispatched after both. The rows are
+  committed and the id is on the event before the task can run.
+
+`tests/unit/test_persist_retrieved_chunks.py` drives the writer, nine tests, and
+its `test_an_errored_retrieve_stores_null` is #81's guard already standing on the
+writer's side of the seam.
+
+**So #81 closes by honouring a flag that was already honoured, one table over.**
+`_persisted_chunks` returns SQL NULL for an errored retrieve. The reader had to
+stop reading a different source, not learn a new check.
+
+**And #84 closes by removal.** Slice 1's trace expected this slice to stamp a
+proxy version beside `CONTEXT_PROXY_VERSION`. Stamping would have made the
+cutover discontinuity readable and left #81 standing, which is what #84 itself
+says when it calls the second option "the honest one". `run_eval_suite` already
+scores the real chunks and `CONTEXT_PROXY_VERSION` already names that shape
+`agent_retrieve_chunks/1`; the live Judge now reads the same kind of thing as the
+offline one, so one constant covers both.
+
+### Files
+
+- `apps/api/app/worker/tasks/runtime/retrieval_eval.py`. `_fetch_turn_context`
+  returns `message_id` instead of the summary list and issues one query instead of
+  two. New: `_TurnRetrieval`, `_decode_chunks`, `_read_retrieved_rows`,
+  `_fetch_retrieved_contexts`, `_citation_coverage`, `_scored_report`.
+- `apps/api/app/services/agent_loop.py`, `apps/api/app/services/sse.py`. Comments
+  only. Both named this task as the reader of the persisted `summary`.
+- `apps/api/scripts/gates.py`. `run_retrieval_faithfulness` pin 14/90 to 12/82.
+- `apps/api/tests/unit/test_retrieval_faithfulness_task.py`. 19 to 34.
+- `apps/api/tests/unit/test_sse.py`, `apps/api/tests/unit/test_agent_loop.py`.
+  The same stale claim, in a guard and in two docstrings.
+
+### Decisions
+
+**NULL and `[]` are two observations and `_read_retrieved_rows` keeps them apart.**
+This is `_persisted_chunks`' own docstring read from the other end. A NULL row
+recorded no context, so it contributes nothing and counts unmeasured; `[]` is a
+retrieve that ran and matched nothing, so it counts measured. Collapsing them
+would hand Ragas an empty context, and an empty context makes every claim
+unsupported, so the score would describe the DoS guard rather than the answer.
+
+**The counts are of CALLS, never of chunks.** A turn that retrieved nothing and a
+turn nobody could read both arrive with an empty `contexts`, so the list cannot
+carry the distinction and two integers beside it do.
+`retrieve_calls_measured` and `retrieve_calls_unmeasured` are on the log line and
+the returned dict of every status past the sampling gate, including `no_signal`.
+The existing `test_citation_coverage_none_when_nothing_retrieved` asserted the
+whole `no_signal` dict, so it changed with them, which is the assertion doing its
+job.
+
+**The citation-coverage denominator counts measured calls.** It counted one
+summary per call before, errored ones included, so a turn whose DoS guard fired
+was reported as poorly cited. The function's own docstring already said it
+measured "retrieve calls with a result".
+
+**A `str` column value is decoded rather than counted unmeasured.** psycopg2
+decodes jsonb to a list, and that is what this normally sees. A connection without
+the typecaster would otherwise report every retrieve in the tenant as unmeasured,
+and that outage would read as a quiet run of unknowns rather than as an outage.
+Anything that still does not decode to a list is unmeasured, which is the
+fail-closed direction.
+
+**An absent `message_id` reports zero calls, not a guessed count.** It cannot be
+joined on. The task only runs when a `retrieval_metrics` row exists, so at least
+one retrieve did happen, and reporting `unmeasured: 1` would be a number nobody
+counted. The log line names the id so the absence is visible, and
+`_fetch_retrieved_contexts` opens no connection at all in that case, which is what
+the test asserts.
+
+**`_scored_report` exists to pay for the docstring.** The task grew to 104 lines
+with the new reads and the pin is exact in both directions, so the write-and-report
+tail moved out. CCN fell 14 to 12 because `_citation_coverage` took the if/else
+and `_scored_report` took the try/except.
+
+### The persisted `summary` now has no server-side reader
+
+Worth recording, because four sites said it did.
+`app/services/agent_loop.py`'s `_run_tool_call` docstring called the payload shape
+a contract and named this task. `app/services/sse.py` justified the PERSIST versus
+PUBLISH split with it, twice. `tests/unit/test_agent_loop.py` explained two tests
+by it. And `tests/unit/test_sse.py`'s `TestSummaryStaysOnThePersistedRow` was a
+guard whose entire subject was this reader.
+
+The guard is repointed rather than deleted, to
+`TestTheJoinKeyStaysOnThePersistedRow`: same shape, same #104 lesson, pointed at
+`message_id` on `agent.response`, which is the id the new join needs and the one
+WIRE-05 already publishes for the widget's feedback route. The other three sites
+now say the field is the turn's event trail and that nothing on the server reads
+it. This is the "test the constraint, do not quote it" failure caught before it
+had a chance to be copied a fifth time.
+
+### Observed
+
+```
+test_retrieval_faithfulness_task.py                  19 -> 34 passed
+retrieval + eval_result_type + eval_task
+  + eval_service + persist_retrieved_chunks          271 passed, 43.98s
+sse + agent_loop + retrieval + persist               158 passed, 52.12s
+gates + agent_task + judge_sees_agent_context
+  + retrieval_health_route + migration_tenant_0020    92 passed, 204.74s
+
+static gates passed in 8.3s
+  ruff clean, import-linter clean
+  complexity: clean against the 115 pinned function(s)
+  source assertions: clean, 44 pinned files, 113 sites
+  app\worker\tasks\runtime\retrieval_eval.py:565: warning:
+    run_retrieval_faithfulness has 41 NLOC, 12 CCN, 340 token, 3 PARAM,
+    82 length, 0 ND
+
+full gates passed in 740.9s               3597 passed, 13 skipped
+```
+
+Two mutations, both taken against `280ff05` and restored with
+`git checkout HEAD -- <path>`.
+
+```
+mutation A  _decode_chunks returns [] where it returned None
+            (a NULL column value becomes a measured empty context)
+  FAILED test_a_null_retrieved_chunks_is_unmeasured_not_an_empty_context
+  FAILED test_null_and_a_corpus_miss_are_counted_apart
+  FAILED test_an_errored_retrieve_reaches_this_reader_as_unmeasured
+  FAILED test_a_value_that_does_not_decode_to_a_list_is_unmeasured
+    assert (1, 1) == (0, 2)
+  4 failed, 30 passed in 34.24s
+  restored                                34 passed
+
+mutation B  _persisted_chunks drops its RETRIEVE_RESULT_IS_ERROR_KEY check
+            (#81's writer-side guard, in agent.py)
+  FAILED test_persist_retrieved_chunks.py::test_an_errored_retrieve_stores_null
+  FAILED test_retrieval_faithfulness_task.py::
+           test_an_errored_retrieve_reaches_this_reader_as_unmeasured
+    assert '[]' is None
+  2 failed, 40 passed in 33.86s
+  restored                                42 passed
+```
+
+Mutation B is the one worth reading. `'[]' is None` is #81 itself: the errored
+retrieve's row stores an empty list, the reader counts it measured, and the turn
+is scored against a context that exists only because the guard fired. The seam
+test fails beside the writer's own, which is the point of writing it across both
+halves rather than in one of them.
+
+### Open, from this slice
+
+- **Rows written before `280ff05` carry scores from the old proxy and nothing on
+  the row says so.** #84 closes for every score from here on, and the historical
+  `retrieval_metrics.faithfulness` values remain three instruments deep: the SDK
+  repr, `wire_text(wire)[:200]`, and now the chunks. `judge_identity` is NULL
+  before migration 0020 and separates eras only by accident. Opened as #120.
+- **Nothing has run this path against a real tenant DB.** `_fetch_retrieved_contexts`
+  is the only new function with SQL in it and its test asserts the no-join case.
+  The decision it makes is tested pure, the way `test_persist_retrieved_chunks.py`
+  tests `_persisted_chunks` and for the same stated reason, but the column read
+  itself is unobserved. It belongs to the same integration gap as `7.36`.
+
+---
+
+## Open after six slices
+
+Every open item the six slice sections recorded, in one place. Items without an
+issue number have none, and that is the reading, not an omission.
+
+**Has an issue**
+
+- **#119** A golden-set tenant gets no run-level metric number, so the eval page
+  plots one line where the record holds two measurements, and `aggregate_scores`
+  reads 0.0 for such a tenant. Recorded in slices 3 and 4. Frontend.
+- **#120** Pre-`280ff05` `retrieval_metrics` rows carry old-proxy faithfulness
+  scores with nothing marking the shape. Slice 6, above.
+
+**No issue yet**
+
+- **`EvalResult` carries no `unattributed` count**, so the list route reports
+  nulls for it. Either the record grows the field or the response drops the key.
+  Slices 3 and 4 both recorded it and neither decided it. It is the oldest
+  undecided item on this branch.
+- **A two-dataset tenant has no run-level faithfulness for the regression alert**,
+  so `eval_regression` cannot fire for it. Same root gap as #119, one reader over.
+  Either the alert compares per dataset or the golden set gets its own threshold.
+  Slice 4.
+- **The admin deploy page averages `pass_rates` across metrics**
+  (`avgPassRate`, `apps/admin/app/agents/[id]/deploy/page.tsx:468`) and reads
+  `failing_scenarios ?? 0`, so a null reads as zero failures on that screen.
+  Slice 4. Frontend, beside #119.
+- **A fifth scenario writer would inherit nothing.** The NULL-dataset refusal
+  lives in `store_scenarios` and `insert_provenance_scenario` writes its own
+  INSERT, so the four callers are covered and a new one beside them is not. The
+  `test_label_provenance` statement scan is the shape that would catch it. Slice 5.
+- **Nothing designates a golden row.** All four producers write `exploratory`, no
+  path in the tree writes `golden`, and `summarise_run_validity` reports
+  `golden 0/0/0` for every tenant. The corpus ticket owns the designation path,
+  and #119 cannot be finished before it. Slice 5.
+- **`generate_eval_suite` and the promote flow have no test driving a real row**
+  to `eval_scenarios`. They call the writers slice 5 changed and needed no edit.
+  Slice 5.
+- **The read path has no integration coverage.** Slice 6, above. `7.36`.
+
+**Closed by the branch, on merge**
+
+#25, #26, #27, #81, #84, and #51 itself. The keywords are in commits on
+`feat/eval-result`, so GitHub acts on them when the owner merges, not before.
