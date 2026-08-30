@@ -880,3 +880,194 @@ under `-C 15 -L 60 -a 11`.
 - **`EvalResult` still carries no `unattributed` count**, so nothing downstream
   reports it. Slice 3 left the same note.
 - Slice 5 owns generation and timeouts; slice 6 owns the retrieval proxy.
+
+## Slice 5, generation, timeouts, and the verdict precedence
+
+Three commits: the dataset write and refusal (#27), the failure record and the
+timeout message (#25), the `_VERDICT_PATTERNS` ordering test (#97's debt).
+Criterion 3 of the ticket.
+
+### Files
+
+- `apps/api/app/services/scenario_service.py`. `InvalidScenario`,
+  `_scenario_dataset`; `store_scenarios` writes `dataset` and refuses a row
+  without one; `generate_scenarios_from_chunks`, `mine_production_scenarios` and
+  `insert_provenance_scenario` each write `exploratory`.
+- `apps/api/app/domain/eval_result.py`. `DATASET_GOLDEN` / `DATASET_EXPLORATORY`
+  become names, `ScenarioFailure`, `_require_failures`, `EvalResult.failures`.
+- `apps/api/app/services/eval_service.py`. `_failure_report`;
+  `summarise_agent_invocation` returns `failures`; `build_eval_result` carries
+  them; `dataset_of`'s docstring says what its NULL fold is for.
+- `apps/api/app/worker/tasks/runtime/eval.py`. `_failure_of`; the invocation
+  record gains `error_message`.
+- `apps/api/scripts/gates.py`. Two pins lowered.
+- Tests: `test_scenario_service.py` (+9), `test_eval_result_type.py` (+11),
+  `test_eval_task.py` (+4), `test_eval_agent_invocation.py` (+4),
+  `test_eval_service.py` (+2), `test_red_team_probe.py` (+11, one parametrised
+  over six).
+
+### Decisions
+
+**The refusal runs before the connection opens.** `store_scenarios` resolves
+every row's dataset into a list, then inserts. A per-row check inside the loop
+would have written the good rows ahead of the bad one and committed nothing,
+leaving a half-stored suite whose count reads as a completed generation. The
+test that pins this puts the bad row LAST, because a check that happens to run
+first passes an all-or-nothing assertion for the wrong reason.
+
+**`mine_production_scenarios` was not in the plan and had to be.** The plan named
+two producers. There are four writers in the module and three of them reach
+`eval_scenarios` through `store_scenarios`, so a miner that kept omitting the
+column would have had every batch refused. `run_eval_suite` wraps the
+mine-and-store pair in a best-effort try/except that logs `mine_failed`, so the
+failure mode was one warning line a night and no mined scenarios ever again,
+with every gate green. A test now drives the miner and the writer as a pair.
+
+**No migration backfills the NULL rows, and `dataset_of` keeps folding them.**
+The twenty rows of eval run 29754ceb are still in the table. Which of them
+belongs in a golden set is the owner's call to make once, not a default an ALTER
+can guess, so the fold stays and its docstring now says it exists for rows
+written before this change and for nothing else. Nothing written after it
+reaches `dataset_of` as NULL.
+
+**`DATASET_GOLDEN` and `DATASET_EXPLORATORY` moved into `app.domain`, and
+`scenario_service` imports them.** `eval_service` keeps its own pair under the
+existing test that pins the two tuples together. The producer does not: a writer
+holding its own copy of the vocabulary is how #27 survived four of them.
+
+**The failure message is composed, never copied.** `_failure_of` gives a timeout
+`agent turn exceeded 90s` and gives every other class its own name and nothing
+more. `str(TimeoutError())` is the empty string, which is the whole of #25; and
+`eval_runs.result` is jsonb the owner reads back, which is #96's boundary. A
+phrase this module chose cannot carry a customer's words, a connection string or
+a stack frame across it. The log line still carries `str(exc)`, because a log is
+where an operator debugging a provider needs the raw string, and a test pins
+that too so the rule is not read as "delete the text everywhere".
+
+**`failures` lives on `EvalResult`, not on `Invocation`.** The plan said so and
+the reason holds: `Invocation` is nine counters under the summariser's own
+names, and a list of records is a different grain. The record refuses to hold
+more failures than `invocation.failed`, which is worth something only because
+`_failure_report` produces the histogram and the list in one walk.
+
+**`RULE_VERSION` stays 1.** The field says a stored payload was written under
+different rules and is not a like-for-like comparison. `failures` adds detail
+and changes no number a comparison reads: the metrics, the counts and the cost
+are what they were. A payload written before the field reads as no failure
+detail, never as a run that lost no turns, because `invocation.failed` still
+says it did.
+
+**The ordering test is written against the whole list.** The parametrised case
+covers every entry that is not `would_have_executed`, so a pattern added below
+it tomorrow arrives inside the test rather than beside it. FM-004 is why each
+case asserts both needles are in its fixture before it asserts a tag: a fixture
+matching one pattern makes an ordering assertion vacuous, which is the
+arrangement that hid this. A separate test pins that no second landed tag sits
+lower down, since one would make the first entry's own argument false while
+leaving the comment in place.
+
+### Observed
+
+Mutation, `_scenario_dataset` folding a missing dataset to exploratory instead
+of refusing, restored with `git checkout HEAD --`:
+
+```
+MUTATION APPLIED: _scenario_dataset folds a missing dataset to exploratory instead of refusing
+FAILED test_scenario_service.py::TestTheDatasetColumnIsWritten::test_a_row_without_a_dataset_is_refused_and_nothing_is_written
+FAILED test_scenario_service.py::TestTheDatasetColumnIsWritten::test_a_dataset_nobody_reports_is_refused
+FAILED test_scenario_service.py::TestTheDatasetColumnIsWritten::test_one_bad_row_in_a_batch_writes_none_of_them
+3 failed, 11 passed in 7.53s
+
+restored: 14 passed in 5.76s
+```
+
+Mutation, `_failure_of` returning `str(exc)` as the message:
+
+```
+MUTATION APPLIED: _failure_of returns str(exc) as the message
+FAILED test_eval_agent_invocation.py::test_a_timed_out_turn_carries_the_budget_it_exceeded
+FAILED test_eval_agent_invocation.py::test_a_failure_that_is_not_a_timeout_says_its_class_and_no_more
+FAILED test_eval_agent_invocation.py::test_the_exceptions_own_text_reaches_no_field_of_the_observation
+3 failed, 86 passed in 37.43s
+
+restored: 89 passed in 32.63s
+```
+
+`test_eval_task.py` stayed green under that mutation, and correctly. Its fixture
+doubles the invoker and supplies the message, so those four tests pin the carry
+through to `eval_runs.result` rather than the composition. The composition is
+pinned one module over, against the real `_invoke_agent_for_scenarios`.
+
+Mutation, `would_have_executed` moved to the end of `_VERDICT_PATTERNS`:
+
+```
+MUTATION APPLIED: would_have_executed moved to the end of _VERDICT_PATTERNS
+FAILED test_red_team_probe.py::test_would_have_executed_outranks_every_refusal_pattern[provider_not_configured]
+FAILED test_red_team_probe.py::test_would_have_executed_outranks_every_refusal_pattern[capability_denied]
+FAILED test_red_team_probe.py::test_would_have_executed_outranks_every_refusal_pattern[identity_required]
+FAILED test_red_team_probe.py::test_would_have_executed_outranks_every_refusal_pattern[rate_denied]
+FAILED test_red_team_probe.py::test_would_have_executed_outranks_every_refusal_pattern[actor_blocked]
+FAILED test_red_team_probe.py::test_would_have_executed_outranks_every_refusal_pattern[awaiting_approval]
+FAILED test_red_team_probe.py::test_the_list_order_is_the_precedence_the_comment_argues
+7 failed, 54 passed in 11.74s
+
+restored: 61 passed in 9.57s
+```
+
+Suites:
+
+```
+test_scenario_service test_eval_result_type test_eval_task test_eval_service
+test_eval_agent_invocation test_red_team_probe test_transactional_tools
+test_label_downstream                       481 passed in 45.12s
+```
+
+Gates, `scripts/gates.py static`, passed in 7.3s:
+
+```
+ruff: clean against the 0 pinned baseline violation(s)
+Contracts: 3 kept, 0 broken
+complexity: clean against the 115 pinned function(s)
+source assertions: clean against the 44 pinned file(s), 113 site(s)
+```
+
+Lizard, the functions this slice touched:
+
+```
+scenario_service.py:111  generate_scenarios_from_chunks   7 CCN,  66 length  (pin held)
+scenario_service.py:179  store_scenarios                  6 CCN,  55 length  (unpinned)
+scenario_service.py:236  generate_eval_suite_for_agent    7 CCN,  66 length  (untouched)
+scenario_service.py:309  insert_provenance_scenario       1 CCN,  58 length  (unpinned)
+scenario_service.py:405  mine_production_scenarios       11 CCN, 114 length  (pin held)
+eval_service.py:760      summarise_agent_invocation      31 CCN, 186 length  (was 33/186)
+eval.py:448              _invoke_agent_for_scenarios     14 CCN, 223 length  (was 14/224)
+```
+
+Two pins lowered, none raised. Three functions had to trade lines to hold theirs:
+`generate_scenarios_from_chunks` dropped a comment that restated the line under
+it, `mine_production_scenarios` lost a docstring paragraph that contradicted
+itself mid-sentence about what reaches the `job_events` payload, and
+`_invoke_agent_for_scenarios` collapsed a three-line `sum()` that fits on one at
+120 columns. The five new functions (`_scenario_dataset`, `_failure_of`,
+`_failure_report`, `_require_failures`, and `ScenarioFailure`'s methods) are all
+under `-C 15 -L 60 -a 11` and take no baseline entry.
+
+`EvalResult.__post_init__` went over the standard when the failure checks landed
+inline, at ccn 16 length 67, and the gate caught it. `_require_failures` is where
+they went.
+
+### Open, carried forward
+
+- **The four `store_scenarios` callers are covered; a fifth writer is not.**
+  The refusal lives in `store_scenarios`, and `insert_provenance_scenario` writes
+  its own INSERT, so a new writer added beside them inherits nothing. The
+  `test_label_provenance` statement scan is the shape that would catch it, one
+  column over.
+- **Nothing designates a golden row.** All four producers write `exploratory` and
+  no path in the tree writes `golden`, so `summarise_run_validity` still reports
+  `golden 0/0/0` for every tenant. The column is now honest about why: the rows
+  say exploratory because they are, rather than saying nothing. The corpus ticket
+  owns the designation path.
+- **`generate_eval_suite` and the promote flow are untouched.** They call the
+  writers this slice changed and need no edit, and neither has a test that drives
+  a real row to the table.
