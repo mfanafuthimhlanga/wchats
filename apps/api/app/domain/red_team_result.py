@@ -57,6 +57,21 @@ WHY THE RECORD HOLDS THE FINDINGS
     would write `breaches=0, max_severity="none"` beside that finding.
     `_require_findings_agree` refuses that record on construction.
 
+WHY THE STORED RECORD IS RE-CHECKED ON THE WAY OUT
+    `from_payload` is `payload`'s inverse and it refuses a stored shape on every
+    rule a fresh record is refused on. Already being written down is not evidence
+    that a shape is honest: `red_team_runs.result` is jsonb, so nothing in the
+    column stops a hand-edited row, a row an older build wrote, or a row written
+    before a key meant what it means now.
+
+    A MISSING KEY IS A REFUSAL, NEVER A DEFAULT. A defaulted count is a number,
+    and a number is indistinguishable from a measurement one reader later. An
+    unknown key is a refusal too, so adding a field to this record is a breaking
+    read of older rows on purpose rather than a silent half-read. The stored
+    `breaches`, `max_severity` and `coverage` are derived, and `from_payload`
+    re-derives them from the rows and refuses a payload that disagrees, because a
+    column holding two answers to one question answers neither.
+
 Rung: `app.domain` imports the standard library, third-party packages and its
 domain siblings. This module imports the standard library and one sibling,
 `app.domain.red_team_finding`.
@@ -64,7 +79,7 @@ domain siblings. This module imports the standard library and one sibling,
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -119,6 +134,23 @@ _SEVERITY_RANK: dict[Severity, int] = {
 }
 
 
+#: The keys `VectorOutcome`'s stored row carries, and the only ones it reads.
+_VECTOR_KEYS: tuple[str, ...] = ("vector", "attempts", "breaches", "max_severity")
+
+#: The keys `RedTeamResult.payload` writes, and the only ones it reads back. The
+#: last three are derived from `vectors`; they are stored so a reader of the
+#: column never re-derives them, and re-derived on the way out so the column
+#: cannot hold two answers.
+_RESULT_KEYS: tuple[str, ...] = (
+    "k",
+    "vectors",
+    "findings",
+    "breaches",
+    "max_severity",
+    "coverage",
+)
+
+
 class InvalidRedTeamResult(ValueError):
     """A run record that would misreport what a run covered, refused on construction.
 
@@ -167,6 +199,61 @@ def _as_findings(value: Any) -> tuple[RedTeamFinding, ...]:
             "RedTeamResult needs every finding to be a RedTeamFinding, got " + ", ".join(wrong)
         )
     return tuple(value)
+
+
+def _require_exact_keys(payload: Mapping, keys: tuple[str, ...], where: str) -> None:
+    """The stored shape names every key and no others.
+
+    A MISSING key is refused rather than defaulted, because a default is a number
+    and a number is indistinguishable from a measurement one reader later. An
+    UNKNOWN key is refused because something this build does not know about wrote
+    it, and reading the rest of the row would be reading half of whatever that
+    was. `app.domain.verdict` reads its own stored shape under the same rule.
+
+    Raises:
+        InvalidRedTeamResult: the payload is not a mapping, misses a key, or
+            carries one this build does not read.
+    """
+    if not isinstance(payload, Mapping):
+        raise InvalidRedTeamResult(f"{where} needs a mapping, got {type(payload).__name__}")
+    missing = sorted(set(keys) - set(payload))
+    if missing:
+        raise InvalidRedTeamResult(
+            f"{where} needs {', '.join(missing)} in the stored shape. A default in "
+            "its place would report a measurement nobody made."
+        )
+    unknown = sorted(set(payload) - set(keys))
+    if unknown:
+        raise InvalidRedTeamResult(
+            f"{where} was stored with {', '.join(unknown)}, which this build does "
+            f"not read. Its keys are {', '.join(keys)}."
+        )
+
+
+def _finding_from_payload(stored: Any) -> RedTeamFinding:
+    """One stored finding, with pydantic doing the checking.
+
+    `RedTeamFinding.model_dump()` is what `payload` wrote, so this is its inverse
+    and nothing here restates the six fields. A missing field and a seventh key
+    are both refusals, which is the model's required fields plus its
+    `extra="forbid"`, and both arrive as ValidationError.
+
+    Raises:
+        InvalidRedTeamResult: the stored finding is not a mapping, or pydantic
+            refuses it. ValidationError IS a ValueError, so this rung catches it
+            without importing pydantic to name it.
+    """
+    if not isinstance(stored, Mapping):
+        raise InvalidRedTeamResult(
+            "RedTeamResult needs every stored finding to be a mapping, got "
+            f"{type(stored).__name__}"
+        )
+    try:
+        return RedTeamFinding(**stored)
+    except (TypeError, ValueError) as exc:
+        raise InvalidRedTeamResult(
+            f"RedTeamResult cannot rebuild a stored finding ({type(exc).__name__}: {exc})"
+        ) from exc
 
 
 def worst_severity(severities: Iterable[Severity | str]) -> Severity:
@@ -298,6 +385,58 @@ class VectorOutcome:
             )
         # object.__setattr__ is how a frozen dataclass normalises a field.
         object.__setattr__(self, "max_severity", severity)
+
+    @classmethod
+    def from_payload(cls, payload: Mapping) -> VectorOutcome:
+        """Rebuild one vector's row from its stored form.
+
+        Raises:
+            InvalidRedTeamResult: the stored shape is not a mapping, misses a
+                key, carries a key this build does not read, or breaks one of the
+                construction rules above.
+        """
+        _require_exact_keys(payload, _VECTOR_KEYS, "VectorOutcome")
+        return cls(
+            vector=payload["vector"],
+            attempts=payload["attempts"],
+            breaches=payload["breaches"],
+            max_severity=_as_severity(payload["max_severity"]),
+        )
+
+
+def _require_derived_agree(payload: Mapping, record: RedTeamResult) -> None:
+    """The stored totals say what the stored rows add up to.
+
+    `payload` writes `breaches`, `max_severity` and `coverage` beside the rows
+    they came off, so a reader of the column never re-derives them.
+    `from_payload` rebuilds the record from the rows alone, so a payload claiming
+    `breaches: 0` over rows reporting two reads back as two, and the column held
+    two answers with nothing choosing between them. Each stored total therefore
+    has to equal what the rebuilt record derives, and a payload where one does
+    not is refused rather than quietly corrected.
+
+    This is the read-time twin of `_require_findings_agree`, which holds the
+    findings to the rows at construction. Together they leave one number per
+    question in the column.
+
+    Args:
+        payload: the stored shape, already checked for its exact keys.
+        record:  what the rows in it rebuilt.
+
+    Raises:
+        InvalidRedTeamResult: a stored total disagrees with the rows under it.
+    """
+    for name, derived in (
+        ("breaches", record.breaches),
+        ("max_severity", record.max_severity.value),
+        ("coverage", record.coverage),
+    ):
+        if payload[name] != derived:
+            raise InvalidRedTeamResult(
+                f"RedTeamResult stores {name}={payload[name]!r} over vector rows "
+                f"that derive {derived!r}. One run cannot have two answers to one "
+                "question, and the rows are where the attempts were counted."
+            )
 
 
 @dataclass(frozen=True)
@@ -466,6 +605,56 @@ class RedTeamResult:
             "max_severity": self.max_severity.value,
             "coverage": self.coverage,
         }
+
+    @classmethod
+    def from_payload(cls, payload: Mapping) -> RedTeamResult:
+        """Rebuild the record from a stored `red_team_runs.result`.
+
+        The round trip is the contract: `RedTeamResult.from_payload(r.payload) == r`,
+        and `from_payload(p).payload == p` back the other way. A stored row is
+        validated on the way out as it was on the way in.
+
+        EVERY WAY A STORED SHAPE CAN BE WRONG LEAVES HERE AS InvalidRedTeamResult.
+        A reader that catches this module's refusal alone would otherwise take a
+        pydantic ValidationError out of one malformed finding, or a TypeError out
+        of a row that is not a mapping, as a 500 for the whole route.
+
+        Args:
+            payload: the stored shape, as `red_team_runs.result` holds it.
+
+        Raises:
+            InvalidRedTeamResult: the stored shape is not a mapping, misses a
+                key, carries a key this build does not read, breaks a
+                construction rule, or cannot be read as this record at all.
+        """
+        _require_exact_keys(payload, _RESULT_KEYS, "RedTeamResult")
+        rows = payload["vectors"]
+        if not isinstance(rows, (list, tuple)):
+            raise InvalidRedTeamResult(
+                f"RedTeamResult needs stored vectors as a list, got {type(rows).__name__}"
+            )
+        stored_findings = payload["findings"]
+        if not isinstance(stored_findings, (list, tuple)):
+            raise InvalidRedTeamResult(
+                "RedTeamResult needs stored findings as a list, got "
+                f"{type(stored_findings).__name__}"
+            )
+        try:
+            record = cls(
+                k=payload["k"],
+                vectors=[VectorOutcome.from_payload(row) for row in rows],
+                findings=[_finding_from_payload(row) for row in stored_findings],
+            )
+        except InvalidRedTeamResult:
+            # Already this module's refusal, carrying which rule it broke.
+            raise
+        except (TypeError, KeyError, ValueError, AttributeError) as exc:
+            raise InvalidRedTeamResult(
+                "RedTeamResult cannot be rebuilt from this stored shape "
+                f"({type(exc).__name__}: {exc})"
+            ) from exc
+        _require_derived_agree(payload, record)
+        return record
 
     def _incomplete_reason(self, short: tuple[str, ...]) -> str | None:
         """One clause per short vector, or None when every vector met k."""

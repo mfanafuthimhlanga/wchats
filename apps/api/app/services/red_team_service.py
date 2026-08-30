@@ -36,6 +36,8 @@ from app.core.model_client import LedgerContext, make_async_client, route_for
 from app.domain.red_team_finding import RedTeamFinding
 from app.domain.red_team_result import (
     RED_TEAM_VECTORS,
+    InvalidRedTeamResult,
+    RedTeamResult,
     VectorOutcome,
     worst_severity,
 )
@@ -537,6 +539,78 @@ def run_coverage(observations: list[VectorObservation] | None) -> dict:
             if obs.pii_deflections
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Reading a stored run back (ticket 17, issue #54)
+# ---------------------------------------------------------------------------
+
+#: `red_team_runs.result` by run id, the column alembic_tenant 0021 added. The
+#: cast is here because the column is UUID and the caller holds the id as a
+#: string, which is how every other run id travels through Celery.
+_READ_RED_TEAM_RUN_RESULT_SQL = """
+    SELECT result FROM red_team_runs WHERE id = %(id)s::uuid
+"""
+
+
+def read_red_team_result(run_id: str, conn_str: str) -> RedTeamResult | None:
+    """The run's record, or None when there is not one. PRODUCTION.
+
+    None covers four states and every one of them reads the same way to a
+    caller: no such run, a tenant DB that predates migration 0021, a NULL column
+    because the run never wrote one, and a stored payload that broke a
+    construction rule on the way out. All four mean the run recorded no
+    measurement, which is unknown and never a pass. The log says which.
+
+    A None here is what `decide()` blocks on under `absent_red_team_measurement`.
+    A run that reads as None has not been shown to be clean; it has not been
+    shown anything, and a caller that filled the counts in itself would turn an
+    unread run into a clean one.
+
+    The validation is `RedTeamResult.from_payload`'s. Never logs conn_str.
+
+    Args:
+        run_id: UUID string of the `red_team_runs` row.
+        conn_str: PRODUCTION tenant connection string.
+    """
+    conn = psycopg2.connect(conn_str, connect_timeout=5)
+    try:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(_READ_RED_TEAM_RUN_RESULT_SQL, {"id": run_id})
+                row = cur.fetchone()
+        except psycopg2.errors.UndefinedColumn:
+            # The read opened a transaction that is now aborted, and the
+            # connection is closed in the `finally` below either way. The
+            # rollback is what keeps this from being the difference between a
+            # clean close and a server-side abort.
+            conn.rollback()
+            log.warning(
+                "read_red_team_result.column_absent",
+                run_id=run_id,
+                detail=(
+                    "tenant DB predates alembic_tenant 0021, so no run on it "
+                    "records a result"
+                ),
+            )
+            return None
+    finally:
+        conn.close()
+    if not row or row[0] is None:
+        return None
+    try:
+        return RedTeamResult.from_payload(row[0])
+    except InvalidRedTeamResult as exc:
+        log.error(
+            "read_red_team_result.unreadable",
+            run_id=run_id,
+            error=str(exc),
+            detail=(
+                "the stored record breaks a construction rule; the run reads as "
+                "unmeasured"
+            ),
+        )
+        return None
 
 
 # ---------------------------------------------------------------------------
