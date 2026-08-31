@@ -141,6 +141,7 @@ async def add_cache_control(request: Request, call_next):
 # Routers
 # ---------------------------------------------------------------------------
 
+from app.api import mcp  # noqa: E402
 from app.api.v1 import (  # noqa: E402
     agent_chat,
     agents,
@@ -166,6 +167,7 @@ from app.api.v1 import (  # noqa: E402
 # before any wildcard route patterns
 app.include_router(webhooks.router)
 app.include_router(health.router)
+app.include_router(mcp.router)
 app.include_router(widget.router)
 app.include_router(tenants.router, prefix="/api/v1")
 app.include_router(agents.router, prefix="/api/v1")
