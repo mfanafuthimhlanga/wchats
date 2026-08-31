@@ -76,6 +76,7 @@ from app.services.deployment_service import (
     EVAL_SUMMARY_UNAVAILABLE_SIGNAL,
     NARRATION_UNAVAILABLE_SUMMARY,
     RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL,
+    TERMINAL_RUN_STATUSES,
     DeploymentReport,
     _compute_envelope_hash_sync,
     _dispatch_moment,
@@ -207,12 +208,70 @@ def _dispatch_red_team_run(agent_id: str) -> bool:
         return False
 
 
+def _continue_wait(agent_id: str, wait_state: object) -> dict | None:
+    """A continuation's carried state, or None with its run marked failed.
+
+    An unreadable continuation stops, and stopping must not leave the row
+    'running' forever (#125): when the state still names its run, that run is
+    marked failed so the 60-minute guard frees up. A state too broken to name
+    one is logged and dropped, which is the #125 residual.
+    """
+    try:
+        return _require_wait_state(wait_state)
+    except Exception as exc:
+        salvaged = wait_state.get("run_id") if isinstance(wait_state, dict) else None
+        log.error(
+            "run_deployment_checklist.continuation_unreadable",
+            agent_id=agent_id,
+            run_id=salvaged,
+            error_type=type(exc).__name__,
+            error=str(exc) or repr(exc),
+        )
+        if salvaged:
+            _persist_failed(agent_id, str(salvaged), exc)
+        return None
+
+
+def _wait_continues(pending: list, waited_s: float) -> bool:
+    """Still under the ceiling with a half outstanding."""
+    return bool(pending) and waited_s < settings.CHECKLIST_WAIT_CEILING_S
+
+
+def _hand_off(
+    agent_id: str, run_id: str, state: dict, pending: list, waited_s: float
+) -> dict:
+    """Give the wait to the next message, or mark the run failed when it cannot.
+
+    A dispatch that fails still expires honestly; a re-queue that fails kills
+    the whole chain, so the failure is persisted rather than left as a
+    'running' row nothing will ever finish.
+    """
+    if not _requeue_wait(agent_id, state):
+        _persist_failed(
+            agent_id, run_id, RuntimeError("the wait could not be re-queued")
+        )
+        return {}
+    log.info(
+        "run_deployment_checklist.still_waiting",
+        agent_id=agent_id,
+        run_id=run_id,
+        pending=pending,
+        waited_s=round(waited_s, 1),
+    )
+    return {
+        "status": "waiting",
+        "run_id": run_id,
+        "pending": pending,
+        "waited_s": round(waited_s, 1),
+    }
+
+
 def _log_wait_outcome(agent_id: str, statuses: dict, waited_s: float) -> None:
     """Name which half ran out of ceiling, with the wait actually observed.
 
-    The observed number rather than the configured one: a run that expired at
-    2700.4s and a run that expired because the poll returned None instantly are
-    different incidents, and only the measured wait tells them apart.
+    The observed number rather than the configured one: a run that ran the
+    ceiling out and a run that expired because the poll returned None instantly
+    are different incidents, and only the measured wait tells them apart.
     """
     timed_out = sorted(name for name, status in statuses.items() if status is None)
     if timed_out:
@@ -267,6 +326,34 @@ def _require_wait_state(wait_state: object) -> dict:
             f"run_deployment_checklist was continued without {', '.join(missing)}. "
             "A default in their place would grade runs this checklist did not start."
         )
+    statuses = wait_state["statuses"]
+    if not isinstance(statuses, dict) or set(statuses) != {"eval", "red_team"}:
+        raise ValueError(
+            "run_deployment_checklist waits on exactly eval and red_team, and "
+            f"was continued with statuses {statuses!r}."
+        )
+    wrong = sorted(
+        f"{name}={status!r}"
+        for name, status in statuses.items()
+        if status is not None and status not in TERMINAL_RUN_STATUSES
+    )
+    if wrong:
+        # poll_terminal_statuses treats any recorded status as already
+        # terminal, so a value this build never wrote would skip the wait
+        # entirely and collect against runs that are still going.
+        raise ValueError(
+            "run_deployment_checklist was continued with " + ", ".join(wrong)
+            + ", which this build never wrote as a terminal status."
+        )
+    for key in ("since", "started_at"):
+        try:
+            datetime.fromisoformat(wait_state[key])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"run_deployment_checklist was continued with {key}="
+                f"{wait_state[key]!r}, which is not a timestamp this build "
+                "wrote."
+            ) from exc
     return dict(wait_state)
 
 
@@ -325,7 +412,7 @@ def _waited_s(state: dict) -> float:
     return (datetime.now(timezone.utc) - started_at).total_seconds()
 
 
-def _requeue_wait(agent_id: str, state: dict) -> None:
+def _requeue_wait(agent_id: str, state: dict) -> bool:
     """Hand the wait to the next message and let this worker slot go.
 
     THE CHECKLIST MUST NOT SLEEP INSIDE THE TASK (#54 review). It used to, on the
@@ -336,21 +423,39 @@ def _requeue_wait(agent_id: str, state: dict) -> None:
     countdown is what the loop's `sleep` used to be, except the broker holds it
     and the worker is free in the meantime.
     """
-    run_deployment_checklist.apply_async(
-        kwargs={"agent_id": agent_id, "wait_state": state},
-        countdown=settings.CHECKLIST_WAIT_POLL_S,
-        queue="runtime",
-    )
+    try:
+        run_deployment_checklist.apply_async(
+            kwargs={"agent_id": agent_id, "wait_state": state},
+            countdown=settings.CHECKLIST_WAIT_POLL_S,
+            queue="runtime",
+        )
+        return True
+    except Exception as exc:
+        # The dispatch helpers are best-effort because a lost dispatch still
+        # expires honestly. A lost RE-QUEUE kills the whole chain, so the
+        # caller marks the run failed rather than leaving a 'running' row
+        # nothing will ever finish.
+        log.error(
+            "run_deployment_checklist.requeue_failed",
+            agent_id=agent_id,
+            run_id=state["run_id"],
+            error_type=type(exc).__name__,
+            error=str(exc) or repr(exc),
+        )
+        return False
 
 
 def _collected(agent_id: str, event: str, fetch, fallback):
     """One collector, whose own failure is substituted rather than raised.
 
     A collector that raises must not fail a checklist that has already read the
-    others and still owes the owner a report. WHAT IT SUBSTITUTES IS NEVER A
-    PLAUSIBLE NUMBER: the eval and red-team halves substitute an 'unavailable'
-    signal the evidence gate refuses to ship on, because the zeros nobody read
-    used to look exactly like the zeros of a clean run. That is audit D3, and it
+    others and still owes the owner a report. THE TWO GATED HALVES NEVER
+    SUBSTITUTE A PLAUSIBLE NUMBER: eval and red team fall back to an
+    'unavailable' signal the evidence gate refuses to ship on, because the
+    zeros nobody read used to look exactly like the zeros of a clean run. The
+    verified_qa and corpus fallbacks below still substitute zeros a reader
+    cannot tell from a measurement; they gate nothing, and #131 tracks making
+    them refuse the same way. The refused half is audit D3, and it
     is why the fallback is a callable rather than a shared dict: a caller that
     handed the module constant itself would let a later mutation poison it.
 
@@ -824,7 +929,9 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
         # ------------------------------------------------------------------
         state = _open_wait(run_id, agent_id, conn_str)
     else:
-        state = _require_wait_state(wait_state)
+        state = _continue_wait(agent_id, wait_state)
+        if state is None:
+            return {}
         run_id = state["run_id"]
 
     # One look, then either hand the wait to the next message or go on. A job
@@ -833,21 +940,8 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
     state = _poll_wait(agent_id, conn_str, state)
     waited_s = _waited_s(state)
     pending = sorted(name for name, status in state["statuses"].items() if status is None)
-    if pending and waited_s < settings.CHECKLIST_WAIT_CEILING_S:
-        _requeue_wait(agent_id, state)
-        log.info(
-            "run_deployment_checklist.still_waiting",
-            agent_id=agent_id,
-            run_id=run_id,
-            pending=pending,
-            waited_s=round(waited_s, 1),
-        )
-        return {
-            "status": "waiting",
-            "run_id": run_id,
-            "pending": pending,
-            "waited_s": round(waited_s, 1),
-        }
+    if _wait_continues(pending, waited_s):
+        return _hand_off(agent_id, run_id, state, pending, waited_s)
 
     _log_wait_outcome(agent_id, state["statuses"], waited_s)
 

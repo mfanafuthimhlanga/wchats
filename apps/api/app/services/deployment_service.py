@@ -906,7 +906,7 @@ def _record_of(run_id: str, payload: object) -> EvalResult | None:
 #   _dispatch_moment          the tenant DB's clock, so the boundary carries no skew
 #   _latest_run_since         "has the run this checklist started finished yet,"
 #                             "and which row was it?"
-#   wait_for_terminal_runs    the pure loop, driven by an injected sleep and clock
+#   poll_terminal_statuses    one look at both runs; the broker holds the sleep between looks
 
 #: The two statuses that END a run. `run_eval_suite` and `run_red_team` both write
 #: one of them at the end of their bodies. Anything else, including a status this
@@ -1293,8 +1293,10 @@ RED_TEAM_RUN_STATUS_COMPLETE = "complete"
 #: whole correction (#54 review): without it the 'running' row `run_red_team`
 #: INSERTs before it attacks anything satisfied "a run exists", and the collector
 #: answered MEASURED with zero open findings for an agent nothing had ever
-#: probed. Same predicate and same reasoning as `_LATEST_RUN_SQL` on the eval
-#: half: a status this query has not heard of is still terminal, so it is
+#: probed. Same STATUS predicate and reasoning as `_LATEST_RUN_SQL` on the eval
+#: half, minus its kind filter: this read is not agent-scoped, so on a tenant DB
+#: carrying two agents it returns the other one's newest finished run (#127).
+#: A status this query has not heard of is still terminal, so it is
 #: excluded by naming the one non-terminal status rather than by listing the
 #: terminal ones.
 _RED_TEAM_LATEST_SQL = (
@@ -2134,8 +2136,8 @@ def _eval_did_not_finish_warning() -> DeploymentWarning:
         message=(
             "The quality check for this agent was still running when this "
             "readiness check gave up waiting, so there are no results to "
-            "approve on yet. Run the readiness check again once the Evaluation "
-            "page shows the run has finished."
+            "approve on yet. The check keeps running on its own; run the "
+            "readiness check again in a little while."
         ),
         severity_level="warning",
     )
@@ -2216,8 +2218,8 @@ _RED_TEAM_ABSENCE_WARNINGS: dict[str, tuple[str, str]] = {
         "red_team_did_not_finish",
         "The security check for this agent was still running when this "
         "readiness check gave up waiting, so its safety cannot be confirmed "
-        "yet. Run the readiness check again once the Security page shows the "
-        "run has finished.",
+        "yet. The check keeps running on its own; run the readiness check "
+        "again in a little while.",
     ),
     RED_TEAM_SIGNAL_RUN_FAILED: (
         "red_team_run_failed",

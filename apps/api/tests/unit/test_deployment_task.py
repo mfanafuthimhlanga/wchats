@@ -1497,6 +1497,7 @@ def _drive_sequenced(
 
     def _capture_requeue(_agent_id, state):
         queued.append(state)
+        return True
 
     def _target(name, **kwargs):
         return patch("app.worker.tasks.runtime.deployment." + name, **kwargs)
@@ -1733,7 +1734,7 @@ class TestTheWaitIsAChainOfMessages:
             _deployment_patch("_dispatch_eval_run", return_value=True),
             _deployment_patch("_dispatch_red_team_run", return_value=True),
             _deployment_patch(
-                "_requeue_wait", new=lambda _a, state: queued.append(state)
+                "_requeue_wait", new=lambda _a, state: queued.append(state) or True
             ),
             _deployment_patch("latest_eval_run_status_since", return_value=eval_status),
             _deployment_patch(
@@ -2683,3 +2684,172 @@ class TestTheRedTeamDispatchHelper:
         fake_task.apply_async.side_effect = RuntimeError("broker unreachable")
 
         assert self._dispatch("agent-1", fake_task) is False
+
+
+class TestTheReQueueGuardsTheChain:
+    """A lost re-queue kills the whole wait chain (f55d052 review, #125 family).
+
+    The dispatch helpers are best-effort because a lost dispatch still expires
+    honestly. A lost re-queue leaves a 'running' row nothing will ever finish,
+    so it is persisted as a failure instead.
+    """
+
+    def _state(self):
+        return {
+            "run_id": "run-1",
+            "since": "2026-08-30T12:00:00+00:00",
+            "started_at": "2026-08-30T12:00:01+00:00",
+            "statuses": {"eval": "complete", "red_team": None},
+            "eval_dispatched": True,
+            "red_team_dispatched": True,
+        }
+
+    def test_a_broker_failure_returns_false_and_names_the_run(self):
+        from app.worker.tasks.runtime import deployment as deployment_task
+
+        mock_log = MagicMock()
+        with patch.object(
+            deployment_task.run_deployment_checklist,
+            "apply_async",
+            side_effect=RuntimeError("broker unreachable"),
+        ), patch.object(deployment_task, "log", mock_log):
+            assert deployment_task._requeue_wait("agent-1", self._state()) is False
+
+        failures = [
+            call for call in mock_log.error.call_args_list
+            if call.args and call.args[0] == "run_deployment_checklist.requeue_failed"
+        ]
+        assert len(failures) == 1, mock_log.error.call_args_list
+        assert failures[0].kwargs["run_id"] == "run-1"
+
+    def test_a_failed_requeue_marks_the_run_failed_rather_than_stranding_it(self):
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        mock_db, mock_run = _build_full_happy_path_mock_db(str(uuid.uuid4()))
+        with ExitStack() as stack:
+            for one in [
+                _deployment_patch("get_sync_db", new=_make_sync_db_ctx(mock_db)),
+                _deployment_patch(
+                    "fernet_decrypt", return_value="postgresql://test/tenant"
+                ),
+                _deployment_patch(
+                    "_dispatch_moment",
+                    return_value=datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
+                ),
+                _deployment_patch("_dispatch_eval_run", return_value=True),
+                _deployment_patch("_dispatch_red_team_run", return_value=True),
+                _deployment_patch("latest_eval_run_status_since", return_value=None),
+                _deployment_patch(
+                    "latest_red_team_run_status_since", return_value=None
+                ),
+                _deployment_patch("_requeue_wait", return_value=False),
+            ]:
+                stack.enter_context(one)
+            result = run_deployment_checklist.run(agent_id=str(uuid.uuid4()))
+
+        assert result == {}, (
+            "a wait that cannot continue must not report itself as waiting: "
+            f"{result}"
+        )
+        assert mock_run.status == "failed", (
+            "the row must not sit 'running' with no continuation coming: "
+            f"{mock_run.status}"
+        )
+
+
+class TestAContinuationIsValidatedByValue:
+    """FM-018: the reader checks what the writer guarantees, not key names alone."""
+
+    def _state(self, **over):
+        state = {
+            "run_id": "run-1",
+            "since": "2026-08-30T12:00:00+00:00",
+            "started_at": "2026-08-30T12:00:01+00:00",
+            "statuses": {"eval": "complete", "red_team": None},
+            "eval_dispatched": True,
+            "red_team_dispatched": True,
+        }
+        state.update(over)
+        return state
+
+    def test_a_status_this_build_never_wrote_is_refused(self):
+        """poll_terminal_statuses treats any recorded status as terminal, so a
+        smuggled 'running' would skip the wait and collect against live runs."""
+        from app.worker.tasks.runtime.deployment import _require_wait_state
+
+        with pytest.raises(ValueError) as excinfo:
+            _require_wait_state(
+                self._state(statuses={"eval": "running", "red_team": None})
+            )
+        assert "running" in str(excinfo.value)
+
+    def test_a_statuses_map_missing_a_half_is_refused(self):
+        from app.worker.tasks.runtime.deployment import _require_wait_state
+
+        with pytest.raises(ValueError):
+            _require_wait_state(self._state(statuses={"eval": None}))
+
+    def test_a_timestamp_that_does_not_parse_is_refused(self):
+        from app.worker.tasks.runtime.deployment import _require_wait_state
+
+        with pytest.raises(ValueError) as excinfo:
+            _require_wait_state(self._state(since="garbage"))
+        assert "since" in str(excinfo.value)
+
+    def test_an_unreadable_continuation_marks_its_run_failed(self):
+        """Refusing must not mean vanishing: the named run is closed out (#125)."""
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        mock_db, mock_run = _build_full_happy_path_mock_db("run-1")
+        with ExitStack() as stack:
+            for one in [
+                _deployment_patch("get_sync_db", new=_make_sync_db_ctx(mock_db)),
+                _deployment_patch(
+                    "fernet_decrypt", return_value="postgresql://test/tenant"
+                ),
+            ]:
+                stack.enter_context(one)
+            result = run_deployment_checklist.run(
+                agent_id=str(uuid.uuid4()), wait_state=self._state(since="garbage")
+            )
+
+        assert result == {}
+        assert mock_run.status == "failed"
+
+
+class TestTheEvalHalfExpiresLikeTheRedTeamHalf:
+    """The eval branch of the expiry fold, driven at task level (f55d052 review)."""
+
+    def test_a_ceiling_expiry_with_the_eval_still_running_substitutes_did_not_finish(self):
+        _, fetchers, collectors = _sequenced_world(eval_polls=10**6, red_team_polls=0)
+
+        result, mock_run, _ = _drive_sequenced(fetchers, collectors, ceiling_s=0)
+
+        assert result["status"] == "complete"
+        assert mock_run.report["eval_summary"]["eval_signal"] == "did_not_finish", (
+            "the eval never finished, so its summary is the substituted absent "
+            "state, never the pre-dispatch collector read"
+        )
+        assert "eval_dispatched" in mock_run.report["eval_summary"], (
+            "the substitution branch must still carry the dispatch fact the "
+            "owner-facing warning reads"
+        )
+        assert result["recommendation"] == "block"
+        assert "eval_did_not_finish" in [
+            warning["warning_id"] for warning in mock_run.warnings
+        ]
+
+
+class TestTheWaitMeasuresItself:
+    """`waited_s` is a measurement; a constant would satisfy every other test."""
+
+    def test_waited_s_is_the_clock_since_the_wait_opened(self):
+        from datetime import timedelta
+
+        from app.worker.tasks.runtime.deployment import _waited_s
+
+        started = datetime.now(timezone.utc) - timedelta(seconds=30)
+        value = _waited_s({"started_at": started.isoformat()})
+        assert 29.0 <= value <= 40.0, (
+            f"thirty seconds of wait must read as about thirty seconds: {value}"
+        )
