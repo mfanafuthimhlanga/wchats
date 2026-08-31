@@ -58,27 +58,22 @@ not about missing features.
 
 ## 3. THE GAPS
 
-### 3.1 Infrastructure — fully designed, never stood up
+### 3.1 Infrastructure — Railway (ADR 0005); the Terraform era is deleted
 
-`READ`, from `deploy/`:
+`READ`, as of ticket 18 (2026-08-31):
 
-- A complete AWS serving substrate exists in `deploy/terraform/`: VPC + NAT + IGW, ALB with 2
-  listeners, CloudFront + OAC, 2× ECR, ECS Fargate cluster with **3 services and 3 task
-  definitions**, ElastiCache replication group (Redis), Route53, S3, Secrets Manager, IAM roles and
-  policies, 3 CloudWatch log groups. Plus `deploy/systemd/` units and a `deploy/caddy/Caddyfile` from
-  the earlier single-box design.
-- **`main.tf` declares no `backend` block**, so Terraform state is local — and **no `.tfstate` and no
-  `.terraform/` exist anywhere in the repo.** Terraform has therefore **never been applied**.
-- **There is no `~/.aws` directory on this machine**, so the AWS CLI has never been configured and
-  the ECR build/push steps in the runbook have never been started.
-- **No deploy workflow.** `.github/workflows/` contains exactly `ci.yml` and `nightly.yml`.
-  Deployment is a manual runbook, executed by a human, and has not been executed.
-
-**Prerequisites from `deploy/README.md` that are unmet or unconfirmed:** an AWS account with billing
-enabled; a Route53 hosted zone (the runbook assumes `wchats.app`); **two** ACM certificates, one of
-which *must* be in `us-east-1` for CloudFront; Bedrock model access granted for
-`amazon.titan-embed-text-v2:0`; Docker with buildx, building `--platform linux/amd64` (the runbook
-warns that building on Windows without it produces an image Fargate cannot run).
+- The stack targets Railway: api, runtime worker, pipeline worker and beat services from
+  `apps/api/railway.*.toml` (one config file per service, #122), two Dockerfiles
+  (`Dockerfile`, and `Dockerfile.pipeline` carrying the docling extra), Railway's managed
+  Redis plugin, staging and production as two environments under a $20 hard limit.
+- `deploy/terraform/`, `deploy/systemd/` and `deploy/caddy/` are **deleted** with ADR
+  0005 (decision #14). Terraform was never applied (no state, no backend block, no
+  `~/.aws` on this machine); git history keeps the trees.
+- **No deploy workflow, by design.** Railway builds the Dockerfile on push;
+  `.github/workflows/` stays `ci.yml` and `nightly.yml`, building no images.
+- `RECORD` (the owed observation): a staging deploy from a push serving `/health` on a
+  public URL, with worker and beat running — the build-log line `Using Detected
+  Dockerfile` is the first checkpoint (`.dev/debug/railway-first-build.md`).
 
 ### 3.2 Configuration — the example env cannot boot the app
 
