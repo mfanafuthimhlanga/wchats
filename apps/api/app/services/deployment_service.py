@@ -18,12 +18,12 @@ import asyncio
 import math
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, NamedTuple
 from urllib.parse import urlsplit
 
 import psycopg2
 import structlog
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import text
 
 from app.core.config import settings
@@ -2584,6 +2584,72 @@ NARRATION_UNAVAILABLE_SUMMARY = (
     "security results. The plain-language write-up could not be produced this "
     "time, so read the listed warnings for the reasons behind it."
 )
+
+
+class Narration(NamedTuple):
+    """What the narration turn actually contributed, once it was read.
+
+    `dropped_warnings` counts the warning payloads this build refused. A
+    `warnings` value that is not a list at all counts as one refusal, because the
+    whole value was refused. `summary_replaced` is True when the fallback stands
+    in for prose the turn did not supply in readable form.
+    """
+
+    summary: str
+    warnings: list[DeploymentWarning]
+    dropped_warnings: int
+    summary_replaced: bool
+
+
+def parse_narration(report_data: object) -> Narration:
+    """Read the model's report, and keep only the parts that are its declared shape.
+
+    THE TOOL LOOP VALIDATES NOTHING, and that is why this exists (#54 review).
+    `build_report_tools` stores submit_report's arguments verbatim and
+    `dispatch_outcome` awaits the handler on raw args, so whatever the model
+    emitted reaches `DeploymentReport` exactly as emitted. A warnings item
+    missing `category`, a summary that came back None, a `warnings` value that is
+    not a list: each of those raised a pydantic ValidationError inside the
+    persist block, which marked the run 'failed' and threw away a verdict the
+    platform had already computed. That is the outcome criterion 5 exists to
+    prevent, reached through the one door it left open.
+
+    So a malformed narration costs what an absent one costs: the prose, and
+    nothing else. Warnings are validated ONE AT A TIME rather than as a list, so
+    a single unreadable item does not discard the readable ones beside it.
+
+    Pure, and it never raises. The caller owns the log line, because the ids that
+    make it findable (agent, run) live on the task rather than here.
+    """
+    if not isinstance(report_data, Mapping):
+        return Narration(NARRATION_UNAVAILABLE_SUMMARY, [], 0, True)
+
+    raw_summary = report_data.get("summary")
+    summary = raw_summary.strip() if isinstance(raw_summary, str) else ""
+
+    raw_warnings = report_data.get("warnings")
+    if isinstance(raw_warnings, list):
+        items, dropped = raw_warnings, 0
+    elif raw_warnings is None:
+        # The turn submitted no warnings at all, which is a whole report about a
+        # clean run rather than a defect. Nothing was refused.
+        items, dropped = [], 0
+    else:
+        items, dropped = [], 1
+
+    warnings: list[DeploymentWarning] = []
+    for item in items:
+        try:
+            warnings.append(DeploymentWarning.model_validate(item))
+        except ValidationError:
+            dropped += 1
+
+    return Narration(
+        summary or NARRATION_UNAVAILABLE_SUMMARY,
+        warnings,
+        dropped,
+        not summary,
+    )
 
 
 def render_verdict(verdict: Verdict) -> dict:

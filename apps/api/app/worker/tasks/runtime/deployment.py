@@ -92,6 +92,7 @@ from app.services.deployment_service import (
     latest_eval_run_status_since,
     latest_red_team_run_id_since,
     latest_red_team_run_status_since,
+    parse_narration,
     poll_terminal_statuses,
     red_team_summary_did_not_finish,
     render_verdict,
@@ -604,15 +605,38 @@ def _merge_warnings(narrated: list, derived: list) -> list:
 def _narration(agent_id: str, run_id: str, result_container: dict) -> tuple[str, list]:
     """The model's summary and warnings, or the fixed fallback. Step 5's output.
 
-    A FAILED OR TIMED-OUT NARRATION NO LONGER FAILS THE CHECKLIST (#54). The
-    verdict was computed before this turn ran and does not depend on it, so
-    persisting 'failed' here would throw away a decision the platform had already
-    reached and would leave the owner with nothing. What is missing is the prose,
-    and the fallback summary says so in as many words.
+    A FAILED, TIMED-OUT OR MALFORMED NARRATION NO LONGER FAILS THE CHECKLIST
+    (#54). The verdict was computed before this turn ran and does not depend on
+    it, so persisting 'failed' here would throw away a decision the platform had
+    already reached and would leave the owner with nothing. What is missing is
+    the prose, and the fallback summary says so in as many words.
+
+    A REPORT THAT ARRIVED IS NOT A REPORT THIS BUILD CAN READ. The tool loop
+    validates nothing, so `parse_narration` is what stands between the model's
+    raw arguments and `DeploymentReport`. Without it a warnings item missing
+    `category` raised a ValidationError one step later, inside the persist block,
+    and reached the failed path anyway: the same discarded verdict by a longer
+    route.
     """
     report_data = result_container.get("report")
     if report_data:
-        return report_data.get("summary", ""), report_data.get("warnings", [])
+        narration = parse_narration(report_data)
+        if narration.dropped_warnings or narration.summary_replaced:
+            # Loud, because the owner-facing outcome no longer shows it. A model
+            # emitting a report this build cannot read is a defect in the prompt
+            # or in the routing, and this line is where it surfaces.
+            log.error(
+                "run_deployment_checklist.narration_malformed",
+                agent_id=agent_id,
+                run_id=run_id,
+                dropped_warnings=narration.dropped_warnings,
+                summary_replaced=narration.summary_replaced,
+                detail=(
+                    "the narration turn submitted a report this build cannot "
+                    "read; the verdict stands and the unreadable parts are dropped"
+                ),
+            )
+        return narration.summary, narration.warnings
     log.error(
         "run_deployment_checklist.narration_unavailable",
         agent_id=agent_id,
@@ -947,11 +971,11 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
         # ------------------------------------------------------------------
         # Step 7 — UPDATE status=failed on exception; retry if retries remain.
         #
-        # RESERVED FOR THE TASK'S OWN FAILURES (#54). A narration that timed out
-        # or fell over does not land here any more: the verdict exists without
-        # the model, so the checklist completes on it. What reaches this block is
-        # a record read that raised, a decide() refusal, or a control-DB write
-        # that failed, and in each of those the decision was never reached.
+        # RESERVED FOR THE TASK'S OWN FAILURES (#54). A narration that timed out,
+        # fell over, or came back unreadable does not land here: the verdict
+        # exists without the model, and parse_narration drops what it cannot
+        # read. What reaches this block is a record read that raised, a decide()
+        # refusal, or a control-DB write that failed, and none reached a decision.
         # ------------------------------------------------------------------
         _persist_failed(agent_id, run_id, exc)
         if self.request.retries < self.max_retries:

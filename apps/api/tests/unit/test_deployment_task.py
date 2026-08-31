@@ -2081,6 +2081,139 @@ class TestTheNarrationIsOptional:
         assert result["recommendation"] == "ship"
         assert mock_run.report["summary"] == NARRATION_UNAVAILABLE_SUMMARY
 
+    def test_a_malformed_warning_costs_the_prose_and_never_the_decision(self):
+        """The reviewer's scenario, and the fourth occupant of the failed block.
+
+        The tool loop validates nothing: build_report_tools stores submit_report's
+        arguments verbatim and dispatch_outcome awaits the handler on raw args, so
+        whatever the model emitted reaches DeploymentReport exactly as emitted. A
+        warnings item carrying only warning_id raised a pydantic ValidationError
+        inside the persist block, which marked the run 'failed', retried twice on
+        the same prompt and the same model, and discarded a verdict the platform
+        had already computed.
+        """
+
+        async def _malformed(signals_json, result_container, *, ledger=None):
+            result_container["report"] = {
+                "summary": "ok",
+                "warnings": [{"warning_id": "x"}],
+            }
+
+        result, mock_run = _drive_with_verdict(
+            _blocking_verdict(), orchestrator=_malformed
+        )
+
+        assert result["status"] == "complete", (
+            f"a malformed narration must cost the prose and nothing else: {result}"
+        )
+        assert mock_run.status == "complete"
+        assert result["recommendation"] == "block"
+        assert mock_run.report["summary"] == "ok", (
+            "the readable half of the narration is still the owner's prose"
+        )
+        ids = [w["warning_id"] for w in mock_run.warnings]
+        assert "x" not in ids, f"an unreadable warning must not be persisted: {ids}"
+        assert "absent_eval_measurement" in ids, (
+            "the verdict's own reason is what explains the block"
+        )
+
+    def test_one_bad_warning_does_not_discard_the_good_ones_beside_it(self):
+        async def _mixed(signals_json, result_container, *, ledger=None):
+            result_container["report"] = {
+                "summary": "ok",
+                "warnings": [
+                    {"warning_id": "x"},
+                    {
+                        "warning_id": "narrated_note",
+                        "category": "eval_quality",
+                        "message": "Worth a look before launch.",
+                        "severity_level": "info",
+                    },
+                ],
+            }
+
+        _, mock_run = _drive_with_verdict(_ship_verdict(), orchestrator=_mixed)
+
+        ids = [w["warning_id"] for w in mock_run.warnings]
+        assert "narrated_note" in ids, f"the readable warning was thrown out too: {ids}"
+        assert "x" not in ids
+
+    def test_a_summary_of_none_falls_back_and_keeps_the_readable_warnings(self):
+        from app.services.deployment_service import NARRATION_UNAVAILABLE_SUMMARY
+
+        async def _no_summary(signals_json, result_container, *, ledger=None):
+            result_container["report"] = {
+                "summary": None,
+                "warnings": [
+                    {
+                        "warning_id": "narrated_note",
+                        "category": "eval_quality",
+                        "message": "Worth a look before launch.",
+                        "severity_level": "info",
+                    }
+                ],
+            }
+
+        result, mock_run = _drive_with_verdict(
+            _ship_verdict(), orchestrator=_no_summary
+        )
+
+        assert result["status"] == "complete"
+        assert result["recommendation"] == "ship"
+        assert mock_run.report["summary"] == NARRATION_UNAVAILABLE_SUMMARY
+        assert "narrated_note" in [w["warning_id"] for w in mock_run.warnings]
+
+    def test_a_warnings_value_that_is_not_a_list_still_completes(self):
+        async def _string_warnings(signals_json, result_container, *, ledger=None):
+            result_container["report"] = {"summary": "ok", "warnings": "none"}
+
+        result, mock_run = _drive_with_verdict(
+            _ship_verdict(), orchestrator=_string_warnings
+        )
+
+        assert result["status"] == "complete"
+        assert result["recommendation"] == "ship"
+        assert mock_run.report["summary"] == "ok"
+
+    def test_the_malformed_narration_is_logged_loudly(self):
+        """A model emitting an unreadable report is a defect in the prompt or in
+        the routing, and the owner-facing outcome no longer shows it. The log
+        line is where it shows."""
+        mock_log = MagicMock()
+
+        async def _malformed(signals_json, result_container, *, ledger=None):
+            result_container["report"] = {
+                "summary": None,
+                "warnings": [{"warning_id": "x"}],
+            }
+
+        _drive_with_verdict(
+            _ship_verdict(), orchestrator=_malformed, mock_log=mock_log
+        )
+
+        malformed = [
+            call
+            for call in mock_log.error.call_args_list
+            if call.args
+            and call.args[0] == "run_deployment_checklist.narration_malformed"
+        ]
+        assert len(malformed) == 1, (
+            f"expected one malformed-narration line: {mock_log.error.call_args_list}"
+        )
+        assert malformed[0].kwargs["dropped_warnings"] == 1
+        assert malformed[0].kwargs["summary_replaced"] is True
+
+    def test_a_well_formed_narration_is_not_logged_as_malformed(self):
+        mock_log = MagicMock()
+        _drive_with_verdict(_ship_verdict(), mock_log=mock_log)
+
+        assert not [
+            call
+            for call in mock_log.error.call_args_list
+            if call.args
+            and call.args[0] == "run_deployment_checklist.narration_malformed"
+        ], "a report this build can read is the ordinary case"
+
     def test_the_fallback_summary_says_the_write_up_is_what_is_missing(self):
         from app.services.deployment_service import NARRATION_UNAVAILABLE_SUMMARY
 

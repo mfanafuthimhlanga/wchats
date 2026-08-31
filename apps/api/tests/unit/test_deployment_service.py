@@ -85,6 +85,7 @@ from app.services.deployment_service import (
     EVAL_SIGNAL_RUN_FAILED,
     EVAL_SIGNAL_UNAVAILABLE,
     EVAL_SUMMARY_UNAVAILABLE_SIGNAL,
+    NARRATION_UNAVAILABLE_SUMMARY,
     ORCHESTRATOR_PURPOSE,
     RED_TEAM_SIGNAL_DID_NOT_FINISH,
     RED_TEAM_SIGNAL_MEASURED,
@@ -105,6 +106,7 @@ from app.services.deployment_service import (
     derive_blast_radius_warnings,
     derive_quality_warnings,
     eval_summary_did_not_finish,
+    parse_narration,
     poll_terminal_statuses,
     red_team_summary_did_not_finish,
     render_verdict,
@@ -3340,6 +3342,102 @@ class TestTheReportToolTakesNoDecision:
         )
         assert "recommendation" not in schema["required"]
         assert sorted(schema["required"]) == ["summary", "warnings"]
+
+
+class TestTheNarrationIsReadBeforeItIsTrusted:
+    """parse_narration: the tool loop validates nothing, so this does.
+
+    `build_report_tools` stores submit_report's arguments verbatim, so every
+    shape below is a shape the model can actually put in front of the report.
+    Each of them used to raise a pydantic ValidationError one step later, inside
+    the persist block, where it cost a verdict the platform had already computed.
+    """
+
+    def _warning(self, warning_id="narrated_note"):
+        return {
+            "warning_id": warning_id,
+            "category": "eval_quality",
+            "message": "Worth a look before launch.",
+            "severity_level": "info",
+        }
+
+    def test_a_well_formed_report_passes_through_untouched(self):
+        narration = parse_narration(
+            {"summary": "Two things to read first.", "warnings": [self._warning()]}
+        )
+
+        assert narration.summary == "Two things to read first."
+        assert narration.warnings == [DeploymentWarning(**self._warning())]
+        assert narration.dropped_warnings == 0
+        assert narration.summary_replaced is False
+
+    def test_a_warning_missing_its_required_fields_is_dropped(self):
+        narration = parse_narration(
+            {"summary": "ok", "warnings": [{"warning_id": "x"}]}
+        )
+
+        assert narration.warnings == []
+        assert narration.dropped_warnings == 1
+        assert narration.summary == "ok", "the readable half is still the prose"
+
+    def test_one_bad_item_does_not_discard_the_readable_ones_beside_it(self):
+        narration = parse_narration(
+            {"summary": "ok", "warnings": [{"warning_id": "x"}, self._warning()]}
+        )
+
+        assert [w.warning_id for w in narration.warnings] == ["narrated_note"]
+        assert narration.dropped_warnings == 1
+
+    def test_a_warnings_value_that_is_not_a_list_is_refused_whole(self):
+        narration = parse_narration({"summary": "ok", "warnings": "none"})
+
+        assert narration.warnings == []
+        assert narration.dropped_warnings == 1, (
+            "the whole value was refused, and the count says one refusal"
+        )
+
+    def test_absent_warnings_are_not_counted_as_refused(self):
+        """A turn that submitted no warnings wrote a report about a clean run.
+        Nothing was refused, so nothing is logged as malformed."""
+        narration = parse_narration({"summary": "All clear."})
+
+        assert narration.warnings == []
+        assert narration.dropped_warnings == 0
+        assert narration.summary_replaced is False
+
+    @pytest.mark.parametrize("summary", [None, "", "   ", 7, {"text": "ok"}])
+    def test_a_summary_that_is_not_prose_falls_back(self, summary):
+        narration = parse_narration({"summary": summary, "warnings": []})
+
+        assert narration.summary == NARRATION_UNAVAILABLE_SUMMARY
+        assert narration.summary_replaced is True
+
+    def test_a_report_that_is_not_a_mapping_reads_as_no_narration(self):
+        narration = parse_narration(["summary", "warnings"])
+
+        assert narration.summary == NARRATION_UNAVAILABLE_SUMMARY
+        assert narration.warnings == []
+        assert narration.summary_replaced is True
+
+    def test_what_it_returns_is_what_the_report_accepts(self):
+        """The point of the whole function, asserted where it lands: the report
+        constructs rather than raising, on arguments that used to raise."""
+        narration = parse_narration(
+            {"summary": None, "warnings": [{"warning_id": "x"}, self._warning()]}
+        )
+
+        report = DeploymentReport(
+            recommendation="block",
+            summary=narration.summary,
+            warnings=narration.warnings,
+            eval_summary={},
+            red_team_summary={},
+            verified_qa_stats={},
+            corpus_stats={},
+        )
+
+        assert report.summary == NARRATION_UNAVAILABLE_SUMMARY
+        assert [w.warning_id for w in report.warnings] == ["narrated_note"]
 
 
 class TestTheTwoWarningsDecideCannotSee:
