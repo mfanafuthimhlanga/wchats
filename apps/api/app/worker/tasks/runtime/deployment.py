@@ -929,10 +929,10 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
         # ------------------------------------------------------------------
         state = _open_wait(run_id, agent_id, conn_str)
     else:
-        state = _continue_wait(agent_id, wait_state)
-        if state is None:
+        continued = _continue_wait(agent_id, wait_state)
+        if continued is None:
             return {}
-        run_id = state["run_id"]
+        state, run_id = continued, continued["run_id"]
 
     # One look, then either hand the wait to the next message or go on. A job
     # that never reaches terminal inside the ceiling reads as an ABSENT record,
