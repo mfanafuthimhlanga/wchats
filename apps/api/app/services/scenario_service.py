@@ -14,7 +14,7 @@ import structlog
 from sqlalchemy import text
 
 from app.core.model_client import LedgerContext, ledger_recorder
-from app.domain.eval_result import DATASET_EXPLORATORY, EVAL_DATASETS
+from app.domain.eval_result import DATASET_EXPLORATORY, DATASET_GOLDEN, EVAL_DATASETS
 
 log = structlog.get_logger(__name__)
 
@@ -27,8 +27,11 @@ HAIKU_MODEL = "claude-haiku-4-5"
 # files them from a promoted trace or a contained red-team finding. The golden
 # set is the owner's own assertion, which #19 sizes at ten authored pairs before
 # a calibration may run, and a golden set that filled itself from generation
-# would be the old random sample wearing a stable name. No writer in the tree
-# designates a golden row today; the corpus ticket is where that path lands.
+# would be the old random sample wearing a stable name. The one writer that
+# designates a golden row is `insert_authored_golden_scenario` at the bottom of
+# this module, and no model sits on its path: the text arrives verbatim from the
+# golden registration route (#56), which derives provenance from the
+# authenticated caller and never composes an answer server-side.
 
 
 class InvalidScenario(ValueError):
@@ -516,3 +519,66 @@ def mine_production_scenarios(
 
     log.info("scenario_service.mined", agent_id=agent_id, count=len(mined))
     return mined
+
+
+# ---------------------------------------------------------------------------
+# #56: the golden registration writer
+# ---------------------------------------------------------------------------
+
+
+def insert_authored_golden_scenario(
+    conn,
+    question: str,
+    reference_answer: str,
+    provenance: str,
+) -> str:
+    """Insert one owner-authored golden pair. The only writer of dataset='golden'.
+
+    Same transaction contract as `insert_provenance_scenario`: the caller passes
+    an open psycopg2 connection and owns commit/rollback, so a batch of pairs
+    lands atomically or not at all.
+
+    Requires migration 0024 (source CHECK v3 admits 'authored') — inserting
+    before it raises psycopg2.errors.CheckViolation.
+
+    What this deliberately does NOT write: `label_trust_tier` and `labelled_by`.
+    Those columns assert which HUMAN wrote a string, and the golden route
+    authenticates an account (the tenant key), not a person. The row's claim is
+    carried honestly in `source='authored'` plus the provenance tag the route
+    derives from the authenticated caller. The ship rule gates golden rows on
+    `dataset` alone (app.domain.verdict), so the tier stays NULL without
+    weakening the gate.
+
+    Args:
+        conn: An open psycopg2 connection. Not committed or closed here.
+        question: The pair's question, verbatim from the request.
+        reference_answer: The pair's reference answer, verbatim from the request.
+        provenance: Origin tag derived by the route from the authenticated
+            caller and its credential kind. Never a caller-supplied human name.
+
+    Returns:
+        The new scenario's UUID (str). The row joins the golden dataset.
+
+    Raises:
+        InvalidScenario: question or reference_answer is empty once stripped.
+            A visibly-empty golden pair would gate every future deploy on
+            nothing.
+    """
+    if not question.strip() or not reference_answer.strip():
+        raise InvalidScenario(
+            "a golden pair needs both a question and a reference answer; "
+            "got an empty one. Golden rows gate deploys, so an empty pair "
+            "would be a contract term that says nothing."
+        )
+    scenario_id = str(uuid.uuid4())
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO eval_scenarios
+              (id, source, question, reference_answer, retrieved_contexts,
+               provenance, dataset, created_at)
+            VALUES (%s, 'authored', %s, %s, '[]'::jsonb, %s, %s, NOW())
+            """,
+            (scenario_id, question, reference_answer, provenance, DATASET_GOLDEN),
+        )
+    return scenario_id
