@@ -2244,7 +2244,7 @@ def _red_team_evidence_warnings(red_team_signal: object) -> list[DeploymentWarni
     if red_team_signal == SHIPPABLE_SIGNAL:
         return []
     warning_id, message = _RED_TEAM_ABSENCE_WARNINGS.get(
-        red_team_signal, _RED_TEAM_UNREADABLE_WARNING  # type: ignore[arg-type]  # a non-str signal is unhashable-safe here: every produced signal is a str or None
+        red_team_signal, _RED_TEAM_UNREADABLE_WARNING  # type: ignore[call-overload]  # a non-str signal is unhashable-safe here: every produced signal is a str or None
     )
     return [
         DeploymentWarning(
