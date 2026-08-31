@@ -350,7 +350,10 @@ class Settings(BaseSettings):
     #                    (apps/api/static/wchats, SHA-gated by
     #                    apps/widget/scripts/sync-embed.mjs) and the snippet
     #                    derives PUBLIC_API_BASE + "/wchats". Set it only when
-    #                    a real CDN fronts the bundle. #135: the CloudFront
+    #                    a real CDN fronts the bundle, and then add that
+    #                    origin to CORS_ORIGINS too: the iframe's runtime
+    #                    calls to the API become cross-origin the moment the
+    #                    page loads from the CDN. #135: the CloudFront
     #                    origin went with ADR 0005, and the old default,
     #                    https://widget.wchats.app, named a host nothing
     #                    served, so every emitted snippet was dead on arrival.

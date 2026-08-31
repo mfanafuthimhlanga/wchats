@@ -7,8 +7,8 @@
  *           async></script>
  *
  * It reads its own data-* attributes, injects a floating launcher button, and lazily
- * mounts the chat panel inside a sandboxed <iframe> (so the host page's CSS/JS can never
- * collide with the widget). The iframe loads index.html (served alongside this file) with
+ * mounts the chat panel inside a separate-origin <iframe> (so the host page's CSS/JS can
+ * never collide with the widget; no sandbox attribute is set). The iframe loads index.html (served alongside this file) with
  * ?agent_id=…&api=… — exactly what apps/widget/src/index.jsx expects.
  *
  * Host-agnostic by design: works behind Vercel static, S3+CloudFront, or any origin.

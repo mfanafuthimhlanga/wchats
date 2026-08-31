@@ -133,9 +133,18 @@ async def add_cache_control(request: Request, call_next):
 
     This covers all routes including SSE.  The SSE endpoint also sets the
     header explicitly on the EventSourceResponse for belt-and-suspenders.
+
+    The widget bundle at /wchats is the one exemption (#135 review): it is
+    public static content on every customer page view, and no-store would
+    force a full re-download per view and forbid any future CDN from caching
+    it. Five minutes plus StaticFiles' ETag revalidation keeps updates
+    near-immediate at 304 cost.
     """
     response = await call_next(request)
-    response.headers["Cache-Control"] = "no-store"
+    if request.url.path.startswith("/wchats/"):
+        response.headers["Cache-Control"] = "public, max-age=300"
+    else:
+        response.headers["Cache-Control"] = "no-store"
     return response
 
 
@@ -191,7 +200,9 @@ app.include_router(pending_confirmations.router, prefix="/api/v1")
 # (the default) makes the embed snippet derive this host, so the snippet and
 # the serving cannot drift apart. The files live at apps/api/static/wchats,
 # synced from apps/widget and SHA-gated by sync-embed.mjs; the CloudFront
-# origin went with ADR 0005.
+# origin went with ADR 0005. check_dir defaults True, so a build that drops
+# the folder fails the API at import: fail loud beats serving an API whose
+# snippets point at nothing.
 app.mount(
     "/wchats",
     StaticFiles(directory=Path(__file__).parent.parent / "static" / "wchats"),

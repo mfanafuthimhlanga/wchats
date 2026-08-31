@@ -1149,6 +1149,34 @@ class TestEmbedSnippet:
         assert 'src="https://cdn.test.example/widget.js"' in snippet, snippet
         assert "/wchats/" not in snippet, snippet
 
+    def test_production_refuses_a_non_https_api_base(self, monkeypatch):
+        """#135 review, finding 9: an http src on an https customer page is
+        silently mixed-content-blocked, so production refuses to emit it."""
+        monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+        monkeypatch.setattr(settings, "WIDGET_CDN_BASE", "")
+        monkeypatch.setattr(settings, "PUBLIC_API_BASE", "http://api.example.com")
+
+        with pytest.raises(SnippetNotConfigured):
+            _make_iframe_snippet(str(uuid4()))
+
+    def test_production_refuses_a_loopback_configured_cdn(self, monkeypatch):
+        """#135 review, finding 8: the configured branch is guarded too."""
+        monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+        monkeypatch.setattr(settings, "WIDGET_CDN_BASE", "http://localhost:9000")
+        monkeypatch.setattr(settings, "PUBLIC_API_BASE", "https://api.example.com")
+
+        with pytest.raises(SnippetNotConfigured):
+            _make_iframe_snippet(str(uuid4()))
+
+    def test_production_emits_when_both_bases_are_public_https(self, monkeypatch):
+        monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+        monkeypatch.setattr(settings, "WIDGET_CDN_BASE", "")
+        monkeypatch.setattr(settings, "PUBLIC_API_BASE", "https://api.example.com")
+
+        snippet = _make_iframe_snippet(str(uuid4()))
+
+        assert 'src="https://api.example.com/wchats/widget.js"' in snippet, snippet
+
     async def test_route_returns_the_generated_snippet(self):
         """The console's snippet is the API's snippet, byte for byte."""
         fake_tenant = _make_fake_tenant()

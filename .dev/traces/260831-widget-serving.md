@@ -42,3 +42,25 @@ serves.
   the suite passed (outputs in the PR).
 - `gates.py static` passed in 15.6s (after relocating the bundle out of lizard's tree,
   which had failed the gate on the minified functions). ruff clean.
+
+## The tier-1 review
+
+15 findings. Applied: the no-store middleware now exempts `/wchats` (public,
+max-age=300 with ETag revalidation; CloudFront's caching was its unreplicated second
+job), the integration e2e assertion that still demanded the dead host, the root
+`.env.example` that still instructed setting it (an explicit value beats the
+derivation), a CI drift gate (`git diff --exit-code` over the three sync targets,
+because postbuild's write-mode sync would silently repair drift in the CI checkout),
+production refusal extended to the configured CDN and to non-https schemes on both
+bases (`_refuse_unservable_base`), the fail-loud import note on the mount, the 404
+test's in-test control, honest docstrings on the byte-identity test and the loader's
+iframe claim, and the CORS caveat wherever a CDN is suggested.
+
+Declined, recorded in PRODUCTION-READINESS as accepted costs with the CDN env var as
+the lever: no compression (gzip middleware risks SSE buffering; ~25KB raw once per
+visitor per cache window), widget delivery sharing the API's fate and capacity, and
+widget rebuilds redeploying all four Railway services via `apps/api/**` watch
+patterns.
+
+After the fixes: 46 passed across the deployment and mount suites; ruff clean;
+`gates.py static` 34.3s green; sync check PASS over 10 files.

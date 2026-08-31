@@ -30,13 +30,21 @@ class TestWidgetStaticMount:
                 assert len(response.content) > 0, name
 
     async def test_a_file_outside_the_bundle_is_404(self):
+        """The in-test 200 is the control (FM-004): with the mount deleted the
+        404 half still passes on the framework default, so alone it proves
+        nothing."""
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
+            control = await client.get("/wchats/widget.js")
             response = await client.get("/wchats/not-a-bundle-file.js")
+        assert control.status_code == 200
         assert response.status_code == 404
 
     async def test_served_loader_matches_the_synced_folder(self):
+        """Pins that the mount serves the directory this test names. While the
+        sync holds, every copy is byte-identical, so a mount pointed at
+        another copy only fails this after a drift event."""
         expected = (STATIC_WCHATS / "widget.js").read_bytes()
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"

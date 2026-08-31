@@ -199,6 +199,12 @@ jobs:
         working-directory: apps/widget
         run: pnpm install --frozen-lockfile && pnpm run build
 
+      # #135 review: postbuild's sync-embed runs in WRITE mode and would
+      # silently overwrite committed drift in this checkout, so the gate is
+      # the git diff, not the script's own --check.
+      - name: Widget embed targets match the committed build (drift gate)
+        run: git diff --exit-code -- apps/widget/embed apps/admin/public/wchats apps/api/static/wchats
+
       - name: Run deterministic evals (D3, D5, D6, D7, G-06)
         working-directory: apps/api
         run: python -m pytest tests/evals/run_evals.py -k deterministic -v --tb=short
