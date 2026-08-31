@@ -3,9 +3,12 @@
 BACKLOG `1.24`. `S3_ENDPOINT_URL` exists so the ingestion chain can be exercised
 against a local S3-compatible process (E2E-2) without an AWS account. It is not
 an ordinary setting: it redirects **every read and write of customer document
-bytes**, so the test that matters most here is
-`test_the_override_is_refused_in_production` — without it this module would be
-documenting a redirect primitive rather than a development affordance.
+bytes**. In production it is honoured for exactly the object stores decision
+#14 names, Cloudflare R2 and Backblaze B2 (ticket 18), and refused for every
+other host, so the tests that matter most here are the production ones: the
+allowlist must admit those two suffixes on the parsed hostname and nothing
+else, or this module would be documenting a redirect primitive rather than a
+bounded seam.
 
 Why each test resets `storage_service._s3`
 ------------------------------------------
@@ -116,6 +119,65 @@ def test_production_without_the_override_is_unaffected():
     args, kwargs = _build_client(S3_ENDPOINT_URL=None, ENVIRONMENT="production")
     assert args == ("s3",)
     assert "endpoint_url" not in kwargs
+
+
+def _refused_in_production(endpoint: str) -> str:
+    """Run _get_s3 in production with `endpoint` and return the refusal text."""
+    fake_boto3 = MagicMock()
+    with patch.dict("sys.modules", {"boto3": fake_boto3}):
+        with patch.multiple(
+            storage_service.settings,
+            AWS_REGION="us-east-1",
+            S3_ENDPOINT_URL=endpoint,
+            ENVIRONMENT="production",
+        ):
+            with pytest.raises(StorageNotConfigured) as exc_info:
+                storage_service._get_s3()
+    assert fake_boto3.client.call_count == 0, (
+        "a client was constructed anyway — the guard must refuse BEFORE "
+        "building anything that could serve a request"
+    )
+    return str(exc_info.value)
+
+
+def test_r2_is_honoured_in_production():
+    """Decision #14.6: R2 is a destination production may write documents to."""
+    r2 = "https://accountid.r2.cloudflarestorage.com"
+    args, kwargs = _build_client(S3_ENDPOINT_URL=r2, ENVIRONMENT="production")
+    assert kwargs.get("endpoint_url") == r2
+
+
+def test_b2_is_honoured_in_production():
+    b2 = "https://s3.us-west-004.backblazeb2.com"
+    args, kwargs = _build_client(S3_ENDPOINT_URL=b2, ENVIRONMENT="production")
+    assert kwargs.get("endpoint_url") == b2
+
+
+def test_the_allowlist_reads_the_parsed_host_not_the_string():
+    """A suffix in the query string must not admit an arbitrary host."""
+    message = _refused_in_production(
+        "https://evil.example/?redirect=.r2.cloudflarestorage.com"
+    )
+    assert "evil.example" in message
+
+
+def test_a_lookalike_suffix_without_the_dot_is_refused():
+    """evilr2.cloudflarestorage.com is not a subdomain of the allowed store."""
+    _refused_in_production("https://evilr2xcloudflarestorage.com")
+
+
+def test_credentials_embedded_in_the_endpoint_are_refused_in_production():
+    """A URL carrying userinfo is one log line from disclosing the key."""
+    message = _refused_in_production(
+        "https://AKIA:secret@bucket.r2.cloudflarestorage.com"
+    )
+    assert "credential" in message.lower()
+
+
+def test_the_host_comparison_is_case_insensitive():
+    r2 = "https://Account.R2.CloudflareStorage.com"
+    args, kwargs = _build_client(S3_ENDPOINT_URL=r2, ENVIRONMENT="production")
+    assert kwargs.get("endpoint_url") == r2
 
 
 # --------------------------------------------------------------------------

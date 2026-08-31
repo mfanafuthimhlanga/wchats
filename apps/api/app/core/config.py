@@ -278,12 +278,13 @@ class Settings(BaseSettings):
     # S3-compatible process (MinIO) so the ingestion chain can be exercised
     # without an AWS account.
     #
-    # THIS IS A REDIRECT PRIMITIVE ON THE BOUNDARY THAT DECIDES WHERE CUSTOMER
-    # DOCUMENTS ARE WRITTEN AND READ. It is therefore refused outright when
-    # ENVIRONMENT == "production" — see storage_service._get_s3(), which raises
-    # rather than warning or silently ignoring it. A production process
-    # configured to send customer documents to a non-AWS endpoint must fail to
-    # serve that path, not serve it quietly.
+    # THIS DECIDES WHERE CUSTOMER DOCUMENTS ARE WRITTEN AND READ. In
+    # production, storage_service._require_production_endpoint honours it for
+    # exactly the object stores decision #14 names (Cloudflare R2, Backblaze
+    # B2) and raises for every other host, so a process configured to send
+    # customer documents somewhere unvetted fails to serve that path rather
+    # than serving it quietly. Everywhere else it is the local-dev seam
+    # (MinIO) it always was.
     S3_ENDPOINT_URL: str | None = None
 
     # The owned loop's per-turn USD ceiling (#48). Between model calls
