@@ -91,7 +91,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_tenant
+from app.api.deps import get_credential_kind, get_current_tenant
 from app.core.database import get_async_db
 from app.core.security import fernet_decrypt
 from app.domain.eval_result import (
@@ -105,9 +105,17 @@ from app.domain.eval_result import (
 from app.domain.judge_record import scenario_verdict
 from app.models.agent import Agent
 from app.models.tenant import Tenant
+from app.schemas.eval import (
+    GoldenScenariosRegisterRequest,
+    GoldenScenariosRegisterResponse,
+)
 from app.services.eval_service import EVAL_DATASETS
 from app.services.eval_service import GATED_METRIC_KEYS as EVAL_GATED_METRIC_KEYS
 from app.services.eval_service import METRIC_KEYS as EVAL_METRIC_KEYS
+from app.services.scenario_service import (
+    InvalidScenario,
+    insert_authored_golden_scenario,
+)
 from app.worker.tasks.runtime.eval import run_eval_suite
 
 router = APIRouter(tags=["evals"])
@@ -199,7 +207,7 @@ _LEDGER_SQL = """
         COUNT(*) FILTER (WHERE source = 'production') AS born_in_production_count,
         COUNT(*) FILTER (WHERE source = 'red_team')    AS red_team_count,
         COUNT(*) FILTER (
-            WHERE source IN ('generated', 'mined') OR provenance IS NULL
+            WHERE source IN ('generated', 'mined', 'authored') OR provenance IS NULL
         ) AS authored_count
     FROM eval_scenarios
 """
@@ -725,3 +733,130 @@ async def trigger_eval_run(
         "task_id": task.id,
         "agent_id": str(agent_id),
     }
+
+
+# ---------------------------------------------------------------------------
+# #56: golden registration, the one write on this router
+# ---------------------------------------------------------------------------
+
+_GOLDEN_EXISTING_SQL = "SELECT question FROM eval_scenarios WHERE dataset = 'golden'"
+
+
+def _register_golden_sync(
+    conn_str: str, pairs: list[tuple[str, str]], provenance: str
+) -> tuple[int, list[str], int]:
+    """Insert authored golden pairs in one transaction, skipping known questions.
+
+    A question already in the golden set is skipped rather than duplicated, so
+    one caller re-running the same file is idempotent. No unique constraint
+    backs the check, so concurrent registrations of one file can still race
+    duplicates in; the surface is a single operator. Returns
+    (registered, skipped_questions, golden_total), the total counting distinct
+    question texts. Any failure rolls the whole batch back; a file
+    half-registered would leave the golden floor unaccountable.
+    """
+    conn = psycopg2.connect(conn_str, connect_timeout=10)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_GOLDEN_EXISTING_SQL)
+            existing = {q for (q,) in cur.fetchall()}
+        registered = 0
+        skipped: list[str] = []
+        for question, reference_answer in pairs:
+            if question in existing:
+                skipped.append(question)
+                continue
+            insert_authored_golden_scenario(
+                conn,
+                question=question,
+                reference_answer=reference_answer,
+                provenance=provenance,
+            )
+            existing.add(question)
+            registered += 1
+        conn.commit()
+        return registered, skipped, len(existing)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _golden_refusal(exc: Exception) -> HTTPException:
+    """422 for a pair the writer refused; 409 for a pre-0024 tenant DB (#64's
+    class: nothing re-runs tenant migrations after provision)."""
+    if isinstance(exc, InvalidScenario):
+        return HTTPException(status_code=422, detail=str(exc))
+    return HTTPException(
+        status_code=409,
+        detail=(
+            "The tenant database predates migration 0024 and refuses "
+            "authored rows. Re-run tenant migrations for this agent (#64)."
+        ),
+    )
+
+
+@router.post(
+    "/agents/{agent_id}/golden-scenarios",
+    status_code=201,
+    response_model=GoldenScenariosRegisterResponse,
+)
+async def register_golden_scenarios(
+    agent_id: UUID,
+    body: GoldenScenariosRegisterRequest,
+    db: AsyncSession = Depends(get_async_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    credential_kind: str = Depends(get_credential_kind),
+) -> GoldenScenariosRegisterResponse:
+    """Register owner-authored golden pairs for an agent (#56).
+
+    The golden set is the tenant's own acceptance contract: `decide()` gates on
+    it absolutely and refuses to ship under ten attempted pairs, so this is a
+    mandatory Provisioning step before the first deploy.
+
+    The rows land with `source='authored'`, `dataset='golden'` and a provenance
+    tag derived from the authenticated caller. `label_trust_tier` stays NULL:
+    this route authenticates an account (tenant key or Clerk session), not a
+    person, so it does not assert which human wrote the text. No authored_by
+    field is accepted for the same reason.
+
+    Security:
+        IDOR check on agent (404 on foreign or missing agent).
+        Refusals map through _golden_refusal: 422 for an empty pair (golden
+        rows gate deploys, so one is never stored), 409 for a pre-0024 DB.
+    """
+    agent = await db.get(Agent, agent_id)
+    if agent is None or agent.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if not agent.neon_connection_string:
+        raise HTTPException(status_code=404, detail="Agent database not provisioned")
+
+    conn_str = fernet_decrypt(agent.neon_connection_string)
+    # The colon separates provenance fields, so the caller's segment loses its.
+    source_tag = (body.source_file or "inline").replace(":", "_")
+    provenance = f"authored:{credential_kind}:{source_tag}"
+
+    try:
+        registered, skipped, total = await asyncio.to_thread(
+            _register_golden_sync,
+            conn_str,
+            [(p.question, p.reference_answer) for p in body.pairs],
+            provenance,
+        )
+    except (InvalidScenario, psycopg2.errors.CheckViolation) as exc:
+        raise _golden_refusal(exc) from exc
+
+    log.info(
+        "golden.registered",
+        agent_id=str(agent_id),
+        tenant_id=str(tenant.id),
+        registered=registered,
+        skipped=len(skipped),
+        golden_total=total,
+    )
+    return GoldenScenariosRegisterResponse(
+        registered=registered,
+        skipped_duplicates=skipped,
+        golden_total=total,
+    )
