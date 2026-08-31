@@ -2,7 +2,7 @@
 Unit tests for the MCP endpoint (app/api/mcp.py, #56).
 
 Protocol surface:
-    1. tools/list returns the fifteen tools in deterministic order with cache hints
+    1. tools/list returns the eighteen tools in deterministic order with cache hints
     2. GET and DELETE /mcp return 405 with Allow: POST
     3. No credential returns 401
     4. Unknown method returns HTTP 404 with JSON-RPC -32601
@@ -12,7 +12,7 @@ Protocol surface:
     8. The modern header contract: MCP-Protocol-Version without Mcp-Method is
        400 with -32020; a fully-declared modern request succeeds
 
-Tool wrapping (the route IS the behaviour — nothing here re-tests route logic):
+Tool wrapping (the route IS the behaviour; nothing here re-tests route logic):
     9.  tools/call replays the real route: a route 404 arrives as an isError
         tool result carrying status 404
     10. a successful tools/call carries the route's JSON as structuredContent
@@ -33,7 +33,7 @@ from httpx import ASGITransport, AsyncClient
 
 # conftest.py sets required env vars before any app import
 from app.api.deps import get_async_db, get_credential_kind, get_current_tenant
-from app.api.mcp import _POLL, TOOLS, get_mcp_tenant
+from app.api.mcp import PROTOCOL_VERSION, TOOLS, get_mcp_tenant
 from app.core.security import hash_api_key, hmac_key_prefix
 from app.main import app
 from app.models.agent import Agent
@@ -50,8 +50,11 @@ EXPECTED_TOOL_NAMES = [
     "list_eval_runs",
     "get_eval_results",
     "trigger_red_team",
+    "list_red_team_runs",
     "get_red_team_run",
     "run_checklist",
+    "list_checklist_runs",
+    "get_checklist_run",
     "acknowledge_warning",
     "approve_deployment",
     "get_embed_snippet",
@@ -116,7 +119,7 @@ def _override_outer_auth(tenant: Tenant) -> None:
 
 
 class TestToolsList:
-    async def test_lists_the_fifteen_tools_in_deterministic_order(self):
+    async def test_lists_the_eighteen_tools_in_deterministic_order(self):
         tenant = _make_fake_tenant()
         _override_outer_auth(tenant)
         try:
@@ -356,10 +359,10 @@ class TestToolWrapping:
 
 
 class TestToolTable:
-    def test_fifteen_tools_with_legal_unique_names(self):
+    def test_eighteen_tools_with_legal_unique_names(self):
         names = [t.name for t in TOOLS]
-        assert len(names) == 15
-        assert len(set(names)) == 15
+        assert len(names) == 18
+        assert len(set(names)) == 18
         for name in names:
             assert re.fullmatch(r"[A-Za-z0-9_.\-]{1,128}", name)
 
@@ -369,15 +372,29 @@ class TestToolTable:
             assert required in names
         assert "register_golden_scenarios" in names
 
-    def test_every_path_param_is_satisfiable(self):
+    def test_path_params_match_the_template_exactly(self):
+        """Both directions: a template param missing from path_params AND a
+        path_params entry the template never uses (str.format ignores extras,
+        which would silently eat a required argument)."""
         for tool in TOOLS:
-            # raises KeyError if the template names a param not in path_params
-            tool.path.format(**{p: "x" for p in tool.path_params})
+            placeholders = set(re.findall(r"{(\w+)}", tool.path))
+            assert placeholders == set(tool.path_params), tool.name
 
-    def test_trigger_tools_name_the_poll_loop(self):
-        for name in ("create_agent", "upload_documents", "trigger_eval", "trigger_red_team", "run_checklist"):
+    def test_trigger_tools_name_their_poll_target_and_it_exists(self):
+        """FM-012: a description is a prompt; a tool name spelled in one must
+        resolve against the table or a rename goes stale silently."""
+        names = {t.name for t in TOOLS}
+        polls = {
+            "create_agent": "get_job",
+            "upload_documents": "get_job",
+            "trigger_eval": "list_eval_runs",
+            "trigger_red_team": "list_red_team_runs",
+            "run_checklist": "list_checklist_runs",
+        }
+        for name, target in polls.items():
             tool = next(t for t in TOOLS if t.name == name)
-            assert _POLL in tool.description
+            assert target in tool.description, name
+            assert target in names, target
 
     def test_body_model_fields_are_spread_flat(self):
         create_agent = next(t for t in TOOLS if t.name == "create_agent")
@@ -387,3 +404,249 @@ class TestToolTable:
         golden = next(t for t in TOOLS if t.name == "register_golden_scenarios")
         assert {"agent_id", "pairs"} <= set(golden.input_schema["properties"])
         assert "agent_id" in golden.input_schema["required"]
+
+
+# ---------------------------------------------------------------------------
+# 13. Every tool reaches its route (tier-1 review, finding 7)
+# ---------------------------------------------------------------------------
+
+
+class TestToolWiring:
+    """One fake tenant and a DB that knows nothing: every route answers its own
+    401/404/422. A router-level miss answers {"detail": "Not Found"} or 405,
+    and the assertion refuses both, so a wrong path or method in the table
+    turns exactly this red for that tool."""
+
+    async def test_every_tool_reaches_its_route(self):
+        tenant = _make_fake_tenant()
+        _override_outer_auth(tenant)
+        app.dependency_overrides[get_current_tenant] = lambda: tenant
+        app.dependency_overrides[get_credential_kind] = lambda: "api_key"
+        mock_db = AsyncMock()
+        mock_db.get = AsyncMock(return_value=None)
+        result_mock = MagicMock()
+        result_mock.scalars.return_value.first.return_value = None
+        result_mock.scalar_one_or_none.return_value = None
+        mock_db.execute = AsyncMock(return_value=result_mock)
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+        try:
+            for tool in TOOLS:
+                arguments = {p: str(uuid4()) for p in tool.path_params}
+                response = await _post(
+                    _rpc(
+                        "tools/call",
+                        params={"name": tool.name, "arguments": arguments},
+                    )
+                )
+                assert response.status_code == 200, tool.name
+                result = response.json()["result"]
+                if result.get("isError"):
+                    payload = json.loads(result["content"][0]["text"])
+                    assert payload["status"] != 405, tool.name
+                    assert payload.get("detail") != "Not Found", (
+                        tool.name,
+                        payload,
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# 14. Protocol edges (tier-1 review, findings 4, 7, 8, 11)
+# ---------------------------------------------------------------------------
+
+
+class TestProtocolEdges:
+    async def test_unknown_tool_is_invalid_params(self):
+        _override_outer_auth(_make_fake_tenant())
+        try:
+            response = await _post(
+                _rpc("tools/call", params={"name": "no_such_tool", "arguments": {}})
+            )
+        finally:
+            app.dependency_overrides.clear()
+        assert response.json()["error"]["code"] == -32602
+
+    async def test_non_object_arguments_is_invalid_params(self):
+        _override_outer_auth(_make_fake_tenant())
+        try:
+            response = await _post(
+                _rpc("tools/call", params={"name": "get_agent", "arguments": [1]})
+            )
+        finally:
+            app.dependency_overrides.clear()
+        assert response.json()["error"]["code"] == -32602
+
+    async def test_unexpected_argument_is_an_error_result(self):
+        _override_outer_auth(_make_fake_tenant())
+        try:
+            response = await _post(
+                _rpc(
+                    "tools/call",
+                    params={
+                        "name": "get_agent",
+                        "arguments": {"agent_id": str(uuid4()), "bogus": 1},
+                    },
+                )
+            )
+        finally:
+            app.dependency_overrides.clear()
+        result = response.json()["result"]
+        assert result["isError"] is True
+        assert "unexpected" in result["content"][0]["text"]
+
+    async def test_missing_path_param_is_an_error_result(self):
+        _override_outer_auth(_make_fake_tenant())
+        try:
+            response = await _post(
+                _rpc("tools/call", params={"name": "get_agent", "arguments": {}})
+            )
+        finally:
+            app.dependency_overrides.clear()
+        result = response.json()["result"]
+        assert result["isError"] is True
+        assert "missing" in result["content"][0]["text"]
+
+    async def test_upload_bad_base64_is_an_error_result(self):
+        _override_outer_auth(_make_fake_tenant())
+        try:
+            response = await _post(
+                _rpc(
+                    "tools/call",
+                    params={
+                        "name": "upload_documents",
+                        "arguments": {
+                            "agent_id": str(uuid4()),
+                            "files": [
+                                {"filename": "a.md", "content_base64": "%%%"}
+                            ],
+                        },
+                    },
+                )
+            )
+        finally:
+            app.dependency_overrides.clear()
+        result = response.json()["result"]
+        assert result["isError"] is True
+        assert "base64" in result["content"][0]["text"]
+
+    async def test_upload_entry_missing_filename_is_an_error_result(self):
+        _override_outer_auth(_make_fake_tenant())
+        try:
+            response = await _post(
+                _rpc(
+                    "tools/call",
+                    params={
+                        "name": "upload_documents",
+                        "arguments": {
+                            "agent_id": str(uuid4()),
+                            "files": [{"content_base64": "aGk="}],
+                        },
+                    },
+                )
+            )
+        finally:
+            app.dependency_overrides.clear()
+        result = response.json()["result"]
+        assert result["isError"] is True
+        assert "filename" in result["content"][0]["text"]
+
+    async def test_mcp_name_header_mismatch_is_400(self):
+        _override_outer_auth(_make_fake_tenant())
+        params = {
+            "name": "get_agent",
+            "arguments": {"agent_id": str(uuid4())},
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
+                "io.modelcontextprotocol/clientCapabilities": {},
+            },
+        }
+        try:
+            response = await _post(
+                _rpc("tools/call", params=params),
+                headers={
+                    "MCP-Protocol-Version": PROTOCOL_VERSION,
+                    "Mcp-Method": "tools/call",
+                    "Mcp-Name": "some_other_tool",
+                },
+            )
+        finally:
+            app.dependency_overrides.clear()
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == -32020
+
+    async def test_legacy_version_header_skips_the_modern_contract(self):
+        """A 2025-06-18 client sends the version header on every request with
+        no Mcp-Method and no _meta; refusing it breaks every request after the
+        handshake (review finding 4)."""
+        _override_outer_auth(_make_fake_tenant())
+        try:
+            response = await _post(
+                _rpc("tools/list"),
+                headers={"MCP-Protocol-Version": "2025-06-18"},
+            )
+        finally:
+            app.dependency_overrides.clear()
+        assert response.status_code == 200
+        assert len(response.json()["result"]["tools"]) == len(EXPECTED_TOOL_NAMES)
+
+    async def test_unknown_version_header_is_refused(self):
+        _override_outer_auth(_make_fake_tenant())
+        try:
+            response = await _post(
+                _rpc("tools/list"),
+                headers={"MCP-Protocol-Version": "3000-01-01"},
+            )
+        finally:
+            app.dependency_overrides.clear()
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == -32020
+
+    async def test_wrong_jsonrpc_field_is_invalid_request_with_id_echoed(self):
+        _override_outer_auth(_make_fake_tenant())
+        try:
+            response = await _post(
+                {"jsonrpc": "1.0", "id": 7, "method": "tools/list"}
+            )
+        finally:
+            app.dependency_overrides.clear()
+        body = response.json()
+        assert response.status_code == 400
+        assert body["error"]["code"] == -32600
+        assert body["id"] == 7
+
+    async def test_modern_notification_missing_meta_is_still_202(self):
+        """The spec's MUST on the 202 outranks the header contract."""
+        _override_outer_auth(_make_fake_tenant())
+        try:
+            response = await _post(
+                _rpc("notifications/initialized", rpc_id=None),
+                headers={"MCP-Protocol-Version": PROTOCOL_VERSION},
+            )
+        finally:
+            app.dependency_overrides.clear()
+        assert response.status_code == 202
+
+    async def test_initialize_answers_the_legacy_handshake(self):
+        _override_outer_auth(_make_fake_tenant())
+        try:
+            response = await _post(
+                _rpc("initialize", params={"protocolVersion": "2025-06-18"})
+            )
+        finally:
+            app.dependency_overrides.clear()
+        result = response.json()["result"]
+        assert result["protocolVersion"] == "2025-06-18"
+        assert result["serverInfo"]["name"] == "wchats"
+
+    async def test_ping_and_discover_carry_result_type(self):
+        _override_outer_auth(_make_fake_tenant())
+        try:
+            ping = await _post(_rpc("ping"))
+            discover = await _post(_rpc("server/discover"))
+        finally:
+            app.dependency_overrides.clear()
+        assert ping.json()["result"]["resultType"] == "complete"
+        discover_result = discover.json()["result"]
+        assert discover_result["versions"] == [PROTOCOL_VERSION]
+        assert discover_result["resultType"] == "complete"

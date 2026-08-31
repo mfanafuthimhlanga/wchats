@@ -20,6 +20,7 @@ Route:
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import psycopg2
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -268,3 +269,69 @@ class TestGoldenRoute:
         finally:
             app.dependency_overrides.clear()
         assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# 9-10. Review edges (tier-1, findings 3 and 17)
+# ---------------------------------------------------------------------------
+
+
+class TestGoldenRouteReviewEdges:
+    async def test_pre_0024_tenant_db_is_409(self):
+        """A tenant DB provisioned before 0024 still carries the v2 CHECK;
+        the refusal names the migration and the tracked class (#64)."""
+        tenant = _make_fake_tenant()
+        agent = _make_agent(tenant)
+        app.dependency_overrides[get_current_tenant] = lambda: tenant
+        app.dependency_overrides[get_credential_kind] = lambda: "api_key"
+        mock_db = AsyncMock()
+        mock_db.get = AsyncMock(return_value=agent)
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+        try:
+            with (
+                patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://x"),
+                patch(
+                    "app.api.v1.evals._register_golden_sync",
+                    side_effect=psycopg2.errors.CheckViolation("v2 refused"),
+                ),
+            ):
+                response = await _post_pairs(
+                    agent.id,
+                    {"pairs": [{"question": "q", "reference_answer": "a"}]},
+                )
+        finally:
+            app.dependency_overrides.clear()
+        assert response.status_code == 409
+        assert "0024" in response.json()["detail"]
+
+    async def test_source_file_colons_cannot_forge_the_credential_field(self):
+        """The colon separates provenance fields, so the caller's segment may
+        not carry one: 'x:clerk_jwt:y' must not read as a credential claim."""
+        tenant = _make_fake_tenant()
+        agent = _make_agent(tenant)
+        app.dependency_overrides[get_current_tenant] = lambda: tenant
+        app.dependency_overrides[get_credential_kind] = lambda: "api_key"
+        mock_db = AsyncMock()
+        mock_db.get = AsyncMock(return_value=agent)
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+        try:
+            with (
+                patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://x"),
+                patch(
+                    "app.api.v1.evals._register_golden_sync",
+                    return_value=(1, [], 1),
+                ) as sync_mock,
+            ):
+                response = await _post_pairs(
+                    agent.id,
+                    {
+                        "pairs": [{"question": "q", "reference_answer": "a"}],
+                        "source_file": "x:clerk_jwt:y",
+                    },
+                )
+        finally:
+            app.dependency_overrides.clear()
+        assert response.status_code == 201
+        provenance = sync_mock.call_args[0][2]
+        assert provenance == "authored:api_key:x_clerk_jwt_y"
+        assert provenance.split(":")[1] == "api_key"

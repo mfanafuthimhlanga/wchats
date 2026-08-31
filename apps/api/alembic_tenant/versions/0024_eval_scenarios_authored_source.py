@@ -14,8 +14,13 @@ Same shape as 0011, for the same reasons:
   - downgrade restores v2 exactly.
 
 No column changes. 'authored' is an ORIGIN claim ("the tenant submitted this
-pair as their own"), not a label tier — label_trust_tier stays NULL on these
-rows and eval_service.label_trust_tier() resolves NULL from the source map.
+pair as their own"), never a label tier: the golden writer names no label
+column, so label_trust_tier stays NULL on these rows.
+
+Downgrade narrows the CHECK over live rows, so it fails while any
+source='authored' row exists, exactly as 0011's narrowing fails over
+'production' rows. Remove or re-source those rows first; the observed round
+trip ran against a cleaned probe database.
 """
 
 from typing import Sequence, Union

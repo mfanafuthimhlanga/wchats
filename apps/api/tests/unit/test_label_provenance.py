@@ -832,8 +832,10 @@ class TestR3TheModelWritersCannotWrite:
         """Every model-driven producer routes through
         `scenario_service.store_scenarios` or
         `scenario_service.insert_provenance_scenario` — generated suites, mined
-        production failures, promoted traces, contained red-team findings.
-        Neither statement names a label-provenance column.
+        production failures, promoted traces, contained red-team findings. The
+        third service INSERT path, `insert_authored_golden_scenario` (#56), is
+        fed by an API route rather than a producer. None of the three
+        statements names a label-provenance column.
 
         THE CLAIM THIS TEST NO LONGER MAKES: that those producers "physically
         cannot" populate one. They can — by writing raw SQL that never touches
@@ -1050,13 +1052,14 @@ class TestR3TheModelWritersCannotWrite:
             assert column in joined, f"label_service never writes {column}"
 
     def test_the_scenario_service_insert_paths_name_no_label_column(self):
-        """Stated directly against the two functions as well as against the
-        tree, because these two are the ones a future producer will copy."""
+        """Stated directly against the three functions as well as against the
+        tree, because these are the ones a future producer will copy."""
         from app.services import scenario_service
 
         for fn in (
             scenario_service.store_scenarios,
             scenario_service.insert_provenance_scenario,
+            scenario_service.insert_authored_golden_scenario,
         ):
             source = inspect.getsource(fn)
             for column in LABEL_COLUMNS:

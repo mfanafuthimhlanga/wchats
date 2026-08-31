@@ -736,7 +736,7 @@ async def trigger_eval_run(
 
 
 # ---------------------------------------------------------------------------
-# #56: golden registration — the one write on this router
+# #56: golden registration, the one write on this router
 # ---------------------------------------------------------------------------
 
 _GOLDEN_EXISTING_SQL = "SELECT question FROM eval_scenarios WHERE dataset = 'golden'"
@@ -748,10 +748,12 @@ def _register_golden_sync(
     """Insert authored golden pairs in one transaction, skipping known questions.
 
     A question already in the golden set is skipped rather than duplicated, so
-    re-running the same file is idempotent. Returns
-    (registered, skipped_questions, golden_total). Any failure rolls the whole
-    batch back — a file half-registered would leave the golden floor
-    unaccountable.
+    one caller re-running the same file is idempotent. No unique constraint
+    backs the check, so concurrent registrations of one file can still race
+    duplicates in; the surface is a single operator. Returns
+    (registered, skipped_questions, golden_total), the total counting distinct
+    question texts. Any failure rolls the whole batch back; a file
+    half-registered would leave the golden floor unaccountable.
     """
     conn = psycopg2.connect(conn_str, connect_timeout=10)
     try:
@@ -781,6 +783,20 @@ def _register_golden_sync(
         conn.close()
 
 
+def _golden_refusal(exc: Exception) -> HTTPException:
+    """422 for a pair the writer refused; 409 for a pre-0024 tenant DB (#64's
+    class: nothing re-runs tenant migrations after provision)."""
+    if isinstance(exc, InvalidScenario):
+        return HTTPException(status_code=422, detail=str(exc))
+    return HTTPException(
+        status_code=409,
+        detail=(
+            "The tenant database predates migration 0024 and refuses "
+            "authored rows. Re-run tenant migrations for this agent (#64)."
+        ),
+    )
+
+
 @router.post(
     "/agents/{agent_id}/golden-scenarios",
     status_code=201,
@@ -807,8 +823,8 @@ async def register_golden_scenarios(
 
     Security:
         IDOR check on agent (404 on foreign or missing agent).
-        422 when a pair is empty once stripped — golden rows gate deploys, so
-        an empty pair is refused, never stored.
+        Refusals map through _golden_refusal: 422 for an empty pair (golden
+        rows gate deploys, so one is never stored), 409 for a pre-0024 DB.
     """
     agent = await db.get(Agent, agent_id)
     if agent is None or agent.tenant_id != tenant.id:
@@ -817,7 +833,9 @@ async def register_golden_scenarios(
         raise HTTPException(status_code=404, detail="Agent database not provisioned")
 
     conn_str = fernet_decrypt(agent.neon_connection_string)
-    provenance = f"authored:{credential_kind}:{body.source_file or 'inline'}"
+    # The colon separates provenance fields, so the caller's segment loses its.
+    source_tag = (body.source_file or "inline").replace(":", "_")
+    provenance = f"authored:{credential_kind}:{source_tag}"
 
     try:
         registered, skipped, total = await asyncio.to_thread(
@@ -826,8 +844,8 @@ async def register_golden_scenarios(
             [(p.question, p.reference_answer) for p in body.pairs],
             provenance,
         )
-    except InvalidScenario as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (InvalidScenario, psycopg2.errors.CheckViolation) as exc:
+        raise _golden_refusal(exc) from exc
 
     log.info(
         "golden.registered",

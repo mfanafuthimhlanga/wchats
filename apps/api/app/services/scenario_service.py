@@ -27,11 +27,13 @@ HAIKU_MODEL = "claude-haiku-4-5"
 # files them from a promoted trace or a contained red-team finding. The golden
 # set is the owner's own assertion, which #19 sizes at ten authored pairs before
 # a calibration may run, and a golden set that filled itself from generation
-# would be the old random sample wearing a stable name. The one writer that
-# designates a golden row is `insert_authored_golden_scenario` at the bottom of
-# this module, and no model sits on its path: the text arrives verbatim from the
-# golden registration route (#56), which derives provenance from the
-# authenticated caller and never composes an answer server-side.
+# would be the old random sample wearing a stable name. One writer designates a
+# golden row on its own authority: `insert_authored_golden_scenario` at the
+# bottom of this module, fed verbatim by the golden registration route (#56),
+# which derives provenance from the authenticated caller and never composes an
+# answer server-side. `store_scenarios` writes whatever dataset its caller
+# filed, and every producer in this module files exploratory; that is a caller
+# convention, not a wall.
 
 
 class InvalidScenario(ValueError):
@@ -538,11 +540,11 @@ def insert_authored_golden_scenario(
     an open psycopg2 connection and owns commit/rollback, so a batch of pairs
     lands atomically or not at all.
 
-    Requires migration 0024 (source CHECK v3 admits 'authored') — inserting
+    Requires migration 0024 (source CHECK v3 admits 'authored'); inserting
     before it raises psycopg2.errors.CheckViolation.
 
-    What this deliberately does NOT write: `label_trust_tier` and `labelled_by`.
-    Those columns assert which HUMAN wrote a string, and the golden route
+    What this deliberately does NOT write: the 0016 label provenance columns.
+    Those assert which HUMAN wrote a string, and the golden route
     authenticates an account (the tenant key), not a person. The row's claim is
     carried honestly in `source='authored'` plus the provenance tag the route
     derives from the authenticated caller. The ship rule gates golden rows on

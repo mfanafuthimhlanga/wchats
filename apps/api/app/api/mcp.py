@@ -7,7 +7,7 @@ request and replays it against this same FastAPI app in-process, so the
 route's own auth, ownership checks, validation and status codes are the
 tool's behaviour, and the route tests cover it.
 
-Protocol: revision 2026-07-28 — stateless by design (no session id, no SSE,
+Protocol: revision 2026-07-28, stateless by design (no session id, no SSE,
 no server-initiated requests). A legacy `initialize` is answered minimally so
 an older client can still hand-shake; nothing stateful is minted for it. The
 normative requirements implemented here are quoted in
@@ -31,6 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+from structlog import contextvars as structlog_contextvars
 
 from app.api.deps import get_current_tenant
 from app.core.config import settings
@@ -56,10 +57,19 @@ ERR_HEADER_MISMATCH = -32020
 META_PROTOCOL = "io.modelcontextprotocol/protocolVersion"
 META_CLIENT_CAPS = "io.modelcontextprotocol/clientCapabilities"
 
-_POLL = " Returns immediately with a job/run id; poll get_job until status is terminal."
+_POLL_JOB = " Returns a job id immediately; poll get_job until status is terminal."
+_POLL_EVAL = " Returns immediately; poll list_eval_runs until the newest run is terminal."
+_POLL_RED_TEAM = (
+    " Returns immediately; poll list_red_team_runs until the newest run is terminal."
+)
+_POLL_CHECKLIST = (
+    " Returns immediately; poll list_checklist_runs until the newest run is "
+    "terminal. Its run id and warning ids feed acknowledge_warning and "
+    "approve_deployment."
+)
 
 # ---------------------------------------------------------------------------
-# The tool table. One row per tool, one existing route per row — the whole map.
+# The tool table. One row per tool, one existing route per row. This is the map.
 # ---------------------------------------------------------------------------
 
 _UUID_PARAM = {"type": "string", "description": "UUID"}
@@ -143,13 +153,17 @@ class _Tool:
         self.path = path
         self.path_params = path_params
         self.body_model = body_model
-        self.input_schema = input_schema or _merge_schema(path_params, body_model)
+        self.input_schema = (
+            input_schema
+            if input_schema is not None
+            else _merge_schema(path_params, body_model)
+        )
 
 
 TOOLS: tuple[_Tool, ...] = (
     _Tool(
         "create_agent",
-        "Create an Agent for the authenticated Tenant." + _POLL,
+        "Create an Agent for the authenticated Tenant." + _POLL_JOB,
         "POST",
         "/api/v1/agents",
         (),
@@ -173,7 +187,7 @@ TOOLS: tuple[_Tool, ...] = (
     _Tool(
         "upload_documents",
         "Upload documents and/or URLs into the Agent's Corpus through the "
-        "real ingestion pipeline." + _POLL,
+        "real ingestion pipeline." + _POLL_JOB,
         "POST",
         "/api/v1/agents/{agent_id}/documents",
         ("agent_id",),
@@ -200,7 +214,7 @@ TOOLS: tuple[_Tool, ...] = (
     ),
     _Tool(
         "trigger_eval",
-        "Run the eval suite against an Agent." + _POLL,
+        "Run the eval suite against an Agent." + _POLL_EVAL,
         "POST",
         "/api/v1/agents/{agent_id}/eval-runs/trigger",
         ("agent_id",),
@@ -221,8 +235,17 @@ TOOLS: tuple[_Tool, ...] = (
     ),
     _Tool(
         "trigger_red_team",
-        "Run the red-team programme against an Agent." + _POLL,
+        "Run the red-team programme against an Agent." + _POLL_RED_TEAM,
         "POST",
+        "/api/v1/agents/{agent_id}/red-team-runs",
+        ("agent_id",),
+    ),
+    _Tool(
+        "list_red_team_runs",
+        "List an Agent's red-team runs, newest first. The run ids here are the "
+        "ones get_red_team_run reads; the id a trigger returns is its task, "
+        "not the run.",
+        "GET",
         "/api/v1/agents/{agent_id}/red-team-runs",
         ("agent_id",),
     ),
@@ -236,10 +259,26 @@ TOOLS: tuple[_Tool, ...] = (
     _Tool(
         "run_checklist",
         "Run the deployment checklist: it sequences eval and red team, then "
-        "computes the Verdict." + _POLL,
+        "computes the Verdict." + _POLL_CHECKLIST,
         "POST",
         "/api/v1/agents/{agent_id}/checklist-runs",
         ("agent_id",),
+    ),
+    _Tool(
+        "list_checklist_runs",
+        "List an Agent's checklist runs, newest first, with each run's status, "
+        "warnings and recommendation. The run ids here are the ones the "
+        "approve and acknowledge steps take.",
+        "GET",
+        "/api/v1/agents/{agent_id}/checklist-runs",
+        ("agent_id",),
+    ),
+    _Tool(
+        "get_checklist_run",
+        "Read one checklist run: status, gate results, warnings, Verdict.",
+        "GET",
+        "/api/v1/agents/{agent_id}/checklist-runs/{run_id}",
+        ("agent_id", "run_id"),
     ),
     _Tool(
         "acknowledge_warning",
@@ -295,7 +334,7 @@ async def get_mcp_tenant(
     """Resolve the Tenant from the static key, via the same lookup every route uses.
 
     A bearer value here is always treated as a tenant API key, never as a Clerk
-    session token — MCP is a machine surface (ADR 0004), and the routes it
+    session token: MCP is a machine surface (ADR 0004), and the routes it
     replays record credential_kind='api_key' accordingly.
     """
     api_key = _extract_api_key(request)
@@ -347,12 +386,19 @@ def _check_origin(request: Request) -> None:
 def _check_modern_headers(request: Request, body: dict[str, Any]) -> None:
     """The 2026-07-28 header contract, applied when the client declares it.
 
-    A request without MCP-Protocol-Version is a legacy-era request and skips
-    these checks; the initialize fallback covers those clients.
+    A request without MCP-Protocol-Version, or one declaring a legacy revision
+    (which sends no Mcp-Method and no _meta), skips these checks; an unknown
+    revision is refused rather than trusted with the modern contract.
     """
     header_version = request.headers.get("mcp-protocol-version")
-    if header_version is None:
+    if header_version is None or header_version in LEGACY_VERSIONS:
         return
+    if header_version != PROTOCOL_VERSION:
+        raise _ProtocolError(
+            400,
+            ERR_HEADER_MISMATCH,
+            f"unsupported protocol version {header_version!r}",
+        )
     method = body.get("method")
     if request.headers.get("mcp-method") != method:
         raise _ProtocolError(
@@ -378,7 +424,7 @@ def _check_modern_headers(request: Request, body: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# tools/call — build the REST request, replay it in-process, map the response
+# tools/call: build the REST request, replay it in-process, map the response
 # ---------------------------------------------------------------------------
 
 
@@ -398,6 +444,8 @@ def _build_upload(args: dict[str, Any]) -> dict[str, Any]:
     """httpx kwargs for the one multipart route. Raises ValueError on bad base64."""
     files = []
     for f in args.pop("files", []) or []:
+        if not isinstance(f, dict) or "filename" not in f or "content_base64" not in f:
+            raise ValueError("each files[] entry needs 'filename' and 'content_base64'")
         try:
             content = base64.b64decode(f["content_base64"], validate=True)
         except (binascii.Error, ValueError) as exc:
@@ -438,13 +486,24 @@ async def _call_tool(
             {"error": f"unexpected arguments: {sorted(args)}"}, is_error=True
         )
 
-    transport = httpx.ASGITransport(app=request.app)
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://mcp.internal"
-    ) as client:
-        response = await client.request(
-            tool.method, path, headers={"X-API-Key": api_key}, **kwargs
-        )
+    # raise_app_exceptions=False: a route that dies past FastAPI's handlers
+    # comes back as its 500 response and maps to an isError result below,
+    # instead of dropping the JSON-RPC contract on exactly the failure path.
+    transport = httpx.ASGITransport(app=request.app, raise_app_exceptions=False)
+    # The inner request's RequestIdMiddleware clears and rebinds the structlog
+    # contextvars in this same task, so the outer request's binding is saved
+    # and restored around the hop.
+    saved_context = structlog_contextvars.get_contextvars()
+    try:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://mcp.internal"
+        ) as client:
+            response = await client.request(
+                tool.method, path, headers={"X-API-Key": api_key}, **kwargs
+            )
+    finally:
+        structlog_contextvars.clear_contextvars()
+        structlog_contextvars.bind_contextvars(**saved_context)
 
     try:
         payload: Any = response.json()
@@ -480,7 +539,7 @@ async def _dispatch(
             },
         )
     if method == "ping":
-        return _rpc_result(rpc_id, {})
+        return _rpc_result(rpc_id, {"resultType": "complete"})
     if method == "server/discover":
         return _rpc_result(
             rpc_id,
@@ -532,16 +591,25 @@ async def mcp_endpoint(
             raise _ProtocolError(
                 400, ERR_INVALID_REQUEST, "a single request object is required"
             )
-        _check_modern_headers(request, body)
     except _ProtocolError as exc:
         return _rpc_error(None, exc.http_status, exc.code, exc.message)
 
-    if "id" not in body or str(body.get("method", "")).startswith("notifications/"):
+    rpc_id = body.get("id")
+    if body.get("jsonrpc") != "2.0":
+        return _rpc_error(rpc_id, 400, ERR_INVALID_REQUEST, "jsonrpc must be '2.0'")
+    if "id" not in body:
+        # A notification gets its 202 before the header contract is judged:
+        # the spec's MUST on the 202 outranks a refusal nobody would read.
         return Response(status_code=202)
+
+    try:
+        _check_modern_headers(request, body)
+    except _ProtocolError as exc:
+        return _rpc_error(rpc_id, exc.http_status, exc.code, exc.message)
 
     api_key = _extract_api_key(request) or ""
     log.info("mcp.request", method=body.get("method"), tenant_id=str(tenant.id))
-    return await _dispatch(request, body, body.get("id"), api_key)
+    return await _dispatch(request, body, rpc_id, api_key)
 
 
 @router.get("/mcp")

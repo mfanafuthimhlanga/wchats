@@ -41,13 +41,15 @@ THE FOUR RESTRICTIONS, EACH INDEPENDENTLY MUTABLE AND EACH SEPARATELY PINNED
 
     3. The model-driven writers do not write the label columns — and do not
        name them.
-       `scenario_service.store_scenarios` and
-       `scenario_service.insert_provenance_scenario` are the only INSERT paths
-       into `eval_scenarios` that go through a service, and between them they
-       carry every model-driven producer: generated suites, mined production
-       failures, promoted traces, contained red-team findings. Neither
-       statement names a label-provenance column, so the failure mode of that
-       route is a NULL tier, which reads as "no human labelled this".
+       `scenario_service.store_scenarios`,
+       `scenario_service.insert_provenance_scenario` and
+       `scenario_service.insert_authored_golden_scenario` (#56) are the only
+       INSERT paths into `eval_scenarios` that go through a service, and the
+       first two carry every model-driven producer: generated suites, mined
+       production failures, promoted traces, contained red-team findings.
+       None of the three statements names a label-provenance column, so the
+       failure mode of that route is a NULL tier, which reads as "no human
+       labelled this".
 
        THIS SAID "PHYSICALLY CANNOT" UNTIL 2026-08-09, AND THAT WAS FALSE. The
        P1 adversarial review appended a function to a real Celery task module
