@@ -212,6 +212,43 @@ class Settings(BaseSettings):
     # M8: Deployment checklist configuration
     DEP_BLOCK_ON_HIGH_RED_TEAM: bool = True  # when True, high_count > 0 triggers block (DEP-03)
 
+    # THE CHECKLIST SEQUENCES THE TWO JOBS IT GRADES (#54, decision 19 rule 5).
+    # It dispatches an eval chain and a red-team run, then waits for both to
+    # reach a terminal status before it reads a single signal, so every summary
+    # in the report describes the run this checklist started. The first checklist
+    # ever run read eval_signal=no_runs seconds after starting the eval it was
+    # asking about; that shape is what these two numbers close.
+    #
+    # THE CHECKLIST DOES NOT HOLD A WORKER SLOT WHILE IT WAITS, and that is what
+    # lets this number be large enough to be useful (#54 review). It used to sleep
+    # inside the task on the same `runtime` queue as the two jobs it had just
+    # dispatched; on the documented local topology — one worker, `-Q
+    # pipeline,runtime`, solo pool, so one execution slot — those jobs could not
+    # start until the checklist returned, and the wait could never be satisfied.
+    # The task now polls once, re-queues itself with CHECKLIST_WAIT_POLL_S of
+    # countdown and returns, so the slot is free between looks.
+    #
+    # 2700s is 45 minutes, which covers the red-team k=3 bound rather than
+    # sitting below it. At 1500s a full red-team run was EXPECTED to outlast the
+    # ceiling, so the report's security half was routinely decided on a job that
+    # never finished.
+    #
+    # It stays under the checklist's own 60-minute idempotency window. Past that
+    # a second trigger would find no 'running' row while the first was still
+    # waiting and put two checklists on one agent.
+    #
+    # A half that does not reach terminal inside this still reads as an ABSENT
+    # record and blocks. The ceiling bounds how long the platform is willing to
+    # wait; it never decides what the report may claim.
+    CHECKLIST_WAIT_CEILING_S: int = 2700
+
+    # The countdown between one poll of the tenant DB and the next. Each poll
+    # opens one short psycopg2 connection per job still in flight and costs one
+    # Celery message, so at the 2700s ceiling the worst case is 270 polls.
+    # Lowering it buys latency at the cost of connections against a per-tenant
+    # Neon project and messages on the broker.
+    CHECKLIST_WAIT_POLL_S: int = 10
+
     # M10: Maintenance + Observability thresholds and flags
     ALERT_FAITHFULNESS_THRESHOLD: float = 0.6
     ALERT_RED_TEAM_CRITICAL_COUNT: int = 1

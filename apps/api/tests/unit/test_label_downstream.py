@@ -755,18 +755,20 @@ class TestALabelChangesWhatTheDeployGateReads:
     The chain, hop by hop:
 
         run_eval_suite -> write_eval_results        -> eval_results (PRODUCTION)
-        _fetch_eval_summary_sync lifts eval_runs.result, per dataset -> pass_rates
-        run_deployment_checklist puts eval_summary on the orchestrator payload
-        the orchestrator's ship/warn/block conditions read the rates
+        run_eval_suite freezes the run's own record on eval_runs.result
+        run_deployment_checklist reads that record back and calls decide()
+        decide()'s exploratory rule reads the dataset's pass rate
 
-    WHERE THE THRESHOLD ACTUALLY LIVES, because the review's own wording put it
-    one hop further than the code does. `apply_signal_evidence_gate` never reads
-    `pass_rates` — it is a one-way floor on the signal's PRESENCE (measured,
-    agent_invoked) and on red-team severity. The 0.85 ship bar and the
-    [0.70, 0.85) warning band are prose in `_DEPLOYMENT_SYSTEM_PROMPT`, applied
-    by the orchestrator model. So the gate cannot rescue a rate that labelling
-    depressed either: the deterministic half can only make a recommendation more
-    conservative.
+    WHERE THE THRESHOLD ACTUALLY LIVES, which has moved once since this class was
+    written. `apply_signal_evidence_gate` has never read `pass_rates` — it is a
+    one-way floor on the signal's PRESENCE (measured, agent_invoked) and on
+    red-team severity. The bar used to be prose in `_DEPLOYMENT_SYSTEM_PROMPT`,
+    applied by the orchestrator model, which is issue #36. Since ticket 17 (#54)
+    it is `EXPLORATORY_SHIP_LOWER` and `EXPLORATORY_BLOCK_UPPER` in
+    `app.domain.verdict`, read by `decide()` against a Wilson interval rather
+    than against the point estimate. So a rate labelling depressed now moves a
+    deterministic bound, and the gate still cannot rescue it: the floor can only
+    make a recommendation more conservative.
 
     WHY THIS MATTERS FOR THE LABELLING LOOP. The queue is populated with mined
     production FAILURES — questions the agent got wrong. Answering them adds
@@ -910,20 +912,27 @@ class TestALabelChangesWhatTheDeployGateReads:
             "the point of this test to be observed rather than argued"
         )
 
-    def test_the_ship_bar_is_prose_in_the_prompt_not_code_in_the_gate(self):
-        """Names the hop the review's wording put one step too far.
+    def test_the_ship_bar_is_in_the_rule_table_and_not_in_the_gate(self):
+        """Names the hop, which moved out of the prompt at #54.
 
         `apply_signal_evidence_gate` is deterministic and refuses on the signal
-        STATE. The rate threshold is a sentence in the orchestrator's system
-        prompt, read by a model. Both facts are pinned here because "the deploy
-        gate blocks on the pass rate" is the plausible misreading, and it would
-        make someone look for a threshold in Python that is not there.
+        STATE. The rate threshold is `EXPLORATORY_SHIP_LOWER` and
+        `EXPLORATORY_BLOCK_UPPER` in `app.domain.verdict`, and until #54 it was a
+        sentence in the orchestrator prompt read by a model. Both facts are
+        pinned because "the deploy gate blocks on the pass rate" is the plausible
+        misreading, and it would make someone look for a threshold in the gate
+        that is not there.
 
         `_eval_evidence_warnings` is read too since #51 slice 4 moved the eval
         arms out of the gate's own body. It refuses a run whose gated metrics
         were measured on NO dataset, which is a floor under evidence and not a
         bar on quality: it asks whether a number exists, never how big it is.
         """
+        from app.domain.verdict import (
+            EXPLORATORY_BLOCK_UPPER,
+            EXPLORATORY_SHIP_LOWER,
+        )
+
         gate_source = inspect.getsource(deployment_service.apply_signal_evidence_gate)
         body = gate_source.split('"""', 2)[-1]
         assert "pass_rates" not in body, (
@@ -932,14 +941,17 @@ class TestALabelChangesWhatTheDeployGateReads:
             "second opinion about quality rather than a floor under evidence"
         )
         prompt = deployment_service._DEPLOYMENT_SYSTEM_PROMPT
-        assert "all eval metrics >= 0.85" in prompt
-        assert "Any eval metric pass_rate in [0.70, 0.85)" in prompt
+        for number in (str(EXPLORATORY_SHIP_LOWER), str(EXPLORATORY_BLOCK_UPPER)):
+            assert number not in prompt, (
+                f"{number} is back in the orchestrator prompt. A threshold the "
+                "model can read is a threshold the model can apply, which is #36"
+            )
 
         # And behaviourally, which is what a source read cannot show since #51
         # slice 4 moved the eval arms into `_eval_evidence_warnings`. A run that
-        # MEASURED a catastrophic faithfulness still leaves the orchestrator's
-        # verdict alone: the deterministic gate asks whether a number exists,
-        # never how big it is.
+        # MEASURED a catastrophic faithfulness still leaves the computed verdict
+        # alone: the deterministic gate asks whether a number exists, never how
+        # big it is.
         catastrophic = deployment_service._eval_summary(
             deployment_service.EVAL_SIGNAL_MEASURED,
             last_run_at="2026-05-23T02:00:00",
@@ -951,9 +963,34 @@ class TestALabelChangesWhatTheDeployGateReads:
             "ship", catastrophic, _MEASURED_RED_TEAM
         )
         assert recommendation == "ship", (
-            "the deterministic gate blocked on a low rate; the 0.85 bar is the "
-            "orchestrator's sentence to apply and a second copy in Python would "
-            "be a second opinion about quality"
+            "the evidence gate blocked on a low rate. The bar is decide()'s, and "
+            "a second copy here would be a second opinion about quality rather "
+            "than a floor under evidence"
+        )
+
+    def test_a_depressed_rate_reaches_the_decision_deterministically(self):
+        """The labelling loop's live risk, now measurable rather than narrated.
+
+        An owner working the queue answers mined production FAILURES, so their
+        own labelling adds hard negatives to the exploratory population. That
+        used to depress a number a model read; it now moves a Wilson lower bound
+        `decide()` compares against a constant, and the refusal carries the
+        observation and the bar in words.
+        """
+        from app.domain.calibration_status import CalibrationStatus
+        from app.domain.verdict import Outcome, decide
+
+        verdict = decide(
+            _record_scoring(0.02),
+            None,
+            CalibrationStatus.absent("no_artifact"),
+            block_on_high=True,
+        )
+
+        assert verdict.outcome is Outcome.BLOCK
+        blocking = {r.rule for r in verdict.blocking_reasons}
+        assert "exploratory_ci_blocks" in blocking or "golden_failure" in blocking, (
+            f"a catastrophic run has to refuse on its rate somewhere: {blocking}"
         )
 
 
