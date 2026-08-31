@@ -688,8 +688,8 @@ def run_eval_suite_beat(self) -> dict:
     """Beat-triggered dispatcher: one run_eval_suite per DEPLOYED agent.
 
     Queries the control DB for agents with is_deployed=True and fans out one
-    run_eval_suite task per agent, the same selection run_red_team_beat and
-    run_weekly_digest_beat make. It selected status='ready' until #32: a ready
+    run_eval_suite task per agent, the same selection every other per-agent
+    fan-out makes (red team, digest, alerts, index staleness). It selected status='ready' until #32: a ready
     agent nobody has deployed was evaluated nightly, spending eval-run money on
     agents no customer can reach. Schedules arm per agent AT DEPLOY (decision
     #6): is_deployed has exactly one writer, POST /approve-deployment.

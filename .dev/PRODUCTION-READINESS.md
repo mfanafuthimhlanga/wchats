@@ -72,8 +72,16 @@ not about missing features.
 - **No deploy workflow, by design.** Railway builds the Dockerfile on push;
   `.github/workflows/` stays `ci.yml` and `nightly.yml`, building no images.
 - `RECORD` (the owed observation): a staging deploy from a push serving `/health` on a
-  public URL, with worker and beat running — the build-log line `Using Detected
-  Dockerfile` is the first checkpoint (`.dev/debug/railway-first-build.md`).
+  public URL, with worker and beat log lines showing ready — the build-log line
+  `Using Detected Dockerfile` is the first checkpoint (the first attempt failed in 9s on
+  an unset Root Directory; `scripts/railway_staging_wizard.sh` walks every field).
+- `RECORD`: the widget bundle's serving story is #135 — the deleted CloudFront/S3 pair
+  was the only thing putting `widget.js` at `WIDGET_CDN_BASE`, and the approve-deployment
+  snippet still points there.
+- `RECORD`: Railway's proxy idle timeout against SSE — the deleted ALB config held 4000s;
+  the probe is `curl -N` surviving past 125s on a live SSE stream.
+- `RECORD`: migrations at deploy. No toml carries a preDeployCommand; control-DB alembic
+  and tenant migrations (#64) both run from nowhere on this stack.
 
 ### 3.2 Configuration — the example env cannot boot the app
 

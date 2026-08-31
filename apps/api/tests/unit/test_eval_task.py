@@ -1402,10 +1402,12 @@ class TestRunEvalSuiteBeat:
         stmt = mock_db.execute.call_args.args[0]
         # The WHERE clause alone: the column list names every Agent column,
         # `status` included, so the full statement cannot distinguish the
-        # selections this test exists to tell apart.
+        # selections this test exists to tell apart. The PREDICATE is the
+        # behaviour: `is_deployed` merely appearing would also pass for
+        # == False or IS NULL, so the rendered comparison is what is pinned.
         where = str(stmt.whereclause).lower()
-        assert "is_deployed" in where, (
-            f"the beat must select deployed agents only (#32): {where}"
+        assert "is_deployed = true" in where, (
+            f"the beat must select DEPLOYED agents, positively (#32): {where}"
         )
         assert "status" not in where, (
             "the pre-#32 selection (status='ready') is back, which fans the "

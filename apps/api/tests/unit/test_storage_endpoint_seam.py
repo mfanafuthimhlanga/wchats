@@ -85,7 +85,8 @@ def test_with_the_override_boto3_gets_the_endpoint_url():
 
 
 def test_the_override_is_refused_in_production():
-    """A production process may not redirect customer documents off AWS.
+    """A production process may not redirect customer documents to an
+    arbitrary endpoint; only the PRODUCTION_ENDPOINT_SUFFIXES stores pass.
 
     Refused loudly rather than ignored: an operator who set the variable
     believes the bytes are going somewhere. Silently sending them to AWS
@@ -162,8 +163,35 @@ def test_the_allowlist_reads_the_parsed_host_not_the_string():
 
 
 def test_a_lookalike_suffix_without_the_dot_is_refused():
-    """evilr2.cloudflarestorage.com is not a subdomain of the allowed store."""
+    """Two lookalikes, two threat classes, both out: an attacker-registrable
+    domain carrying the words, and a sibling inside Cloudflare's own domain
+    that is still not the .r2. subtree."""
     _refused_in_production("https://evilr2xcloudflarestorage.com")
+    _refused_in_production("https://evilr2.cloudflarestorage.com")
+
+
+def test_the_scheme_is_https_or_nothing_in_production():
+    """Cleartext transport of customer documents is refused outright."""
+    message = _refused_in_production(
+        "http://accountid.r2.cloudflarestorage.com"
+    )
+    assert "https" in message
+
+
+def test_the_bare_apex_is_not_a_subdomain():
+    """r2.cloudflarestorage.com itself is nobody's bucket endpoint."""
+    _refused_in_production("https://r2.cloudflarestorage.com")
+
+
+def test_a_trailing_dot_fqdn_is_refused():
+    """host. and host are the same place to a resolver; the check must not
+    be sidestepped by the dot."""
+    _refused_in_production("https://accountid.r2.cloudflarestorage.com.")
+
+
+def test_an_endpoint_with_no_host_is_refused():
+    message = _refused_in_production("https:///bucket-path-only")
+    assert "unreadable host" in message
 
 
 def test_credentials_embedded_in_the_endpoint_are_refused_in_production():

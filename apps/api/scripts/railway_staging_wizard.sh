@@ -185,6 +185,14 @@ finish() {
 # wizard is the human half: create the services, point each at its file, wire
 # Redis and R2, set the variables, and observe /health on the public URL.
 
+# Interactive only: every checkpoint waits on a human answer, and EOF would
+# spin the re-prompt loops forever.
+[[ -t 0 ]] || { echo "this wizard needs a terminal (stdin is not a tty)"; exit 1; }
+
+# Captured values persist here, never in .env: the local .env is the dev
+# seam (MinIO) and these are Railway-side facts.
+ENV_FILE="${ENV_FILE:-.railway-staging.env}"
+
 TOTAL_STAGES=10
 
 banner "W Chats on Railway: staging + R2"
@@ -204,7 +212,11 @@ say "Railway's user-set hard cap takes workloads offline when hit; that cap is"
 say "why Railway won over Fly and Render (decision #14.1)."
 open_url "https://railway.com/workspace/usage"
 step "Workspace Settings > Usage > set a HARD limit of \$20"
-until confirm "Hard limit saved at \$20?"; do say "Finish the step above, then answer y."; done
+if ! confirm "Hard limit saved at \$20?"; then
+  warn "Hard limits are plan-gated on some Railway tiers. Do not deploy real"
+  warn "credentials until a spend cap exists somewhere."
+  SKIPPED+=("the \$20 hard limit: set it before real credentials go in")
+fi
 
 # ──────────────────────────────────────────────────────────────────────────
 stage "api service"
@@ -215,6 +227,9 @@ step "Settings > Source > Root Directory = apps/api"
 step "Settings > Config-as-code > file path = railway.api.toml"
 note "The first green build's log opens with 'Using Detected Dockerfile'."
 note "A 9-second 'Railpack could not determine how to build' means Root Directory is unset."
+note "If the deploy IGNORES the toml (wrong start command in the deploy log),"
+note "Railway resolved the path from the repo root: set it to"
+note "apps/api/railway.api.toml instead, and the same for the other three."
 until confirm "api service points at apps/api and railway.api.toml?"; do say "Finish the step above, then answer y."; done
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -274,20 +289,25 @@ until confirm "Bucket and token created, three values copied somewhere safe?"; d
 
 # ──────────────────────────────────────────────────────────────────────────
 stage "Shared variables on Railway"
-say "Project > Variables (shared across services). The required set is derived"
-say "by tests/unit/test_env_example_covers_required_settings.py; today it is:"
+say "Project > Variables (shared across services). The nine no-default"
+say "settings (the set tests/unit/test_env_example_covers_required_settings.py"
+say "derives, checked against it 2026-08-31):"
 note "  NEON_API_KEY            NEON_ENCRYPTION_KEY   PLATFORM_CREDENTIAL_KEY"
 note "  CONTROL_DB_URL          CONTROL_DB_SYNC_URL   ADMIN_KEY"
-note "  ANTHROPIC_API_KEY       VOYAGE_API_KEY        JWT_SECRET"
-note "  CLERK_WEBHOOK_SIGNING_SECRET"
+note "  VOYAGE_API_KEY          JWT_SECRET            CLERK_WEBHOOK_SIGNING_SECRET"
 say "Plus, for this stack:"
 note "  OPENAI_API_KEY          (every routed purpose serves gpt-5.6-luna)"
+note "  ANTHROPIC_API_KEY       (defaults empty; #88's residual clients read it)"
 note "  EMBEDDING_PROVIDER=voyage"
-note "  ENVIRONMENT=production  (staging is production-shaped: the storage"
-note "                           allowlist and the snippet guard key off it)"
+note "  ENVIRONMENT=production  (type EXACTLY that word: it arms the storage"
+note "                           allowlist, hides /docs, refuses loopback"
+note "                           snippets and redacts token errors; an unknown"
+note "                           word refuses to boot)"
 note "  S3_ENDPOINT_URL=<the R2 endpoint>    S3_UPLOADS_BUCKET=wchats-uploads"
 note "  AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY = the R2 token pair"
-warn "CONTROL_DB_URL / CONTROL_DB_SYNC_URL: the Neon control project's DSNs."
+warn "CONTROL_DB_URL / CONTROL_DB_SYNC_URL: create a SEPARATE Neon control"
+warn "project for staging. The repo .env's DSNs are LIVE PRODUCTION; pasted"
+warn "here, the staging beat spends nightly eval money on production agents."
 until confirm "All variables saved?"; do say "Finish the step above, then answer y."; done
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -296,11 +316,14 @@ step "api service > Settings > Networking > Generate Domain; copy the URL"
 step "Add PUBLIC_API_BASE=<that URL> to the shared variables (the embed"
 step "snippet route refuses the localhost default in production)"
 step "Deployments > redeploy anything that did not pick the variables up"
+step "Open worker-runtime and beat Deploy Logs; each must show celery 'ready'"
 ask STAGING_API_BASE "Paste the api service's public URL (https://...):"
+write_env STAGING_API_BASE "${STAGING_API_BASE%/}"
 say "Checking ${STAGING_API_BASE%/}/health ..."
 if command -v curl >/dev/null 2>&1 && curl -fsS -m 15 "${STAGING_API_BASE%/}/health" >/dev/null 2>&1; then
-  say "✓ /health answers. Staging serves; acceptance criterion (a) is observed."
-  note "Delete .dev/debug/railway-first-build.md; its build succeeded."
+  say "✓ /health answers: the api half of criterion (a). The worker-and-beat"
+  say "  half is the two 'ready' log lines from the step above."
+  note "If .dev/debug/railway-first-build.md exists in this checkout, delete it."
 else
   warn "/health did not answer. Read the api service's build and deploy logs;"
   warn "the first line of a good build is 'Using Detected Dockerfile'."

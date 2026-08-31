@@ -82,18 +82,29 @@ PRODUCTION_ENDPOINT_SUFFIXES: tuple[str, ...] = (
 
 
 def _require_production_endpoint(endpoint: str) -> None:
-    """Refuse a production endpoint that is not an allowlisted object store.
+    """Refuse a production endpoint outside PRODUCTION_ENDPOINT_SUFFIXES.
 
     The suffix check runs on the PARSED hostname, never on the raw string: a
     URL like https://evil.example/?x=.r2.cloudflarestorage.com carries the
     suffix without pointing there. Userinfo is refused outright, because an
     endpoint URL that embeds credentials puts them one log line or one
-    misconfigured client away from disclosure.
+    misconfigured client away from disclosure. Scheme is https or nothing:
+    customer bytes do not travel cleartext.
+
+    THE BOUND IS THE PROVIDER, NOT THE ACCOUNT. Any R2 or B2 tenant's host
+    carries these suffixes, so a mistyped or hostile S3_ENDPOINT_URL can still
+    name an account that is not ours; pinning the owner's own host is #133.
     """
     from urllib.parse import urlsplit  # noqa: PLC0415
 
     parsed = urlsplit(endpoint)
     host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https":
+        raise StorageNotConfigured(
+            "S3_ENDPOINT_URL must be https while ENVIRONMENT=production; over "
+            + (parsed.scheme or "a missing scheme")
+            + " every customer document is readable in transit."
+        )
     if parsed.username or parsed.password:
         raise StorageNotConfigured(
             "S3_ENDPOINT_URL embeds credentials while ENVIRONMENT=production. "
