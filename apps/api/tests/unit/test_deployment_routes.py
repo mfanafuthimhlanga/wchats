@@ -465,7 +465,9 @@ class TestApproveDeployment:
         body = response.json()
         assert body["deployed"] is True
         assert "iframe_snippet" in body
-        assert "widget.wchats.app" in body["iframe_snippet"]
+        # #135: with WIDGET_CDN_BASE empty (the default) the snippet derives
+        # the bundle host from PUBLIC_API_BASE + /wchats.
+        assert "/wchats/widget.js" in body["iframe_snippet"]
 
     async def test_approve_rejects_blocked(self):
         """POST /approve-deployment returns 422 with 'blocked' in detail for blocked runs (DEP-06)."""
@@ -1126,6 +1128,26 @@ class TestEmbedSnippet:
         assert 'src="https://cdn.test.example/widget.js"' in snippet, snippet
         assert 'data-api="https://api.test.example"' in snippet, snippet
         assert "widget.wchats.app" not in snippet, snippet
+
+    def test_empty_cdn_base_derives_from_the_api_base(self, monkeypatch):
+        """#135: empty means this API serves the bundle at /wchats, so the
+        snippet and the serving cannot drift apart."""
+        monkeypatch.setattr(settings, "WIDGET_CDN_BASE", "")
+        monkeypatch.setattr(settings, "PUBLIC_API_BASE", "https://api.test.example/")
+
+        snippet = _make_iframe_snippet(str(uuid4()))
+
+        assert 'src="https://api.test.example/wchats/widget.js"' in snippet, snippet
+
+    def test_a_configured_cdn_base_still_wins(self, monkeypatch):
+        """A real CDN in front of the bundle overrides the derivation."""
+        monkeypatch.setattr(settings, "WIDGET_CDN_BASE", "https://cdn.test.example")
+        monkeypatch.setattr(settings, "PUBLIC_API_BASE", "https://api.test.example")
+
+        snippet = _make_iframe_snippet(str(uuid4()))
+
+        assert 'src="https://cdn.test.example/widget.js"' in snippet, snippet
+        assert "/wchats/" not in snippet, snippet
 
     async def test_route_returns_the_generated_snippet(self):
         """The console's snippet is the API's snippet, byte for byte."""

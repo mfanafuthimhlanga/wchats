@@ -344,8 +344,17 @@ class Settings(BaseSettings):
     # The two hosts the embed snippet names (BACKLOG 7.1). The snippet is the
     # one artifact a customer pastes into their own site, so both halves of it
     # are deployment configuration, not code:
-    #   WIDGET_CDN_BASE  where widget.js and its index.html are served from
-    #   PUBLIC_API_BASE  the origin the loader's data-api points the widget at
+    #   WIDGET_CDN_BASE  where widget.js and its index.html are served from.
+    #                    Empty (the default) means "this API serves them at
+    #                    /wchats": the api image carries the synced bundle
+    #                    (apps/api/static/wchats, SHA-gated by
+    #                    apps/widget/scripts/sync-embed.mjs) and the snippet
+    #                    derives PUBLIC_API_BASE + "/wchats". Set it only when
+    #                    a real CDN fronts the bundle. #135: the CloudFront
+    #                    origin went with ADR 0005, and the old default,
+    #                    https://widget.wchats.app, named a host nothing
+    #                    served, so every emitted snippet was dead on arrival.
+    #   PUBLIC_API_BASE  the origin the loader's data-api points the widget at.
     # PUBLIC_API_BASE defaults to the local uvicorn address because that is the
     # only value that is true on a fresh checkout.
     #
@@ -359,7 +368,7 @@ class Settings(BaseSettings):
     # http://localhost is a potentially-trustworthy origin so an https page does
     # not even mixed-content block it. A base that cannot be reached from a
     # visitor's browser must fail to issue a snippet, not issue a dead one.
-    WIDGET_CDN_BASE: str = "https://widget.wchats.app"
+    WIDGET_CDN_BASE: str = ""
     PUBLIC_API_BASE: str = "http://localhost:8000"
 
     def __repr__(self) -> str:  # T-01-01, T-01-02: never leak field values

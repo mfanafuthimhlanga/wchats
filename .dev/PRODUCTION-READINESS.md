@@ -75,9 +75,11 @@ not about missing features.
   public URL, with worker and beat log lines showing ready — the build-log line
   `Using Detected Dockerfile` is the first checkpoint (the first attempt failed in 9s on
   an unset Root Directory; `scripts/railway_staging_wizard.sh` walks every field).
-- `RECORD`: the widget bundle's serving story is #135 — the deleted CloudFront/S3 pair
-  was the only thing putting `widget.js` at `WIDGET_CDN_BASE`, and the approve-deployment
-  snippet still points there.
+- `RECORD`: the api serves the widget bundle at `/wchats` and an empty
+  `WIDGET_CDN_BASE` derives the snippet host from `PUBLIC_API_BASE` (#135,
+  fix/widget-serving; mount tests and derivation pins OBSERVED green locally). The owed
+  observation on staging: `curl` fetches `/wchats/widget.js` on the public URL, and the
+  snippet an approve issues names that same host.
 - `RECORD`: Railway's proxy idle timeout against SSE — the deleted ALB config held 4000s;
   the probe is `curl -N` surviving past 125s on a live SSE stream.
 - `RECORD`: migrations at deploy. No toml carries a preDeployCommand; control-DB alembic

@@ -22,10 +22,12 @@ Threat mitigations:
 """
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
 from app.core.logging import RequestIdMiddleware, configure_logging
@@ -184,3 +186,14 @@ app.include_router(metrics.router, prefix="/api/v1")
 app.include_router(prompt_versions.router, prefix="/api/v1")
 app.include_router(capability_envelopes.router, prefix="/api/v1")
 app.include_router(pending_confirmations.router, prefix="/api/v1")
+
+# #135: the api serves the widget bundle at /wchats. An empty WIDGET_CDN_BASE
+# (the default) makes the embed snippet derive this host, so the snippet and
+# the serving cannot drift apart. The files live at apps/api/static/wchats,
+# synced from apps/widget and SHA-gated by sync-embed.mjs; the CloudFront
+# origin went with ADR 0005.
+app.mount(
+    "/wchats",
+    StaticFiles(directory=Path(__file__).parent.parent / "static" / "wchats"),
+    name="wchats_widget",
+)

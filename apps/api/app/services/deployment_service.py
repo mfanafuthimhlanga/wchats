@@ -455,10 +455,14 @@ def _make_iframe_snippet(agent_id: str) -> str:
     (`apps/widget/embed/widget.js`), so the tag this function returned produced
     a widget that painted on the customer's site and could not reach anything.
 
-    Both hosts now come from `Settings` — see `WIDGET_CDN_BASE` /
-    `PUBLIC_API_BASE`, documented in both `.env.example` files. Trailing
-    slashes are stripped so a base configured as `https://api.example.com/`
-    cannot yield `https://api.example.com//`.
+    Both hosts now come from `Settings` (`WIDGET_CDN_BASE` and
+    `PUBLIC_API_BASE`, documented in both `.env.example` files). An empty
+    WIDGET_CDN_BASE, the default since #135, derives the bundle host as
+    PUBLIC_API_BASE + "/wchats", where this API serves the synced bundle
+    itself (main.py mounts apps/api/static/wchats there), so the production
+    refusal below guards the derived host too. Trailing slashes are stripped
+    so a base configured as `https://api.example.com/` cannot yield
+    `https://api.example.com//`.
 
     PUBLIC_API_BASE defaults to `http://localhost:8000`, and the loader only
     warns when the API base is EMPTY — so the default is silent in a way the
@@ -473,8 +477,9 @@ def _make_iframe_snippet(agent_id: str) -> str:
         SnippetNotConfigured: ENVIRONMENT is production and PUBLIC_API_BASE is
             empty or points at a loopback host.
     """
-    cdn_base = settings.WIDGET_CDN_BASE.rstrip("/")
     api_base = settings.PUBLIC_API_BASE.strip().rstrip("/")
+    # #135: empty means "this API serves the bundle at /wchats" (main.py mount).
+    cdn_base = settings.WIDGET_CDN_BASE.strip().rstrip("/") or f"{api_base}/wchats"
 
     if settings.ENVIRONMENT == "production":
         host = urlsplit(api_base).hostname or "" if api_base else ""

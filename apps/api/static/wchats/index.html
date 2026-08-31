@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>W Chats</title>
+  <!-- Built widget styles + bundle sit alongside this file in the deployed folder. -->
+  <link rel="stylesheet" href="./widget.css" />
+  <style>
+    html, body { margin: 0; height: 100%; background: transparent; }
+    #root { height: 100%; }
+  </style>
+</head>
+<body>
+  <!-- apps/widget/src/index.jsx reads ?agent_id=…&api=… and renders into #root -->
+  <div id="root"></div>
+  <script src="./widget.iife.js" defer></script>
+</body>
+</html>

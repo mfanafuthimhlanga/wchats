@@ -24,7 +24,7 @@
 // apps/admin/public/wchats/, so a loader fix cannot land in one location only.
 
 import { createHash } from 'node:crypto'
-import { copyFileSync, existsSync, readFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -34,6 +34,7 @@ const REPO_ROOT = join(WIDGET_ROOT, '..', '..')
 const DIST = join(WIDGET_ROOT, 'dist')
 const EMBED = join(WIDGET_ROOT, 'embed')
 const ADMIN_PUBLIC = join(REPO_ROOT, 'apps', 'admin', 'public', 'wchats')
+const API_STATIC = join(REPO_ROOT, 'apps', 'api', 'static', 'wchats')
 
 const BUILT = ['widget.iife.js', 'widget.css']
 const LOADERS = ['widget.js', 'index.html']
@@ -45,6 +46,13 @@ const SYNCS = [
   [DIST, EMBED, BUILT],
   [DIST, ADMIN_PUBLIC, BUILT],
   [EMBED, ADMIN_PUBLIC, LOADERS],
+  // #135: the api service serves the bundle at /wchats on Railway (the
+  // CloudFront origin went with ADR 0005), and its Docker build context is
+  // apps/api, so the files must live inside it. Beside app/, not in it: the
+  // complexity gate runs lizard over app/ and a minified bundle is not code
+  // it should measure. Same drift gate as the rest.
+  [DIST, API_STATIC, BUILT],
+  [EMBED, API_STATIC, LOADERS],
 ]
 
 const checkOnly = process.argv.includes('--check')
@@ -63,7 +71,10 @@ for (const [sourceDir, destDir, names] of SYNCS) {
       findings.push(`${label(source)} is missing${hint}`)
       continue
     }
-    if (!checkOnly) copyFileSync(source, dest)
+    if (!checkOnly) {
+      mkdirSync(destDir, { recursive: true })
+      copyFileSync(source, dest)
+    }
     if (!existsSync(dest)) {
       findings.push(`${label(dest)} is missing`)
       continue
@@ -94,5 +105,6 @@ if (findings.length > 0) {
 
 const fileCount = SYNCS.reduce((n, [, , names]) => n + names.length, 0)
 console.log(
-  `check:embed-sync: PASS -- embed/ and apps/admin/public/wchats/ both match their sources (${fileCount} files).`
+  `check:embed-sync: PASS -- embed/, apps/admin/public/wchats/ and ` +
+  `apps/api/static/wchats/ all match their sources (${fileCount} files).`
 )
