@@ -15,9 +15,10 @@ embed/
 `widget.iife.js` and `widget.css` are build output: `npm run build` copies them from `dist/`
 and `npm run check:embed-sync` fails if the two folders ever differ. Do not edit them here.
 
-`apps/admin/public/wchats/` is the second copy of these four files, and it is the one the
-production deploy actually uploads (`deploy/README.md` step 4, `deploy/terraform` widget
-bucket). The same build step and the same gate keep it in step with this folder, so a change
+`apps/admin/public/wchats/` is the second copy of these four files, and it is the one a
+production deploy uploads to the widget host (the retired AWS design named it as its
+upload source; that tree is deleted with ADR 0005 and #135 carries the Railway-era
+serving story). The same build step and the same gate keep it in step with this folder, so a change
 here cannot ship without reaching there. Edit the loaders here; never there.
 
 ## Paste-in snippet

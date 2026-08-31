@@ -7,10 +7,10 @@
 // would have shipped was months behind source (BACKLOG 7.5).
 //
 // There are TWO shipping locations, not one. apps/admin/public/wchats/ held the
-// same 1-June bundle, and it is not a leftover: deploy/README.md step 4 runs
-// `aws s3 sync apps/admin/public/wchats/` into the CloudFront origin bucket,
-// deploy/terraform/outputs.tf names it as the upload source, scripts/smoke_vm.sh
-// probes $WIDGET_HOST/wchats/widget.js for a 200, and Next.js serves public/ at
+// same 1-June bundle, and it is not a leftover: the AWS-era deploy ran
+// `aws s3 sync apps/admin/public/wchats/` into the CloudFront origin bucket
+// and named it the upload source (that tree is deleted with ADR 0005; #135
+// carries the Railway-era serving story), and Next.js serves public/ at
 // the admin origin so /wchats/widget.js is live there too. Syncing one and not
 // the other is how the stale bundle survived a gate written about it (D1).
 //

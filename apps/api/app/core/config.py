@@ -8,6 +8,7 @@ T-01-02: CONTROL_DB_SYNC_URL read from env only; same repr suppression applies.
 
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -103,6 +104,22 @@ class Settings(BaseSettings):
 
     # Deployment environment — "production" disables OpenAPI docs (WR-04)
     ENVIRONMENT: str = "development"
+
+    @field_validator("ENVIRONMENT")
+    @classmethod
+    def _environment_is_a_known_word(cls, value: str) -> str:
+        # Four fail-open guards key off the exact string "production": the
+        # storage endpoint allowlist, the /docs and /redoc routes, the embed
+        # snippet's loopback refusal, and the session-token error redaction.
+        # A typo ("Production", "prod", a trailing space) would disable all
+        # four silently, so an unknown word refuses to boot instead.
+        known = ("development", "test", "staging", "production")
+        if value not in known:
+            raise ValueError(
+                f"ENVIRONMENT={value!r} is not one of {', '.join(known)}. "
+                "A typo here silently disables every production-only guard."
+            )
+        return value
 
     # Upload staging directory — shared between API and pipeline worker
     # Override via UPLOADS_DIR env var; default works for both Linux containers
@@ -278,12 +295,13 @@ class Settings(BaseSettings):
     # S3-compatible process (MinIO) so the ingestion chain can be exercised
     # without an AWS account.
     #
-    # THIS IS A REDIRECT PRIMITIVE ON THE BOUNDARY THAT DECIDES WHERE CUSTOMER
-    # DOCUMENTS ARE WRITTEN AND READ. It is therefore refused outright when
-    # ENVIRONMENT == "production" — see storage_service._get_s3(), which raises
-    # rather than warning or silently ignoring it. A production process
-    # configured to send customer documents to a non-AWS endpoint must fail to
-    # serve that path, not serve it quietly.
+    # THIS DECIDES WHERE CUSTOMER DOCUMENTS ARE WRITTEN AND READ. In
+    # production, storage_service._require_production_endpoint honours it for
+    # exactly the object stores decision #14 names (Cloudflare R2, Backblaze
+    # B2) and raises for every other host, so a process configured to send
+    # customer documents somewhere unvetted fails to serve that path rather
+    # than serving it quietly. Everywhere else it is the local-dev seam
+    # (MinIO) it always was.
     S3_ENDPOINT_URL: str | None = None
 
     # The owned loop's per-turn USD ceiling (#48). Between model calls

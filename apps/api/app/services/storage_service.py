@@ -72,6 +72,55 @@ def _bucket() -> str:
     return bucket
 
 
+#: The S3-compatible hosts a production process may write customer documents
+#: to, by hostname suffix (decision #14.6: R2 or B2, chosen when the owner
+#: creates the keys). Everything else, MinIO included, stays refused there.
+PRODUCTION_ENDPOINT_SUFFIXES: tuple[str, ...] = (
+    ".r2.cloudflarestorage.com",
+    ".backblazeb2.com",
+)
+
+
+def _require_production_endpoint(endpoint: str) -> None:
+    """Refuse a production endpoint outside PRODUCTION_ENDPOINT_SUFFIXES.
+
+    The suffix check runs on the PARSED hostname, never on the raw string: a
+    URL like https://evil.example/?x=.r2.cloudflarestorage.com carries the
+    suffix without pointing there. Userinfo is refused outright, because an
+    endpoint URL that embeds credentials puts them one log line or one
+    misconfigured client away from disclosure. Scheme is https or nothing:
+    customer bytes do not travel cleartext.
+
+    THE BOUND IS THE PROVIDER, NOT THE ACCOUNT. Any R2 or B2 tenant's host
+    carries these suffixes, so a mistyped or hostile S3_ENDPOINT_URL can still
+    name an account that is not ours; pinning the owner's own host is #133.
+    """
+    from urllib.parse import urlsplit  # noqa: PLC0415
+
+    parsed = urlsplit(endpoint)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https":
+        raise StorageNotConfigured(
+            "S3_ENDPOINT_URL must be https while ENVIRONMENT=production; over "
+            + (parsed.scheme or "a missing scheme")
+            + " every customer document is readable in transit."
+        )
+    if parsed.username or parsed.password:
+        raise StorageNotConfigured(
+            "S3_ENDPOINT_URL embeds credentials while ENVIRONMENT=production. "
+            "Move the key into the AWS credential variables and keep the URL "
+            "to scheme and host."
+        )
+    if not any(host.endswith(suffix) for suffix in PRODUCTION_ENDPOINT_SUFFIXES):
+        raise StorageNotConfigured(
+            "S3_ENDPOINT_URL points at "
+            + (host or "an unreadable host")
+            + " while ENVIRONMENT=production. Customer documents may only be "
+            "redirected to Cloudflare R2 or Backblaze B2 (decision #14); for "
+            "anything else, unset it or do not run this process as production."
+        )
+
+
 def _get_s3():
     """Return the module-level boto3 S3 client, initializing on first call.
 
@@ -80,9 +129,11 @@ def _get_s3():
     at module load time).  Mirrors _get_bedrock() in bedrock_embedding_service.py.
 
     S3_ENDPOINT_URL (BACKLOG 1.24) redirects every read and write of customer
-    document bytes, so it is REFUSED in production rather than honoured or
-    ignored. Silently ignoring it would be worse than raising: the operator who
-    set it believes documents are going somewhere they are not.
+    document bytes. In production it is honoured for exactly the S3-compatible
+    stores decision #14 names, Cloudflare R2 and Backblaze B2, and refused for
+    every other host (ticket 18). Silently ignoring a refused endpoint would be
+    worse than raising: the operator who set it believes documents are going
+    somewhere they are not.
     """
     global _s3
     if _s3 is None:
@@ -90,12 +141,7 @@ def _get_s3():
 
         endpoint = settings.S3_ENDPOINT_URL
         if endpoint and settings.ENVIRONMENT == "production":
-            raise StorageNotConfigured(
-                "S3_ENDPOINT_URL is set while ENVIRONMENT=production. That "
-                "would redirect every customer document read and write away "
-                "from AWS. It is a local-development affordance only; unset it "
-                "or do not run this process as production."
-            )
+            _require_production_endpoint(endpoint)
 
         kwargs: dict = {"region_name": settings.AWS_REGION}
         if endpoint:

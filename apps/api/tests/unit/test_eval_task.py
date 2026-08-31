@@ -1353,3 +1353,63 @@ class TestATimeoutReachesTheRecordWithItsMessage:
             "the record dropped the message entirely, so the assertion above "
             "would pass for a build that stores no message at all"
         )
+
+
+class TestRunEvalSuiteBeat:
+    """The nightly fan-out selects DEPLOYED agents only (#32, decision #6.5).
+
+    Schedules arm per agent at deploy: is_deployed has one writer,
+    POST /approve-deployment. The beat selected status='ready' until #32, so
+    the first beat worker would have evaluated every ready agent nightly,
+    deployed or not, spending eval money on agents no customer can reach.
+    """
+
+    def _fan_out(self):
+        from contextlib import contextmanager
+
+        mock_agent = MagicMock()
+        mock_agent.id = "11111111-1111-1111-1111-111111111111"
+        mock_db = MagicMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [mock_agent]
+        mock_db.execute.return_value.scalars.return_value = mock_scalars
+
+        @contextmanager
+        def _fake_get_sync_db():
+            yield mock_db
+
+        with patch.object(mod, "get_sync_db", _fake_get_sync_db), patch.object(
+            mod.run_eval_suite, "apply_async"
+        ) as apply_async:
+            result = mod.run_eval_suite_beat.run()
+        return result, mock_db, apply_async
+
+    def test_one_dispatch_per_selected_agent_with_agent_id_only(self):
+        result, _, apply_async = self._fan_out()
+
+        assert result == {"dispatched": 1}
+        assert apply_async.call_count == 1
+        kwargs = apply_async.call_args.kwargs
+        assert kwargs["kwargs"] == {
+            "agent_id": "11111111-1111-1111-1111-111111111111"
+        }, "agent_id only crosses the task boundary (CTL-08)"
+
+    def test_the_selection_is_deployed_only_never_ready(self):
+        """The WHERE clause is the behaviour here, so the compiled SQL is the
+        pin. Control: remove the filter and 'is_deployed' leaves the SQL."""
+        _, mock_db, _ = self._fan_out()
+
+        stmt = mock_db.execute.call_args.args[0]
+        # The WHERE clause alone: the column list names every Agent column,
+        # `status` included, so the full statement cannot distinguish the
+        # selections this test exists to tell apart. The PREDICATE is the
+        # behaviour: `is_deployed` merely appearing would also pass for
+        # == False or IS NULL, so the rendered comparison is what is pinned.
+        where = str(stmt.whereclause).lower()
+        assert "is_deployed = true" in where, (
+            f"the beat must select DEPLOYED agents, positively (#32): {where}"
+        )
+        assert "status" not in where, (
+            "the pre-#32 selection (status='ready') is back, which fans the "
+            f"nightly eval out to undeployed agents: {where}"
+        )

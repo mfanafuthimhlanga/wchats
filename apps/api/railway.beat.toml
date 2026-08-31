@@ -1,9 +1,10 @@
 # Railway config as code for Celery beat (ADR 0005, ticket 18).
 #
 # The scheduler for the nightly eval and the weekly red team. Exactly one
-# replica, ever: two beats enqueue every schedule twice. It fans out to
-# deployed Agents only, so before the first Agent is deployed it enqueues
-# nothing and can be left off.
+# replica, ever: two beats enqueue every schedule twice. The per-agent
+# fan-outs select deployed Agents only, so they are empty before the first
+# deploy; the schedule still carries the usage-pricing rollup and the
+# dispatcher ticks themselves.
 #
 # UI fields, once per service:
 #   Settings > Source > Root Directory        apps/api

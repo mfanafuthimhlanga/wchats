@@ -685,11 +685,16 @@ def _invoke_agent_for_scenarios(
     name="app.worker.tasks.runtime.eval.run_eval_suite_beat",
 )
 def run_eval_suite_beat(self) -> dict:
-    """Beat-triggered dispatcher: find all status='ready' agents and dispatch run_eval_suite per agent.
+    """Beat-triggered dispatcher: one run_eval_suite per DEPLOYED agent.
 
-    Queries the control DB for agents with status='ready' and fans out one
-    run_eval_suite task per agent. No conn_str is passed — the per-agent task
-    fetches and decrypts at runtime (CTL-08).
+    Queries the control DB for agents with is_deployed=True and fans out one
+    run_eval_suite task per agent, the same selection every other per-agent
+    fan-out makes (red team, digest, alerts, index staleness). It selected status='ready' until #32: a ready
+    agent nobody has deployed was evaluated nightly, spending eval-run money on
+    agents no customer can reach. Schedules arm per agent AT DEPLOY (decision
+    #6): is_deployed has exactly one writer, POST /approve-deployment.
+    No conn_str is passed — the per-agent task fetches and decrypts at runtime
+    (CTL-08).
 
     No idempotency guard needed here — the nightly beat fires once at 02:00 UTC;
     duplicate dispatches are harmless because run_eval_suite itself is idempotent.
@@ -699,7 +704,7 @@ def run_eval_suite_beat(self) -> dict:
     """
     with get_sync_db() as db:
         agents = db.execute(
-            select(Agent).where(Agent.status == "ready")
+            select(Agent).where(Agent.is_deployed == True)  # noqa: E712
         ).scalars().all()
 
     dispatched = 0

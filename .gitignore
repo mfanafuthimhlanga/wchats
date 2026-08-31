@@ -112,3 +112,4 @@ apps/admin/verify_*.py
 
 # generated knowledge-graph cache
 .understand-anything/
+.railway-staging.env
