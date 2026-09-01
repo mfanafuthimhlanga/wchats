@@ -71,16 +71,23 @@ not about missing features.
   `~/.aws` on this machine); git history keeps the trees.
 - **No deploy workflow, by design.** Railway builds the Dockerfile on push;
   `.github/workflows/` stays `ci.yml` and `nightly.yml`, building no images.
-- `RECORD` (the owed observation): a staging deploy from a push serving `/health` on a
-  public URL, with worker and beat log lines showing ready — the build-log line
-  `Using Detected Dockerfile` is the first checkpoint (the first attempt failed in 9s on
-  an unset Root Directory; `scripts/railway_staging_wizard.sh` walks every field).
-- `RECORD`: the api serves the widget bundle at `/wchats` and an empty
-  `WIDGET_CDN_BASE` derives the snippet host from `PUBLIC_API_BASE` (#135,
-  fix/widget-serving; mount tests and derivation pins OBSERVED green locally). The owed
-  observation on staging: `curl` fetches `/wchats/widget.js` on the public URL with
-  `Cache-Control: public, max-age=300`, and the snippet an approve issues names that
-  same host.
+- `OBSERVED` 2026-09-01 (the api half): a staging deploy from a push serves `/health` on
+  the public URL, HTTP 200 in 2.0s, body `{"status":"ok","redis":"error","db":"error"}`
+  (no Redis plugin existed yet and the control DSN was not yet connectable, both
+  captured on #55), and `/docs` answers 404 with ENVIRONMENT=production armed. The
+  route to green is on #139: the persistent fault was a stale domain target port from
+  the first Railpack-era deploy; the working config is the Dockerfile build, start
+  command `uvicorn app.main:app --host 0.0.0.0 --port 8000`, and the domain regenerated
+  with target port 8000 (Railway's edge dials the container over IPv4).
+- `RECORD` (the remaining half): worker-runtime and beat deploy logs each showing
+  celery ready, and `/health` reporting redis and db ok once the plugin and the staging
+  DSN land.
+- `OBSERVED` 2026-09-01: the api serves the widget bundle at `/wchats` on the staging
+  public URL. `curl /wchats/widget.js` answered HTTP 200, 5128 bytes,
+  `Content-Type: text/javascript`, `Cache-Control: public, max-age=300` (#135, merged
+  in #138 and carried by the 09:34Z build). Still owed: the snippet an approve issues
+  naming that same host, which needs `PUBLIC_API_BASE` set and an agent to approve
+  (ticket 20's run).
 - Accepted costs of api-served bundles, decided with the #135 review: no compression
   (the iife travels ~25KB raw; CloudFront's `compress=true` went with it, and gzip
   middleware risks SSE buffering), every embed page view is a uvicorn request sharing
