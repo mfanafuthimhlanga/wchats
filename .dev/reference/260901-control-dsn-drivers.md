@@ -70,3 +70,15 @@ driver, and a query parameter the field's driver rejects. Each message names the
 diagnosis. Messages echo only `value.split("://", 1)[0]`, which cannot contain userinfo,
 and fall back to a character count when there is no `://`. A test pins that a password
 never reaches the message.
+
+## A cold Neon compute reads as a connection failure
+
+Neon computes suspend when idle and take roughly 8 to 20 seconds to wake. The first
+probe after a redeploy can therefore fail against a correct DSN. On 2026-09-01 staging
+reported `{"redis":"ok","db":"error"}` immediately after a redeploy whose credentials
+had already been verified from a workstation, and three probes a few minutes later all
+returned `db: ok` with nothing changed in between.
+
+Probe more than once before diagnosing a database failure on a freshly deployed
+service. `/health` currently swallows the exception (#142), so a waking compute and a
+dead credential are the same four characters.
