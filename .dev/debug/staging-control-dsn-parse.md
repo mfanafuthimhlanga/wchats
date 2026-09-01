@@ -120,3 +120,47 @@ Credential safety: the guard echoes only value.split("://", 1)[0], which by URL
 construction cannot contain userinfo, and falls back to a character count when there
 is no "://" at all. model_config sets hide_input_in_errors=True, so pydantic will not
 echo the value itself; a test pins that a password never reaches the message.
+
+## RESOLVED (the parse crash), 2026-09-01, via the Railway CLI
+
+The actual value was none of the six predicted shapes. A find-and-replace had
+overwritten the SCHEME with the query string:
+
+  CONTROL_DB_URL       was  ?ssl=require://USER:PW@ep-...-pooler.sa-east-1.../neondb?ssl=require
+  CONTROL_DB_SYNC_URL  was  ?sslmode=require://USER:PW@...?sslmode=require
+  REDIS_URL            was  redis-cli --tls -u redis://USER:REDACTED@<host>.upstash.io:6379
+
+All three are the same class the differential predicted: a provider snippet pasted
+without unwrapping. Redis was the CLI COMMAND, and because it carried --tls the scheme
+had to become rediss://, not redis://.
+
+Fixed by prefix swap, validated through the landed guard before writing, then
+redeployed. Observed after:
+
+  curl .../health  ->  HTTP 200  {"status":"ok","redis":"ok","db":"error"}
+
+The import crash-loop is over and redis is green. Logs show a clean boot, no traceback.
+
+## STILL OPEN: the control DB credential is invalid
+
+  asyncpg   -> InvalidPasswordError: password authentication failed for user 'neondb_owner'
+  psycopg2  -> OperationalError, same password failure
+
+Not an encoding artefact: the password is 16 characters, alphanumeric plus underscore,
+and parses byte-identical to its raw form.
+
+Two facts the owner needs:
+
+1. Staging and the local .env point at the SAME endpoint, same user, same password
+   (compared by hash, byte-identical). There is no separate staging Neon project, which
+   the standing rule requires. So the local .env credential is equally invalid, and any
+   local work against the control DB fails the same way.
+2. The NEON_API_KEY in use sees only two projects, both per-tenant test harnesses in
+   aws-us-east-1. The control endpoint is in sa-east-1 and belongs to a project this key
+   cannot see, so the password cannot be rotated through the API with this key.
+3. Railway's production environment holds 7 variables and no DB config at all, so there
+   is no working credential to copy from.
+
+Next: the owner opens the Neon console, takes a current connection string for the
+control database, and decides whether staging gets its own Neon project. Nothing else
+here is blocked on code.
