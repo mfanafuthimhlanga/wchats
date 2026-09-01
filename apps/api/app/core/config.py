@@ -8,8 +8,10 @@ T-01-02: CONTROL_DB_SYNC_URL read from env only; same repr suppression applies.
 
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine.url import make_url
+from sqlalchemy.exc import ArgumentError
 
 
 # Walk up from this file to find .env — works whether CWD is the project root,
@@ -33,13 +35,86 @@ def _find_env_file() -> str | None:
 # container has no calibration directory at all, and no Judge has been shown
 # calibrated there.
 def _calibration_artifact_file() -> str:
-    return str(
-        Path(__file__).resolve().parents[2]
-        / "tests"
-        / "evals"
-        / "calibration"
-        / "calibration.json"
-    )
+    return str(Path(__file__).resolve().parents[2] / "tests" / "evals" / "calibration" / "calibration.json")
+
+
+# The two control engines take different drivers, and pasting one into the other's
+# variable is a live staging failure mode. asyncpg for the FastAPI async engine;
+# psycopg for the Celery/Alembic sync engine (scripts/probe_environment.py already
+# treats postgresql+psycopg as a sync form, so it is accepted here too).
+_CONTROL_DSN_DRIVERS: dict[str, tuple[str, ...]] = {
+    "CONTROL_DB_URL": ("postgresql+asyncpg",),
+    "CONTROL_DB_SYNC_URL": ("postgresql", "postgresql+psycopg2", "postgresql+psycopg"),
+}
+
+# Measured 2026-09-01 against the installed drivers: asyncpg 0.31.0 accepts ssl= and
+# raises TypeError on sslmode=/channel_binding=; psycopg2 2.9.12 is the mirror image,
+# accepting those two and refusing ssl= as an invalid dsn option. SQLAlchemy passes
+# query params through untranslated, so the wrong one parses, boots, then kills every
+# connection. Neon's copied string suits the sync URL; the async URL needs rewriting.
+_CONTROL_DSN_REJECTED_QUERY: dict[str, tuple[str, ...]] = {
+    "CONTROL_DB_URL": ("sslmode", "channel_binding"),
+    "CONTROL_DB_SYNC_URL": ("ssl",),
+}
+
+
+def _refuse_unusable_dsn_text(field: str, value: str, expected: tuple[str, ...]):
+    """Reject a control DSN on the text itself, then hand back the parsed URL.
+
+    make_url raises ValueError, not ArgumentError, on a non-numeric port, so both
+    are caught. A line break is checked separately because make_url ACCEPTS one,
+    folding the remainder into the database name rather than failing.
+    """
+    if len(value.splitlines()) > 1:
+        raise ValueError(
+            f"{field} contains a line break. SQLAlchemy parses the first line and "
+            f"folds the rest into the database name instead of failing, so paste "
+            f"the DSN as a single line."
+        )
+    if value != value.strip():
+        raise ValueError(
+            f"{field} has leading or trailing whitespace. Paste the DSN as one "
+            f"bare line, with no surrounding space or newline."
+        )
+    try:
+        return make_url(value)
+    except (ArgumentError, ValueError):
+        if "://" in value:
+            detail = f"it begins {value.split('://', 1)[0][:40]!r}"
+        else:
+            detail = f"it has no '://' at all ({len(value)} characters)"
+        raise ValueError(
+            f"{field} is not a parseable database URL: {detail}. Expected one "
+            f"bare line like '{expected[0]}://USER:PASSWORD@HOST/DBNAME'. A "
+            f"wrapping quote, a 'KEY=' prefix, a 'psql ...' wrapper or an "
+            f"unresolved '${{{{Service.VAR}}}}' reference all do this."
+        ) from None
+
+
+def _refuse_wrong_engine(field: str, value: str, url, expected: tuple[str, ...]) -> None:
+    """Reject a parsed control DSN aimed at the other engine.
+
+    All three of these PARSE. A missing host and the other engine's ssl query
+    param both survive to connect time, costing a live request instead of a boot.
+    """
+    if not url.host:
+        raise ValueError(
+            f"{field} has no host: {value.split('://', 1)[0][:40]!r} followed by "
+            f"nothing usable. Expected "
+            f"'{expected[0]}://USER:PASSWORD@HOST/DBNAME'."
+        )
+    if url.drivername not in expected:
+        raise ValueError(
+            f"{field} uses driver {url.drivername!r}, which belongs to the other "
+            f"control engine. Expected one of {list(expected)}."
+        )
+    rejected = sorted(set(url.query) & set(_CONTROL_DSN_REJECTED_QUERY[field]))
+    if rejected:
+        wanted = "ssl=require" if field == "CONTROL_DB_URL" else "sslmode=require"
+        raise ValueError(
+            f"{field} carries {rejected} in its query string, which its driver "
+            f"({url.drivername}) refuses at connect time. Use {wanted} instead."
+        )
 
 
 class Settings(BaseSettings):
@@ -55,9 +130,7 @@ class Settings(BaseSettings):
     # A misconfigured worker, a CI job with an absent secret, or any Celery task
     # traceback would write that to stderr and into the job log. Pinned by
     # tests/unit/test_config_error_redaction.py.
-    model_config = SettingsConfigDict(
-        env_file=_find_env_file(), extra="ignore", hide_input_in_errors=True
-    )
+    model_config = SettingsConfigDict(env_file=_find_env_file(), extra="ignore", hide_input_in_errors=True)
 
     # Neon
     NEON_API_KEY: str
@@ -119,6 +192,23 @@ class Settings(BaseSettings):
                 f"ENVIRONMENT={value!r} is not one of {', '.join(known)}. "
                 "A typo here silently disables every production-only guard."
             )
+        return value
+
+    @field_validator("CONTROL_DB_URL", "CONTROL_DB_SYNC_URL")
+    @classmethod
+    def _control_dsn_is_a_bare_url(cls, value: str, info: ValidationInfo) -> str:
+        """Refuse a control DSN the engine cannot use, naming the field.
+
+        Without this the first thing to touch the value is create_async_engine at
+        import time, and its ArgumentError names neither the variable nor the fault,
+        so a mispasted Railway value costs a crash-loop and a dashboard hunt.
+        model_config sets hide_input_in_errors=True, so the message has to carry the
+        diagnosis itself. Credentials sit after "://", so the prefix is safe to echo.
+        """
+        field = info.field_name or "CONTROL_DB_URL"
+        expected = _CONTROL_DSN_DRIVERS[field]
+        url = _refuse_unusable_dsn_text(field, value, expected)
+        _refuse_wrong_engine(field, value, url, expected)
         return value
 
     # Upload staging directory — shared between API and pipeline worker
@@ -183,21 +273,21 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str | None = None
 
     # M17: OTP identity verification — TTL and rate-limit settings (OD-4 global TTL lock)
-    VERIFIED_SESSION_TTL_SECONDS: int = 3600   # OD-4: 1 hour verified-session lifetime
-    OTP_EMAIL_TTL_SECONDS: int = 600           # 10 min email OTP window
-    OTP_SMS_TTL_SECONDS: int = 300             # 5 min SMS OTP window
-    OTP_MAX_ATTEMPTS: int = 5                  # max verify attempts before challenge expires
-    OTP_SEND_MAX_PER_WINDOW: int = 3           # max sends per external_id per 10-min window
+    VERIFIED_SESSION_TTL_SECONDS: int = 3600  # OD-4: 1 hour verified-session lifetime
+    OTP_EMAIL_TTL_SECONDS: int = 600  # 10 min email OTP window
+    OTP_SMS_TTL_SECONDS: int = 300  # 5 min SMS OTP window
+    OTP_MAX_ATTEMPTS: int = 5  # max verify attempts before challenge expires
+    OTP_SEND_MAX_PER_WINDOW: int = 3  # max sends per external_id per 10-min window
 
     # M17: SMS OTP provider — OD-2 Twilio default; NullSmsProvider used when creds unset
     # All credentials default to None (fail-safe: unset = SMS not configured).
-    SMS_PROVIDER: str = "twilio"               # "twilio" | "africastalking"
+    SMS_PROVIDER: str = "twilio"  # "twilio" | "africastalking"
     TWILIO_ACCOUNT_SID: str | None = None
     TWILIO_AUTH_TOKEN: str | None = None
-    TWILIO_FROM_NUMBER: str | None = None      # E.164 format, e.g. +27XXXXXXXXX
-    AT_API_KEY: str | None = None              # Africa's Talking API key
-    AT_USERNAME: str | None = None             # Africa's Talking username
-    AT_SENDER_ID: str | None = None            # Africa's Talking sender ID (optional)
+    TWILIO_FROM_NUMBER: str | None = None  # E.164 format, e.g. +27XXXXXXXXX
+    AT_API_KEY: str | None = None  # Africa's Talking API key
+    AT_USERNAME: str | None = None  # Africa's Talking username
+    AT_SENDER_ID: str | None = None  # Africa's Talking sender ID (optional)
 
     # M4.1: Tenant daily budget ceiling (global default; per-tenant override in M5 admin UI)
     TENANT_DAILY_BUDGET_USD: float = 5.0
@@ -216,7 +306,7 @@ class Settings(BaseSettings):
     VERIFIED_QA_HIT_THRESHOLD: float = 0.93
 
     # M7: Red team configuration
-    RED_TEAM_MAX_TURNS: int = 5        # max turns per attack sequence per agent
+    RED_TEAM_MAX_TURNS: int = 5  # max turns per attack sequence per agent
     RED_TEAM_ATTACK_SEQUENCES: int = 3  # number of distinct attack sequences per agent
     # k (ticket 15, issue #52). How many times each of the seven vectors runs its
     # whole probe, from the top, with nothing carried between runs. It is NOT
@@ -337,9 +427,9 @@ class Settings(BaseSettings):
     # ceilings, distinct from the observed-history figures computed over
     # BLAST_RADIUS_OBSERVED_WINDOW_DAYS — Open Decision 1 keeps the two kinds
     # of number separately labelled, never conflated.
-    BLAST_RADIUS_WARN_SINGLE_CENTS: int = 50000    # R500.00 platform-default single-action warning
-    BLAST_RADIUS_WARN_HOURLY_CENTS: int = 200000   # R2000.00 platform-default hourly-aggregate warning
-    BLAST_RADIUS_OBSERVED_WINDOW_DAYS: int = 7     # rolling window the observed blast-radius figures cover
+    BLAST_RADIUS_WARN_SINGLE_CENTS: int = 50000  # R500.00 platform-default single-action warning
+    BLAST_RADIUS_WARN_HOURLY_CENTS: int = 200000  # R2000.00 platform-default hourly-aggregate warning
+    BLAST_RADIUS_OBSERVED_WINDOW_DAYS: int = 7  # rolling window the observed blast-radius figures cover
 
     # The two hosts the embed snippet names (BACKLOG 7.1). The snippet is the
     # one artifact a customer pastes into their own site, so both halves of it
