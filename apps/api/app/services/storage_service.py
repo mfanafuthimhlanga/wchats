@@ -28,7 +28,11 @@ Design:
 
 Security (T-13-06-01..04):
     - Bucket name from settings.S3_UPLOADS_BUCKET (env seam; never hardcoded).
-    - IAM task role provides credentials at runtime — no static AWS key.
+    - Credentials come from settings.S3_ACCESS_KEY_ID and
+      settings.S3_SECRET_ACCESS_KEY and reach boto3 as explicit arguments.
+      boto3's default credential chain is not read, so no environment variable,
+      shared credentials file or instance metadata role can supply an identity
+      this process did not configure by name.
     - Key bytes (file content) are NEVER logged; only key path (agent_id / doc_id).
     - No presigned URL is ever generated — server-side get_object only (Fargate
       IAM task role has the required s3:GetObject permission on the uploads bucket).
@@ -121,12 +125,42 @@ def _require_production_endpoint(endpoint: str) -> None:
         )
 
 
+def _require_credentials() -> tuple[str, str]:
+    """Return the S3 credentials, refusing rather than letting boto3 guess.
+
+    boto3's default chain would silently try environment variables, a shared
+    credentials file and the instance metadata service. On a container with none
+    of them that surfaces as NoCredentialsError inside the first upload, naming
+    nothing the operator set. Refusing here names the setting instead.
+    """
+    key_id = settings.S3_ACCESS_KEY_ID
+    secret = settings.S3_SECRET_ACCESS_KEY
+    missing = [
+        name
+        for name, value in (
+            ("S3_ACCESS_KEY_ID", key_id),
+            ("S3_SECRET_ACCESS_KEY", secret),
+        )
+        if not value
+    ]
+    if missing:
+        raise StorageNotConfigured(
+            f"{' and '.join(missing)} unset, so document storage has no "
+            f"credentials. Set them for the S3-compatible store named by "
+            f"S3_ENDPOINT_URL; boto3's default credential chain is deliberately "
+            f"not used."
+        )
+    return key_id, secret
+
+
 def _get_s3():
     """Return the module-level boto3 S3 client, initializing on first call.
 
-    Lazy init keeps this module importable in unit tests without real AWS
-    credentials (boto3 is only imported when the first S3 call is made, not
-    at module load time).  Mirrors _get_bedrock() in bedrock_embedding_service.py.
+    Lazy init keeps boto3 out of module import (it loads on the first S3 call,
+    not at module load time).  Mirrors _get_bedrock() in
+    bedrock_embedding_service.py.  Credentials are no longer optional at that
+    point: _require_credentials reads them from settings and names the missing
+    one, so nothing falls back to boto3's default credential chain.
 
     S3_ENDPOINT_URL (BACKLOG 1.24) redirects every read and write of customer
     document bytes. In production it is honoured for exactly the S3-compatible
@@ -143,7 +177,12 @@ def _get_s3():
         if endpoint and settings.ENVIRONMENT == "production":
             _require_production_endpoint(endpoint)
 
-        kwargs: dict = {"region_name": settings.AWS_REGION}
+        key_id, secret = _require_credentials()
+        kwargs: dict = {
+            "region_name": settings.AWS_REGION,
+            "aws_access_key_id": key_id,
+            "aws_secret_access_key": secret,
+        }
         if endpoint:
             kwargs["endpoint_url"] = endpoint
             # BACKLOG 1.33: log the HOST, never the whole URL. An endpoint URL

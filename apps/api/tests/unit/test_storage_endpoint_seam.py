@@ -10,6 +10,13 @@ allowlist must admit those two suffixes on the parsed hostname and nothing
 else, or this module would be documenting a redirect primitive rather than a
 bounded seam.
 
+The credentials belong in this module for the same reason. `_get_s3` is the one
+place that decides who this process is to the object store, and both halves of
+that decision, where the bytes go and which key signs for them, are settings the
+operator has to get right. The final section pins them explicit: boto3's default
+chain, which would try environment variables, a shared credentials file and the
+instance metadata service in turn, is never consulted.
+
 Why each test resets `storage_service._s3`
 ------------------------------------------
 The client is memoised in a module global. A test that does not reset it asserts
@@ -28,6 +35,8 @@ from app.services import storage_service
 from app.services.storage_service import StorageNotConfigured
 
 _ENDPOINT = "http://127.0.0.1:9000"
+_KEY_ID = "test-access-key-id"
+_SECRET = "test-secret-access-key"
 
 
 @pytest.fixture(autouse=True)
@@ -45,6 +54,8 @@ def _build_client(**setting_overrides):
         "AWS_REGION": "us-east-1",
         "S3_ENDPOINT_URL": None,
         "ENVIRONMENT": "development",
+        "S3_ACCESS_KEY_ID": _KEY_ID,
+        "S3_SECRET_ACCESS_KEY": _SECRET,
     }
     defaults.update(setting_overrides)
     with patch.dict("sys.modules", {"boto3": fake_boto3}):
@@ -241,3 +252,117 @@ def test_put_bytes_raises_before_calling_s3_when_unconfigured():
     assert fake_client.put_object.call_count == 0, (
         "put_object was called with an unconfigured bucket"
     )
+
+
+# --------------------------------------------------------------------------
+# The credentials are explicit; boto3's default chain is never consulted
+# --------------------------------------------------------------------------
+
+
+def _refused_credentials(**setting_overrides) -> str:
+    """Call _get_s3() with the given credential settings, return the refusal.
+
+    Fails if a client was built anyway. A client constructed without explicit
+    credentials is the exact defect this section exists to prevent: boto3 would
+    then go looking for an identity in the environment.
+    """
+    fake_boto3 = MagicMock()
+    defaults = {
+        "AWS_REGION": "us-east-1",
+        "S3_ENDPOINT_URL": None,
+        "ENVIRONMENT": "development",
+        "S3_ACCESS_KEY_ID": "",
+        "S3_SECRET_ACCESS_KEY": "",
+    }
+    defaults.update(setting_overrides)
+    with patch.dict("sys.modules", {"boto3": fake_boto3}):
+        with patch.multiple(storage_service.settings, **defaults):
+            with pytest.raises(StorageNotConfigured) as exc_info:
+                storage_service._get_s3()
+    assert fake_boto3.client.call_count == 0, (
+        "a client was constructed without explicit credentials, so boto3 would "
+        "fall back to its default chain"
+    )
+    return str(exc_info.value)
+
+
+def test_configured_credentials_reach_boto3():
+    """The point of the whole section: boto3 is told who we are, not asked."""
+    assert storage_service._s3 is None, (
+        "the autouse fixture did not clear the memoised client, so this test "
+        "would assert against a client some earlier test built"
+    )
+    args, kwargs = _build_client()
+    assert args == ("s3",)
+    assert kwargs["aws_access_key_id"] == _KEY_ID
+    assert kwargs["aws_secret_access_key"] == _SECRET
+    assert storage_service._s3 is not None, "the built client was not memoised"
+
+
+@pytest.mark.parametrize(
+    "missing,present",
+    [
+        ("S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"),
+        ("S3_SECRET_ACCESS_KEY", "S3_ACCESS_KEY_ID"),
+    ],
+)
+def test_one_missing_credential_is_refused_by_name(missing, present):
+    """Half-configured is the shape a real deploy lands in, and NoCredentialsError
+    from inside the first upload names nothing the operator can act on."""
+    message = _refused_credentials(**{present: "set-by-the-operator"})
+    assert missing in message, (
+        f"the refusal must name the setting that is unset; got {message!r}"
+    )
+    assert present not in message, (
+        f"{present} is set, so naming it sends the operator to the wrong "
+        f"variable; got {message!r}"
+    )
+
+
+def test_both_missing_credentials_are_named_in_one_message():
+    """One trip, not two: an operator who sets only the first one on the strength
+    of the first error comes straight back for the second."""
+    message = _refused_credentials()
+    assert "S3_ACCESS_KEY_ID" in message
+    assert "S3_SECRET_ACCESS_KEY" in message
+
+
+def test_the_refusal_does_not_echo_the_secret():
+    """The message travels to logs and, through the 503, towards a caller.
+
+    Naming a setting is the whole job. Printing what is in it would put the
+    signing key wherever the refusal lands.
+    """
+    message = _refused_credentials(S3_SECRET_ACCESS_KEY="leak-me-not")
+    assert "leak-me-not" not in message, (
+        f"the refusal echoed the secret value; got {message!r}"
+    )
+    assert "S3_ACCESS_KEY_ID" in message
+
+
+def test_no_configuration_builds_a_client_without_both_credentials():
+    """The regression pin.
+
+    Deleting the _require_credentials() call, or dropping one kwarg from the
+    dict, restores boto3's default chain: it would then read AWS_ACCESS_KEY_ID
+    from the environment, or reach the instance metadata service, and the
+    process would authenticate as an identity nobody configured here. Every
+    setting combination that reaches boto3.client at all must carry both.
+    """
+    combinations = [
+        {},
+        {"S3_ENDPOINT_URL": _ENDPOINT},
+        {"S3_ENDPOINT_URL": None, "ENVIRONMENT": "production"},
+        {
+            "S3_ENDPOINT_URL": "https://accountid.r2.cloudflarestorage.com",
+            "ENVIRONMENT": "production",
+        },
+    ]
+    for overrides in combinations:
+        storage_service._s3 = None
+        args, kwargs = _build_client(**overrides)
+        assert "aws_access_key_id" in kwargs and "aws_secret_access_key" in kwargs, (
+            f"boto3.client was built without explicit credentials for "
+            f"{overrides!r}, so its default credential chain is back. "
+            f"kwargs={kwargs}"
+        )

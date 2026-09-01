@@ -378,6 +378,15 @@ class Settings(BaseSettings):
     # the upload/parse hot path after the S3 migration.
     S3_UPLOADS_BUCKET: str = ""
 
+    # S3-compatible credentials, passed EXPLICITLY to boto3 (see
+    # storage_service._get_s3). They are named for the protocol, not the vendor,
+    # because the deployed store is Cloudflare R2 and the AWS_* names invited a
+    # standing misreading that this project runs on AWS. Nothing reads boto3's
+    # default credential chain any more: an unset credential is refused by name
+    # instead of failing inside the SDK on the first upload.
+    S3_ACCESS_KEY_ID: str = ""
+    S3_SECRET_ACCESS_KEY: str = ""
+
     # Local-development override for the S3 endpoint (E2E-2, BACKLOG 1.24).
     # None (default) => boto3 resolves real AWS exactly as it always has; no
     # deployed environment changes behaviour by this field existing.
