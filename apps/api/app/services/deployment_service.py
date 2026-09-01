@@ -445,6 +445,22 @@ class SnippetNotConfigured(RuntimeError):
     """
 
 
+def _refuse_unservable_base(name: str, base: str) -> None:
+    """Refuse a base a visitor's browser cannot reach (production only).
+
+    Empty and loopback are dead on every visitor's device; a non-https base
+    is silently mixed-content-blocked on every https customer page, which is
+    worse than dead because nothing logs it. #135 review, findings 8 and 9.
+    """
+    split = urlsplit(base)
+    if not base or (split.hostname or "") in _LOOPBACK_HOSTS or split.scheme != "https":
+        raise SnippetNotConfigured(
+            f"{name} is {base!r} while ENVIRONMENT=production. A visitor's "
+            "browser cannot reach it (empty, loopback, or not https), and "
+            f"the loader would not warn. Set {name} to a public https origin."
+        )
+
+
 def _make_iframe_snippet(agent_id: str) -> str:
     """Return the embeddable widget script tag for the given agent.
 
@@ -455,10 +471,14 @@ def _make_iframe_snippet(agent_id: str) -> str:
     (`apps/widget/embed/widget.js`), so the tag this function returned produced
     a widget that painted on the customer's site and could not reach anything.
 
-    Both hosts now come from `Settings` — see `WIDGET_CDN_BASE` /
-    `PUBLIC_API_BASE`, documented in both `.env.example` files. Trailing
-    slashes are stripped so a base configured as `https://api.example.com/`
-    cannot yield `https://api.example.com//`.
+    Both hosts now come from `Settings` (`WIDGET_CDN_BASE` and
+    `PUBLIC_API_BASE`, documented in both `.env.example` files). An empty
+    WIDGET_CDN_BASE, the default since #135, derives the bundle host as
+    PUBLIC_API_BASE + "/wchats", where this API serves the synced bundle
+    itself (main.py mounts apps/api/static/wchats there), so the production
+    refusal below guards the derived host too. Trailing slashes are stripped
+    so a base configured as `https://api.example.com/` cannot yield
+    `https://api.example.com//`.
 
     PUBLIC_API_BASE defaults to `http://localhost:8000`, and the loader only
     warns when the API base is EMPTY — so the default is silent in a way the
@@ -469,23 +489,25 @@ def _make_iframe_snippet(agent_id: str) -> str:
     a snippet is recoverable; a customer pasting one that calls their own
     visitors' machines is not.
 
+    Outside production nothing is refused, and an empty PUBLIC_API_BASE
+    derives a page-relative src that resolves against the customer's own
+    site; the localhost default cannot hit that, and production refuses it.
+
     Raises:
-        SnippetNotConfigured: ENVIRONMENT is production and PUBLIC_API_BASE is
-            empty or points at a loopback host.
+        SnippetNotConfigured: ENVIRONMENT is production and either base is
+            empty, loopback, or not https (a visitor's https page silently
+            mixed-content-blocks an http script src, and the loader cannot
+            warn about a script that never ran).
     """
-    cdn_base = settings.WIDGET_CDN_BASE.rstrip("/")
     api_base = settings.PUBLIC_API_BASE.strip().rstrip("/")
+    # #135: empty means "this API serves the bundle at /wchats" (main.py mount).
+    configured_cdn = settings.WIDGET_CDN_BASE.strip().rstrip("/")
+    cdn_base = configured_cdn or f"{api_base}/wchats"
 
     if settings.ENVIRONMENT == "production":
-        host = urlsplit(api_base).hostname or "" if api_base else ""
-        if not api_base or host in _LOOPBACK_HOSTS:
-            raise SnippetNotConfigured(
-                f"PUBLIC_API_BASE is {api_base!r} while ENVIRONMENT=production. "
-                "The embed snippet would tell every visitor's browser to call "
-                "its own machine, and the loader does not warn about a "
-                "non-empty base. Set PUBLIC_API_BASE to the public origin this "
-                "API is reachable at."
-            )
+        _refuse_unservable_base("PUBLIC_API_BASE", api_base)
+        if configured_cdn:
+            _refuse_unservable_base("WIDGET_CDN_BASE", configured_cdn)
 
     return (
         f'<script src="{cdn_base}/widget.js" '

@@ -75,9 +75,19 @@ not about missing features.
   public URL, with worker and beat log lines showing ready — the build-log line
   `Using Detected Dockerfile` is the first checkpoint (the first attempt failed in 9s on
   an unset Root Directory; `scripts/railway_staging_wizard.sh` walks every field).
-- `RECORD`: the widget bundle's serving story is #135 — the deleted CloudFront/S3 pair
-  was the only thing putting `widget.js` at `WIDGET_CDN_BASE`, and the approve-deployment
-  snippet still points there.
+- `RECORD`: the api serves the widget bundle at `/wchats` and an empty
+  `WIDGET_CDN_BASE` derives the snippet host from `PUBLIC_API_BASE` (#135,
+  fix/widget-serving; mount tests and derivation pins OBSERVED green locally). The owed
+  observation on staging: `curl` fetches `/wchats/widget.js` on the public URL with
+  `Cache-Control: public, max-age=300`, and the snippet an approve issues names that
+  same host.
+- Accepted costs of api-served bundles, decided with the #135 review: no compression
+  (the iife travels ~25KB raw; CloudFront's `compress=true` went with it, and gzip
+  middleware risks SSE buffering), every embed page view is a uvicorn request sharing
+  the API's fate and capacity, and a widget-rebuild commit redeploys all four Railway
+  services because every toml watches `apps/api/**`. The lever for all three is the
+  same: put a real CDN in `WIDGET_CDN_BASE` (plus its origin in `CORS_ORIGINS`) when
+  volume justifies it.
 - `RECORD`: Railway's proxy idle timeout against SSE — the deleted ALB config held 4000s;
   the probe is `curl -N` surviving past 125s on a live SSE stream.
 - `RECORD`: migrations at deploy. No toml carries a preDeployCommand; control-DB alembic
