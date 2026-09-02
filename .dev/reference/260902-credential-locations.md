@@ -21,6 +21,7 @@ Observed 2026-09-02 by listing variable names on Railway and GitHub, never value
 | `VOYAGE_API_KEY` | dashboard.voyageai.com, API keys | `apps/api/.env` | all three | `nightly.yml` reads secret `VOYAGE_API_KEY` |
 | `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_ENDPOINT_URL`, `S3_UPLOADS_BUCKET` | Cloudflare dashboard, R2, an API token scoped to bucket `wchats`; the endpoint is `https://<account-id>.r2.cloudflarestorage.com` | MinIO, `S3_ENDPOINT_URL=http://127.0.0.1:9000` | `api-service` only | not set |
 | `REDIS_URL` | Upstash console, database `firm-calf-277244`, the `rediss://` URL | local `redis-server` | all three | the job's own Redis container |
+| The Bantuson tenant's API key, `vrd_live_...` | `POST /api/v1/tenants` on staging with `X-Admin-Key`, shown once in the response; tenant `3f572bca-0c08-454d-8051-a037662ca826`, minted 2026-09-02 | `~/.claude.json`, this project's `mcpServers.wchats` Authorization header | the control DB holds only its hash | not set |
 
 `EMBEDDING_PROVIDER=voyage` and `ENVIRONMENT=staging` sit beside these on every staging
 service. `PUBLIC_API_BASE` is the Railway public domain of `api-service`,
