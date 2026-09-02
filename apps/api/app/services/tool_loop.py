@@ -202,6 +202,36 @@ def first_choice(completion):
     return choices[0] if choices else None
 
 
+def forced_tool_arguments(completion, name: str) -> dict | None:
+    """The arguments of one named tool call, or None when the reply carried none.
+
+    The forced-tool-choice sites in `validation_service`, `actor_seam`,
+    `scenario_service`, `red_team_service` and `strategy_service` ask for exactly
+    one call and validate its arguments into a typed verdict. They read the wire
+    here rather than each spelling it out, so `choices`, `tool_calls` and a
+    malformed argument string are handled once.
+
+    None covers three different absences, and every caller treats them alike
+    because all three mean the same thing to it: no verdict arrived. The reply
+    had no choices, or the model talked instead of calling the tool, or it called
+    the tool with arguments that are not a JSON object. Each caller raises its
+    own error, because the sentence a judge owes its reader is not the one a
+    Strategist owes a fallback path.
+
+    Args:
+        completion: an OpenAI chat completion.
+        name:       the function the call site forced.
+    """
+    choice = first_choice(completion)
+    if choice is None:
+        return None
+    for call in getattr(choice.message, "tool_calls", None) or []:
+        if call.function.name == name:
+            args, refusal = tool_arguments(name, call.function.arguments)
+            return None if refusal else args
+    return None
+
+
 @dataclass
 class ToolLoopResult:
     """What one `run_tool_loop` sequence produced.

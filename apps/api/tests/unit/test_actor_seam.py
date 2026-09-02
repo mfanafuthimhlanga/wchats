@@ -2,17 +2,19 @@
 Unit tests for the Phase-15 Actor seam (call_actor_gate).
 
 Coverage:
-  ACT-01 — Haiku forced-tool-use returns approve | block | require_human + rationale
+  ACT-01 — a forced tool call returns approve | block | require_human + rationale
   ACT-03 — skip short-circuit: low-value action (max_amount_cents < threshold AND
             requires_confirmation=False) returns approve WITHOUT calling the model
-  ACT-06 — Langfuse v4 start_as_current_observation + create_score + flush called on Haiku call
+  ACT-06 — Langfuse v4 start_as_current_observation + create_score + flush called on the
+            judge call
 
 Mock strategy:
   - Patch the client factory (app.core.model_client.make_client, through
-    model_doubles.factory) so the gate is handed a double whose messages.create
-    is a MagicMock returning a fake tool_use block. The gate builds its client
-    per call through the factory (ticket #47), so no module-level client is left
-    to patch and the assertion stays on the kwargs the provider receives
+    model_doubles.factory) so the gate is handed a double whose
+    chat.completions.create is a MagicMock returning a fake tool call. The gate
+    builds its client per call through the factory (ticket #47), so no
+    module-level client is left to patch and the assertion stays on the kwargs
+    the provider receives
   - Patch app.services.actor_seam._langfuse to test Langfuse logging branch
   - Patch app.services.actor_seam._fetch_history (AsyncMock) to control history fetch
   - asyncio.run() drives the async call_actor_gate; no real event loop setup needed
@@ -30,7 +32,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tests.model_doubles import factory, ledger
+from tests.model_doubles import completion, factory, ledger, openai_client, tool_call
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -74,25 +76,19 @@ _SNAP_ABOVE_THRESHOLD = {
 # ---------------------------------------------------------------------------
 
 
-def _make_tool_use_block(verdict: str, rationale: str = "Test rationale.") -> MagicMock:
-    """Create a fake tool_use content block mimicking the provider response."""
-    block = MagicMock()
-    block.type = "tool_use"
-    block.name = "submit_verdict"
-    block.input = {"verdict": verdict, "rationale": rationale}
-    return block
+def _make_tool_use_block(verdict: str, rationale: str = "Test rationale."):
+    """One `submit_verdict` call, the way the gate's judge answers."""
+    return tool_call("submit_verdict", {"verdict": verdict, "rationale": rationale})
 
 
 def _messages_client(create) -> SimpleNamespace:
-    """A client double whose messages.create is the mock the test asserts on."""
-    return SimpleNamespace(messages=SimpleNamespace(create=create))
+    """A client double whose chat.completions.create is the mock asserted on."""
+    return openai_client(create=create)
 
 
-def _make_api_response(*blocks) -> MagicMock:
-    """Create a fake messages.create response with the given content blocks."""
-    response = MagicMock()
-    response.content = list(blocks)
-    return response
+def _make_api_response(*calls):
+    """A chat completion carrying the given tool calls."""
+    return completion(tool_calls=list(calls), finish_reason="tool_calls")
 
 
 def _run_gate(
@@ -156,7 +152,7 @@ class TestSkipThreshold:
     def test_skip_threshold_returns_approve(self):
         """Low-value skill: requires_confirmation=False, max_amount_cents=400 < 500 → approve,
         and the factory is never asked for a client."""
-        api_mock = MagicMock()  # MagicMock, NOT AsyncMock — messages.create is synchronous
+        api_mock = MagicMock()  # MagicMock, NOT AsyncMock — the create call is synchronous
 
         from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
 
@@ -170,10 +166,10 @@ class TestSkipThreshold:
 
         assert decision == "approve", f"Expected approve, got {decision!r}"
         assert "skip" in rationale, f"Rationale should mention skip, got {rationale!r}"
-        api_mock.assert_not_called()  # No Haiku spend on low-value actions
+        api_mock.assert_not_called()  # No model spend on low-value actions
 
     def test_skip_threshold_does_not_skip_when_at_or_above(self):
-        """Boundary: max_amount_cents == 500 (== threshold) must NOT skip — Haiku IS called."""
+        """Boundary: max_amount_cents == 500 (== threshold) must NOT skip — the judge IS called."""
         approve_block = _make_tool_use_block("approve", "Aligned with intent.")
         api_mock = MagicMock(return_value=_make_api_response(approve_block))
 
@@ -189,10 +185,10 @@ class TestSkipThreshold:
             )
 
         assert decision == "approve"
-        api_mock.assert_called_once()  # Haiku was called
+        api_mock.assert_called_once()  # the judge was called
 
     def test_skip_does_not_apply_when_requires_confirmation_true(self):
-        """requires_confirmation=True + low max_amount_cents → Haiku IS still called."""
+        """requires_confirmation=True + low max_amount_cents → the judge IS still called."""
         approve_block = _make_tool_use_block("approve", "Aligned with intent.")
         api_mock = MagicMock(return_value=_make_api_response(approve_block))
 
@@ -211,7 +207,7 @@ class TestSkipThreshold:
             )
 
         assert decision == "approve"
-        api_mock.assert_called_once()  # Haiku was called regardless of low amount
+        api_mock.assert_called_once()  # the judge was called regardless of low amount
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +216,7 @@ class TestSkipThreshold:
 
 
 class TestVerdictParsing:
-    """ACT-01: forced-tool-use Haiku call returns the parsed verdict and rationale."""
+    """ACT-01: the forced tool call returns the parsed verdict and rationale."""
 
     @pytest.mark.parametrize("verdict_str,expected_rationale", [
         ("approve", "Action aligns with stated intent."),
@@ -253,11 +249,11 @@ class TestVerdictParsing:
     def test_haiku_call_sends_thinking_disabled(self):
         """The forced tool_choice must ship with thinking off.
 
-        Observed 2026-08-16: DeepSeek's Anthropic-format endpoint, which was the
-        default provider then via ANTHROPIC_BASE_URL, rejects a forced tool_choice with
-        HTTP 400 "Thinking mode does not support this tool_choice" unless
-        thinking is explicitly disabled. The parameter is inert on the real
-        Anthropic API, so the flag is provider-neutral.
+        `thinking={"type": "disabled"}` cleared an HTTP 400 observed 2026-08-16 on
+        DeepSeek's Anthropic-format endpoint ("Thinking mode does not support this
+        tool_choice"). Issue #76 moved this call to OpenAI, which rejects a body
+        field it does not declare, so the parameter that used to be required now
+        breaks the call it used to fix.
         """
         block = _make_tool_use_block("approve", "Aligned.")
         api_mock = MagicMock(return_value=_make_api_response(block))
@@ -277,16 +273,20 @@ class TestVerdictParsing:
             )
 
         call_kwargs = api_mock.call_args[1]
-        # Precondition: with no forced tool_choice there is nothing to disable
-        # thinking for, and the assertion below would pin an unrelated call.
-        assert call_kwargs.get("tool_choice", {}).get("type") == "tool"
-        assert call_kwargs.get("thinking") == {"type": "disabled"}, (
-            f"the Actor gate sent thinking={call_kwargs.get('thinking')!r}; the default "
-            "provider returns HTTP 400 on a forced tool_choice without it, so the gate "
-            "raises instead of returning a verdict in production"
+        assert call_kwargs.get("tool_choice") == {
+            "type": "function",
+            "function": {"name": "submit_verdict"},
+        }, (
+            "the Actor gate no longer forces submit_verdict, so the judge can answer "
+            f"in prose. tool_choice={call_kwargs.get('tool_choice')!r}"
+        )
+        leftovers = [f for f in ("thinking", "system", "max_tokens") if f in call_kwargs]
+        assert leftovers == [], (
+            f"the Actor gate sent {leftovers!r}, which OpenAI rejects as unrecognised "
+            "body fields, so the gate raises instead of returning a verdict"
         )
 
-    def test_haiku_call_sends_temperature_zero(self):
+    def test_the_gate_call_sends_temperature_zero(self):
         """BACKLOG 8.2a. The highest-stakes judge in the system samples at 0.
 
         `call_actor_gate` runs SYNCHRONOUSLY before money moves. Until 8.2a every
@@ -324,7 +324,7 @@ class TestVerdictParsing:
             "that runs before money moves may not sample its verdict."
         )
 
-    def test_haiku_approve_verdict(self):
+    def test_approve_verdict(self):
         """Explicit test name for approve verdict (test discovery compatibility)."""
         block = _make_tool_use_block("approve", "Aligned.")
         api_mock = MagicMock(return_value=_make_api_response(block))
@@ -346,7 +346,7 @@ class TestVerdictParsing:
         assert decision == "approve"
         assert rationale == "Aligned."
 
-    def test_haiku_block_verdict(self):
+    def test_block_verdict(self):
         """Explicit test name for block verdict."""
         block = _make_tool_use_block("block", "Misaligned action.")
         api_mock = MagicMock(return_value=_make_api_response(block))
@@ -368,7 +368,7 @@ class TestVerdictParsing:
         assert decision == "block"
         assert "Misaligned" in rationale
 
-    def test_haiku_require_human_verdict(self):
+    def test_require_human_verdict(self):
         """Explicit test name for require_human verdict."""
         block = _make_tool_use_block("require_human", "Uncertain — escalating.")
         api_mock = MagicMock(return_value=_make_api_response(block))
@@ -400,7 +400,7 @@ class TestHistoryFallback:
     """Conversation history fetch failure must not prevent the Actor from running."""
 
     def test_history_fetch_failure_falls_back(self):
-        """When _fetch_history raises, Haiku is still called with NO CONVERSATION HISTORY
+        """When _fetch_history raises, the judge is still called with NO CONVERSATION HISTORY
         AVAILABLE in the prompt; no exception escapes call_actor_gate."""
         approve_block = _make_tool_use_block("approve", "OK.")
         api_mock = MagicMock(return_value=_make_api_response(approve_block))
@@ -426,7 +426,8 @@ class TestHistoryFallback:
 
         # Verify the NO HISTORY sentinel was passed in the user message
         call_args = api_mock.call_args
-        user_content = call_args.kwargs.get("messages", [{}])[0].get("content", "")
+        # [0] is the system prompt; the delimited sections ride the user turn.
+        user_content = call_args.kwargs.get("messages", [{}, {}])[1].get("content", "")
         assert "NO CONVERSATION HISTORY AVAILABLE" in user_content
 
     def test_empty_conn_str_skips_fetch_and_uses_sentinel(self):
@@ -452,7 +453,8 @@ class TestHistoryFallback:
 
         assert decision in ("approve", "block", "require_human")
         call_args = api_mock.call_args
-        user_content = call_args.kwargs.get("messages", [{}])[0].get("content", "")
+        # [0] is the system prompt; the delimited sections ride the user turn.
+        user_content = call_args.kwargs.get("messages", [{}, {}])[1].get("content", "")
         assert "NO CONVERSATION HISTORY AVAILABLE" in user_content
 
 

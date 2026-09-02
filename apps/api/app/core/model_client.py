@@ -108,7 +108,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import Protocol
+from typing import Protocol, cast
 
 import anthropic as _anthropic
 import httpx
@@ -247,20 +247,34 @@ class LedgerContext:
     agent_id: str | None = None
     job_id: str | None = None
 
-    def client(self, purpose: str, **kwargs) -> ProviderClient:
+    def client(self, purpose: str, **kwargs) -> _openai.OpenAI:
         """A factory client for one purpose, billed to these ids.
+
+        The declared type is narrower than `make_client`'s. That function still
+        answers with either SDK, because its `provider` argument can name one.
+        This seam never passes that argument, every `PURPOSE_ROUTES` row names
+        `openai`, and #88 made the route the thing `make_client` reads, so the
+        object a call site gets here is an `OpenAI` and its `.chat` is real.
+
+        A `cast` rather than an isinstance check. The check would refuse the
+        doubles that stand in for a client in every unit test of a call site,
+        which would cost the suite its cheapest seam and prove nothing about
+        production, where the routing table already decides this.
 
         Raises whatever `make_client` raises, including on a purpose the routing
         table does not hold and on a judge purpose, which belongs to
         `instructor_client` because its route names a reasoning effort.
         """
-        return make_client(
-            purpose,
-            tenant_id=self.tenant_id,
-            recorder=self.recorder,
-            agent_id=self.agent_id,
-            job_id=self.job_id,
-            **kwargs,
+        return cast(
+            _openai.OpenAI,
+            make_client(
+                purpose,
+                tenant_id=self.tenant_id,
+                recorder=self.recorder,
+                agent_id=self.agent_id,
+                job_id=self.job_id,
+                **kwargs,
+            ),
         )
 
     def instructor_client(self, purpose: str, **kwargs) -> InstructorClient:

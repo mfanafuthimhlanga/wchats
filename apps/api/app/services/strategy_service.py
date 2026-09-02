@@ -1,24 +1,25 @@
 """
-M9 Strategy service: corpus-signal-driven retrieval strategy synthesizer (direct Anthropic API).
+M9 Strategy service: corpus-signal-driven retrieval strategy synthesizer (direct API).
 
 Architecture notes:
-- Corpus signals are collected synchronously (psycopg2) BEFORE calling the Anthropic API.
-- Direct Anthropic messages.create with tool_use — captures generate_strategy ToolUseBlock.
+- Corpus signals are collected synchronously (psycopg2) BEFORE the model call.
+- One chat completion with a forced generate_strategy tool call, read for its arguments.
 - Synchronous — no asyncio bridge needed; safe in Celery pipeline tasks.
 - Connection strings NEVER logged (CTL-08).
-- The client comes from app.core.model_client.make_client (ticket #46), so every
-  response leaves one model_calls row in the tenant database. Recording is fail
-  open, so a ledger failure logs and the strategy call still returns.
+- The client comes from a `LedgerContext` (ticket #46, issue #76), so every
+  response leaves one model_calls row in the tenant database and the model comes
+  off the purpose's route. Recording is fail open, so a ledger failure logs and
+  the strategy call still returns.
 """
 from __future__ import annotations
 
 import psycopg2
 import structlog
 
-from app.core.model_client import ledger_recorder, make_client
+from app.core.model_client import LedgerContext, ledger_recorder, route_for
 from app.domain.ingestion_job import IngestionJob
+from app.services.tool_loop import forced_tool_arguments
 
-SONNET_MODEL = "claude-sonnet-4-6"
 log = structlog.get_logger(__name__)
 
 
@@ -139,51 +140,57 @@ with the optimized values. Do not call it more than once.
 # ---------------------------------------------------------------------------
 
 _TOOL_GENERATE_STRATEGY = {
-    "name": "generate_strategy",
-    "description": "Submit the optimized retrieval strategy parameters derived from corpus signals.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "vector_k": {
-                "type": "integer",
-                "description": "Number of candidates from HNSW vector search.",
+    "type": "function",
+    "function": {
+        "name": "generate_strategy",
+        "description": (
+            "Submit the optimized retrieval strategy parameters derived from corpus "
+            "signals."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "vector_k": {
+                    "type": "integer",
+                    "description": "Number of candidates from HNSW vector search.",
+                },
+                "bm25_k": {
+                    "type": "integer",
+                    "description": "Number of candidates from BM25 ts_rank_cd search.",
+                },
+                "final_k": {
+                    "type": "integer",
+                    "description": "Number of results after reranking (min(5, vector_k // 4)).",
+                },
+                "rerank_threshold": {
+                    "type": "number",
+                    "description": "Minimum rerank score to include a result (0.0 = include all).",
+                },
+                "query_expansion": {
+                    "type": "boolean",
+                    "description": "Whether to expand the query with alternative phrasings before retrieval.",
+                },
+                "metadata_filters": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Entity-based metadata filter hints (empty list when not applicable).",
+                },
             },
-            "bm25_k": {
-                "type": "integer",
-                "description": "Number of candidates from BM25 ts_rank_cd search.",
-            },
-            "final_k": {
-                "type": "integer",
-                "description": "Number of results after reranking (min(5, vector_k // 4)).",
-            },
-            "rerank_threshold": {
-                "type": "number",
-                "description": "Minimum rerank score to include a result (0.0 = include all).",
-            },
-            "query_expansion": {
-                "type": "boolean",
-                "description": "Whether to expand the query with alternative phrasings before retrieval.",
-            },
-            "metadata_filters": {
-                "type": "array",
-                "items": {"type": "object"},
-                "description": "Entity-based metadata filter hints (empty list when not applicable).",
-            },
+            "required": [
+                "vector_k",
+                "bm25_k",
+                "final_k",
+                "rerank_threshold",
+                "query_expansion",
+                "metadata_filters",
+            ],
         },
-        "required": [
-            "vector_k",
-            "bm25_k",
-            "final_k",
-            "rerank_threshold",
-            "query_expansion",
-            "metadata_filters",
-        ],
     },
 }
 
 
 # ---------------------------------------------------------------------------
-# Direct Anthropic API strategist (synchronous — safe in Celery pipeline tasks)
+# Direct-API strategist (synchronous — safe in Celery pipeline tasks)
 # ---------------------------------------------------------------------------
 
 
@@ -193,9 +200,9 @@ def run_strategist(
     job: IngestionJob,
     tenant_dsn: str,
 ) -> None:
-    """Call Claude directly via the Anthropic API to synthesize a retrieval strategy.
+    """Call the routed model directly to synthesize a retrieval strategy.
 
-    Uses tool_use to reliably extract structured parameters. Logs and swallows
+    Uses a tool call to reliably extract structured parameters. Logs and swallows
     exceptions so the Celery task falls back to RetrievalStrategy() defaults.
 
     Args:
@@ -208,14 +215,13 @@ def run_strategist(
         tenant_dsn:       the tenant database each ledger row is written to.
     """
     try:
-        client = make_client(
-            "retrieval_strategist",
+        ledger = LedgerContext(
             tenant_id=job.tenant_id,
             agent_id=job.agent_id,
             job_id=job.job_id,
             recorder=ledger_recorder(tenant_dsn),
         )
-        response = client.messages.create(
+        response = ledger.client("retrieval_strategist").chat.completions.create(  # type: ignore[call-overload]  # a dict tool schema, not the SDK's TypedDict
             # BACKLOG 8.2a. Judgement is the one task that wants no creativity, and
             # every judge in this system sampled at the provider default until now.
             # Some verdict variance survives temperature 0 anyway, from batching and
@@ -225,18 +231,20 @@ def run_strategist(
             # measured in this system, and CLAUDE.md's own rule is to test a
             # constraint rather than repeat it. BACKLOG 8.11 measures it.)
             temperature=0,
-            model=SONNET_MODEL,
-            max_tokens=500,
-            system=_STRATEGIST_SYSTEM_PROMPT,
-            tools=[_TOOL_GENERATE_STRATEGY],  # type: ignore[list-item]  # agent-sdk/anthropic stubs are narrower than the runtime contract
-            messages=[{
-                "role": "user",
-                "content": f"Corpus signals:\n\n{signals_json}\n\nCall generate_strategy.",
-            }],
+            model=route_for("retrieval_strategist").model,
+            max_completion_tokens=500,
+            tools=[_TOOL_GENERATE_STRATEGY],  # type: ignore[list-item]  # same dict schema
+            messages=[
+                {"role": "system", "content": _STRATEGIST_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"Corpus signals:\n\n{signals_json}\n\nCall generate_strategy.",
+                },
+            ],
         )
-        for block in response.content:
-            if block.type == "tool_use" and block.name == "generate_strategy":
-                result_container["strategy"] = block.input
-                return
+        arguments = forced_tool_arguments(response, "generate_strategy")
+        if arguments is not None:
+            result_container["strategy"] = arguments
+            return
     except Exception as exc:
         log.warning("run_strategist.failed", error=str(exc))

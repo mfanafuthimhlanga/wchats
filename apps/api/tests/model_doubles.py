@@ -20,6 +20,8 @@ nothing here.
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -53,3 +55,48 @@ def factory(client):
     A context manager and a decorator, the same as any `patch(...)`.
     """
     return patch("app.core.model_client.make_client", return_value=client)
+
+
+def openai_client(create=None, parse=None):
+    """The double the factory hands a site, shaped like `openai.OpenAI`.
+
+    Issue #76 moved the eleven direct-API sites off `messages.create` and
+    `messages.parse` onto `chat.completions.create` and `chat.completions.parse`,
+    so this is where a test reaches the method the site actually calls. A double
+    for one of the two leaves the other None, which raises rather than silently
+    passing if a site calls the wrong one.
+    """
+    completions = SimpleNamespace(create=create, parse=parse)
+    return SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+
+def tool_call(name: str, arguments: dict, call_id: str = "call_1"):
+    """One tool call, shaped the way the OpenAI SDK hands one back.
+
+    `arguments` is a JSON STRING on the wire and in the SDK object, which is why
+    `forced_tool_arguments` parses it. Passing a dict here and letting this
+    function serialise it keeps every test honest about that.
+    """
+    return SimpleNamespace(
+        id=call_id,
+        type="function",
+        function=SimpleNamespace(name=name, arguments=json.dumps(arguments)),
+    )
+
+
+def completion(*, content=None, tool_calls=None, finish_reason="stop", parsed=None):
+    """One chat completion, shaped the way the OpenAI SDK hands one back.
+
+    `parsed` is what `chat.completions.parse` fills in and `create` leaves at
+    None. `finish_reason` is `"length"` when the model hit the token ceiling,
+    which is the Auditor's truncation signal.
+    """
+    message = SimpleNamespace(
+        role="assistant",
+        content=content,
+        tool_calls=tool_calls,
+        parsed=parsed,
+        refusal=None,
+    )
+    choice = SimpleNamespace(index=0, message=message, finish_reason=finish_reason)
+    return SimpleNamespace(choices=[choice])

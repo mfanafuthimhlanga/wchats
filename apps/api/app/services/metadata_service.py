@@ -1,10 +1,10 @@
 """
-metadata_service — Claude Haiku structured-output metadata + entity extraction.
+metadata_service — structured-output metadata + entity extraction.
 
-Single Haiku call returning summary + keywords + questions + entities via
-client.messages.parse(output_format=ChunkMetadataAndEntities). Entity extraction
-runs in the same call as metadata enrichment — NOT a separate request (CONTEXT.md
-non-negotiable: same API call, single cost unit).
+One model call returning summary + keywords + questions + entities via
+client.chat.completions.parse(response_format=ChunkMetadataAndEntities). Entity
+extraction runs in the same call as metadata enrichment — NOT a separate request
+(CONTEXT.md non-negotiable: same API call, single cost unit).
 
 Tenacity retry contract:
     Retries ONLY on the provider's rate-limit and timeout errors, which
@@ -23,15 +23,16 @@ Client construction:
 Threat mitigations (T-02-04):
     T-02-04-01: The api key is never in task args. The factory resolves it
                 from Settings at construction.
-    T-02-04-02: client.messages.parse(output_format=...) enforces Pydantic schema
-                validation; malformed responses raise ValidationError.
+    T-02-04-02: client.chat.completions.parse(response_format=...) enforces Pydantic
+                schema validation; malformed responses raise ValidationError.
                 Literal["product","person","place","policy","process"] prevents
                 arbitrary entity type injection.
     T-02-04-04: retry_if_exception_type restricts retries to transient errors only;
                 wait_exponential(min=2, max=30) and stop_after_attempt(5) cap
                 total retries and backoff ceiling.
     T-02-04-05: The system prompt explicitly instructs "Return entities only when
-                explicit; do not invent" — guides Haiku against in-content injections.
+                explicit; do not invent" — guides the model against in-content
+                injections.
     T-02-04-06: log calls reference chunk_id and document_id ONLY — never content.
 """
 
@@ -41,15 +42,14 @@ import structlog
 from pydantic import BaseModel
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from app.core.model_client import TRANSIENT_ERRORS, LedgerContext
+from app.core.model_client import TRANSIENT_ERRORS, LedgerContext, route_for
+from app.services.tool_loop import first_choice
 
 log = structlog.get_logger(__name__)
 
-# Pinned model string. Verify it against the provider's model list before deploy
-# (RESEARCH.md Open Question 2). Do NOT use "claude-haiku-latest" — embedding drift risk.
-HAIKU_MODEL = "claude-haiku-4-5"
-
-#: The routing-table key both enrichment calls bill under.
+#: The routing-table key both enrichment calls bill under. `route_for(PURPOSE)`
+#: carries the model, so no alias is pinned here: a second literal is how an
+#: enrichment ends up billed under one model and served by another.
 PURPOSE = "metadata_enrichment"
 
 # System prompt for structured metadata + entity extraction
@@ -81,7 +81,7 @@ class EntityExtraction(BaseModel):
 
 
 class ChunkMetadataAndEntities(BaseModel):
-    """Structured output returned by a single Haiku enrichment call.
+    """Structured output returned by a single enrichment call.
 
     All four fields are returned in one API call — never split into separate requests
     (CONTEXT.md non-negotiable). entity extraction costs nothing extra because the
@@ -106,11 +106,12 @@ class ChunkMetadataAndEntities(BaseModel):
     retry=retry_if_exception_type(TRANSIENT_ERRORS),
 )
 def enrich_chunk(text: str, ledger: LedgerContext) -> ChunkMetadataAndEntities:
-    """Single Haiku call returning summary + keywords + questions + entities.
+    """One model call returning summary + keywords + questions + entities.
 
-    Uses client.messages.parse() with Pydantic output_format for validated structured
-    output. The Literal["product","person","place","policy","process"] type constraint
-    on EntityExtraction prevents arbitrary entity type injection (T-02-04-02).
+    Uses client.chat.completions.parse() with a Pydantic response_format for
+    validated structured output. The
+    Literal["product","person","place","policy","process"] type constraint on
+    EntityExtraction prevents arbitrary entity type injection (T-02-04-02).
 
     Tenacity retries ONLY on rate-limit/timeout. Authentication errors,
     validation errors, and content-policy errors are fatal — do not retry
@@ -128,38 +129,43 @@ def enrich_chunk(text: str, ledger: LedgerContext) -> ChunkMetadataAndEntities:
         RateLimitError: Re-raised after max retries exhausted.
         APITimeoutError: Re-raised after max retries exhausted.
         AuthenticationError: Fatal. Raised immediately, with no retry.
-        pydantic.ValidationError: Fatal — Haiku response does not match schema.
+        pydantic.ValidationError: Fatal — the response does not match the schema.
     """
-    result = ledger.client(PURPOSE).messages.parse(
-        model=HAIKU_MODEL,
-        system=METADATA_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": text}],
-        max_tokens=1024,  # 512 for summary/keywords/questions + room for entity list
-        output_format=ChunkMetadataAndEntities,
+    result = ledger.client(PURPOSE).chat.completions.parse(
+        model=route_for(PURPOSE).model,
+        messages=[
+            {"role": "system", "content": METADATA_SYSTEM_PROMPT},
+            {"role": "user", "content": text},
+        ],
+        # 512 for summary/keywords/questions + room for entity list
+        max_completion_tokens=1024,
+        response_format=ChunkMetadataAndEntities,
     )
-    parsed = result.parsed_output
+    choice = first_choice(result)
+    parsed = None if choice is None else choice.message.parsed
     if parsed is None:
         raise ValueError("Metadata extraction returned no parsed output")
     return parsed
 
 
 # ---------------------------------------------------------------------------
-# Batched extraction — multiple chunks per Haiku call (cost reduction).
+# Batched extraction — multiple chunks per model call (cost reduction).
 #
-# enrich_chunk() makes one Haiku call per chunk: 50 chunks = 50 calls (~$0.08/doc).
+# enrich_chunk() makes one model call per chunk: 50 chunks = 50 calls (~$0.08/doc).
 # enrich_chunks_batch() packs BATCH_SIZE chunks into a single call: 50 chunks =
 # 5 calls (~$0.008/doc), a ~10x cost reduction at the same per-chunk quality.
 #
 # Both coexist: enrich_chunk() remains the fallback and is exercised by tests.
 # ---------------------------------------------------------------------------
 
-# Chunks packed into one Haiku call. max_tokens budget scales with this value:
+# Chunks packed into one model call. The max_completion_tokens budget scales with
+# this value:
 # ~400 tokens output per chunk × 10 = ~4000, hence max_tokens=4096 below.
 BATCH_SIZE = 10
 
 
 class BatchResult(BaseModel):
-    """Structured output for a single batched Haiku call.
+    """Structured output for a single batched model call.
 
     Wraps a list of per-chunk results returned in the SAME order the chunks were
     submitted. The task zips results back to chunk_ids by position — never by ID,
@@ -195,7 +201,7 @@ BATCH_SYSTEM_PROMPT = (
 def enrich_chunks_batch(
     texts: list[str], ledger: LedgerContext
 ) -> list[ChunkMetadataAndEntities]:
-    """Single Haiku call extracting metadata for up to BATCH_SIZE chunks at once.
+    """One model call extracting metadata for up to BATCH_SIZE chunks at once.
 
     Chunks are numbered by position in the input list. Returns results in the
     same order — zip by index, not by ID.
@@ -215,7 +221,7 @@ def enrich_chunks_batch(
 
     Raises:
         ValueError: Batch size mismatch — model returned a different count than sent.
-        pydantic.ValidationError: Fatal — Haiku response doesn't match BatchResult schema.
+        pydantic.ValidationError: Fatal — the response doesn't match the BatchResult schema.
         AuthenticationError: Fatal. Raised immediately, with no retry.
         RateLimitError: Re-raised after max retries exhausted.
         APITimeoutError: Re-raised after max retries exhausted.
@@ -224,14 +230,18 @@ def enrich_chunks_batch(
         f'<chunk index="{i}">\n{text}\n</chunk>'
         for i, text in enumerate(texts)
     )
-    result = ledger.client(PURPOSE).messages.parse(
-        model=HAIKU_MODEL,
-        system=BATCH_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=4096,  # ~80-400 tokens output per chunk × 10 chunks + headroom
-        output_format=BatchResult,
+    result = ledger.client(PURPOSE).chat.completions.parse(
+        model=route_for(PURPOSE).model,
+        messages=[
+            {"role": "system", "content": BATCH_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        # ~80-400 tokens output per chunk × 10 chunks + headroom
+        max_completion_tokens=4096,
+        response_format=BatchResult,
     )
-    batch = result.parsed_output
+    choice = first_choice(result)
+    batch = None if choice is None else choice.message.parsed
     if batch is None:
         raise ValueError("Batch metadata extraction returned no parsed output")
     if len(batch.chunks) != len(texts):
