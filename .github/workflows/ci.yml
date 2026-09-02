@@ -41,9 +41,13 @@ jobs:
       - name: Install dependencies
         run: pip install -e "apps/api[dev]" mypy
 
+      # gates.py runs the same mypy invocation this step used to run bare, and holds
+      # the result against MYPY_BASELINE. Bare mypy is red on every commit until #92's
+      # 153 errors are gone, so this job gated nothing; the baseline makes it go red on
+      # the 154th and green on the 153.
       - name: Run mypy
         working-directory: apps/api
-        run: python -m mypy app/ --ignore-missing-imports --strict-optional
+        run: python scripts/gates.py mypy
 
   test-unit:
     name: Unit tests
