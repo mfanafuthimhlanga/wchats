@@ -28,16 +28,14 @@ WHERE A PURPOSE GOES
     #48, and the owned loop builds its client through this factory like every
     other purpose, so each loop iteration leaves a `model_calls` row.
 
-    A ROUTE IS NOT YET A REDIRECT FOR THE messages SITES. `make_instructor_client`
-    reads the table and builds on the provider it names. `make_client` does not:
-    it takes the provider as an argument and defaults to whatever the base url
-    says, which is the Anthropic-format endpoint. Nine call sites migrated in
-    #47 send `messages.create` and `messages.parse` bodies and read Anthropic
-    content blocks back, and `OpenAI` has no `.messages` at all (checked
-    against the installed openai 2.45.0). Naming their purpose is what makes each
-    one countable and separable today; moving them to the route's provider is a
-    rewrite of the request and the response at every one of them, and issue #76
-    carries that work rather than this construction change.
+    THE ROUTE DECIDES WHICH CLIENT GETS BUILT, on both seams. `make_client` used
+    to derive the provider from the credentials' base url, and an absent
+    `OPENAI_BASE_URL` derived `anthropic`, so the twelve purposes this table
+    routes to `openai / gpt-5.6-luna` built an `anthropic.Anthropic` (issue #88).
+    The provider now comes off the route, and the credentials are resolved for
+    that provider rather than before it is known. The `provider` argument
+    survives as the seam a test drives another provider through; nothing under
+    `app/` passes it.
 
     `make_instructor_client` applies the route's model and reasoning effort as
     instructor defaults, which a call site can still override per call. In the
@@ -111,7 +109,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Protocol
-from urllib.parse import urlparse
 
 import anthropic as _anthropic
 import httpx
@@ -447,25 +444,6 @@ def route_for(purpose: str, routes: Mapping[str, ModelRoute] = PURPOSE_ROUTES) -
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def provider_for_base_url(base_url: str | None) -> str:
-    """The price book's name for whoever serves this endpoint.
-
-    An unrecognised host is returned as itself rather than guessed at, so the
-    price book raises `UnknownPrice` on the read instead of pricing a call from
-    an assumption.
-    """
-    if not base_url:
-        return "anthropic"
-    host = urlparse(base_url).hostname or base_url
-    if "deepseek" in host:
-        return "deepseek"
-    if "openai" in host:
-        return OPENAI_PROVIDER
-    if "anthropic" in host:
-        return "anthropic"
-    return host
 
 
 def resolve_credentials(provider: str | None = None) -> Credentials:
@@ -831,8 +809,8 @@ def _hooked_sdk_client(
     here. The effort a raw client drops is exactly what that seam is about to
     install as an instructor default, so the refusal would be wrong there.
     """
+    provider = provider or route_for(purpose).provider
     credentials = credentials or resolve_credentials(provider)
-    provider = provider or provider_for_base_url(credentials.base_url)
     http_client = http_client or httpx.Client()
     attach_ledger_hook(
         http_client,
@@ -869,8 +847,9 @@ def make_client(
                      records nothing is the failure this ticket exists to end.
         agent_id:    UUID string of the agent, or None for a platform call.
         job_id:      UUID string of the job, or None.
-        provider:    the price book's name for who serves the calls. Derived from
-                     the base url when absent.
+        provider:    the price book's name for who serves the calls. Read off the
+                     purpose's route when absent, which is what every call site
+                     under `app/` does.
         credentials: api key and base url. Resolved from Settings when absent, for
                      the provider named above.
         http_client: an httpx client to hook instead of a fresh one.
