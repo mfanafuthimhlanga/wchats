@@ -39,7 +39,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -e "apps/api[dev]" mypy
+        run: pip install -e "apps/api[dev]"
 
       # gates.py runs the same mypy invocation this step used to run bare, and holds
       # the result against MYPY_BASELINE. Bare mypy is red on every commit until #92's
