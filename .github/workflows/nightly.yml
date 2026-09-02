@@ -38,12 +38,18 @@ jobs:
         ports:
           - 6379:6379
     env:
+      # Two secrets carry real spend: the Neon key provisions real projects and
+      # the Voyage key embeds. Everything else a fresh Postgres container needs
+      # is a per-run literal or a generated key, as in ci.yml, so a missing
+      # repository secret cannot take this job down (#147).
       NEON_API_KEY: ${{ secrets.NEON_API_KEY_TEST }}
-      NEON_ENCRYPTION_KEY: ${{ secrets.NEON_ENCRYPTION_KEY }}
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
       CONTROL_DB_URL: postgresql+asyncpg://wchats:wchats@localhost:5432/wchats_control
       CONTROL_DB_SYNC_URL: postgresql://wchats:wchats@localhost:5432/wchats_control
       REDIS_URL: redis://localhost:6379/0
-      ADMIN_KEY: ${{ secrets.ADMIN_KEY }}
+      ADMIN_KEY: vrd_admin_nightly
+      JWT_SECRET: nightly-jwt-secret-not-a-real-one
+      CLERK_WEBHOOK_SIGNING_SECRET: whsec_nightly_not_a_real_one
       NEON_REGION: aws-us-east-1
       # Run-scoped ledger of Neon project ids this job created. The E2E test
       # appends an id the moment the control DB records it and removes it again
@@ -61,6 +67,13 @@ jobs:
 
       - name: Install dependencies
         run: pip install -e "apps/api[dev]"
+
+      - name: Generate the per-run key material
+        # Two no-default settings that encrypt nothing this job keeps. A fresh
+        # value per run, the way ci.yml does it, instead of a repository secret.
+        run: |
+          echo "NEON_ENCRYPTION_KEY=$(python -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")" >> $GITHUB_ENV
+          echo "PLATFORM_CREDENTIAL_KEY=$(python -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")" >> $GITHUB_ENV
 
       - name: Run control DB migration
         working-directory: apps/api
@@ -122,11 +135,14 @@ jobs:
       CONTROL_DB_URL: postgresql+asyncpg://wchats:wchats@localhost:5432/wchats_control
       CONTROL_DB_SYNC_URL: postgresql://wchats:wchats@localhost:5432/wchats_control
       REDIS_URL: redis://localhost:6379/0
-      ADMIN_KEY: ${{ secrets.ADMIN_KEY }}
+      ADMIN_KEY: vrd_admin_nightly
+      JWT_SECRET: nightly-jwt-secret-not-a-real-one
+      CLERK_WEBHOOK_SIGNING_SECRET: whsec_nightly_not_a_real_one
       NEON_API_KEY: ${{ secrets.NEON_API_KEY_TEST }}
-      NEON_ENCRYPTION_KEY: ${{ secrets.NEON_ENCRYPTION_KEY }}
       NEON_REGION: aws-us-east-1
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      # The provider is OpenAI (ADR 0008). The Anthropic key this job read until
+      # 2026-09-02 was revoked on 2026-08-27 and never existed as a secret.
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
       AGENT_E2E_ENABLED: "1"
       AGENT_ID: ${{ secrets.EVAL_DEMO_AGENT_ID }}
@@ -160,6 +176,13 @@ jobs:
       - name: Install Python dependencies
         run: pip install -e "apps/api[dev]"
 
+      - name: Generate the per-run key material
+        # Two no-default settings that encrypt nothing this job keeps. A fresh
+        # value per run, the way ci.yml does it, instead of a repository secret.
+        run: |
+          echo "NEON_ENCRYPTION_KEY=$(python -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")" >> $GITHUB_ENV
+          echo "PLATFORM_CREDENTIAL_KEY=$(python -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")" >> $GITHUB_ENV
+
       - name: Install Chromium headless shell for the widget
         # The widget's postbuild runs scripts/check-rendered-notice.mjs, which
         # measures the disclosure notice in a real browser (#106). ubuntu-latest
@@ -187,15 +210,24 @@ jobs:
         run: celery -A app.worker.celery_app worker -Q pipeline,runtime --pool=solo --loglevel=warning &
 
       - name: Wait for API to be ready
+        # A loop that runs out and moves on lets the next step fail on a symptom
+        # ("Capture eval responses" against nothing) while the cause, the API
+        # never booting, scrolled past. The step that can name the cause fails.
         run: |
+          ready=0
           for i in $(seq 1 20); do
             if curl -sf http://localhost:8000/health; then
               echo "API ready after ${i} attempts"
+              ready=1
               break
             fi
             echo "Waiting for API... ($i/20)"
             sleep 3
           done
+          if [ "$ready" != "1" ]; then
+            echo "The API never answered /health in 60s. Read the 'Start API server' step's output for the boot error."
+            exit 1
+          fi
 
       - name: Capture eval responses
         working-directory: apps/api
