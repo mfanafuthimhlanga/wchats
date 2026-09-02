@@ -12,7 +12,8 @@ import pathlib
 
 import pytest
 
-GATES_PATH = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "gates.py"
+API_DIR = pathlib.Path(__file__).resolve().parents[2]
+GATES_PATH = API_DIR / "scripts" / "gates.py"
 
 
 def load_gates():
@@ -41,6 +42,22 @@ def test_lizard_flags_pin_the_standard():
 # happen without editing this file, which is the point.
 
 PINNED_RUFF = {}
+
+PINNED_MYPY = {
+    "app/core/model_client.py": 3,
+    "app/domain/ingestion_job.py": 2,
+    "app/services/actor_seam.py": 21,
+    "app/services/agent_tools.py": 5,
+    "app/services/deployment_service.py": 3,
+    "app/services/metadata_service.py": 2,
+    "app/services/red_team_service.py": 28,
+    "app/services/retrieval_service.py": 1,
+    "app/services/scenario_service.py": 1,
+    "app/services/strategy_service.py": 21,
+    "app/services/validation_service.py": 63,
+    "app/worker/tasks/runtime/agent.py": 2,
+    "app/worker/tasks/runtime/red_team.py": 1,
+}
 
 PINNED_LIZARD = {
     ("app/api/deps.py", "get_current_tenant"): (19, 120),
@@ -217,6 +234,20 @@ def test_ruff_baseline_only_shrinks():
         assert count <= PINNED_RUFF[key], "%s was raised to %d" % (key, count)
 
 
+def test_mypy_baseline_only_shrinks():
+    """Every pinned file is in the snapshot, at or below its count, and still exists.
+
+    A pin at zero errors, or a pin on a path that has left the tree, is a line the gate
+    can never satisfy: run_mypy reads both as stale and stays red until someone deletes
+    the line. The last two assertions catch that here rather than after a 44s mypy run.
+    """
+    for path, count in gates.MYPY_BASELINE.items():
+        assert path in PINNED_MYPY, "%s was added to MYPY_BASELINE" % path
+        assert count <= PINNED_MYPY[path], "%s was raised to %d" % (path, count)
+        assert count > 0, "%s is pinned at 0 errors. Delete the line" % path
+        assert (API_DIR / path).exists(), "%s is pinned and is not in the tree" % path
+
+
 def test_lizard_baseline_only_shrinks():
     """Every pinned function is in the snapshot, at or below its snapshot numbers."""
     for key, (ccn, length) in gates.LIZARD_BASELINE.items():
@@ -286,6 +317,52 @@ SOURCE_CASES = [
 def test_source_assertion_failures(label, found, expect_failure):
     """Unpinned, grown and stale each fail. An exact match passes."""
     assert bool(gates.source_assertion_failures(found, SOURCE_PIN)) is expect_failure
+
+
+MYPY_PIN = {"app/one.py": 3, "app/two.py": 2}
+
+# Every case carries app/two.py, so no case passes by an empty reading, and the unpinned
+# case carries both pinned files EXACTLY at their counts, so it cannot pass with the
+# unpinned branch deleted.
+MYPY_CASES = [
+    (
+        "a file with type errors that nothing pins",
+        {"app/one.py": 3, "app/two.py": 2, "app/three.py": 1},
+        True,
+    ),
+    ("a pinned file whose count grew", {"app/one.py": 4, "app/two.py": 2}, True),
+    ("a pinned file whose count shrank", {"app/one.py": 2, "app/two.py": 2}, True),
+    ("a pinned file mypy no longer errors in", {"app/two.py": 2}, True),
+    ("one pinned file up and another down", {"app/one.py": 4, "app/two.py": 1}, True),
+    ("the tree exactly as pinned", {"app/one.py": 3, "app/two.py": 2}, False),
+]
+
+
+@pytest.mark.parametrize("label, found, expect_failure", MYPY_CASES)
+def test_mypy_failures(label, found, expect_failure):
+    """Unpinned, grown and stale each fail. An exact match passes."""
+    assert bool(gates.mypy_failures(found, MYPY_PIN)) is expect_failure
+
+
+def test_a_mixed_mypy_reading_reports_the_growth_alone():
+    """One file up and another down reports growth only, so one remedy reaches the reader."""
+    failures = gates.mypy_failures({"app/one.py": 4, "app/two.py": 1}, MYPY_PIN)
+    report = "\n".join(failures)
+    assert "gained type errors" in report
+    assert "stale" not in report
+
+
+def test_a_broken_mypy_parse_is_not_a_pass():
+    """mypy exiting nonzero with nothing this parser could read has to fail the gate.
+
+    Exit 2 is the #92 shape: mypy gave up at the first file and printed one error for a
+    tree of 159. Exit 1 with nothing parsed is the same reading through a changed line
+    format. Neither may reach mypy_failures, which would call an empty result clean.
+    """
+    assert gates.mypy_did_not_run(2, {}) is True
+    assert gates.mypy_did_not_run(1, {}) is True
+    assert gates.mypy_did_not_run(1, {"app/one.py": 3}) is False
+    assert gates.mypy_did_not_run(0, {}) is False
 
 
 # One warning line as lizard printed it on 2026-08-24, backslashes and all.
