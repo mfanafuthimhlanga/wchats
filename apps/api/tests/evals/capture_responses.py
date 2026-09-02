@@ -501,7 +501,7 @@ def parse_runs(argv: list[str]) -> int:
 def main() -> None:
     """CLI entry point."""
     if not os.getenv("AGENT_E2E_ENABLED"):
-        print("ERROR: Set AGENT_E2E_ENABLED=1 to run response capture (requires live services + ANTHROPIC_API_KEY).")
+        print("ERROR: Set AGENT_E2E_ENABLED=1 to run response capture (requires live services + OPENAI_API_KEY).")
         sys.exit(1)
 
     overwrite = "--overwrite" in sys.argv
