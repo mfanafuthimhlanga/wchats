@@ -74,6 +74,10 @@ dev = [
     "ruff==0.16.3",
     "lizard>=1.23.0",
     "import-linter>=2.13",
+    # scripts/gates.py runs mypy against MYPY_BASELINE, so the gate needs it locally
+    # and not only in CI. Pinned because the baseline is a count and a version bump
+    # moves counts.
+    "mypy==2.3.1",
     "mutmut>=3.7.0",
 ]
 
