@@ -11,8 +11,8 @@ Listed by name on 2026-09-02 from Railway, GitHub Actions and the code.
 Railway staging keeps variables in two tiers, and the column below names both. The
 environment holds a shared set of 21 names. `api-service` reads 16 of them by reference
 and holds 5 as its own literals. `worker-runtime` and `beat` reference nothing and hold 17
-literals each (#55: the previous session copied them from `api-service` through
-`serviceInstanceUpdate` on 2026-09-01). So a name sits in one of three shapes:
+literals each (#55 copied them from `api-service` through `serviceInstanceUpdate` on
+2026-09-01). So a name sits in one of three shapes:
 
 - **shared+2**: the shared value, which `api-service` reads, plus a literal each on
   `worker-runtime` and `beat`. Three copies.
@@ -21,8 +21,7 @@ literals each (#55: the previous session copied them from `api-service` through
   reads. Four copies, one dead. Editing the shared one changes nothing.
 
 The GitHub Actions column names three kinds of source. `ci.yml` runs pytest in three jobs.
-The unit and integration jobs set the required names in the workflow; the eval job sets
-nothing. `tests/conftest.py` fills every name a job leaves unset, with placeholders whose
+The unit and integration jobs set six names in the workflow; the eval job sets nothing. `tests/conftest.py` fills every name a job leaves unset, with placeholders whose
 database and Redis URLs point at nothing. `nightly.yml` reads repository secrets, and the
 repository holds none.
 
@@ -128,7 +127,7 @@ present in the UI while being absent from the container. Before trusting a varia
 query($e: String!) { environmentStagedChanges(environmentId: $e) { status appliedAt patch } }
 ```
 
-Read the `patch`. Names inside it with `appliedAt: null` are not live. An empty patch with
+Read the `patch`. While `appliedAt` is null, every name in `patch` is not live. An empty patch with
 `status: STAGED` is nothing pending, which is what both environments show today. Snapshot
 the live values before committing a staged patch, because the patch carries every value the
 editor held when it opened and overwrites anything changed since.
