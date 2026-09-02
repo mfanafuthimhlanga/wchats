@@ -12,7 +12,7 @@ neon_direct_connection_string — BYTEA: Fernet-encrypted direct (non-pooled) UR
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import DateTime, Index, LargeBinary, Text, text
+from sqlalchemy import DateTime, Index, LargeBinary, Select, Text, select, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -75,4 +75,29 @@ class Agent(Base):
 
     __table_args__ = (
         Index("agents_tenant_id_idx", "tenant_id"),
+    )
+
+
+def select_beat_fanout_agents() -> Select:
+    """The agents a scheduled beat may spend money on: deployed AND ready (#134).
+
+    The five beat fan-outs (nightly eval, weekly red team, weekly digest, daily
+    alert check, index staleness) all call this so one edit moves all five.
+
+    Both filters are load-bearing and neither alone is enough:
+
+    - `is_deployed` says the owner approved this agent and armed its schedules. It
+      has one writer, POST /approve-deployment. Selecting on `status` alone put the
+      nightly eval on every ready agent no customer could reach (#32).
+    - `status == 'ready'` is what the request routes check before they serve anyone
+      (agent_chat.py, query.py, widget.py, documents.py). Nothing clears
+      `is_deployed` when status later leaves 'ready', so selecting on it alone kept
+      buying eval and red-team runs for an agent whose own chat route answers 409.
+
+    Returns:
+        A SELECT over Agent that the caller executes against the control DB.
+    """
+    return select(Agent).where(
+        Agent.is_deployed == True,  # noqa: E712
+        Agent.status == "ready",
     )

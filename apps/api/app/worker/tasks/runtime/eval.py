@@ -109,12 +109,11 @@ import uuid
 
 import psycopg2
 import structlog
-from sqlalchemy import select
 
 from app.core.database import get_sync_db
 from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.security import fernet_decrypt
-from app.models.agent import Agent
+from app.models.agent import Agent, select_beat_fanout_agents
 from app.services.eval_service import (
     AGENT_INVOCATION_CONCURRENCY,
     AGENT_INVOCATION_MAX_CALLS_PER_RUN,
@@ -685,14 +684,12 @@ def _invoke_agent_for_scenarios(
     name="app.worker.tasks.runtime.eval.run_eval_suite_beat",
 )
 def run_eval_suite_beat(self) -> dict:
-    """Beat-triggered dispatcher: one run_eval_suite per DEPLOYED agent.
+    """Beat-triggered dispatcher: one run_eval_suite per deployed, ready agent.
 
-    Queries the control DB for agents with is_deployed=True and fans out one
-    run_eval_suite task per agent, the same selection every other per-agent
-    fan-out makes (red team, digest, alerts, index staleness). It selected status='ready' until #32: a ready
-    agent nobody has deployed was evaluated nightly, spending eval-run money on
-    agents no customer can reach. Schedules arm per agent AT DEPLOY (decision
-    #6): is_deployed has exactly one writer, POST /approve-deployment.
+    select_beat_fanout_agents() carries the selection and why each half of it is
+    there; every other per-agent fan-out calls the same helper (red team, digest,
+    alerts, index staleness). Schedules arm per agent AT DEPLOY (decision #6):
+    is_deployed has exactly one writer, POST /approve-deployment.
     No conn_str is passed — the per-agent task fetches and decrypts at runtime
     (CTL-08).
 
@@ -704,7 +701,7 @@ def run_eval_suite_beat(self) -> dict:
     """
     with get_sync_db() as db:
         agents = db.execute(
-            select(Agent).where(Agent.is_deployed == True)  # noqa: E712
+            select_beat_fanout_agents()
         ).scalars().all()
 
     dispatched = 0

@@ -1356,12 +1356,13 @@ class TestATimeoutReachesTheRecordWithItsMessage:
 
 
 class TestRunEvalSuiteBeat:
-    """The nightly fan-out selects DEPLOYED agents only (#32, decision #6.5).
+    """The nightly fan-out selects agents that are deployed AND ready (#134).
 
-    Schedules arm per agent at deploy: is_deployed has one writer,
-    POST /approve-deployment. The beat selected status='ready' until #32, so
-    the first beat worker would have evaluated every ready agent nightly,
-    deployed or not, spending eval money on agents no customer can reach.
+    Both halves cost money when they are missing. Dropping `is_deployed` fans the
+    nightly eval out to every ready agent no customer can reach (#32). Dropping
+    `status == 'ready'` keeps spending on an agent whose own chat route now answers
+    409, because `is_deployed` has one writer, POST /approve-deployment, and nothing
+    clears it when status moves off 'ready' afterwards.
     """
 
     def _fan_out(self):
@@ -1394,22 +1395,27 @@ class TestRunEvalSuiteBeat:
             "agent_id": "11111111-1111-1111-1111-111111111111"
         }, "agent_id only crosses the task boundary (CTL-08)"
 
-    def test_the_selection_is_deployed_only_never_ready(self):
-        """The WHERE clause is the behaviour here, so the compiled SQL is the
-        pin. Control: remove the filter and 'is_deployed' leaves the SQL."""
+    def test_the_selection_is_deployed_and_ready(self):
+        """The WHERE clause is the behaviour here, so the compiled SQL is the pin.
+
+        The column list names every Agent column, `status` included, so the full
+        statement cannot tell these selections apart. Only the predicate can. It is
+        rendered with literal binds because `status` alone would also pass for
+        `status = 'pending'`, and a bare `is_deployed` would pass for `= false`.
+        """
         _, mock_db, _ = self._fan_out()
 
         stmt = mock_db.execute.call_args.args[0]
-        # The WHERE clause alone: the column list names every Agent column,
-        # `status` included, so the full statement cannot distinguish the
-        # selections this test exists to tell apart. The PREDICATE is the
-        # behaviour: `is_deployed` merely appearing would also pass for
-        # == False or IS NULL, so the rendered comparison is what is pinned.
-        where = str(stmt.whereclause).lower()
+        where = str(
+            stmt.whereclause.compile(compile_kwargs={"literal_binds": True})
+        ).lower()
         assert "is_deployed = true" in where, (
             f"the beat must select DEPLOYED agents, positively (#32): {where}"
         )
-        assert "status" not in where, (
-            "the pre-#32 selection (status='ready') is back, which fans the "
-            f"nightly eval out to undeployed agents: {where}"
+        assert "status = 'ready'" in where, (
+            "a deployed agent whose status left 'ready' refuses its own customers "
+            f"while the nightly eval keeps spending on it (#134): {where}"
+        )
+        assert " and " in where, (
+            f"the two filters must both hold, not either one (#134): {where}"
         )

@@ -4,7 +4,7 @@ Tests:
     test_run_red_team_idempotent_skip
         — run_red_team returns {"status": "already_running"} when idempotency guard fires
     test_run_red_team_beat_dispatches
-        — run_red_team_beat dispatches one task per ready agent (2 agents → 2 dispatches)
+        — run_red_team_beat dispatches one task per selected agent (2 agents → 2 dispatches)
     test_run_red_team_complete
         — happy path: returns run_id, blocked=False, max_severity="high" for one high finding
 
@@ -119,10 +119,14 @@ class TestRunRedTeamIdempotentSkip:
 
 
 class TestRunRedTeamBeatDispatches:
-    """Verify the beat dispatcher fans out one task per ready agent."""
+    """The beat dispatcher fans out one task per selected agent.
+
+    tests/unit/test_beat_fanout_selection.py owns which agents the beat selects
+    (deployed AND ready, #134). This test owns the dispatch shape.
+    """
 
     def test_run_red_team_beat_dispatches(self):
-        """run_red_team_beat dispatches 2 apply_async calls for 2 ready agents."""
+        """run_red_team_beat dispatches 2 apply_async calls for 2 selected agents."""
         from app.worker.tasks.runtime.red_team import run_red_team_beat
 
         agent_id_1 = str(uuid.uuid4())
