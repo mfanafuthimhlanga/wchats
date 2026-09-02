@@ -13,10 +13,10 @@ the same SQL, to the same table names, and both "succeed". A test that mocked
 eval_service wholesale and asserted "write_eval_results was called" would have
 passed against the defect.
 
-No live PostgreSQL exists on this machine, so every DB boundary is a double:
-psycopg2.connect, the control-DB session and eval_service's writers. Nothing
-here proves a live database accepts the SQL. That is integration territory, and
-it SKIPS, which is unobserved, never a pass.
+Every DB boundary here is a double: psycopg2.connect, the control-DB session and
+eval_service's writers. So these tests prove which DSN each write opens and what
+SQL it carries, and they prove nothing about a live database accepting that SQL.
+That is integration territory, and it SKIPS, which is unobserved, never a pass.
 """
 
 from __future__ import annotations
