@@ -7,7 +7,7 @@ and documents.py all refuse a request unless `status == 'ready'`. Nothing clears
 `is_deployed` when status leaves 'ready', so a deployed agent that stopped being
 ready kept buying runs while answering its own customers with 409.
 
-`Agent.select_beat_fanout_agents()` is the one selection now. These tests drive each
+`select_beat_fanout_agents()` in app.models.agent is the one selection now. These tests drive each
 beat against a mock session and read the predicate it actually executed, so they
 fail for a site that stops calling the helper as well as for a helper that changes
 shape. `tests/unit/test_eval_task.py::TestRunEvalSuiteBeat` pins the fifth beat, the

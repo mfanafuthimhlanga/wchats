@@ -90,7 +90,8 @@ def select_beat_fanout_agents() -> Select:
       has one writer, POST /approve-deployment. Selecting on `status` alone put the
       nightly eval on every ready agent no customer could reach (#32).
     - `status == 'ready'` is what the request routes check before they serve anyone
-      (agent_chat.py, query.py, widget.py, documents.py). Nothing clears
+      (eight sites: agent_chat.py, deployment.py, documents.py, evals.py, query.py,
+      red_team.py, and two in widget.py). Nothing clears
       `is_deployed` when status later leaves 'ready', so selecting on it alone kept
       buying eval and red-team runs for an agent whose own chat route answers 409.
 
