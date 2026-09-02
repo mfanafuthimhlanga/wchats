@@ -214,16 +214,16 @@ def upload_key(agent_id: str, doc_id: str, ext: str) -> str:
     collide with another tenant's key without also knowing the agent UUID
     (~122-bit entropy — T-13-06-01).
 
-    Args:
-        agent_id: UUID string of the agent (tenant-scoping prefix).
-        doc_id:   UUID string of the document.
-        ext:      File extension including the leading dot (e.g., ".pdf", ".png").
-
     An S3_ENDPOINT_URL that carries a path (R2's per-bucket URL ends in the
     bucket name) makes boto3 prefix every key with that path segment, so the
     object sits at "<path>/{agent_id}/{doc_id}{ext}" in that environment and
     at the bare key where the endpoint has no path (local MinIO). Reads and
     writes share one client, so each environment agrees with itself.
+
+    Args:
+        agent_id: UUID string of the agent (tenant-scoping prefix).
+        doc_id:   UUID string of the document.
+        ext:      File extension including the leading dot (e.g., ".pdf", ".png").
 
     Returns:
         Tenant-scoped S3 key string.
