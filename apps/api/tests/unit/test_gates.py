@@ -333,7 +333,11 @@ MYPY_CASES = [
     ("a pinned file whose count grew", {"app/one.py": 4, "app/two.py": 2}, True),
     ("a pinned file whose count shrank", {"app/one.py": 2, "app/two.py": 2}, True),
     ("a pinned file mypy no longer errors in", {"app/two.py": 2}, True),
-    ("one pinned file up and another down", {"app/one.py": 4, "app/two.py": 1}, True),
+    (
+        "an unpinned file beside a pinned file that grew",
+        {"app/one.py": 4, "app/two.py": 2, "app/three.py": 1},
+        True,
+    ),
     ("the tree exactly as pinned", {"app/one.py": 3, "app/two.py": 2}, False),
 ]
 
@@ -352,12 +356,56 @@ def test_a_mixed_mypy_reading_reports_the_growth_alone():
     assert "stale" not in report
 
 
+def test_an_unpinned_file_is_still_reported_beside_growth():
+    """Growth suppresses the stale lines, never the unpinned ones."""
+    failures = gates.mypy_failures({"app/one.py": 4, "app/two.py": 2, "app/three.py": 1}, MYPY_PIN)
+    report = "\n".join(failures)
+    assert "gained type errors" in report
+    assert "nothing pins them" in report
+    assert "app/three.py" in report
+
+
+# The two lines CI printed for seventeen days (#92): one error, then a summary with no
+# denominator. mypy had opened 1 of 150 files.
+NINETY_TWO = (
+    "app/services/red_team_probe.py:434: error: Expected an indented block after "
+    "'if' statement on line 428  [syntax]\n"
+    "Found 1 error in 1 file (errors prevented further checking)\n"
+)
+
+
+def test_the_92_shape_parses_one_line_and_no_summary():
+    """The aborted run reads as one error and reported=None, so run_mypy fails it."""
+    found, parsed, reported = gates.parse_mypy_output(NINETY_TWO)
+    assert found == {"app/services/red_team_probe.py": 1}
+    assert parsed == 1
+    assert reported is None
+    assert gates.mypy_did_not_run(2, found) is False
+
+
+def test_parse_mypy_output_reads_backslashes_and_columns():
+    output = (
+        "app\\services\\x.py:12: error: boom  [arg-type]\n"
+        "app/services/y.py:3:5: error: boom  [arg-type]\n"
+        "Found 2 errors in 2 files (checked 159 source files)\n"
+    )
+    found, parsed, reported = gates.parse_mypy_output(output)
+    assert found == {"app/services/x.py": 1, "app/services/y.py": 1}
+    assert parsed == 2
+    assert reported == 2
+
+
+def test_a_clean_tree_reads_as_zero_reported():
+    found, parsed, reported = gates.parse_mypy_output("Success: no issues found in 159 source files\n")
+    assert (found, parsed, reported) == ({}, 0, 0)
+
+
 def test_a_broken_mypy_parse_is_not_a_pass():
     """mypy exiting nonzero with nothing this parser could read has to fail the gate.
 
-    Exit 2 is the #92 shape: mypy gave up at the first file and printed one error for a
-    tree of 159. Exit 1 with nothing parsed is the same reading through a changed line
-    format. Neither may reach mypy_failures, which would call an empty result clean.
+    A crash before the first error line, or a changed line format, both read as exit
+    nonzero with nothing parsed. Neither may reach mypy_failures, which would call an
+    empty result clean. The #92 shape is the summary check's; see NINETY_TWO above.
     """
     assert gates.mypy_did_not_run(2, {}) is True
     assert gates.mypy_did_not_run(1, {}) is True

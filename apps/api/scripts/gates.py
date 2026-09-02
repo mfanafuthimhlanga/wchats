@@ -21,11 +21,10 @@ gate was killed mid-run. `static` runs the four steps that never import app code
 
 That is the hook's gate now. mypy, collection and the suite belong to `fast` and
 `full`, which are run deliberately and detached, not at the end of every session.
-mypy builds a type graph over the whole tree, so it costs what an import costs:
-44.3s through this gate on 2026-09-02, against 11.3s for `static` on the same box
-the same day, both on a warm cache. A run with no .mypy_cache went past ten minutes
-and was killed at the tool limit before it finished, so CI pays far more than 44.3s.
-`mypy` is its own mode so CI's Type-check job runs that one step and nothing else.
+mypy builds a type graph over the whole tree, so it costs what an import costs.
+Warm runs on this box on 2026-09-02 took between 26s and 80s, against 11s to 16s for
+`static`, and a run with no .mypy_cache did not finish inside ten minutes. `mypy` is
+its own mode so CI's Type-check job runs that one step and nothing else.
 
 Four of the steps are baselines rather than ceilings. RUFF_BASELINE, MYPY_BASELINE,
 LIZARD_BASELINE and SOURCE_ASSERTION_BASELINE each hold what the tree contains
@@ -93,10 +92,9 @@ RUFF_BASELINE = {}
 
 # CI has run this exact line since the workflow was written, and nothing local ran it,
 # so the Type-check job was its only reader. That job went red on 2026-08-11 and stayed
-# red (#92), and a job that is red on the trunk stops being read as a signal: PR #116
-# added one error and PR #118 added ten, and both showed the same red main showed, so
-# both reviews recorded "red as on main" (FM-017). The count was the only thing that
-# moved, and nothing compared counts.
+# red (#92), and a job that is red on the trunk stops being read as a signal. Branches
+# added errors under that red and every review recorded "red as on main" (FM-017). The
+# count was the only thing that moved, and nothing compared counts.
 #
 # This gate makes the count the check, and it runs CI's invocation rather than one of
 # its own, so green here and a green Type-check job are the same claim.
@@ -108,8 +106,10 @@ MYPY_COMMAND = [PYTHON, "-m", "mypy", "app/", "--ignore-missing-imports", "--str
 #   app\services\deployment_service.py:419: error: Argument 3 to "tool" has incompatible
 #   type "Collection[str]"; expected "dict[str, Any]"  [arg-type]
 #
-# run_mypy normalises to forward slashes before counting, so one pin reads both.
-MYPY_ERROR = re.compile(r"^(?P<file>.+?):\d+: error:")
+# parse_mypy_output normalises to forward slashes before counting, so one pin reads
+# both. The optional second number is the column `--show-column-numbers` would add;
+# without it a lazy match would swallow the line number into the path.
+MYPY_ERROR = re.compile(r"^(?P<file>.+?\.py):\d+(?::\d+)?: error:")
 
 # The summary line, verbatim, 2026-09-02:
 #
@@ -465,13 +465,41 @@ def run_ruff():
 def mypy_did_not_run(returncode, found):
     """True when mypy exited nonzero and this parser read no error line out of it.
 
-    mypy exits 1 when it reports errors and 0 when it reports none. It exits 2 when it
-    gives up, and #92 is seventeen days of that exit printing `Found 1 error in 1 file
-    (errors prevented further checking)` while 149 files went unopened. A nonzero exit
-    with nothing parsed is the gate not running, and the gate not running is never a
-    pass (FM-013).
+    mypy exits 1 when it reports errors and 0 when it reports none. A nonzero exit with
+    nothing parsed means mypy crashed before its first error line, or the line format
+    changed under MYPY_ERROR. Either way the gate did not run, and a gate that did not
+    run is never a pass (FM-013). The #92 shape, one error line and then `Found 1 error
+    in 1 file (errors prevented further checking)`, parses one line and is caught by the
+    summary check in run_mypy instead, because that line carries no denominator.
     """
     return returncode != 0 and not found
+
+
+def parse_mypy_output(output):
+    """One mypy run read as (found, parsed, reported).
+
+    found maps each file with errors to its count, paths with forward slashes on every
+    platform. parsed is the number of error lines read. reported is the count mypy's own
+    summary line names, 0 for `Success: no issues found`, and None when mypy printed no
+    summary at all, which is what an aborted run looks like and what #92 spent seventeen
+    days calling "one error".
+    """
+    found = {}
+    parsed = 0
+    reported = None
+    for line in output.splitlines():
+        match = MYPY_ERROR.match(line)
+        if match:
+            path = match.group("file").replace("\\", "/")
+            found[path] = found.get(path, 0) + 1
+            parsed += 1
+            continue
+        match = MYPY_SUMMARY.match(line)
+        if match:
+            reported = int(match.group("errors"))
+        elif MYPY_CLEAN.match(line):
+            reported = 0
+    return found, parsed, reported
 
 
 def mypy_unpinned_lines(unpinned, found):
@@ -538,15 +566,7 @@ def run_mypy():
     output = result.stdout + result.stderr
     print(output, end="", flush=True)
 
-    found = {}
-    parsed = 0
-    for line in output.splitlines():
-        match = MYPY_ERROR.match(line)
-        if not match:
-            continue
-        path = match.group("file").replace("\\", "/")
-        found[path] = found.get(path, 0) + 1
-        parsed += 1
+    found, parsed, reported = parse_mypy_output(output)
 
     if mypy_did_not_run(result.returncode, found):
         print("\nmypy: exited %d and this parser read 0 error line(s)." % result.returncode)
@@ -558,14 +578,6 @@ def run_mypy():
     # The summary carries the denominator. Its absence means mypy stopped before it
     # reached the end, which is exactly the reading #92 spent seventeen days calling
     # "one error".
-    reported = None
-    for line in output.splitlines():
-        match = MYPY_SUMMARY.match(line)
-        if match:
-            reported = int(match.group("errors"))
-        elif MYPY_CLEAN.match(line):
-            reported = 0
-
     if reported is None:
         print("\nmypy: no summary line, so nothing says how many files it opened.")
         print("A run that never finished cannot be read as a count. Find out why mypy")
@@ -951,10 +963,10 @@ def steps(mode):
     ]
     if mode == "static":
         return static
-    # mypy stays out of `static`. It builds a type graph over the whole tree: 44.3s
-    # through this gate on 2026-09-02, against 11.3s for the four static steps together
-    # on the same box the same day. `static` is what the Stop hook runs, and mypy would
-    # be four times that budget. CI's Type-check job runs this mode on its own.
+    # mypy stays out of `static`. It builds a type graph over the whole tree, and warm
+    # runs here took 26s to 80s on 2026-09-02 against 11s to 16s for the four static
+    # steps together. `static` is what the Stop hook runs. CI's Type-check job runs this
+    # mode on its own.
     if mode == "mypy":
         return [("mypy", run_mypy)]
     fast = static + [
