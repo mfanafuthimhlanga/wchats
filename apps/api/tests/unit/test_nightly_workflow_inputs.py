@@ -1,29 +1,17 @@
 """Every nightly job supplies every setting that has no default (#147).
 
-On 2026-09-02 the nightly workflow had failed on every scheduled run since at
-least 2026-08-29, for two reasons that nothing in the repo could catch. The
-E2E job read seven repository secrets the repository did not hold, so
-`NEON_API_KEY` reached the job empty and Neon answered `not authenticated`.
-The eval job never set `PLATFORM_CREDENTIAL_KEY`, `JWT_SECRET` or
-`CLERK_WEBHOOK_SIGNING_SECRET` at all, and because it starts uvicorn outside
-pytest nothing filled them, so `Settings` raised at import, the readiness loop
-ran out without failing its step, and "Capture eval responses" failed against
-a server that never started.
+The nightly's eval job starts uvicorn outside pytest, so nothing fills a setting the
+workflow leaves unset, and `Settings` raises at import. The E2E job reads repository
+secrets, and a secret the repository does not hold arrives as an empty string. This
+file pins what the workflow asks for. Whether the repository holds a secret is not a
+fact of the file; `.dev/reference/260902-credential-locations.md` records that.
 
-Why the required set is derived, never listed
----------------------------------------------
-The same reason `test_env_example_covers_required_settings.py` gives: a hand
-list drifts the first time somebody adds a no-default field. The set comes
-from `Settings.model_fields[...].is_required()` at test time.
+The required set is derived from `Settings.model_fields[...].is_required()` at test
+time, for the reason `test_env_example_covers_required_settings.py` gives. A hand list
+drifts the first time somebody adds a field.
 
-What counts as supplied
------------------------
-A key in the job's `env:` block, or a name a step writes to `$GITHUB_ENV` with
-`echo "NAME=..."`. A secret reference counts as supplied here, because whether
-the repository holds the secret is not a fact of the file; the reader of the
-credential-locations note (`.dev/reference/260902-credential-locations.md`)
-checks that. What this test pins is that the workflow asks for everything the
-process needs, and only reaches for a secret where real spend is involved.
+A name counts as supplied when it is a key in the job's `env:` block or a step writes
+it to `$GITHUB_ENV` with `echo "NAME=..."`.
 """
 
 from __future__ import annotations
@@ -77,20 +65,27 @@ def test_the_revoked_anthropic_key_is_not_read() -> None:
     )
 
 
-def test_only_spend_bearing_names_come_from_secrets() -> None:
-    """Every secret the workflow reads is one an owner must set for a reason."""
+SPEND_BEARING = {
+    "NEON_API_KEY_TEST",  # provisions real Neon projects
+    "VOYAGE_API_KEY",  # real embeddings
+    "OPENAI_API_KEY",  # the Judges and the Agent turn
+}
+
+#: Read by the eval job for capture_responses.py. Neither carries spend, and neither
+#: can name an agent in the job's own fresh database, which #147 records as the eval
+#: job's open design gap. Named here so the test states them rather than blessing them.
+EVAL_DEMO = {"EVAL_DEMO_AGENT_ID", "EVAL_DEMO_API_KEY"}
+
+
+def test_secrets_are_read_for_spend_and_nothing_else() -> None:
     text = NIGHTLY.read_text(encoding="utf-8")
     read = set(re.findall(r"secrets\.([A-Z][A-Z0-9_]*)", text))
-    allowed = {
-        "NEON_API_KEY_TEST",  # provisions real Neon projects
-        "VOYAGE_API_KEY",  # real embeddings
-        "OPENAI_API_KEY",  # the Judges and the Agent turn
-        "EVAL_DEMO_AGENT_ID",  # the agent the capture script drives
-        "EVAL_DEMO_API_KEY",  # its tenant key
-    }
-    assert read <= allowed, (
+    assert SPEND_BEARING <= read, (
+        f"nightly.yml stopped reading a spend-bearing secret: {sorted(SPEND_BEARING - read)}"
+    )
+    assert read <= SPEND_BEARING | EVAL_DEMO, (
         f"nightly.yml reads secrets that a fresh job could generate or literal "
-        f"instead: {sorted(read - allowed)}"
+        f"instead: {sorted(read - SPEND_BEARING - EVAL_DEMO)}"
     )
 
 

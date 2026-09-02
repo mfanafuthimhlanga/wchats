@@ -38,10 +38,10 @@ jobs:
         ports:
           - 6379:6379
     env:
-      # Two secrets carry real spend: the Neon key provisions real projects and
-      # the Voyage key embeds. Everything else a fresh Postgres container needs
-      # is a per-run literal or a generated key, as in ci.yml, so a missing
-      # repository secret cannot take this job down (#147).
+      # Two secrets carry real spend. The Neon key provisions real projects and
+      # the Voyage key embeds. The API process needs every other name too, and
+      # this job generates or literals those, as ci.yml does, so a missing
+      # repository secret cannot take the job down (#147).
       NEON_API_KEY: ${{ secrets.NEON_API_KEY_TEST }}
       VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
       CONTROL_DB_URL: postgresql+asyncpg://wchats:wchats@localhost:5432/wchats_control
