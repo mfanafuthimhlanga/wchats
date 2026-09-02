@@ -14,8 +14,7 @@ Design:
         Format: "{agent_id}/{doc_id}{ext}" (e.g., "abc-123/def-456.pdf").
         The agent_id UUIDv4 prefix provides ~122-bit cross-tenant isolation
         without a separate tenant-level prefix (UUIDs are globally unique).
-        No public URL; bucket is private with Block Public Access (13-01
-        Terraform module).
+        No public URL is ever issued; every read is server-side get_object.
 
     put_bytes(key, data): Upload raw bytes to S3 (server-side, explicit S3 credential pair;
         no presigned public URL exposed — T-13-06-02).
@@ -220,6 +219,12 @@ def upload_key(agent_id: str, doc_id: str, ext: str) -> str:
         doc_id:   UUID string of the document.
         ext:      File extension including the leading dot (e.g., ".pdf", ".png").
 
+    An S3_ENDPOINT_URL that carries a path (R2's per-bucket URL ends in the
+    bucket name) makes boto3 prefix every key with that path segment, so the
+    object sits at "<path>/{agent_id}/{doc_id}{ext}" in that environment and
+    at the bare key where the endpoint has no path (local MinIO). Reads and
+    writes share one client, so each environment agrees with itself.
+
     Returns:
         Tenant-scoped S3 key string.
     """
@@ -230,7 +235,7 @@ def put_bytes(key: str, data: bytes) -> None:
     """Upload raw bytes to S3 under the given key.
 
     Uses server-side boto3 put_object with the explicit S3 credential pair from
-    Settings.  No presigned URL is generated; the bucket is private.
+    Settings.  No presigned URL is generated.
 
     Args:
         key:  S3 object key — use upload_key() to build a tenant-scoped key.
