@@ -17,7 +17,7 @@ Design:
         No public URL; bucket is private with Block Public Access (13-01
         Terraform module).
 
-    put_bytes(key, data): Upload raw bytes to S3 (server-side IAM task role;
+    put_bytes(key, data): Upload raw bytes to S3 (server-side, explicit S3 credential pair;
         no presigned public URL exposed — T-13-06-02).
 
     get_bytes(key): Download raw bytes from S3 (server-side; not exposed
@@ -34,8 +34,8 @@ Security (T-13-06-01..04):
       shared credentials file or instance metadata role can supply an identity
       this process did not configure by name.
     - Key bytes (file content) are NEVER logged; only key path (agent_id / doc_id).
-    - No presigned URL is ever generated — server-side get_object only (Fargate
-      IAM task role has the required s3:GetObject permission on the uploads bucket).
+    - No presigned URL is ever generated; server-side get_object only, under the
+      explicit S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY pair named above.
 """
 
 import structlog
@@ -229,9 +229,8 @@ def upload_key(agent_id: str, doc_id: str, ext: str) -> str:
 def put_bytes(key: str, data: bytes) -> None:
     """Upload raw bytes to S3 under the given key.
 
-    Uses server-side boto3 put_object; the Fargate task's IAM role provides
-    credentials.  No presigned URL is generated — the bucket is private
-    (Block Public Access enforced at the Terraform level, 13-01).
+    Uses server-side boto3 put_object with the explicit S3 credential pair from
+    Settings.  No presigned URL is generated; the bucket is private.
 
     Args:
         key:  S3 object key — use upload_key() to build a tenant-scoped key.
@@ -253,8 +252,8 @@ def put_bytes(key: str, data: bytes) -> None:
 def get_bytes(key: str) -> bytes:
     """Download raw bytes from S3 for the given key.
 
-    Server-side boto3 get_object inside Fargate; IAM task role provides
-    credentials.  No presigned URL; the bytes are returned directly to the
+    Server-side boto3 get_object with the explicit S3 credential pair from
+    Settings.  No presigned URL; the bytes are returned directly to the
     caller and NEVER logged (T-13-06-04).
 
     Args:
