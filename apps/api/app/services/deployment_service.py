@@ -2744,7 +2744,7 @@ def stored_run_records_agent_invocation(report: object) -> bool:
 #: What kind of concern each rule slug is, so a console can group the warnings a
 #: Verdict produces beside the ones the evidence gate and the blast-radius
 #: deriver produce. The slugs come from `app.domain.verdict._RULES` and this
-#: table names every one of them at RULE_VERSION 2.
+#: table names every one of them at DECISION_RULE_VERSION 2.
 _VERDICT_WARNING_CATEGORIES: dict[str, str] = {
     "absent_eval_measurement": "eval_quality",
     "golden_failure": "eval_quality",

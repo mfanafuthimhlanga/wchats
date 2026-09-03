@@ -3278,7 +3278,7 @@ class TestAVerdictReachesTheOwnerAsWarnings:
             _VERDICT_WARNING_CATEGORIES.values()
         )
         assert len(_VERDICT_WARNING_CATEGORIES) == 12, (
-            "RULE_VERSION 2 has twelve slugs across eleven rule functions"
+            "DECISION_RULE_VERSION 2 has twelve slugs across eleven rule functions"
         )
         assert slugs, "the rule table stopped being discoverable by name"
 
