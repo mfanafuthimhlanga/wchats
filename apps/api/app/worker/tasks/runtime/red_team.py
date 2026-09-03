@@ -175,7 +175,7 @@ def _build_probe_fn(agent: "Agent", conn_str: str, ledger: LedgerContext):
             choice = first_choice(completion)
             return "" if choice is None else (choice.message.content or "")
         except Exception as exc:
-            log.warning("probe_fn.failed", error=str(exc))
+            log.warning("probe_fn.failed", error_type=type(exc).__name__, error=_log_error_detail(exc))
             return ""
 
     def probe_fn(message: str) -> str:
@@ -187,7 +187,7 @@ def _build_probe_fn(agent: "Agent", conn_str: str, ledger: LedgerContext):
         try:
             return asyncio.run(asyncio.wait_for(_async_probe(message), timeout=60.0))
         except Exception as exc:
-            log.warning("probe_fn.timeout_or_error", error=str(exc))
+            log.warning("probe_fn.timeout_or_error", error_type=type(exc).__name__, error=_log_error_detail(exc))
             return ""
 
     return probe_fn
@@ -421,17 +421,28 @@ _LOG_ERROR_CHAR_CAP = 200
 def _log_error_detail(exc: BaseException) -> str:
     """What a log line is allowed to say about an exception raised by a write.
 
-    psycopg2 renders a server error as the primary message, then `LINE n:` with
-    a fragment of the statement, then DETAIL and CONTEXT. Every statement this
-    module fails on carries the agent's own response as a parameter, so those
-    trailing lines quote it straight back. A red-team run exists to make an
-    agent say something it should not have, and an unbounded `str(exc)` on a
-    warning published it a second time to wherever the worker's logs go.
+    A red-team run exists to make an agent say something it should not have, so
+    an unbounded `str(exc)` on a warning published that a second time, to
+    wherever the worker's logs go. Every handler in this module used one.
 
-    Postgres keeps values out of the primary message by design and puts them in
-    DETAIL, so the first line is the part that describes the failure rather than
-    the data, and the cap bounds anything that does not follow that convention.
-    The result is scrubbed as well, because a log sink is a text field too.
+    The two libraries that raise here both put the description on the first line
+    and the data underneath it, so the first line is the part worth keeping:
+
+      - psycopg2 renders a server error as the primary message, then `LINE n:`
+        with a fragment of the statement, then DETAIL and CONTEXT. Postgres
+        keeps values out of the primary message by design. The statements this
+        module fails on carry the agent's response as a parameter, so those
+        trailing lines quote it straight back.
+      - pydantic heads a ValidationError with the error count and the model
+        name, then one indented block per field carrying `input_value=`. A
+        grade the attacker model garbled arrives in that block.
+
+    What the cap is for is everything else. An exception whose whole message is
+    one line of interpolated model text is still cut to
+    `_LOG_ERROR_CHAR_CAP`, which bounds the leak rather than closing it; the
+    close is to stop building messages that way. `error_type` is logged
+    alongside at every call site, so a line that says little still says what
+    raised. The result is scrubbed too, because a log sink is a text field.
     """
     return _pg_text(str(exc).strip().partition("\n")[0])[:_LOG_ERROR_CHAR_CAP]
 
@@ -694,8 +705,8 @@ def run_red_team(self, agent_id: str) -> dict:
         # Idempotency guard is best-effort — proceed on any check failure
         log.warning(
             "run_red_team.idempotency_check_failed",
-            agent_id=agent_id,
-            error=str(exc),
+            agent_id=agent_id, error_type=type(exc).__name__,
+            error=_log_error_detail(exc),
         )
 
     # ------------------------------------------------------------------
@@ -718,8 +729,8 @@ def run_red_team(self, agent_id: str) -> dict:
         except Exception as exc:
             log.error(
                 "run_red_team.insert_run_failed",
-                agent_id=agent_id,
-                error=str(exc),
+                agent_id=agent_id, error_type=type(exc).__name__,
+                error=_log_error_detail(exc),
             )
             if self.request.retries < self.max_retries:
                 raise self.retry(exc=exc, countdown=2 ** self.request.retries)
@@ -1017,9 +1028,9 @@ def run_red_team(self, agent_id: str) -> dict:
     except Exception as exc:
         log.error(
             "run_red_team.agents_failed",
-            agent_id=agent_id,
-            run_id=run_id,
-            error=str(exc),
+            agent_id=agent_id, run_id=run_id,
+            error_type=type(exc).__name__,
+            error=_log_error_detail(exc),
         )
         # Mark run as failed before retry
         try:
@@ -1037,9 +1048,9 @@ def run_red_team(self, agent_id: str) -> dict:
         except Exception as fail_upd_exc:
             log.warning(
                 "run_red_team.update_failed_status_error",
-                agent_id=agent_id,
-                run_id=run_id,
-                error=str(fail_upd_exc),
+                agent_id=agent_id, run_id=run_id,
+                error_type=type(fail_upd_exc).__name__,
+                error=_log_error_detail(fail_upd_exc),
             )
 
         if self.request.retries < self.max_retries:
