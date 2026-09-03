@@ -20,7 +20,7 @@ substituted with a prior run's numbers.
 
 ## The rule, version 2
 
-Every threshold is a module constant in `verdict.py` beside `RULE_VERSION`. No prompt
+Every threshold is a module constant in `verdict.py` beside `DECISION_RULE_VERSION`. No prompt
 carries one. Reasons name signal, observed value and threshold in owner-readable sentences.
 
 | Rule slug | Fires when | Outcome |
