@@ -228,7 +228,7 @@ MIN_MINORITY_ROWS = 2
 
 # The second floor, and the P4 review is why it exists (MIN_PAIRS alone is not
 # enough). A judge that returns verdict='ERROR' on seven of ten labelled rows —
-# Anthropic 529s, a JSON parse failure, judge.py:170-177's score=0 on any
+# a provider 5xx, a reply cut off at the ceiling, `judge()`'s score=0 on any
 # exception — still leaves three pairs, and if those three happen to rank in
 # agreement the harness reported rho=1.000 and "PASS - judge is calibrated. Safe
 # to trust automated results." over a judge that failed 70% of its calls. The
