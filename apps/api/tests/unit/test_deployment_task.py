@@ -2794,6 +2794,128 @@ class TestTheReQueueGuardsTheChain:
         )
 
 
+class TestTheFirstPassIsFencedLikeTheContinuation:
+    """#125: the stretch from the row insert to the first poll had no fence.
+
+    A continuation that cannot be read marks its run failed, and a re-queue that
+    fails does the same. The FIRST pass ran the dispatch moment, both dispatches
+    and the first poll outside every try, so anything that raised there left the
+    row 'running' with no terminal update and the step-2 guard then refused every
+    re-run behind it for the whole window.
+    """
+
+    def _state(self):
+        return {
+            "run_id": "run-1",
+            "since": "2026-08-30T12:00:00+00:00",
+            "started_at": "2026-08-30T12:00:01+00:00",
+            "statuses": {"eval": None, "red_team": None},
+            "eval_dispatched": True,
+            "red_team_dispatched": True,
+        }
+
+    def _drive(self, patches, wait_state=None):
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        mock_db, mock_run = _build_full_happy_path_mock_db("run-1")
+        mock_log = MagicMock()
+        with ExitStack() as stack:
+            for one in [
+                _deployment_patch("get_sync_db", new=_make_sync_db_ctx(mock_db)),
+                _deployment_patch(
+                    "fernet_decrypt", return_value="postgresql://test/tenant"
+                ),
+                _deployment_patch("log", new=mock_log),
+                *patches,
+            ]:
+                stack.enter_context(one)
+            result = run_deployment_checklist.run(
+                agent_id=str(uuid.uuid4()), wait_state=wait_state
+            )
+        return result, mock_run, mock_log
+
+    def _opened(self):
+        return [
+            _deployment_patch(
+                "_dispatch_moment",
+                return_value=datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
+            ),
+            _deployment_patch("_dispatch_eval_run", return_value=True),
+            _deployment_patch("_dispatch_red_team_run", return_value=True),
+        ]
+
+    def test_a_wait_that_cannot_be_opened_marks_the_row_failed(self):
+        """The row exists from the insert on, so the failure has somewhere to land."""
+        result, mock_run, _ = self._drive(
+            [
+                _deployment_patch(
+                    "_dispatch_moment", side_effect=RuntimeError("tenant clock refused")
+                )
+            ]
+        )
+
+        assert result == {}, f"a run that never opened its wait is not waiting: {result}"
+        assert mock_run.status == "failed", (
+            "the row must not sit 'running' with no wait behind it: "
+            f"{mock_run.status}"
+        )
+
+    def test_the_first_poll_that_raises_marks_the_row_failed(self):
+        result, mock_run, _ = self._drive(
+            self._opened()
+            + [
+                _deployment_patch(
+                    "latest_eval_run_status_since",
+                    side_effect=RuntimeError("tenant db unreachable"),
+                )
+            ]
+        )
+
+        assert result == {}, f"a pass that never polled is not waiting: {result}"
+        assert mock_run.status == "failed", (
+            f"the row must not sit 'running' after a poll that raised: {mock_run.status}"
+        )
+
+    def test_a_poll_that_raises_on_a_continuation_marks_the_row_failed(self):
+        """The continuation reads its state fine and the poll is what falls over."""
+        result, mock_run, _ = self._drive(
+            [
+                _deployment_patch(
+                    "latest_eval_run_status_since",
+                    side_effect=RuntimeError("tenant db unreachable"),
+                )
+            ],
+            wait_state=self._state(),
+        )
+
+        assert result == {}
+        assert mock_run.status == "failed", (
+            f"a continuation whose poll raised must close its row: {mock_run.status}"
+        )
+
+    def test_the_failure_is_logged_with_the_error_type_that_caused_it(self):
+        """`_continue_wait`'s shape: the run is named and so is what went wrong."""
+        result, _, mock_log = self._drive(
+            [
+                _deployment_patch(
+                    "_dispatch_moment", side_effect=KeyError("no such setting")
+                )
+            ]
+        )
+
+        assert result == {}
+        failures = [
+            call
+            for call in mock_log.error.call_args_list
+            if call.args and call.args[0] == "run_deployment_checklist.failed"
+        ]
+        assert len(failures) == 1, mock_log.error.call_args_list
+        assert failures[0].kwargs["run_id"] == "run-1"
+        assert failures[0].kwargs["error_type"] == "KeyError", (
+            f"the original failure has to survive to the log: {failures[0].kwargs}"
+        )
+
+
 class TestAContinuationIsValidatedByValue:
     """FM-018: the reader checks what the writer guarantees, not key names alone."""
 

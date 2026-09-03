@@ -408,6 +408,93 @@ def _poll_wait(agent_id: str, conn_str: str, state: dict) -> dict:
     return {**state, "statuses": statuses}
 
 
+def _a_run_is_already_live(agent_id: str) -> bool:
+    """Step 2's idempotency guard, against the CONTROL DB through the ORM.
+
+    Sixty minutes because this checklist waits on two jobs and then makes a model
+    call. Independent of red_team.py's window, which is sized to ITS bound.
+
+    FIRST PASS ONLY. A continuation would find the row this run inserted itself
+    and skip, which would abandon its own wait.
+    """
+    with get_sync_db() as db:
+        existing = db.execute(
+            select(ChecklistRun).where(
+                ChecklistRun.agent_id == agent_id,
+                ChecklistRun.status == "running",
+                ChecklistRun.created_at > text("now() - interval '60 minutes'"),
+            )
+        ).scalar_one_or_none()
+    return existing is not None
+
+
+def _insert_run(agent_id: str) -> str:
+    """Step 3 — this run's own row, in the CONTROL DB only (T-08-03-04)."""
+    with get_sync_db() as db:
+        run = ChecklistRun(agent_id=agent_id, status="running")
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        run_id = str(run.id)
+    log.info("run_deployment_checklist.started", agent_id=agent_id, run_id=run_id)
+    return run_id
+
+
+def _open_first_wait(agent_id: str, run_id: str, conn_str: str) -> dict | None:
+    """Step 3b's opened wait, or None with the run marked failed.
+
+    THE CHECKLIST SEQUENCES THE JOBS IT GRADES (#54, decision 19 rule 5). Both
+    are dispatched inside `_open_wait`, unconditionally. Step 4 used to run
+    first, which is why the first checklist ever executed reported
+    eval_signal=no_runs about the eval it had started seconds earlier.
+
+    THE STRETCH FROM THE INSERT TO HERE SAT OUTSIDE EVERY TRY (#125). The row
+    exists from the insert onwards, so anything raising across it left the row
+    'running' with no terminal update, and the step-2 guard then refused every
+    re-run behind it for the rest of the window. The fence is `_continue_wait`'s:
+    the run is marked failed and the error type reaches the log.
+    """
+    try:
+        return _open_wait(run_id, agent_id, conn_str)
+    except Exception as exc:
+        log.error(
+            "run_deployment_checklist.wait_unopened",
+            agent_id=agent_id,
+            run_id=run_id,
+            error_type=type(exc).__name__,
+            error=str(exc) or repr(exc),
+        )
+        _persist_failed(agent_id, run_id, exc)
+        return None
+
+
+def _polled(agent_id: str, conn_str: str, state: dict | None) -> dict | None:
+    """One fenced look at both runs, or None when this pass has no wait left.
+
+    A None `state` comes from an open or a continuation that already fell over
+    and already marked its row, so one place in the task stops a dead pass rather
+    than three.
+
+    A poll that raises is the same failure one message later (#125). The tenant
+    DB read sits inside `_latest_run_since`'s own except, but the fold around it
+    does not, and an exception here used to leave the row 'running'.
+    """
+    if state is None:
+        return None
+    try:
+        return _poll_wait(agent_id, conn_str, state)
+    except Exception as exc:
+        log.error(
+            "run_deployment_checklist.poll_failed",
+            agent_id=agent_id,
+            run_id=state["run_id"],
+            error_type=type(exc).__name__,
+            error=str(exc) or repr(exc),
+        )
+        _persist_failed(agent_id, state["run_id"], exc)
+        return None
+
+
 def _waited_s(state: dict) -> float:
     """How long this wait has actually run, across every continuation of it."""
     started_at = datetime.fromisoformat(state["started_at"])
@@ -887,61 +974,25 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
         conn_str = fernet_decrypt(agent.neon_connection_string)
         tenant_id = str(agent.tenant_id)
 
+    # Steps 2, 3 and 3b, on the first pass only: guard, insert, dispatch both
+    # jobs and open the wait. A continuation's state comes off the message
+    # instead, and either path can hand back None having already marked its own
+    # row failed (#125).
     if wait_state is None:
-        # ------------------------------------------------------------------
-        # Step 2 — Idempotency guard: check checklist_runs for a recent running row
-        # Uses control DB (ORM) — NOT psycopg2 against tenant DB.
-        # 60-minute window because this checklist waits on two jobs and then
-        # makes a model call. Independent of red_team.py's window, which is sized
-        # to ITS bound.
-        #
-        # FIRST PASS ONLY. A continuation would find the row this run inserted
-        # itself and skip, which would abandon its own wait.
-        # ------------------------------------------------------------------
-        with get_sync_db() as db:
-            existing = db.execute(
-                select(ChecklistRun).where(
-                    ChecklistRun.agent_id == agent_id,
-                    ChecklistRun.status == "running",
-                    ChecklistRun.created_at > text("now() - interval '60 minutes'"),
-                )
-            ).scalar_one_or_none()
-            if existing:
-                log.info(
-                    "run_deployment_checklist.idempotency_skip", agent_id=agent_id
-                )
-                return {"status": "already_running"}
-
-        # ------------------------------------------------------------------
-        # Step 3 — Insert checklist_runs row in control DB via ORM
-        # (NOT in tenant DB — checklist_runs is control DB only, T-08-03-04)
-        # ------------------------------------------------------------------
-        with get_sync_db() as db:
-            run = ChecklistRun(agent_id=agent_id, status="running")
-            db.add(run)
-            db.commit()
-            db.refresh(run)
-            run_id = str(run.id)
-
-        log.info("run_deployment_checklist.started", agent_id=agent_id, run_id=run_id)
-
-        # ------------------------------------------------------------------
-        # Step 3b. THE CHECKLIST SEQUENCES THE JOBS IT GRADES (#54, decision 19
-        # rule 5). Both are dispatched here, unconditionally. Step 4 used to run
-        # first, which is why the first checklist ever executed reported
-        # eval_signal=no_runs about the eval it had started seconds earlier.
-        # ------------------------------------------------------------------
-        state = _open_wait(run_id, agent_id, conn_str)
+        if _a_run_is_already_live(agent_id):
+            log.info("run_deployment_checklist.idempotency_skip", agent_id=agent_id)
+            return {"status": "already_running"}
+        state = _open_first_wait(agent_id, _insert_run(agent_id), conn_str)
     else:
-        continued = _continue_wait(agent_id, wait_state)
-        if continued is None:
-            return {}
-        state, run_id = continued, continued["run_id"]
+        state = _continue_wait(agent_id, wait_state)
 
     # One look, then either hand the wait to the next message or go on. A job
     # that never reaches terminal inside the ceiling reads as an ABSENT record,
     # so the gate blocks on it; the pre-dispatch summary is never read.
-    state = _poll_wait(agent_id, conn_str, state)
+    state = _polled(agent_id, conn_str, state)
+    if state is None:
+        return {}
+    run_id = state["run_id"]
     waited_s = _waited_s(state)
     pending = sorted(name for name, status in state["statuses"].items() if status is None)
     if _wait_continues(pending, waited_s):
