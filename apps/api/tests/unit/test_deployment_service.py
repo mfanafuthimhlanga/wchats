@@ -3960,3 +3960,184 @@ class TestVerifiedQaStatsAgainstTheProbeCluster:
         assert isinstance(stats["avg_faithfulness"], float)
         assert stats["avg_faithfulness"] == pytest.approx(0.75)
         assert stats["avg_relevance"] == pytest.approx(0.5)
+
+
+# ---------------------------------------------------------------------------
+# TestTheSinceReadersAgainstTheProbeCluster - two rows, ordered by PostgreSQL
+# ---------------------------------------------------------------------------
+
+
+class TestTheSinceReadersAgainstTheProbeCluster:
+    """#128: a newer in-flight run masked the awaited run's completion.
+
+    `ORDER BY started_at DESC LIMIT 1` with no status predicate answers "the
+    newest run since the mark", and the wait is asking "has the run I started
+    finished". The checklist's own run completes, the nightly beat starts a
+    second one before the next poll, and every poll from then on reads the newer
+    'running' row: the wait burns the whole ceiling for a run that finished in
+    minutes, and the id the collector re-queries belongs to a run still going, so
+    read_eval_result hands back None and the report blocks while logging nothing
+    that names the reason.
+
+    A MOCK CANNOT SEE THIS. Every other test of these readers scripts `fetchone`,
+    so the predicate is never evaluated and two rows are never ordered against
+    each other. These execute the statement.
+
+    The rows are written under a kind unique to each test, so nothing existing is
+    deleted, and the transaction is rolled back either way.
+    """
+
+    @pytest.fixture
+    def probe_conn(self):
+        try:
+            conn = psycopg2.connect(PROBE_DB_URL, connect_timeout=5)
+        except psycopg2.OperationalError as exc:
+            pytest.skip(f"no local tenant probe cluster at {PROBE_DB_URL}: {exc}")
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('eval_runs'), to_regclass('red_team_runs')")
+                if None in cur.fetchone():
+                    pytest.skip(
+                        "the probe database has no eval_runs/red_team_runs table: "
+                        "run run_tenant_migrations against it first"
+                    )
+            yield conn
+        finally:
+            conn.rollback()
+            conn.close()
+
+    def _since(self):
+        from datetime import timezone
+
+        return datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+
+    def _at(self, seconds):
+        from datetime import timedelta
+
+        return self._since() + timedelta(seconds=seconds)
+
+    def _eval_run(self, conn, kind, status, seconds):
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO eval_runs (kind, started_at, status) "
+                "VALUES (%s, %s, %s) RETURNING id::text",
+                (kind, self._at(seconds), status),
+            )
+            return cur.fetchone()[0]
+
+    def _red_team_run(self, conn, kind, status, seconds):
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO red_team_runs (kind, started_at, status) "
+                "VALUES (%s, %s, %s) RETURNING id::text",
+                (kind, self._at(seconds), status),
+            )
+            return cur.fetchone()[0]
+
+    def _read(self, conn, reader, agent_id):
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=_LendConnection(conn),
+        ):
+            return reader(agent_id, PROBE_DB_URL, self._since())
+
+    def test_a_newer_running_eval_does_not_mask_the_completed_one(self, probe_conn):
+        from app.services.deployment_service import latest_eval_run_status_since
+
+        agent_id = str(uuid.uuid4())
+        finished = self._eval_run(probe_conn, f"m6:{agent_id}", "complete", 10)
+        self._eval_run(probe_conn, f"m6:{agent_id}", "running", 20)
+
+        status = self._read(probe_conn, latest_eval_run_status_since, agent_id)
+
+        assert status == "complete", (
+            "the run this checklist started finished; a second run somebody else "
+            f"began after it is not an answer to that question: {status!r}"
+        )
+        assert finished, "the fixture wrote no completed run to find"
+
+    def test_the_eval_id_is_the_completed_run_the_status_came_from(self, probe_conn):
+        """The record read at collect time has to belong to the run observed."""
+        from app.services.deployment_service import latest_eval_run_id_since
+
+        agent_id = str(uuid.uuid4())
+        finished = self._eval_run(probe_conn, f"m6:{agent_id}", "complete", 10)
+        self._eval_run(probe_conn, f"m6:{agent_id}", "running", 20)
+
+        run_id = self._read(probe_conn, latest_eval_run_id_since, agent_id)
+
+        assert run_id == finished, (
+            "read_eval_result against a run that is still going returns None and "
+            f"the report blocks on a run that had finished: {run_id!r}"
+        )
+
+    def test_a_newer_running_red_team_run_does_not_mask_the_completed_one(
+        self, probe_conn
+    ):
+        from app.services.deployment_service import latest_red_team_run_status_since
+
+        agent_id = str(uuid.uuid4())
+        self._red_team_run(probe_conn, f"m7:{agent_id}", "complete", 10)
+        self._red_team_run(probe_conn, f"m7:{agent_id}", "running", 20)
+
+        status = self._read(probe_conn, latest_red_team_run_status_since, agent_id)
+
+        assert status == "complete"
+
+    def test_the_red_team_id_is_the_completed_run_too(self, probe_conn):
+        from app.services.deployment_service import latest_red_team_run_id_since
+
+        agent_id = str(uuid.uuid4())
+        finished = self._red_team_run(probe_conn, f"m7:{agent_id}", "complete", 10)
+        self._red_team_run(probe_conn, f"m7:{agent_id}", "running", 20)
+
+        assert self._read(probe_conn, latest_red_team_run_id_since, agent_id) == finished
+
+    def test_a_run_that_is_only_running_reads_as_no_run_at_all(self, probe_conn):
+        """The wait's question is "has it finished", so 'running' is not an answer.
+
+        `poll_terminal_statuses` discarded a 'running' status anyway, so this
+        changes no verdict. It changes what the reader CLAIMS, and the id reader
+        beside it acted on that claim.
+        """
+        from app.services.deployment_service import (
+            latest_eval_run_id_since,
+            latest_eval_run_status_since,
+        )
+
+        agent_id = str(uuid.uuid4())
+        self._eval_run(probe_conn, f"m6:{agent_id}", "running", 10)
+
+        assert self._read(probe_conn, latest_eval_run_status_since, agent_id) is None
+        assert self._read(probe_conn, latest_eval_run_id_since, agent_id) is None
+
+    def test_a_failed_run_is_still_a_finished_one(self, probe_conn):
+        """'failed' is terminal. The wait stops on it and the gate blocks on it."""
+        from app.services.deployment_service import latest_eval_run_status_since
+
+        agent_id = str(uuid.uuid4())
+        self._eval_run(probe_conn, f"m6:{agent_id}", "failed", 10)
+
+        assert self._read(probe_conn, latest_eval_run_status_since, agent_id) == "failed"
+
+    def test_a_finished_run_before_the_mark_is_still_excluded(self, probe_conn):
+        """The status predicate is added BESIDE the boundary, never instead of it."""
+        from app.services.deployment_service import latest_eval_run_status_since
+
+        agent_id = str(uuid.uuid4())
+        self._eval_run(probe_conn, f"m6:{agent_id}", "complete", -600)
+
+        assert self._read(probe_conn, latest_eval_run_status_since, agent_id) is None, (
+            "last night's terminal run satisfying the wait is the staleness the "
+            "whole boundary exists to remove"
+        )
+
+    def test_another_agents_completed_run_is_not_read_as_this_ones(self, probe_conn):
+        from app.services.deployment_service import latest_eval_run_status_since
+
+        self._eval_run(probe_conn, f"m6:{uuid.uuid4()}", "complete", 10)
+
+        assert (
+            self._read(probe_conn, latest_eval_run_status_since, str(uuid.uuid4()))
+            is None
+        )

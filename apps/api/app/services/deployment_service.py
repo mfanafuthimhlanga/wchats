@@ -959,19 +959,32 @@ TERMINAL_RUN_STATUSES = frozenset({"complete", "failed"})
 #: `started_at >= %s` is the whole point of the query. Without it the wait would
 #: be satisfied by last night's terminal run and the checklist would go straight
 #: back to grading a row it did not cause.
+#:
+#: `status <> 'running'` IS THE OTHER HALF OF THAT BOUNDARY (#128). The newest
+#: row since the mark is not the question; the question is whether the run this
+#: checklist started has finished. Without the predicate the checklist's own run
+#: completes, the nightly beat starts a second one before the next poll, and
+#: every poll from then on reads the newer 'running' row: the wait burns the
+#: whole ceiling for a run that finished in minutes, and the id
+#: `latest_eval_run_id_since` re-queries at collect time names a run still going,
+#: so `read_eval_result` returns None and the report blocks with nothing in the
+#: log naming why. Same predicate and same reasoning as `_LATEST_RUN_SQL` above:
+#: a status this query has not heard of is still finished, so the one
+#: non-terminal name is excluded rather than the terminal ones listed.
+#:
 #: `id::text` because the id is a uuid column and every consumer of it is a
 #: string: `read_eval_result` and `read_red_team_result` both cast it back with
 #: `%(id)s::uuid`, and a UUID object would have to be stringified somewhere in
 #: between anyway.
 _EVAL_RUN_SINCE_SQL = (
     "SELECT id::text, status FROM eval_runs "
-    "WHERE kind = %s AND started_at >= %s "
+    "WHERE kind = %s AND started_at >= %s AND status <> 'running' "
     "ORDER BY started_at DESC LIMIT 1"
 )
 
 _RED_TEAM_RUN_SINCE_SQL = (
     "SELECT id::text, status FROM red_team_runs "
-    "WHERE kind = %s AND started_at >= %s "
+    "WHERE kind = %s AND started_at >= %s AND status <> 'running' "
     "ORDER BY started_at DESC LIMIT 1"
 )
 
@@ -1006,12 +1019,15 @@ def _dispatch_moment(conn_str: str) -> datetime:
 def _latest_run_since(
     sql: str, kind: str, conn_str: str, since: datetime
 ) -> tuple[str, str] | None:
-    """(id, status) for the newest run of this kind started at or after `since`.
+    """(id, status) for the newest FINISHED run of this kind started since `since`.
 
-    None means there is no such row yet, or the read failed. Both keep the wait
-    waiting and both end at the ceiling as an absent measurement, which is the
+    None means no such row yet, or the read failed. Both keep the wait waiting
+    and both end at the ceiling as an absent measurement, which is the
     fail-closed direction: a tenant DB we cannot reach must not resolve into a
     finished run.
+
+    A run that is merely in flight is not a row this returns (#128), so a second
+    run started after the awaited one cannot answer for it.
     """
     try:
         conn = psycopg2.connect(conn_str, connect_timeout=10)
@@ -1032,7 +1048,7 @@ def _latest_run_since(
 def latest_eval_run_status_since(
     agent_id: str, conn_str: str, since: datetime
 ) -> str | None:
-    """The newest eval run this checklist could have started, by status."""
+    """The newest finished eval run this checklist could have started, by status."""
     row = _latest_run_since(_EVAL_RUN_SINCE_SQL, f"m6:{agent_id}", conn_str, since)
     return None if row is None else row[1]
 
@@ -1040,7 +1056,7 @@ def latest_eval_run_status_since(
 def latest_red_team_run_status_since(
     agent_id: str, conn_str: str, since: datetime
 ) -> str | None:
-    """The newest red-team run this checklist could have started, by status."""
+    """The newest finished red-team run this checklist could have started."""
     row = _latest_run_since(_RED_TEAM_RUN_SINCE_SQL, f"m7:{agent_id}", conn_str, since)
     return None if row is None else row[1]
 
@@ -1063,7 +1079,7 @@ def latest_eval_run_id_since(
 def latest_red_team_run_id_since(
     agent_id: str, conn_str: str, since: datetime
 ) -> str | None:
-    """The id of the newest red-team run started at or after `since`."""
+    """The id of the newest finished red-team run started at or after `since`."""
     row = _latest_run_since(_RED_TEAM_RUN_SINCE_SQL, f"m7:{agent_id}", conn_str, since)
     return None if row is None else row[0]
 
