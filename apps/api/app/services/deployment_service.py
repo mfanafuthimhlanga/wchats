@@ -2039,8 +2039,24 @@ CORPUS_STATS_UNAVAILABLE_SIGNAL: dict = _corpus_stats(
 # a tenant DB the poller could not reach both end here with None.
 
 
-def eval_summary_did_not_finish(waited_s: float) -> dict:
-    """The eval half of a ceiling expiry. Every number null, and it says why."""
+def eval_summary_did_not_finish(waited_s: float, *, dispatched: bool = True) -> dict:
+    """The eval half of a wait that ended with nothing to read. Every number null.
+
+    TWO WAYS IN, AND THEY ARE DIFFERENT FACTS (#130). The run was started and had
+    not finished when the ceiling expired, or the broker refused the dispatch and
+    no run of this check's ever existed. Both are absent measurements and both
+    block, so only the detail separates them, and it has to: since the wait stops
+    on the first poll for a refusal, "had not finished after 0s" would read as a
+    platform that gave up instantly rather than one that never reached a queue.
+    """
+    if not dispatched:
+        return _eval_summary(
+            EVAL_SIGNAL_DID_NOT_FINISH,
+            detail=(
+                "the eval run for this readiness check could not be started, so "
+                "there is nothing it measured to read"
+            ),
+        )
     return _eval_summary(
         EVAL_SIGNAL_DID_NOT_FINISH,
         detail=(
@@ -2050,8 +2066,18 @@ def eval_summary_did_not_finish(waited_s: float) -> dict:
     )
 
 
-def red_team_summary_did_not_finish(waited_s: float) -> dict:
-    """The security half of the same expiry."""
+def red_team_summary_did_not_finish(
+    waited_s: float, *, dispatched: bool = True
+) -> dict:
+    """The security half of the same two ways in."""
+    if not dispatched:
+        return _red_team_summary(
+            RED_TEAM_SIGNAL_DID_NOT_FINISH,
+            detail=(
+                "the red-team run for this readiness check could not be started, "
+                "so its security surface is unmeasured"
+            ),
+        )
     return _red_team_summary(
         RED_TEAM_SIGNAL_DID_NOT_FINISH,
         detail=(

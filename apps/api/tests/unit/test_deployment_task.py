@@ -1740,6 +1740,141 @@ class TestTheChecklistSequencesBothJobs:
         assert "started" in matching[0]["message"].lower()
 
 
+class TestARefusedDispatchIsNotWaitedOn:
+    """#130: a half the broker refused burnt the whole ceiling before blocking.
+
+    `_open_wait` records the refusal, so that half's outcome is decided the
+    moment the wait opens: no run of this checklist's exists to reach terminal,
+    every poll until the ceiling asks a question already answered, and the answer
+    was always going to be an absent measurement. Fail-closed, and forty-five
+    minutes of it with the answer in hand.
+    """
+
+    def _refused(self):
+        return (lambda _agent_id: False, lambda _agent_id: True)
+
+    def test_a_half_the_broker_refused_is_not_polled_to_the_ceiling(self):
+        """The eval never reports terminal. Its dispatch never happened either."""
+        state, fetchers, collectors = _sequenced_world(
+            eval_polls=10**6, red_team_polls=0
+        )
+
+        result, mock_run, _ = _drive_sequenced(
+            fetchers, collectors, dispatch=self._refused()
+        )
+
+        eval_polls = [e for e in state["events"] if e[0] == "poll" and e[1] == "eval"]
+        assert len(eval_polls) == 1, (
+            "one look is all a refused dispatch is worth; the rest is the ceiling "
+            f"spent on a question already answered: {len(eval_polls)} polls"
+        )
+        assert result["status"] == "complete"
+        assert result["recommendation"] == "block", (
+            "a half that was never started is an absent measurement and the gate "
+            f"still refuses on it: {result}"
+        )
+        assert mock_run.report["eval_summary"]["eval_signal"] == "did_not_finish"
+
+    def test_both_dispatches_refused_settle_on_the_first_pass(self):
+        state, fetchers, collectors = _sequenced_world(
+            eval_polls=10**6, red_team_polls=10**6
+        )
+
+        result, _, _ = _drive_sequenced(
+            fetchers,
+            collectors,
+            dispatch=(lambda _a: False, lambda _a: False),
+        )
+
+        polls = [e for e in state["events"] if e[0] == "poll"]
+        assert len(polls) == 2, (
+            f"one look at each half and then the report: {state['events']}"
+        )
+        assert result["status"] == "complete"
+        assert result["recommendation"] == "block"
+
+    def test_a_dispatched_half_still_holds_the_wait_open(self):
+        """The change is scoped to a refusal. A job in flight is still waited on."""
+        state, fetchers, collectors = _sequenced_world(eval_polls=3, red_team_polls=0)
+
+        result, _, _ = _drive_sequenced(fetchers, collectors)
+
+        eval_polls = [e for e in state["events"] if e[0] == "poll" and e[1] == "eval"]
+        assert len(eval_polls) == 4, (
+            f"a dispatched run is polled until it reports terminal: {eval_polls}"
+        )
+        assert result["status"] == "complete"
+
+    def test_a_refused_dispatch_still_reads_a_run_the_poll_does_find(self):
+        """A refusal closes the WAIT, never the reading.
+
+        run_eval_suite's own guard absorbs a dispatch made while a run is already
+        in flight, and the nightly beat starts runs this checklist did not. A row
+        at or after `since` that reports terminal on the first look is this
+        checklist's evidence whatever the broker said about the dispatch.
+        """
+        _, fetchers, collectors = _sequenced_world(eval_polls=0, red_team_polls=0)
+
+        _, mock_run, _ = _drive_sequenced(
+            fetchers, collectors, dispatch=self._refused()
+        )
+
+        assert mock_run.report["eval_summary"]["eval_signal"] == "measured", (
+            "the poll found a terminal run at or after the dispatch moment, so "
+            f"its record is read: {mock_run.report['eval_summary']}"
+        )
+
+    def test_the_log_says_never_dispatched_rather_than_ran_out_of_ceiling(self):
+        """Two different incidents. One is a slow job, the other a dead broker."""
+        _, fetchers, collectors = _sequenced_world(
+            eval_polls=10**6, red_team_polls=0
+        )
+        mock_log = MagicMock()
+
+        _drive_sequenced(
+            fetchers, collectors, dispatch=self._refused(), mock_log=mock_log
+        )
+
+        closures = [
+            call
+            for call in mock_log.warning.call_args_list
+            if call.args
+            and call.args[0] == "run_deployment_checklist.wait_closed_undispatched"
+        ]
+        assert len(closures) == 1, (
+            f"expected one undispatched-closure warning: {mock_log.warning.call_args_list}"
+        )
+        assert closures[0].kwargs["never_dispatched"] == ["eval"]
+        expiries = [
+            call
+            for call in mock_log.warning.call_args_list
+            if call.args
+            and call.args[0] == "run_deployment_checklist.wait_ceiling_expired"
+        ]
+        assert expiries == [], (
+            "nothing ran out of ceiling here, and saying so sends the reader to "
+            f"look for a slow job: {expiries}"
+        )
+
+    def test_the_owner_facing_detail_says_it_never_started(self):
+        """"had not finished after 0s" reads as a platform that gave up instantly."""
+        _, fetchers, collectors = _sequenced_world(
+            eval_polls=10**6, red_team_polls=0
+        )
+
+        _, mock_run, _ = _drive_sequenced(
+            fetchers, collectors, dispatch=self._refused()
+        )
+
+        detail = mock_run.report["eval_summary"]["signal_detail"]
+        assert "had not finished" not in detail, (
+            f"no run of this checklist's was ever started: {detail!r}"
+        )
+        assert "start" in detail, (
+            f"the detail has to name what actually went wrong: {detail!r}"
+        )
+
+
 class TestTheWaitIsAChainOfMessages:
     """The worker slot is free between polls (#54 review).
 

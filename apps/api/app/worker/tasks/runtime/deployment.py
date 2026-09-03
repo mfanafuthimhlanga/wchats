@@ -268,14 +268,58 @@ def _hand_off(
     }
 
 
-def _log_wait_outcome(agent_id: str, statuses: dict, waited_s: float) -> None:
-    """Name which half ran out of ceiling, with the wait actually observed.
+def _dispatched(state: dict) -> dict:
+    """Which halves the broker actually accepted when the wait opened."""
+    return {
+        "eval": state["eval_dispatched"],
+        "red_team": state["red_team_dispatched"],
+    }
 
-    The observed number rather than the configured one: a run that ran the
-    ceiling out and a run that expired because the poll returned None instantly
-    are different incidents, and only the measured wait tells them apart.
+
+def _pending(state: dict) -> list:
+    """The halves this wait can still be waiting FOR.
+
+    A HALF THE BROKER REFUSED IS NOT PENDING (#130). `_open_wait` recorded the
+    refusal, so that half is decided the moment the wait opens: no run of this
+    checklist's exists to reach terminal, and every poll until the ceiling asks a
+    question already answered. It reads as an absent measurement and the gate
+    blocks either way; the only thing the ceiling bought was forty-five minutes
+    of it.
+
+    The poll still runs and its answer still counts. `run_eval_suite`'s own guard
+    absorbs a dispatch made while a run is in flight, and the nightly beat starts
+    runs this checklist did not, so a terminal row at or after `since` is this
+    checklist's evidence whatever the broker said about the dispatch.
     """
-    timed_out = sorted(name for name, status in statuses.items() if status is None)
+    dispatched = _dispatched(state)
+    return sorted(
+        name
+        for name, status in state["statuses"].items()
+        if status is None and dispatched[name]
+    )
+
+
+def _log_wait_outcome(agent_id: str, state: dict, waited_s: float) -> None:
+    """Name which half the wait ended without, and which of the two ways.
+
+    A job that ran the ceiling out and a job that never reached a queue are
+    different incidents with the same effect on the report, and a reader sent to
+    the wrong one looks for a slow eval when the broker is down. The observed
+    wait rather than the configured ceiling, for the same reason: a run that
+    expired because the poll returned None instantly did not wait at all.
+    """
+    statuses, dispatched = state["statuses"], _dispatched(state)
+    absent = [name for name, status in statuses.items() if status is None]
+    never_dispatched = sorted(name for name in absent if not dispatched[name])
+    timed_out = sorted(name for name in absent if dispatched[name])
+    if never_dispatched:
+        log.warning(
+            "run_deployment_checklist.wait_closed_undispatched",
+            agent_id=agent_id,
+            never_dispatched=never_dispatched,
+            waited_s=round(waited_s, 1),
+            detail="the broker refused the dispatch, so no run of this check exists",
+        )
     if timed_out:
         log.warning(
             "run_deployment_checklist.wait_ceiling_expired",
@@ -285,14 +329,14 @@ def _log_wait_outcome(agent_id: str, statuses: dict, waited_s: float) -> None:
             ceiling_s=settings.CHECKLIST_WAIT_CEILING_S,
             detail="each named job reads as an absent measurement and blocks",
         )
-        return
-    log.info(
-        "run_deployment_checklist.both_runs_terminal",
-        agent_id=agent_id,
-        waited_s=round(waited_s, 1),
-        eval_status=statuses.get("eval"),
-        red_team_status=statuses.get("red_team"),
-    )
+    if not absent:
+        log.info(
+            "run_deployment_checklist.both_runs_terminal",
+            agent_id=agent_id,
+            waited_s=round(waited_s, 1),
+            eval_status=statuses.get("eval"),
+            red_team_status=statuses.get("red_team"),
+        )
 
 
 #: Every key one continuation of the checklist carries across the broker. They
@@ -691,7 +735,9 @@ def _collect_signals(
     breaks the tenant-DB-only convention the others follow.
     """
     if state["statuses"]["eval"] is None:
-        eval_summary = eval_summary_did_not_finish(waited_s)
+        eval_summary = eval_summary_did_not_finish(
+            waited_s, dispatched=state["eval_dispatched"]
+        )
     else:
         eval_summary = _collected(
             agent_id,
@@ -702,7 +748,9 @@ def _collect_signals(
     eval_summary["eval_dispatched"] = state["eval_dispatched"]
 
     if state["statuses"]["red_team"] is None:
-        red_team_summary = red_team_summary_did_not_finish(waited_s)
+        red_team_summary = red_team_summary_did_not_finish(
+            waited_s, dispatched=state["red_team_dispatched"]
+        )
     else:
         red_team_summary = _collected(
             agent_id,
@@ -1098,11 +1146,11 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
         return {}
     run_id = state["run_id"]
     waited_s = _waited_s(state)
-    pending = sorted(name for name, status in state["statuses"].items() if status is None)
+    pending = _pending(state)
     if _wait_continues(pending, waited_s):
         return _hand_off(agent_id, run_id, state, pending, waited_s)
 
-    _log_wait_outcome(agent_id, state["statuses"], waited_s)
+    _log_wait_outcome(agent_id, state, waited_s)
 
     # ------------------------------------------------------------------
     # Step 4 — Collect the five signals and the BLR-02 envelope hash. Always
