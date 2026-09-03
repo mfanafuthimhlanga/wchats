@@ -291,9 +291,10 @@ whether the coverage figures came from the run itself ('run') or describe what
 today's code can test ('current_build'), which may not be what that run tested.
 
 verified_qa_stats and corpus_stats are how much verified knowledge the agent has
-to answer from. Each carries a `signal`, and every figure beside it is null when
-that signal is not 'measured' — the platform could not reach the tenant's own
-database, so say that rather than describing an empty knowledge base.
+to answer from. Each carries a `signal`, and every count and average beside it
+is null when that signal is not 'measured'. The platform could not reach the
+tenant's own database, so say that rather than describing an empty knowledge
+base.
 `row_count` is a count and is real at nought, but `avg_faithfulness` and
 `avg_relevance` are null whenever there were no pairs to average, and a null
 average is unknown rather than a low score.
