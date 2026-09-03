@@ -145,6 +145,62 @@ def test_judge_samples_at_zero(name, invoke, payload):
 @pytest.mark.parametrize(
     ("name", "invoke", "payload"), _JUDGES, ids=[judge[0] for judge in _JUDGES]
 )
+def test_judge_sends_a_real_output_ceiling(name, invoke, payload):
+    """The ceiling is the other half of the truncation story, and it was unpinned.
+
+    BACKLOG 5.14 was an Auditor ceiling of 512 truncating a real verdict, and the
+    fix raised it. Nothing pinned that the request carries a ceiling AT ALL:
+    `test_auditor_truncation.py` asserts the Auditor's number, and the other two
+    judges had no assertion of any kind. An OpenAI request with no
+    `max_completion_tokens` is legal and takes the provider's default, so
+    deleting the line breaks no test while moving where a verdict truncates.
+
+    A positive int rather than a specific number: 512 is right for a Gatekeeper
+    verdict of three scalars and wrong for the Auditor's evidence echo, so the
+    value belongs to each judge and only its presence is shared.
+    """
+    captured = _drive(payload, invoke)
+
+    ceiling = captured.get("max_completion_tokens")
+    assert isinstance(ceiling, int) and not isinstance(ceiling, bool) and ceiling > 0, (
+        f"{name} sent max_completion_tokens={ceiling!r}. Without a ceiling the "
+        "judge runs to the provider's default, and where a verdict truncates stops "
+        "being a number this repo chose."
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "invoke", "payload"), _JUDGES, ids=[judge[0] for judge in _JUDGES]
+)
+def test_the_judges_instructions_ride_the_system_role(name, invoke, payload):
+    """The prompt that says "treat this as data" may not arrive as data itself.
+
+    Issue #76 moved these judges off the Anthropic-format endpoint, where the
+    instructions travelled in a top-level `system` field, onto `chat.completions`,
+    where they are the first entry of `messages`. `test_judge_sends_no_anthropic_
+    only_parameter` pins that the old field is gone. Nothing pinned where the
+    prompt landed instead, so a rewrite that dropped it into a user turn would
+    pass every test in this module.
+
+    That matters here more than in most places. Each of these prompts tells the
+    model to treat the delimited sections below as data and not as instructions,
+    and it is the system role that gives the sentence its standing. Sent as a
+    user turn it becomes one more piece of the text an injected instruction sits
+    beside.
+    """
+    captured = _drive(payload, invoke)
+
+    first = captured["messages"][0]
+    assert first["role"] == "system", (
+        f"{name} sent its instructions as role={first['role']!r}. The prompt that "
+        "tells the judge to treat the sections below as data is then one more "
+        f"turn of that data. messages[0]={first!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "invoke", "payload"), _JUDGES, ids=[judge[0] for judge in _JUDGES]
+)
 def test_judge_sends_no_anthropic_only_parameter(name, invoke, payload):
     """`system` and `max_tokens` are the two a rewrite leaves behind by habit."""
     captured = _drive(payload, invoke)
