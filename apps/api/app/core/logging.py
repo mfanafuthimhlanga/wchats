@@ -29,6 +29,9 @@ def configure_logging(log_level: str = "INFO") -> None:
             structlog.stdlib.add_log_level,
             structlog.stdlib.add_logger_name,
             structlog.processors.TimeStamper(fmt="iso"),
+            # Without this, exc_info=True renders as the literal `"exc_info":
+            # true` and the traceback is dropped (#142).
+            structlog.processors.format_exc_info,
             structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.stdlib.BoundLogger,
