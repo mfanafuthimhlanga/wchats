@@ -260,10 +260,10 @@ def forced_tool_arguments(completion, name: str, *, truncation_note: str = "") -
         return None
     if choice.finish_reason == "length":
         raise ForcedToolCallTruncated(
-            f"the forced {name} tool call hit max_completion_tokens and was truncated "
-            "mid-JSON, so its arguments never arrived whole. This is a BUDGET failure "
-            "and its remedy is the ceiling: the model did not ignore its schema and it "
-            f"did not decline to call the tool. {truncation_note}".strip()
+            f"the reply that was to carry the forced {name} tool call hit "
+            "max_completion_tokens, so its arguments never arrived whole. This is a "
+            "BUDGET failure and its remedy is the ceiling, not the prompt or the "
+            f"schema. {truncation_note}".strip()
         )
     for call in getattr(choice.message, "tool_calls", None) or []:
         if call.function.name == name:

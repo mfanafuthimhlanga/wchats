@@ -16,7 +16,7 @@ demo tenant is verification data, not production surface.
 Mock strategy (mirrors tests/unit/test_actor_seam.py exactly):
     - Patch the client factory (app.core.model_client.make_client, through
       model_doubles.factory) so the gate is handed a double whose
-      messages.create returns a fake tool_use block.
+      chat.completions.create returns a forced submit_verdict tool call.
     - Patch app.services.actor_seam._fetch_history (AsyncMock) so no real
       psycopg2 connection is attempted.
     - Patch app.services.actor_seam._langfuse to None so no Langfuse call is
@@ -53,7 +53,6 @@ include "enabled".
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -63,7 +62,7 @@ from app.services.capability_service import (
     PLATFORM_CAPABILITY_DEFAULTS,
     validate_tighten_only,
 )
-from tests.model_doubles import factory, ledger
+from tests.model_doubles import completion, factory, ledger, openai_client, tool_call
 
 _MODULE = "app.services.actor_seam"
 
@@ -180,26 +179,17 @@ VER01_DEMO_TENANT_SPEC: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 
-def _make_tool_use_block(verdict: str = "approve", rationale: str = "Test rationale.") -> MagicMock:
-    """Create a fake tool_use content block mimicking an Anthropic API response."""
-    block = MagicMock()
-    block.type = "tool_use"
-    block.name = "submit_verdict"
-    block.input = {"verdict": verdict, "rationale": rationale}
-    return block
-
-
-def _make_api_response(*blocks: MagicMock) -> MagicMock:
-    """Create a fake anthropic messages.create response with the given content blocks."""
-    response = MagicMock()
-    response.content = list(blocks)
-    return response
+def _verdict_completion(verdict: str = "approve", rationale: str = "Test rationale."):
+    """One chat completion carrying a forced submit_verdict call, the shape the gate reads."""
+    return completion(
+        tool_calls=[tool_call("submit_verdict", {"verdict": verdict, "rationale": rationale})]
+    )
 
 
 def _run_gate(skill: str, snapshot: dict, api_mock: MagicMock) -> tuple[str, str]:
     """Drive call_actor_gate through asyncio.run with every external dependency mocked."""
     with (
-        factory(SimpleNamespace(messages=SimpleNamespace(create=api_mock))),
+        factory(openai_client(create=api_mock)),
         patch(f"{_MODULE}._fetch_history", AsyncMock(return_value=[])),
         patch(f"{_MODULE}._langfuse", None),
     ):
@@ -241,7 +231,7 @@ def test_actor_skip_does_not_engage_at_exactly_the_threshold():
         "requires_confirmation": False,
         "constraints": {"max_amount_cents": settings.ACTOR_SKIP_MAX_AMOUNT_CENTS},
     }
-    api_mock = MagicMock(return_value=_make_api_response(_make_tool_use_block("approve")))
+    api_mock = MagicMock(return_value=_verdict_completion("approve"))
 
     _run_gate("issue_refund", snapshot, api_mock)
 
@@ -272,7 +262,7 @@ def test_actor_skip_does_not_engage_when_requires_confirmation_true():
         "requires_confirmation": True,
         "constraints": {"max_amount_cents": settings.ACTOR_SKIP_MAX_AMOUNT_CENTS - 1},
     }
-    api_mock = MagicMock(return_value=_make_api_response(_make_tool_use_block("approve")))
+    api_mock = MagicMock(return_value=_verdict_completion("approve"))
 
     _run_gate("issue_refund", snapshot, api_mock)
 
@@ -287,7 +277,7 @@ def test_actor_skip_does_not_engage_when_max_amount_cents_absent():
         "requires_confirmation": False,
         "constraints": {},
     }
-    api_mock = MagicMock(return_value=_make_api_response(_make_tool_use_block("approve")))
+    api_mock = MagicMock(return_value=_verdict_completion("approve"))
 
     _run_gate("issue_refund", snapshot, api_mock)
 
@@ -298,7 +288,7 @@ def test_demo_place_order_envelope_does_not_engage_skip():
     """The demo tenant's place_order envelope does NOT engage the skip — making
     the accepted require_human residual gap (T-19-04) a tested fact rather than
     a claim. The verdict itself is not asserted; only that Haiku was reached."""
-    api_mock = MagicMock(return_value=_make_api_response(_make_tool_use_block("approve")))
+    api_mock = MagicMock(return_value=_verdict_completion("approve"))
 
     _run_gate("place_order", _PLACE_ORDER_ENVELOPE, api_mock)
 

@@ -78,13 +78,13 @@ class CitationSpan(BaseModel):
     supported: bool
 
 
-#: The Auditor's truncation error, under the name three modules already import.
+#: The Auditor's truncation error, under the name it had before #153.
 #:
 #: BACKLOG 5.14 raised this for the Auditor alone. The other six forced-tool
 #: sites hit the same wire fact and reported it as "returned no submit_verdict
 #: tool call", so the class moved to `tool_loop` beside the function that raises
 #: it and all seven now say the same thing. The old name stays an alias because
-#: `test_auditor_truncation.py` and the eval harness import it.
+#: `test_auditor_truncation.py` imports it.
 AuditorVerdictTruncated = ForcedToolCallTruncated
 
 #: The sentence the Auditor's reader needs beside the budget fact. A truncated
