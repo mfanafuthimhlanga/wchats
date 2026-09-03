@@ -61,7 +61,7 @@ import json
 from datetime import datetime, timezone
 
 import structlog
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.database import get_sync_db
@@ -408,28 +408,125 @@ def _poll_wait(agent_id: str, conn_str: str, state: dict) -> dict:
     return {**state, "statuses": statuses}
 
 
+#: The stretch after the last poll, which beats nothing: five collectors, the two
+#: record reads, the Orchestrator's turn under ORCHESTRATOR_TIMEOUT_S and the
+#: control DB write. Only the turn carries a bound of its own, so this is a budget
+#: rather than a measurement, and it is the grace added to the ceiling below.
+CHECKLIST_DECIDE_GRACE_S = 900
+
+
+def _stale_after_s() -> float:
+    """How long a 'running' row may go quiet before it stops meaning a live chain.
+
+    ANCHORED ON THE LAST BEAT, NEVER ON created_at (#129). The guard used to read
+    a row created more than sixty minutes ago as gone, and a congested chain
+    outlives that: the ceiling caps the observed WAIT at forty-five minutes, but
+    continuations queue behind the eval and red-team turns they are waiting for on
+    the one documented local worker, and the deciding pass adds the Orchestrator's
+    budget after the last poll. Past minute sixty a second trigger found no live
+    row and started a second checklist for the same agent, and both persisted.
+
+    The chain beats once per pass, so a live chain is never quiet for longer than
+    the gap between two passes, and that gap is bounded by the ceiling itself: a
+    continuation that finally runs past it stops waiting and goes on to collect.
+    The grace covers the only stretch of the chain that beats nothing.
+
+    Derived rather than configured, for the reason BACKLOG 1.33 records: a second
+    number sized by hand beside the ceiling drifts away from it.
+    """
+    return settings.CHECKLIST_WAIT_CEILING_S + CHECKLIST_DECIDE_GRACE_S
+
+
+def _still_beating(run: ChecklistRun, now: datetime) -> bool:
+    """Whether this row's last beat is recent enough to mean a live chain.
+
+    A row that has never beaten falls back to when it was created, which is what
+    a first pass between its insert and its first poll looks like. Reading that
+    NULL as "abandoned" would reap a run in the middle of opening its own wait.
+
+    Both ends of the comparison are worker clocks. `_beat` stamps
+    `datetime.now(timezone.utc)` and so does the caller, so the only skew that can
+    matter is between two workers, against a grace measured in minutes.
+    """
+    last_beat = run.heartbeat_at or run.created_at
+    return (now - last_beat).total_seconds() < _stale_after_s()
+
+
+def _reap(db, agent_id: str, run: ChecklistRun) -> None:
+    """Close out a 'running' row no continuation is coming back to.
+
+    The guard is the only thing that ever looks at an abandoned row, so it is the
+    only place that can end one. Left alone it would block this agent's checklist
+    for as long as the row existed, which is the cost of a guard that no longer
+    forgets a run after an hour.
+    """
+    log.warning(
+        "run_deployment_checklist.abandoned_run_reaped",
+        agent_id=agent_id,
+        run_id=str(run.id),
+        created_at=run.created_at.isoformat(),
+        last_beat=run.heartbeat_at.isoformat() if run.heartbeat_at else None,
+        stale_after_s=_stale_after_s(),
+    )
+    run.status = "failed"
+    db.commit()
+
+
 def _a_run_is_already_live(agent_id: str) -> bool:
     """Step 2's idempotency guard, against the CONTROL DB through the ORM.
 
-    Sixty minutes because this checklist waits on two jobs and then makes a model
-    call. Independent of red_team.py's window, which is sized to ITS bound.
+    KEYED ON THE ROW'S STATE, NOT ON ITS AGE (#129). A 'running' row is a running
+    checklist however old it is, for as long as its chain keeps beating; a row
+    whose beat has gone quiet is abandoned and is closed out here so the next
+    trigger gets through. Widening the old created_at window instead would have
+    moved the same defect further out rather than removed it.
 
     FIRST PASS ONLY. A continuation would find the row this run inserted itself
     and skip, which would abandon its own wait.
     """
     with get_sync_db() as db:
         existing = db.execute(
-            select(ChecklistRun).where(
+            select(ChecklistRun)
+            .where(
                 ChecklistRun.agent_id == agent_id,
                 ChecklistRun.status == "running",
-                ChecklistRun.created_at > text("now() - interval '60 minutes'"),
             )
+            .order_by(ChecklistRun.created_at.desc())
+            .limit(1)
         ).scalar_one_or_none()
-    return existing is not None
+        if existing is None:
+            return False
+        if _still_beating(existing, datetime.now(timezone.utc)):
+            return True
+        _reap(db, agent_id, existing)
+        return False
+
+
+def _beat(agent_id: str, run_id: str) -> None:
+    """Say on the row that this pass ran, so the guard can read the chain as live.
+
+    Once per pass, from the worker clock the guard compares against. A beat that
+    fails costs freshness and nothing else: the row keeps its previous beat and
+    the grace in `_stale_after_s` absorbs a lost pass, so a control DB blip never
+    turns into a checklist reaped out from under itself.
+    """
+    try:
+        with get_sync_db() as db:
+            run_obj = db.get(ChecklistRun, run_id)
+            if run_obj:
+                run_obj.heartbeat_at = datetime.now(timezone.utc)
+                db.commit()
+    except Exception as exc:
+        log.warning(
+            "run_deployment_checklist.heartbeat_failed",
+            agent_id=agent_id,
+            run_id=run_id,
+            error=str(exc) or repr(exc),
+        )
 
 
 def _insert_run(agent_id: str) -> str:
-    """Step 3 — this run's own row, in the CONTROL DB only (T-08-03-04)."""
+    """Step 3. This run's own row, in the CONTROL DB only (T-08-03-04)."""
     with get_sync_db() as db:
         run = ChecklistRun(agent_id=agent_id, status="running")
         db.add(run)
@@ -478,11 +575,16 @@ def _polled(agent_id: str, conn_str: str, state: dict | None) -> dict | None:
     A poll that raises is the same failure one message later (#125). The tenant
     DB read sits inside `_latest_run_since`'s own except, but the fold around it
     does not, and an exception here used to leave the row 'running'.
+
+    A look that succeeded is also this pass's heartbeat (#129): the guard reads
+    that beat to tell a chain still working from one nothing will ever finish,
+    and reaching the tenant DB is the strongest thing a pass can say about
+    itself.
     """
     if state is None:
         return None
     try:
-        return _poll_wait(agent_id, conn_str, state)
+        polled = _poll_wait(agent_id, conn_str, state)
     except Exception as exc:
         log.error(
             "run_deployment_checklist.poll_failed",
@@ -493,6 +595,8 @@ def _polled(agent_id: str, conn_str: str, state: dict | None) -> dict | None:
         )
         _persist_failed(agent_id, state["run_id"], exc)
         return None
+    _beat(agent_id, state["run_id"])
+    return polled
 
 
 def _waited_s(state: dict) -> float:

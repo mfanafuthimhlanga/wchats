@@ -56,6 +56,16 @@ class ChecklistRun(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
+    # Migration 0021 (#129): the moment a pass of run_deployment_checklist last
+    # looked at the tenant DB, stamped by the worker that looked. The idempotency
+    # guard reads it to tell a chain that is still working from one nothing will
+    # ever finish; age since created_at cannot separate the two, and a congested
+    # chain that outlived the old sixty-minute window let a second checklist
+    # start beside it. NULL on a historical row and on a run whose first pass has
+    # not polled yet, so the guard falls back to created_at.
+    heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     __table_args__ = (
         Index("checklist_runs_agent_id_idx", "agent_id"),

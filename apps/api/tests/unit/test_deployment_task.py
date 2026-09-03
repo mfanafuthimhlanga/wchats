@@ -169,6 +169,10 @@ class TestRunDeploymentChecklistIdempotency:
         The task opens get_sync_db twice before the guard fires:
           - Step 1: db.get(Agent, agent_id) returns mock agent with neon_connection_string
           - Step 2: db.execute(...).scalar_one_or_none() returns mock existing ChecklistRun
+
+        The existing row carries a real beat because the guard reads one (#129).
+        TestTheIdempotencyGuardKeysOnTheRunNotTheClock runs the same guard against
+        PostgreSQL, where the WHERE clause is evaluated rather than scripted.
         """
         from app.worker.tasks.runtime.deployment import run_deployment_checklist
 
@@ -178,8 +182,10 @@ class TestRunDeploymentChecklistIdempotency:
         mock_agent = MagicMock()
         mock_agent.neon_connection_string = b"encrypted_conn"
 
-        # Mock existing ChecklistRun returned by idempotency query
+        # Mock existing ChecklistRun returned by idempotency query, beating now
         mock_existing_run = MagicMock()
+        mock_existing_run.created_at = datetime.now(timezone.utc)
+        mock_existing_run.heartbeat_at = datetime.now(timezone.utc)
 
         # Mock DB: get(Agent) returns mock_agent; execute().scalar_one_or_none() returns existing run
         mock_db = MagicMock()
@@ -2791,6 +2797,186 @@ class TestTheReQueueGuardsTheChain:
         assert mock_run.status == "failed", (
             "the row must not sit 'running' with no continuation coming: "
             f"{mock_run.status}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# The idempotency guard, executed by PostgreSQL rather than scripted (#129)
+# ---------------------------------------------------------------------------
+
+#: The disposable local cluster CLAUDE.md names, read through the same env-var
+#: override the other probe tests use so a machine with non-default local
+#: credentials is configured from one place. checklist_runs is a CONTROL DB
+#: table; what this borrows from the probe database is a real PostgreSQL to run
+#: the guard's WHERE against, inside a transaction that is rolled back.
+CONTROL_PROBE_URL = os.getenv(
+    "TEST_TENANT_PROBE_URL",
+    os.getenv("TEST_LOCAL_BASE", "postgresql://wchats:wchats@localhost:5432")
+    + "/wchats_tenant_probe",
+)
+
+
+class TestTheIdempotencyGuardKeysOnTheRunNotTheClock:
+    """#129: a congested chain outlived the guard's 60-minute created_at window.
+
+    The ceiling caps the observed wait at 45 minutes, but continuations queue
+    behind the eval and red-team turns they are waiting for on the solo worker
+    and the deciding pass adds the orchestrator's budget on top. Past minute 60
+    the window no longer covered a run that was still going, a second trigger saw
+    no live row, and two checklists ran on one agent.
+
+    A MOCK CANNOT SEE THIS. Every other test of the guard scripts
+    `scalar_one_or_none`, so the WHERE clause is never evaluated and a row handed
+    back reads as live whatever the query said about it. These run the statement.
+    """
+
+    @pytest.fixture
+    def session(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import Session
+
+        from app.models.checklist_run import ChecklistRun
+
+        engine = create_engine(CONTROL_PROBE_URL)
+        try:
+            conn = engine.connect()
+        except Exception as exc:  # OperationalError and everything under it
+            engine.dispose()
+            pytest.skip(f"no local probe cluster at {CONTROL_PROBE_URL}: {exc}")
+        outer = conn.begin()
+        try:
+            ChecklistRun.__table__.create(bind=conn)
+            db = Session(bind=conn, join_transaction_mode="create_savepoint")
+            try:
+                yield db
+            finally:
+                db.close()
+        finally:
+            outer.rollback()
+            conn.close()
+            engine.dispose()
+
+    def _row(self, db, agent_id, *, age_s, beat_age_s, status="running"):
+        """One checklist_runs row, aged and beating exactly as the case needs."""
+        from datetime import timedelta
+
+        from app.models.checklist_run import ChecklistRun
+
+        now = datetime.now(timezone.utc)
+        run = ChecklistRun(
+            agent_id=agent_id,
+            status=status,
+            created_at=now - timedelta(seconds=age_s),
+            heartbeat_at=(
+                None if beat_age_s is None else now - timedelta(seconds=beat_age_s)
+            ),
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        return run
+
+    def _guard(self, db, agent_id):
+        from app.worker.tasks.runtime import deployment as deployment_task
+
+        @contextmanager
+        def _lend():
+            yield db
+
+        with patch.object(deployment_task, "get_sync_db", _lend):
+            return deployment_task._a_run_is_already_live(str(agent_id))
+
+    def test_a_chain_still_beating_blocks_however_old_its_row_is(self, session):
+        """The whole of #129. Three hours old, beating ten seconds ago, alive."""
+        agent_id = uuid.uuid4()
+        self._row(session, agent_id, age_s=3 * 3600, beat_age_s=10)
+
+        assert self._guard(session, agent_id) is True, (
+            "a chain that beat ten seconds ago is running, and a second trigger "
+            "that starts beside it puts two checklists on one agent"
+        )
+
+    def test_a_row_whose_beat_went_silent_is_reaped_and_the_trigger_goes_through(
+        self, session
+    ):
+        """The other direction: an abandoned row must not block the agent forever."""
+        agent_id = uuid.uuid4()
+        run = self._row(session, agent_id, age_s=4 * 3600, beat_age_s=4 * 3600)
+
+        assert self._guard(session, agent_id) is False
+        session.refresh(run)
+        assert run.status == "failed", (
+            "a row nothing is going to finish has to be closed out, not skipped "
+            f"over: {run.status}"
+        )
+
+    def test_a_row_that_has_not_beaten_yet_falls_back_to_when_it_was_created(
+        self, session
+    ):
+        """The first pass inserts and then dispatches; it has not polled yet."""
+        agent_id = uuid.uuid4()
+        self._row(session, agent_id, age_s=5, beat_age_s=None)
+
+        assert self._guard(session, agent_id) is True
+
+    def test_a_row_that_never_beat_and_never_will_is_reaped_on_its_created_at(
+        self, session
+    ):
+        agent_id = uuid.uuid4()
+        run = self._row(session, agent_id, age_s=5 * 3600, beat_age_s=None)
+
+        assert self._guard(session, agent_id) is False
+        session.refresh(run)
+        assert run.status == "failed"
+
+    def test_a_finished_row_is_not_a_live_run_whatever_its_beat_says(self, session):
+        agent_id = uuid.uuid4()
+        self._row(session, agent_id, age_s=60, beat_age_s=1, status="complete")
+
+        assert self._guard(session, agent_id) is False
+
+    def test_another_agents_live_run_does_not_block_this_one(self, session):
+        self._row(session, uuid.uuid4(), age_s=60, beat_age_s=1)
+
+        assert self._guard(session, uuid.uuid4()) is False
+
+    def test_an_agent_with_no_row_at_all_is_let_through(self, session):
+        assert self._guard(session, uuid.uuid4()) is False
+
+
+class TestEveryPassStampsTheRunsBeat:
+    """The guard reads a heartbeat, so a live chain has to write one (#129)."""
+
+    def test_a_pass_that_polls_stamps_the_beat_on_its_own_row(self):
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        mock_db, mock_run = _build_full_happy_path_mock_db("run-1")
+        mock_run.heartbeat_at = None
+        with ExitStack() as stack:
+            for one in [
+                _deployment_patch("get_sync_db", new=_make_sync_db_ctx(mock_db)),
+                _deployment_patch(
+                    "fernet_decrypt", return_value="postgresql://test/tenant"
+                ),
+                _deployment_patch(
+                    "_dispatch_moment",
+                    return_value=datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
+                ),
+                _deployment_patch("_dispatch_eval_run", return_value=True),
+                _deployment_patch("_dispatch_red_team_run", return_value=True),
+                _deployment_patch("latest_eval_run_status_since", return_value=None),
+                _deployment_patch(
+                    "latest_red_team_run_status_since", return_value=None
+                ),
+                _deployment_patch("_requeue_wait", return_value=True),
+            ]:
+                stack.enter_context(one)
+            result = run_deployment_checklist.run(agent_id=str(uuid.uuid4()))
+
+        assert result["status"] == "waiting"
+        assert isinstance(mock_run.heartbeat_at, datetime), (
+            "a pass that reached the tenant DB has to say so on its row, or the "
+            f"guard reads the chain as abandoned: {mock_run.heartbeat_at!r}"
         )
 
 
