@@ -334,6 +334,68 @@ def _coverage_at_k(observations: list[VectorObservation], result: RedTeamResult)
     return coverage
 
 
+# ---------------------------------------------------------------------------
+# What a model wrote, made storable (issue #117)
+# ---------------------------------------------------------------------------
+
+#: The longest a single model-produced string may be by the time it reaches a
+#: column. `agent_response` is whatever the deployed agent said, and the owner
+#: reads it verbatim in the ops room (`app/api/v1/red_team.py`). Twenty thousand
+#: characters is well past any real answer and short of a row a reader cannot
+#: scroll. A finding is evidence, so the cut is announced rather than silent.
+RED_TEAM_FIELD_CHAR_CAP = 20_000
+
+#: What ends a string this module cut, inside the cap rather than beyond it.
+_TRUNCATION_MARKER = " [truncated]"
+
+
+def _pg_text(value: str) -> str:
+    """One model-produced string, made safe for a text or jsonb column.
+
+    Postgres stores no NUL byte in either type. json.dumps escapes it to
+    \\u0000, and the server rejects the escape when it parses the JSON, so the
+    json.dumps round trip #116 relied on proves nothing about the write.
+    Observed 2026-09-03 against the local `wchats_tenant_probe` cluster, on the
+    real `_store_completion` statement:
+
+        UntranslatableCharacter: unsupported Unicode escape sequence
+        DETAIL:  \\u0000 cannot be converted to text.
+        RUN ROW STATUS: 'running'
+
+    Stripping is the right repair rather than escaping. A NUL carries no meaning
+    a reader of a red-team finding can use, and the alternative encodings all
+    change the text the owner is told the agent produced.
+    """
+    cleaned = value.replace("\x00", "")
+    if len(cleaned) <= RED_TEAM_FIELD_CHAR_CAP:
+        return cleaned
+    return cleaned[:RED_TEAM_FIELD_CHAR_CAP - len(_TRUNCATION_MARKER)] + _TRUNCATION_MARKER
+
+
+def _pg_scrub(value: object) -> object:
+    """`_pg_text` applied through a payload, to its keys as well as its values.
+
+    A key carries a NUL as readily as a value: `attack_vector` is free text the
+    attacker model chose, and `RedTeamResult.payload` groups by it.
+    """
+    if isinstance(value, str):
+        return _pg_text(value)
+    if isinstance(value, dict):
+        return {_pg_scrub(k): _pg_scrub(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_pg_scrub(item) for item in value]
+    return value
+
+
+def _pg_json(payload: object) -> str:
+    """The jsonb literal for a payload every string of which is storable.
+
+    Every jsonb column this module writes goes through here. Reaching for
+    json.dumps directly on model-produced text is what issue #117 records.
+    """
+    return json.dumps(_pg_scrub(payload))
+
+
 # The completion UPDATE, widest first. `result` arrived with alembic_tenant 0021
 # and `coverage` with 0015; tenants are migrated at provision time only, so a
 # tenant older than either does not have the column and psycopg2 raises
@@ -399,6 +461,80 @@ def _store_completion(conn, run_id: str, agent_id: str, base_params: tuple,
                 ),
             )
     return False
+
+
+def _fail_run(conn, run_id: str, agent_id: str, error_type: str) -> None:
+    """Put a run row in a terminal state after its completion write did not land.
+
+    Before issue #117 there was no such path: a write that raised past the
+    UndefinedColumn ladder left `status` at 'running' for good. The ops room then
+    reads a finished run as in flight, `red_team_runs` never records that the run
+    ended, and Step 2's idempotency guard refuses the next run for this agent for
+    the whole ninety-minute window.
+
+    The rollback comes first. The statement that raised aborted the transaction,
+    and Postgres refuses every later statement on that connection until it is
+    rolled back. On the exhausted-ladder path `_store_completion` has already
+    rolled back and this one is a no-op.
+
+    Args:
+        error_type: the class name of the failure this row is terminal because
+            of. It reaches the log line, not the row: `red_team_runs` has no
+            column for it and `coverage` means something else.
+    """
+    try:
+        conn.rollback()
+        with conn.cursor() as _cur:
+            _cur.execute(
+                """
+                UPDATE red_team_runs
+                SET status = 'failed', finished_at = NOW()
+                WHERE id = %s
+                """,
+                (run_id,),
+            )
+        conn.commit()
+        log.warning(
+            "run_red_team.completion_write_failed",
+            agent_id=agent_id, run_id=run_id, error_type=error_type,
+        )
+    except Exception as exc:
+        log.warning(
+            "run_red_team.run_row_stuck_running",
+            agent_id=agent_id, run_id=run_id,
+            error_type=type(exc).__name__, after=error_type,
+        )
+
+
+def _write_completion(conn, run_id: str, agent_id: str, base_params: tuple,
+                      coverage_json: str, result_json: str) -> None:
+    """`_store_completion`, plus the terminal status the row is owed when it fails.
+
+    The two failures are different and both end the same way. An exhausted ladder
+    means the tenant DB lacks a column M7 gave every tenant, so the schema is
+    wrong. An exception means the values are wrong, which since #117 is what a
+    model-produced NUL byte looks like from here. Neither is a run still running.
+    """
+    try:
+        if _store_completion(conn, run_id, agent_id, base_params,
+                             coverage_json, result_json):
+            return
+        error_type = "UndefinedColumn"
+        log.warning(
+            "run_red_team.update_complete_failed",
+            agent_id=agent_id,
+            run_id=run_id,
+            error="every completion statement hit an absent column",
+        )
+    except Exception as update_exc:
+        error_type = type(update_exc).__name__
+        log.warning(
+            "run_red_team.update_complete_failed",
+            agent_id=agent_id,
+            run_id=run_id,
+            error=str(update_exc),
+        )
+    _fail_run(conn, run_id, agent_id, error_type)
 
 
 # ---------------------------------------------------------------------------
@@ -665,28 +801,14 @@ def run_red_team(self, agent_id: str) -> dict:
         # and its readers report that as unrecorded rather than as full.
         # ------------------------------------------------------------------
         _complete_params = (
-            json.dumps([f.model_dump() for f in run_result.findings]),
+            _pg_json([f.model_dump() for f in run_result.findings]),
             max_severity,
             deployment_blocked,
         )
-        try:
-            if not _store_completion(
-                _agents_conn, run_id, agent_id, _complete_params,
-                json.dumps(coverage), json.dumps(run_result.payload),
-            ):
-                log.warning(
-                    "run_red_team.update_complete_failed",
-                    agent_id=agent_id,
-                    run_id=run_id,
-                    error="every completion statement hit an absent column",
-                )
-        except Exception as update_exc:
-            log.warning(
-                "run_red_team.update_complete_failed",
-                agent_id=agent_id,
-                run_id=run_id,
-                error=str(update_exc),
-            )
+        _write_completion(
+            _agents_conn, run_id, agent_id, _complete_params,
+            _pg_json(coverage), _pg_json(run_result.payload),
+        )
 
         # ------------------------------------------------------------------
         # Step 7b — Persist first-class strategy + probe rows (OPS-13)
@@ -717,7 +839,7 @@ def run_red_team(self, agent_id: str) -> dict:
         strategy_ids: dict[str, str | None] = {}
         finding_probe_ids: list[str | None] = []
         try:
-            distinct_vectors = sorted({f.attack_vector for f in run_result.findings})
+            distinct_vectors = sorted({_pg_text(f.attack_vector) for f in run_result.findings})
             with _agents_conn.cursor() as _cur:
                 for vector in distinct_vectors:
                     _cur.execute(
@@ -743,9 +865,9 @@ def run_red_team(self, agent_id: str) -> dict:
                         RETURNING id
                         """,
                         (
-                            strategy_ids.get(finding.attack_vector),
+                            strategy_ids.get(_pg_text(finding.attack_vector)),
                             None,
-                            finding.probe_message,
+                            _pg_text(finding.probe_message),
                         ),
                     )
                     _probe_row = _cur.fetchone()
@@ -784,12 +906,12 @@ def run_red_team(self, agent_id: str) -> dict:
                         """,
                         (
                             run_id,
-                            strategy_ids.get(_finding.attack_vector),
+                            strategy_ids.get(_pg_text(_finding.attack_vector)),
                             _probe_id,
                             _finding.severity,
-                            _finding.attack_vector,
-                            _finding.probe_message,
-                            _finding.agent_response,
+                            _pg_text(_finding.attack_vector),
+                            _pg_text(_finding.probe_message),
+                            _pg_text(_finding.agent_response),
                             _finding.turn_count,
                         ),
                     )
