@@ -89,7 +89,7 @@ def _get_redis() -> redis_lib.Redis:
     WR-04: For rediss:// URLs, certificate verification is ON by default
     (ssl_cert_reqs=ssl.CERT_REQUIRED, ssl_check_hostname=True). Disabling
     verification requires REDIS_TLS_INSECURE=True in settings AND emits a
-    warning log on every factory call so the exposure is visible in logs.
+    warning log, once per process per URL, so the exposure is visible in logs.
 
     Issue #144: this factory was the only one of fourteen that read the setting,
     and app.core.redis_tls now holds that decision for all of them.

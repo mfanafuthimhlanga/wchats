@@ -78,6 +78,10 @@ class TestRedisSslKwargs:
         """REDIS_TLS_INSECURE=True is the one route to CERT_NONE, and it logs the exposure."""
         import app.core.redis_tls as seam  # noqa: PLC0415
 
+        # The warning is once per process per URL, so an earlier test in this process
+        # may already hold this URL's entry.
+        seam._warn_tls_verification_disabled.cache_clear()
+
         with (
             patch.object(seam.settings, "REDIS_TLS_INSECURE", True, create=True),
             patch.object(seam, "log") as mock_log,
@@ -90,6 +94,32 @@ class TestRedisSslKwargs:
         assert "tls" in event_name.lower(), (
             f"Expected a TLS-related warning event, got {event_name!r}. "
             "Dropping verification must be visible in the logs of whatever opened the connection."
+        )
+
+    def test_the_warning_fires_once_per_process(self):
+        """One line per process, not one per connection.
+
+        ``app/api/deps.py::get_async_redis`` builds a client for every API request, so a
+        warning on each call put a line in the API log per request. A fact repeated that
+        often stops reading as a warning.
+        """
+        import app.core.redis_tls as seam  # noqa: PLC0415
+
+        # A URL of its own, so this neither warms nor reads the entry the other
+        # warning tests use.
+        url = "rediss://once-per-process.example.invalid:6380/0"
+
+        with (
+            patch.object(seam.settings, "REDIS_TLS_INSECURE", True, create=True),
+            patch.object(seam, "log") as mock_log,
+        ):
+            first = redis_ssl_kwargs(url)
+            second = redis_ssl_kwargs(url)
+
+        assert first == second == {"ssl_cert_reqs": ssl.CERT_NONE}
+        assert mock_log.warning.call_count == 1, (
+            f"The seam warned {mock_log.warning.call_count} times for two connections to "
+            "the same URL. The exposure is a property of the process, not of the request."
         )
 
 

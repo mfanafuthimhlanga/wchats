@@ -782,9 +782,13 @@ class TestEnforcementSplit:
         Issue #144 moved the decision into app.core.redis_tls, so the warning is now
         emitted there; this factory reaching it is the thing under test.
         """
+        import app.core.redis_tls as redis_tls  # noqa: PLC0415
         import app.services.transactional.enforcement as enf_module  # noqa: PLC0415
 
         enf_module._rate_limit_redis = None
+        # The seam warns once per process per URL, so an earlier test in this process
+        # may already hold this URL's entry.
+        redis_tls._warn_tls_verification_disabled.cache_clear()
 
         def _fake_from_url(url, **kwargs):
             return MagicMock()
