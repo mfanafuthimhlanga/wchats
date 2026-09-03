@@ -253,8 +253,8 @@ class TestRunDeploymentChecklistHappyPath:
         # Signal fetch return values (minimal valid dicts)
         empty_eval = _measured_eval_signal()
         empty_red_team = _measured_red_team_signal()
-        empty_verified_qa = {"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9}
-        empty_corpus = {"document_count": 5, "chunk_count": 100, "last_ingested_at": None}
+        empty_verified_qa = _measured_verified_qa_signal()
+        empty_corpus = _measured_corpus_signal()
         empty_blast_radius = {
             "configured_max_single_action_cents": None,
             "configured_max_hourly_aggregate_cents": None,
@@ -375,10 +375,10 @@ class TestRunDeploymentChecklistHappyPath:
             return_value=_measured_red_team_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_verified_qa_stats_sync",
-            return_value={"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+            return_value=_measured_verified_qa_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_corpus_stats_sync",
-            return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+            return_value=_measured_corpus_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
             return_value={
@@ -464,8 +464,11 @@ class TestRunDeploymentChecklistFailurePath:
 
         empty_eval = _measured_eval_signal()
         empty_red_team = _measured_red_team_signal()
-        empty_verified_qa = {"row_count": 0, "avg_faithfulness": 0.0, "avg_relevance": 0.0}
-        empty_corpus = {"document_count": 0, "chunk_count": 0, "last_ingested_at": None}
+        # A tenant whose corpus was READ and came back empty. The dict this
+        # replaces put 0.0 in both averages, which is the #121 payload itself:
+        # a faithfulness of nought asserted about pairs that do not exist.
+        empty_verified_qa = _measured_verified_qa_signal(row_count=0)
+        empty_corpus = _measured_corpus_signal(document_count=0, chunk_count=0)
         empty_blast_radius = {
             "configured_max_single_action_cents": None,
             "configured_max_hourly_aggregate_cents": None,
@@ -655,13 +658,56 @@ def _measured_red_team_signal():
     }
 
 
+def _measured_verified_qa_signal(row_count=60, average=0.9):
+    """The verified-QA payload the collector writes when it counted something.
+
+    Built through the collector's own constructor for the reason
+    `_measured_eval_signal` is: the hand-written dict this replaces carried no
+    `signal` key at all, which is the pre-#131 shape, so every wiring test that
+    used it sent `derive_quality_warnings` down the compatibility branch kept
+    for reports stored before that fix. The happy paths were therefore the one
+    place in this module NOT exercising what production stores today.
+
+    A `row_count` of nought comes back with both averages None, because that is
+    what the constructor does with an average over no rows.
+    """
+    from app.services.deployment_service import (
+        VERIFIED_QA_SIGNAL_MEASURED,
+        _verified_qa_stats,
+    )
+
+    return _verified_qa_stats(
+        VERIFIED_QA_SIGNAL_MEASURED,
+        row_count=row_count,
+        avg_faithfulness=average,
+        avg_relevance=average,
+    )
+
+
+def _measured_corpus_signal(document_count=5, chunk_count=100):
+    """The corpus payload the collector writes when it reached the tenant DB.
+
+    Same provenance and same reason as `_measured_verified_qa_signal`. Every
+    figure here is a count, so all three are real at nought and the signal is
+    the only thing that separates nought documents from no read at all.
+    """
+    from app.services.deployment_service import CORPUS_SIGNAL_MEASURED, _corpus_stats
+
+    return _corpus_stats(
+        CORPUS_SIGNAL_MEASURED,
+        document_count=document_count,
+        chunk_count=chunk_count,
+        last_ingested_at=None,
+    )
+
+
 def _empty_first_four_signals():
     """The four pre-existing safe-default signal dicts, reused across BLR-01 wiring tests."""
     return (
         _measured_eval_signal(),
         _measured_red_team_signal(),
-        {"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
-        {"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+        _measured_verified_qa_signal(),
+        _measured_corpus_signal(),
     )
 
 
@@ -971,10 +1017,10 @@ class TestEvidenceGateWiring:
             return_value=red_team_summary,
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_verified_qa_stats_sync",
-            return_value={"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+            return_value=_measured_verified_qa_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_corpus_stats_sync",
-            return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+            return_value=_measured_corpus_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
             return_value=blast_radius,
@@ -1094,10 +1140,10 @@ class TestEvidenceGateWiring:
             return_value=_measured_red_team_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_verified_qa_stats_sync",
-            return_value={"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+            return_value=_measured_verified_qa_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_corpus_stats_sync",
-            return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+            return_value=_measured_corpus_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
             return_value=dict(_BLAST_RADIUS_DEFAULT_SIGNAL),
@@ -1518,11 +1564,11 @@ def _drive_sequenced(
         _target("_fetch_red_team_summary_sync", side_effect=collectors[1]),
         _target(
             "_fetch_verified_qa_stats_sync",
-            return_value={"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+            return_value=_measured_verified_qa_signal(),
         ),
         _target(
             "_fetch_corpus_stats_sync",
-            return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+            return_value=_measured_corpus_signal(),
         ),
         _target("_fetch_blast_radius_sync", return_value=dict(_BLAST_RADIUS_FIXTURE)),
         _target("_compute_envelope_hash_sync", return_value="test-envelope-hash"),
@@ -1744,19 +1790,11 @@ class TestTheWaitIsAChainOfMessages:
             _deployment_patch("_fetch_red_team_summary_sync", new=_collect("red_team")),
             _deployment_patch(
                 "_fetch_verified_qa_stats_sync",
-                return_value={
-                    "row_count": 60,
-                    "avg_faithfulness": 0.9,
-                    "avg_relevance": 0.9,
-                },
+                return_value=_measured_verified_qa_signal(),
             ),
             _deployment_patch(
                 "_fetch_corpus_stats_sync",
-                return_value={
-                    "document_count": 5,
-                    "chunk_count": 100,
-                    "last_ingested_at": None,
-                },
+                return_value=_measured_corpus_signal(),
             ),
             _deployment_patch(
                 "_fetch_blast_radius_sync", return_value=dict(_BLAST_RADIUS_FIXTURE)
@@ -1933,12 +1971,11 @@ def _drive_with_verdict(
         ),
         _deployment_patch(
             "_fetch_verified_qa_stats_sync",
-            return_value=verified_qa
-            or {"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+            return_value=verified_qa or _measured_verified_qa_signal(),
         ),
         _deployment_patch(
             "_fetch_corpus_stats_sync",
-            return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+            return_value=_measured_corpus_signal(),
         ),
         _deployment_patch(
             "_fetch_blast_radius_sync", return_value=dict(_BLAST_RADIUS_FIXTURE)
@@ -2035,7 +2072,7 @@ class TestTheVerdictDrivesTheRecommendation:
         verdict's."""
         result, mock_run = _drive_with_verdict(
             _ship_verdict(),
-            verified_qa={"row_count": 4, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+            verified_qa=_measured_verified_qa_signal(row_count=4),
             red_team_summary=dict(_measured_red_team_signal(), medium_count=5),
         )
 
@@ -2457,13 +2494,13 @@ class TestATaskFailureBeforeTheVerdictStillFails:
             stack.enter_context(
                 _deployment_patch(
                     "_fetch_verified_qa_stats_sync",
-                    return_value={"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+                    return_value=_measured_verified_qa_signal(),
                 )
             )
             stack.enter_context(
                 _deployment_patch(
                     "_fetch_corpus_stats_sync",
-                    return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+                    return_value=_measured_corpus_signal(),
                 )
             )
             stack.enter_context(
