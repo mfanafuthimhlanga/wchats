@@ -116,7 +116,12 @@ CONTEXT_PROXY_VERSION = "agent_retrieve_chunks/1"
 #: written under a different set of rules is readable but is not a like-for-like
 #: comparison, and this is the field that says so. One, because this is the
 #: first.
-RULE_VERSION = 1
+#:
+#: The EVAL_ prefix is #126: verdict.py has its own constant for the decision
+#: rule table, sitting at 2, and under a shared bare name a reader comparing the
+#: two sibling modules reads drift where there is none. The stored field stays
+#: `rule_version` and the value stays 1.
+EVAL_RULE_VERSION = 1
 
 _COUNT_FIELDS_INVOCATION = (
     "valid",
@@ -884,7 +889,7 @@ class EvalResult:
     # The init input, not what the record holds. __post_init__ freezes it.
     failures: Sequence[ScenarioFailure] = ()
     context_proxy_version: str = CONTEXT_PROXY_VERSION
-    rule_version: int = RULE_VERSION
+    rule_version: int = EVAL_RULE_VERSION
 
     def __post_init__(self) -> None:
         for name in ("run_id", "agent_id", "requested_model", "context_proxy_version"):
@@ -1065,7 +1070,7 @@ class EvalResult:
                 context_proxy_version=payload.get(
                     "context_proxy_version", CONTEXT_PROXY_VERSION
                 ),
-                rule_version=payload.get("rule_version", RULE_VERSION),
+                rule_version=payload.get("rule_version", EVAL_RULE_VERSION),
             )
         except InvalidEvalResult:
             # Already this module's refusal, carrying which rule it broke.
