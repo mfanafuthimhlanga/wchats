@@ -199,7 +199,7 @@ class TestCeleryTakesTheSeamDict:
         assert connparams["connection_class"].__name__ == "SSLConnection"
 
     def test_plain_redis_backend_takes_no_ssl_options(self):
-        """Celery raises on any ssl option under redis://, so {} is the required answer."""
+        """The seam hands a plain redis:// URL nothing, so no ssl option reaches the backend."""
         from celery import Celery  # noqa: PLC0415
 
         assert redis_ssl_kwargs(REDIS) == {}
@@ -209,3 +209,49 @@ class TestCeleryTakesTheSeamDict:
 
         connparams = app.backend.connparams
         assert "ssl_cert_reqs" not in connparams
+
+    def test_rediss_broker_connection_verifies_the_certificate(self):
+        """The broker side, which carries every task payload, not only the result backend.
+
+        kombu builds the broker connection from ``broker_use_ssl`` and redis-py builds
+        the result backend from ``redis_backend_use_ssl``. They are separate paths, so
+        the broker gets its own assertion.
+        """
+        from celery import Celery  # noqa: PLC0415
+
+        import app.core.redis_tls as seam  # noqa: PLC0415
+
+        url = "rediss://:pw@example.upstash.io:6380/0"
+        with patch.object(seam.settings, "REDIS_TLS_INSECURE", False, create=True):
+            opts = redis_ssl_kwargs(url)
+
+        app = Celery("test_redis_tls_seam_broker")
+        app.conf.update(
+            broker_url=url,
+            result_backend=url,
+            broker_use_ssl=opts,
+            redis_backend_use_ssl=opts,
+        )
+
+        assert app.connection_for_write().ssl == {
+            "ssl_cert_reqs": ssl.CERT_REQUIRED,
+            "ssl_check_hostname": True,
+        }
+
+    def test_plain_redis_broker_takes_the_seam_dict_unconditionally(self):
+        """The site passes the seam dict with no guard, and kombu ignores an empty one.
+
+        kombu's redis transport reads the options under ``if conninfo.ssl:``
+        (``kombu/transport/redis.py``, ``Channel._connparams``), so ``{}`` under a
+        ``redis://`` scheme is skipped rather than rejected. This reads the app the
+        worker actually boots, under the ``redis://`` URL ``tests/conftest.py`` pins.
+        """
+        from app.worker.celery_app import celery_app as booted  # noqa: PLC0415
+
+        assert booted.conf.broker_url.startswith("redis://"), (
+            f"Expected the pinned test REDIS_URL, got {booted.conf.broker_url!r}. "
+            "tests/conftest.py sets redis://localhost:6379/1 before any app import."
+        )
+        assert booted.conf.broker_use_ssl == {}
+        assert booted.conf.redis_backend_use_ssl == {}
+        assert not booted.connection_for_write().ssl

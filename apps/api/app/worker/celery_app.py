@@ -81,18 +81,21 @@ BROKER_VISIBILITY_TIMEOUT_S = 7200
 celery_app = Celery("wchats")
 
 _redis_url = settings.REDIS_URL
-# Strip ssl_cert_reqs from URL — configured explicitly via broker_use_ssl /
-# redis_backend_use_ssl so Celery 5.x receives the Python ssl constant, not a string.
+# Strip the query string before the scheme is read. redis-py's parse_url forwards an
+# ssl_cert_reqs query key and lets it beat the keyword argument, so a URL carrying one
+# would pick the verification mode instead of redis_ssl_kwargs.
 _redis_url_clean = _redis_url.split("?")[0] if "?" in _redis_url else _redis_url
-# Empty for a plain redis:// URL, and Celery raises E_REDIS_SSL_PARAMS_AND_SCHEME_MISMATCH
-# if an ssl option reaches that scheme, so the empty dict stays out of conf below.
 _ssl_opts = redis_ssl_kwargs(_redis_url_clean)
 
 celery_app.conf.update(
-    # Broker and result backend — both point to Redis
+    # Broker and result backend, both pointing at Redis.
     broker_url=_redis_url_clean,
     result_backend=_redis_url_clean,
-    **({"broker_use_ssl": _ssl_opts, "redis_backend_use_ssl": _ssl_opts} if _ssl_opts else {}),
+    # kombu reads these under `if conninfo.ssl:` (kombu/transport/redis.py,
+    # Channel._connparams), so the seam's empty dict for a plain redis:// URL is
+    # skipped rather than rejected, and no guard is needed here.
+    broker_use_ssl=_ssl_opts,
+    redis_backend_use_ssl=_ssl_opts,
 
     # --- Task autodiscovery -----------------------------------------------
     # Worker discovers tasks by importing these modules on startup.

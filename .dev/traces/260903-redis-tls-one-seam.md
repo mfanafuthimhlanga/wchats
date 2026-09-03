@@ -35,9 +35,12 @@ something everywhere instead of in one module out of fourteen.
   eleven modules under patched settings costs more on a 4 GB box than the contract does,
   and the contract is the stronger guard: it fails on the import, before any value exists.
   The three sites with a factory function are driven for real.
-- `celery_app.py` keeps its `if _ssl_opts else {}` guard on the conf update. Celery raises
-  `E_REDIS_SSL_PARAMS_AND_SCHEME_MISMATCH` when an ssl option reaches a `redis://` scheme,
-  so the empty dict must stay out of the config rather than be passed as empty.
+- `celery_app.py` passes `broker_use_ssl` and `redis_backend_use_ssl` with no guard. The
+  first version kept an `if _ssl_opts` around them and said Celery raises
+  `E_REDIS_SSL_PARAMS_AND_SCHEME_MISMATCH` when an ssl option reaches a `redis://` scheme.
+  Measured on kombu 5.6.2: `Channel._connparams` reads them under `if conninfo.ssl:`, so an
+  empty dict is skipped and only an actual ssl key raises. The guard was dead and its
+  comment was false, so both went.
 
 ## Observed
 
