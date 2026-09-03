@@ -27,13 +27,21 @@ Schema contract:
     can consume directly.
   - Every field carries Field(description=...) so the schema is self-describing for
     both the SDK input_schema and the A2A manifest.
+
+Immutability (decision #7 on map #4, issue #72):
+  - Every model is frozen. An argument object that can be rewritten after
+    validation is validated in name only: what the capability envelope checked,
+    what the enforcement path checked and what the audit row recorded could all
+    disagree with what the adapter finally sends.
+  - A caller that needs a different value builds a new object with
+    model_copy(update=...), which the next check sees.
 """
 
 from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # ---------------------------------------------------------------------------
 # 1. place_order
@@ -42,6 +50,8 @@ from pydantic import BaseModel, Field
 
 class PlaceOrderInput(BaseModel):
     """Input for the place_order transactional tool."""
+
+    model_config = ConfigDict(frozen=True)
 
     idempotency_key: Annotated[
         str,
@@ -72,6 +82,8 @@ class PlaceOrderInput(BaseModel):
 class PlaceOrderOutput(BaseModel):
     """Output for the place_order transactional tool."""
 
+    model_config = ConfigDict(frozen=True)
+
     order_id: Annotated[
         str,
         Field(description="Platform-assigned order identifier."),
@@ -94,6 +106,8 @@ class PlaceOrderOutput(BaseModel):
 class CancelOrderInput(BaseModel):
     """Input for the cancel_order transactional tool."""
 
+    model_config = ConfigDict(frozen=True)
+
     idempotency_key: Annotated[
         str,
         Field(description="Client-generated UUID for replay protection. Scoped to (agent_id, skill)."),
@@ -110,6 +124,8 @@ class CancelOrderInput(BaseModel):
 
 class CancelOrderOutput(BaseModel):
     """Output for the cancel_order transactional tool."""
+
+    model_config = ConfigDict(frozen=True)
 
     order_id: Annotated[
         str,
@@ -133,6 +149,8 @@ class CancelOrderOutput(BaseModel):
 class IssueRefundInput(BaseModel):
     """Input for the issue_refund transactional tool."""
 
+    model_config = ConfigDict(frozen=True)
+
     idempotency_key: Annotated[
         str,
         Field(description="Client-generated UUID for replay protection. Scoped to (agent_id, skill)."),
@@ -153,6 +171,8 @@ class IssueRefundInput(BaseModel):
 
 class IssueRefundOutput(BaseModel):
     """Output for the issue_refund transactional tool."""
+
+    model_config = ConfigDict(frozen=True)
 
     refund_id: Annotated[
         str,
@@ -176,6 +196,8 @@ class IssueRefundOutput(BaseModel):
 class UpdateSubscriptionInput(BaseModel):
     """Input for the update_subscription transactional tool."""
 
+    model_config = ConfigDict(frozen=True)
+
     idempotency_key: Annotated[
         str,
         Field(description="Client-generated UUID for replay protection. Scoped to (agent_id, skill)."),
@@ -196,6 +218,8 @@ class UpdateSubscriptionInput(BaseModel):
 
 class UpdateSubscriptionOutput(BaseModel):
     """Output for the update_subscription transactional tool."""
+
+    model_config = ConfigDict(frozen=True)
 
     subscription_id: Annotated[
         str,
@@ -218,6 +242,8 @@ class UpdateSubscriptionOutput(BaseModel):
 
 class BookSlotInput(BaseModel):
     """Input for the book_slot transactional tool."""
+
+    model_config = ConfigDict(frozen=True)
 
     idempotency_key: Annotated[
         str,
@@ -244,6 +270,8 @@ class BookSlotInput(BaseModel):
 class BookSlotOutput(BaseModel):
     """Output for the book_slot transactional tool."""
 
+    model_config = ConfigDict(frozen=True)
+
     booking_id: Annotated[
         str,
         Field(description="Platform-assigned booking identifier."),
@@ -266,6 +294,8 @@ class BookSlotOutput(BaseModel):
 class UpdateCustomerRecordInput(BaseModel):
     """Input for the update_customer_record transactional tool."""
 
+    model_config = ConfigDict(frozen=True)
+
     idempotency_key: Annotated[
         str,
         Field(description="Client-generated UUID for replay protection. Scoped to (agent_id, skill)."),
@@ -287,6 +317,8 @@ class UpdateCustomerRecordInput(BaseModel):
 
 class UpdateCustomerRecordOutput(BaseModel):
     """Output for the update_customer_record transactional tool."""
+
+    model_config = ConfigDict(frozen=True)
 
     record_id: Annotated[
         str,
@@ -315,6 +347,8 @@ class ConfirmActionInput(BaseModel):
     directly execute a provider action, hence mutating=False.
     """
 
+    model_config = ConfigDict(frozen=True)
+
     skill: Annotated[
         str,
         Field(description="Canonical skill name of the action being confirmed (e.g. 'place_order')."),
@@ -332,6 +366,8 @@ class ConfirmActionInput(BaseModel):
 
 class ConfirmActionOutput(BaseModel):
     """Output for the confirm_action tool."""
+
+    model_config = ConfigDict(frozen=True)
 
     confirmation_id: Annotated[
         str,
