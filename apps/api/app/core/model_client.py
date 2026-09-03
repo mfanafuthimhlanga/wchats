@@ -441,16 +441,22 @@ PURPOSE_ROUTES: Mapping[str, ModelRoute] = MappingProxyType({
     # the owner's labels (#58) built its own Anthropic client under `tests/`, so
     # it left no row and #153 did not reach it.
     #
-    # `_LUNA` AND NOT `_JUDGE`, which is the row a reader expects on a judge. The
-    # five `_JUDGE` purposes reach the wire through instructor, which turns the
-    # route's effort into a default the SDK fills in. This one forces a tool over
-    # `chat.completions.create`, the raw path, and `_check_raw_purpose` refuses an
-    # effort-bearing route there because a raw client sends no effort field.
-    # OBSERVED 2026-09-03: `make_client("judge_faithfulness", ...)` raises
-    # `EffortNeedsInstructor`. So `_JUDGE` here would raise before the first
-    # verdict of every calibration run. `tests/evals/judge.py` reports no
-    # `JudgeIdentity` for the same reason and says so in its own docstring; #58 is
-    # where an effort is chosen for this judge and the identity becomes real.
+    # `_LUNA` AND NOT `_JUDGE`, and #154 chose the raw path rather than being
+    # forced onto it. `_check_raw_purpose` does refuse an effort-bearing route on
+    # the raw client `tests/evals/judge.py` builds (OBSERVED 2026-09-03:
+    # `make_client("judge_faithfulness", ...)` raises `EffortNeedsInstructor`),
+    # yet this repo keeps an effort on the wire two other ways: through
+    # `make_instructor_client`, which stores the route's effort as a default that
+    # a `response_model=None` call still carries while returning a raw
+    # completion, and through `agent_loop._request_kwargs`, which writes
+    # `route.reasoning_effort` onto every body it builds. The choice costs a
+    # measurement, because the five production judges run at effort `none` (the
+    # figure decision #34 priced) while this one runs at Luna's provider default,
+    # so a calibration run measures a judge at a different effort from the judges
+    # it calibrates and its per-verdict cost for #60 is a number nobody chose.
+    # Routing this purpose at `_JUDGE` and building the judge through
+    # `LedgerContext.instructor_client` is the alternative, once #58 decides which
+    # judge the calibration is of.
     "calibration_judge": _LUNA,
 })
 

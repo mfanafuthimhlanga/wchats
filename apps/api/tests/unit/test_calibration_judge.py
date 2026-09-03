@@ -214,18 +214,27 @@ class TestTheRouteThisJudgeRunsOn:
         assert route.model
 
     def test_the_route_names_no_effort_so_the_raw_client_can_serve_it(self):
-        """OBSERVED 2026-09-03: `make_client("judge_faithfulness", ...)` raises
+        """The route names no effort because #154 chose the raw path, not because
+        the raw path was the only one.
+
+        OBSERVED 2026-09-03: `make_client("judge_faithfulness", ...)` raises
         `EffortNeedsInstructor: Purpose 'judge_faithfulness' runs at reasoning
-        effort 'none', which a raw client sends no field for.`
+        effort 'none', which a raw client sends no field for.` This judge forces
+        a tool over `chat.completions.create`, which is that raw path, so
+        `_JUDGE` as written would raise before a run's first verdict. The repo
+        keeps an effort on the wire two other ways all the same:
+        `make_instructor_client` stores it as a default that a
+        `response_model=None` call still carries, and
+        `agent_loop._request_kwargs` writes it onto every body it builds.
 
-        The five Ragas judges route to `_JUDGE`, which names effort `none`, and
-        `_check_raw_purpose` refuses that route on the raw path because a raw
-        client drops the field. This judge forces a tool over
-        `chat.completions.create`, which is the raw path, so an effort-bearing
-        route would make every calibration run raise before its first verdict.
-
-        `judge_identity()` returns None for the same reason and says so, which is
-        the state #58 changes deliberately rather than by a route edit here.
+        The choice costs a measurement, because the five production judges run at
+        effort `none` (the figure decision #34 priced) while this one runs at
+        Luna's provider default, so a calibration run measures a judge at a
+        different effort from the judges it calibrates and its per-verdict cost
+        for #60 is a number nobody chose. `judge_identity()` returns None for the
+        same reason. Routing this purpose at `_JUDGE` through
+        `LedgerContext.instructor_client` is the alternative, once #58 decides
+        which judge the calibration is of.
         """
         assert route_for("calibration_judge").reasoning_effort is None
 
