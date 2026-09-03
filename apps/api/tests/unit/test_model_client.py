@@ -854,6 +854,10 @@ EVERY_PURPOSE = [
     # against a model no route named, so a checklist run could not report what
     # its own assessment cost. It bills like everything else now.
     "deployment_orchestrator",
+    # Ticket #154. The judge the calibration harness correlates against the
+    # owner's labels lives under `tests/`, which is why #153 stopped short of it
+    # and it kept building its own Anthropic client.
+    "calibration_judge",
 ]
 
 #: The purposes decision #34 priced at effort `none`.

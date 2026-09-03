@@ -437,6 +437,21 @@ PURPOSE_ROUTES: Mapping[str, ModelRoute] = MappingProxyType({
     "strategist": _LUNA,
     "gatekeeper": _LUNA,
     "auditor": _LUNA,
+    # Added by ticket #154. The judge the calibration harness correlates against
+    # the owner's labels (#58) built its own Anthropic client under `tests/`, so
+    # it left no row and #153 did not reach it.
+    #
+    # `_LUNA` AND NOT `_JUDGE`, which is the row a reader expects on a judge. The
+    # five `_JUDGE` purposes reach the wire through instructor, which turns the
+    # route's effort into a default the SDK fills in. This one forces a tool over
+    # `chat.completions.create`, the raw path, and `_check_raw_purpose` refuses an
+    # effort-bearing route there because a raw client sends no effort field.
+    # OBSERVED 2026-09-03: `make_client("judge_faithfulness", ...)` raises
+    # `EffortNeedsInstructor`. So `_JUDGE` here would raise before the first
+    # verdict of every calibration run. `tests/evals/judge.py` reports no
+    # `JudgeIdentity` for the same reason and says so in its own docstring; #58 is
+    # where an effort is chosen for this judge and the identity becomes real.
+    "calibration_judge": _LUNA,
 })
 
 
