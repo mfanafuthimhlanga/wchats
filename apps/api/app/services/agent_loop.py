@@ -99,7 +99,7 @@ from app.services.agent_tools import (
     reset_side_effect_context,
 )
 from app.services.escalation import send_escalation_email
-from app.services.events import emit
+from app.services.events import emit_async
 from app.services.tool_loop import (
     assistant_turn,
     dispatch,
@@ -648,15 +648,19 @@ async def _run_tool_call(call, *, messages, state, turn, job_id, db, redis) -> N
     MORE: `retrieval_eval.run_retrieval_faithfulness` scored that 200-character
     string as retrieved context until #81 and #84 pointed it at the chunks
     `_persist_messages` stores.
+
+    `emit_async`, not `emit`: both events are written from inside the async body
+    the customer is waiting on, and each committed to Neon on this thread until
+    #86. The Redis publish still happens here; only the durable write moves.
     """
     name = call.function.name
     args, refusal = tool_arguments(name, call.function.arguments)
-    emit(job_id, "agent.tool_call", {"tool_name": name, "input": args}, db, redis)
+    await emit_async(job_id, "agent.tool_call", {"tool_name": name, "input": args}, db, redis)
     wire = refusal if refusal is not None else await dispatch(turn.tools, name, args)
     _note_escalation(state, name, args, wire)
     text = wire_text(wire)
     messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
-    emit(job_id, "agent.tool_result", {"tool_name": name, "summary": text[:200]}, db, redis)
+    await emit_async(job_id, "agent.tool_result", {"tool_name": name, "summary": text[:200]}, db, redis)
     state.tool_calls_log.append(_log_entry(name, args, call.id, wire, text))
 
 
@@ -814,8 +818,9 @@ async def run_agent_loop(message: str, *, history, turn: AgentTurn, job_id, db, 
                  keeps session state in `conversations` and `messages`.
         turn:    what `build_agent_turn` assembled.
         job_id:  Celery job id, the SSE channel these events reach.
-        db:      SQLAlchemy sync Session, for `emit`.
-        redis:   sync Redis client, for `emit`.
+        db:      sync Session, for `emit_async`. One write at a time, on a worker
+                 thread, so nothing else may touch it while a tool call runs (#86).
+        redis:   sync Redis client, for `emit_async`. Published on this thread.
 
     Returns:
         response_text, tool_calls_log, escalated, escalation_reason, escalation_context,

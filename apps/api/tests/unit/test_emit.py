@@ -15,6 +15,7 @@ Tests:
 import base64
 import json
 import os
+import threading
 from datetime import datetime
 from unittest.mock import MagicMock
 from uuid import uuid4
@@ -26,7 +27,7 @@ os.environ.setdefault("CONTROL_DB_URL", "postgresql+asyncpg://user:pass@localhos
 os.environ.setdefault("CONTROL_DB_SYNC_URL", "postgresql://user:pass@localhost/testdb")
 os.environ.setdefault("ADMIN_KEY", "test_admin")
 
-from app.services.events import emit  # noqa: E402
+from app.services.events import emit, emit_async  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -222,3 +223,91 @@ class TestEmitEdgeCases:
         job_id, mock_db, mock_redis = make_mocks()
         result = emit(job_id, "job.started", {}, mock_db, mock_redis)
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# emit_async — the same event, for a caller on an event loop (#86)
+# ---------------------------------------------------------------------------
+
+
+class TestEmitAsync:
+    """emit_async is emit with one line moved: the durable write runs in a thread.
+
+    A Celery task holds a sync Session and a sync Redis client, so both halves of
+    emit block. Inside `run_agent_loop` that blocking happens on the loop the
+    customer's turn is running on, and the control DB is Neon.
+    """
+
+    async def test_commits_exactly_once(self):
+        job_id, mock_db, mock_redis = make_mocks()
+        await emit_async(job_id, "agent.tool_call", {"tool_name": "retrieve"}, mock_db, mock_redis)
+        mock_db.add.assert_called_once()
+        mock_db.commit.assert_called_once()
+
+    async def test_the_write_runs_off_the_calling_thread(self):
+        job_id, mock_db, mock_redis = make_mocks()
+        seen: list[int] = []
+        mock_db.commit.side_effect = lambda: seen.append(threading.get_ident())
+
+        await emit_async(job_id, "agent.tool_call", {}, mock_db, mock_redis)
+
+        assert seen and seen[0] != threading.get_ident(), (
+            "the commit ran on the caller's thread, so a Neon round trip still "
+            "blocks the event loop"
+        )
+
+    async def test_the_publish_stays_on_the_calling_thread(self):
+        job_id, mock_db, mock_redis = make_mocks()
+        seen: list[int] = []
+        mock_redis.publish.side_effect = lambda *a: seen.append(threading.get_ident())
+
+        await emit_async(job_id, "agent.tool_call", {}, mock_db, mock_redis)
+
+        assert seen == [threading.get_ident()], (
+            "the Redis publish moved off the caller's thread; live SSE delivery is "
+            "the half that must not wait on a hop"
+        )
+
+    async def test_publishes_before_it_persists(self):
+        """WR-05, unchanged by the offload: a Redis failure must leave no row.
+
+        Redis first means a raise there happens before any commit, so a retry of
+        the task cannot produce a duplicate job_events row.
+        """
+        job_id, mock_db, mock_redis = make_mocks()
+        order: list[str] = []
+        mock_redis.publish.side_effect = lambda *a: order.append("publish")
+        mock_db.commit.side_effect = lambda: order.append("commit")
+
+        await emit_async(job_id, "agent.tool_result", {}, mock_db, mock_redis)
+
+        assert order == ["publish", "commit"]
+
+    async def test_writes_the_same_row_emit_writes(self):
+        """One event shape, two entry points. A drifting pair is two vocabularies."""
+        from app.models.job_event import JobEvent
+
+        job_id, sync_db, sync_redis = make_mocks()
+        emit(job_id, "agent.tool_call", {"tool_name": "retrieve"}, sync_db, sync_redis)
+        sync_row = sync_db.add.call_args[0][0]
+
+        _, async_db, async_redis = make_mocks()
+        await emit_async(
+            job_id, "agent.tool_call", {"tool_name": "retrieve"}, async_db, async_redis
+        )
+        async_row = async_db.add.call_args[0][0]
+
+        assert isinstance(async_row, JobEvent)
+        assert (async_row.job_id, async_row.event_type) == (
+            sync_row.job_id,
+            sync_row.event_type,
+        )
+        assert set(async_row.payload) == set(sync_row.payload)
+
+    async def test_does_not_mutate_the_callers_dict(self):
+        job_id, mock_db, mock_redis = make_mocks()
+        original = {"tool_name": "retrieve"}
+
+        await emit_async(job_id, "agent.tool_call", original, mock_db, mock_redis)
+
+        assert "at" not in original

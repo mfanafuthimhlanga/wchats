@@ -268,8 +268,8 @@ def _failure_of(exc: BaseException) -> tuple[str, str]:
 class _EvalEventSink:
     """The db/redis double `run_agent_loop` emits SSE events through.
 
-    `run_agent_loop` calls `emit(job_id, "agent.tool_call", …, db, redis)` for
-    every tool use it observes. On the chat path those rows are the durable
+    `run_agent_loop` calls `emit_async(job_id, "agent.tool_call", …, db, redis)`
+    for every tool use it observes. On the chat path those rows are the durable
     replay log a late-joining widget reads. On the eval path there is no widget,
     no SSE subscriber and — this is the part that matters — NO `jobs` ROW: the
     job_id is synthesised per scenario. Writing sixty scenarios' worth of
@@ -279,8 +279,10 @@ class _EvalEventSink:
     table over.
 
     So the events are dropped, deliberately and visibly, rather than persisted
-    to a place nothing will ever read them from. `emit` is unchanged: it still
-    publishes and still commits, into this.
+    to a place nothing will ever read them from. `emit_async` is unchanged: it
+    still publishes and still commits, into this. Since #86 the `add`/`commit`
+    half runs on a worker thread, which costs this double nothing — both methods
+    return immediately and the loop's tool calls are sequential awaits.
 
     This is the SSE/persistence divergence the plan named as inherent to
     approach (b) — "Persistence and SSE differ by design" — and it is confined
