@@ -29,12 +29,17 @@ Schema contract:
     both the SDK input_schema and the A2A manifest.
 
 Immutability (decision #7 on map #4, issue #72):
-  - Every model is frozen. An argument object that can be rewritten after
-    validation is validated in name only: what the capability envelope checked,
-    what the enforcement path checked and what the audit row recorded could all
-    disagree with what the adapter finally sends.
+  - Every model is frozen, so attribute assignment after validation raises.
+    Without that, what the capability envelope checked, what the enforcement
+    path checked and what the audit row recorded could all disagree with what
+    the adapter finally sends. The guarantee is the assignment syntax:
+    object.__setattr__ and __dict__ writes still get through, as pydantic
+    documents, so a reviewer reads those two spellings as the mutation they are.
   - A caller that needs a different value builds a new object with
     model_copy(update=...), which the next check sees.
+  - Frozen models are hashable, so two equal instances collapse to one set
+    member. Nothing keys a set or dict on one today; a future dedupe will work
+    where it used to raise, which is worth knowing when reading one.
 """
 
 from __future__ import annotations
