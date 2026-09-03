@@ -84,19 +84,23 @@ def tool_call(name: str, arguments: dict, call_id: str = "call_1"):
     )
 
 
-def completion(*, content=None, tool_calls=None, finish_reason="stop", parsed=None):
+def completion(
+    *, content=None, tool_calls=None, finish_reason="stop", parsed=None, refusal=None
+):
     """One chat completion, shaped the way the OpenAI SDK hands one back.
 
     `parsed` is what `chat.completions.parse` fills in and `create` leaves at
     None. `finish_reason` is `"length"` when the model hit the token ceiling,
-    which is the Auditor's truncation signal.
+    which is the truncation signal every forced-tool site reads. `refusal` is the
+    sentence the model returns instead of the schema when it declines, and it is
+    the only place the reason for an empty `parsed` is written down.
     """
     message = SimpleNamespace(
         role="assistant",
         content=content,
         tool_calls=tool_calls,
         parsed=parsed,
-        refusal=None,
+        refusal=refusal,
     )
     choice = SimpleNamespace(index=0, message=message, finish_reason=finish_reason)
     return SimpleNamespace(choices=[choice])

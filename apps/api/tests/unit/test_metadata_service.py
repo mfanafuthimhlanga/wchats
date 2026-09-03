@@ -433,3 +433,61 @@ def test_enrich_chunks_batch_auth_error_is_fatal():
     assert call_count == 1, (
         f"AuthenticationError must NOT retry; expected 1 call, got {call_count}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The refusal is the reason. Both parse sites have to carry it.
+#
+# `chat.completions.parse` returns `parsed=None` for two different events: the
+# model declined, and something else went wrong. When it declined it writes the
+# reason into `message.refusal`, and that string is the ONLY record of it. The
+# body carries no other trace. Raising "returned no parsed output" over the top
+# of it turns a content-policy refusal, which is a prompt or a corpus problem,
+# into an unexplained empty result, which reads as a provider problem. The chunk
+# it happened to is then re-enriched on the next run and refused again.
+# ---------------------------------------------------------------------------
+
+
+def test_enrich_chunk_error_carries_the_models_refusal():
+    from app.services.metadata_service import enrich_chunk
+
+    mock_client = MagicMock()
+    with factory(mock_client):
+        mock_client.chat.completions.parse.return_value = completion(
+            parsed=None, refusal="content policy"
+        )
+        with pytest.raises(ValueError) as exc_info:
+            enrich_chunk("Some chunk text.", ledger())
+
+    assert "content policy" in str(exc_info.value), (
+        "the error drops `message.refusal`, which is the only place the model "
+        f"wrote down why it declined. error={str(exc_info.value)!r}"
+    )
+
+
+def test_enrich_chunks_batch_error_carries_the_models_refusal():
+    from app.services.metadata_service import enrich_chunks_batch
+
+    mock_client = MagicMock()
+    with factory(mock_client):
+        mock_client.chat.completions.parse.return_value = completion(
+            parsed=None, refusal="content policy"
+        )
+        with pytest.raises(ValueError) as exc_info:
+            enrich_chunks_batch(["chunk one", "chunk two"], ledger())
+
+    assert "content policy" in str(exc_info.value), (
+        "the batch error drops `message.refusal`, so a refusal that stopped ten "
+        f"chunks at once is unexplained. error={str(exc_info.value)!r}"
+    )
+
+
+def test_a_parse_failure_with_no_refusal_still_says_what_happened():
+    """`parsed is None` with no refusal is a different event and keeps its own text."""
+    from app.services.metadata_service import enrich_chunk
+
+    mock_client = MagicMock()
+    with factory(mock_client):
+        mock_client.chat.completions.parse.return_value = completion(parsed=None)
+        with pytest.raises(ValueError, match="no parsed output"):
+            enrich_chunk("Some chunk text.", ledger())

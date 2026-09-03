@@ -100,6 +100,21 @@ class ChunkMetadataAndEntities(BaseModel):
     entities: list[EntityExtraction]
 
 
+def _why(choice) -> str:
+    """The model's own reason for an empty `parsed`, or nothing when it gave none.
+
+    `chat.completions.parse` leaves `parsed` at None for two different events. The
+    model declined, and it wrote the reason into `message.refusal`; or something
+    else went wrong and there is no reason to read. That refusal string is the
+    only record the body carries, so an error raised over the top of it turns a
+    content-policy refusal, which is a prompt or a corpus problem, into an
+    unexplained empty result, which reads as a provider problem. The chunk is then
+    re-enriched on the next run and refused again.
+    """
+    refusal = None if choice is None else getattr(choice.message, "refusal", None)
+    return f": the model refused, saying {refusal!r}" if refusal else ""
+
+
 @retry(
     wait=wait_exponential(multiplier=1, min=2, max=30),
     stop=stop_after_attempt(5),
@@ -144,7 +159,7 @@ def enrich_chunk(text: str, ledger: LedgerContext) -> ChunkMetadataAndEntities:
     choice = first_choice(result)
     parsed = None if choice is None else choice.message.parsed
     if parsed is None:
-        raise ValueError("Metadata extraction returned no parsed output")
+        raise ValueError(f"Metadata extraction returned no parsed output{_why(choice)}")
     return parsed
 
 
@@ -243,7 +258,9 @@ def enrich_chunks_batch(
     choice = first_choice(result)
     batch = None if choice is None else choice.message.parsed
     if batch is None:
-        raise ValueError("Batch metadata extraction returned no parsed output")
+        raise ValueError(
+            f"Batch metadata extraction returned no parsed output{_why(choice)}"
+        )
     if len(batch.chunks) != len(texts):
         raise ValueError(
             f"Batch size mismatch: sent {len(texts)} chunks, got {len(batch.chunks)} results"
