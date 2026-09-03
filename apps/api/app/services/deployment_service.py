@@ -166,6 +166,17 @@ RED_TEAM_SIGNAL_RUN_FAILED = "run_failed"
 # not see finish, closes the other half.
 RED_TEAM_SIGNAL_DID_NOT_FINISH = "did_not_finish"
 
+#: Whether the verified-QA figures were read at all (#121, #131). The two
+#: knowledge collectors carry the same signal vocabulary the two gated ones
+#: already carry, for the same reason: a collector that never executed must
+#: not answer in the vocabulary of one that did.
+VERIFIED_QA_SIGNAL_MEASURED = "measured"
+VERIFIED_QA_SIGNAL_UNAVAILABLE = "unavailable"
+
+#: The same pair for the corpus counts.
+CORPUS_SIGNAL_MEASURED = "measured"
+CORPUS_SIGNAL_UNAVAILABLE = "unavailable"
+
 # The only state either signal may be in for `ship` to survive the gate.
 SHIPPABLE_SIGNAL = "measured"
 
@@ -280,7 +291,12 @@ whether the coverage figures came from the run itself ('run') or describe what
 today's code can test ('current_build'), which may not be what that run tested.
 
 verified_qa_stats and corpus_stats are how much verified knowledge the agent has
-to answer from.
+to answer from. Each carries a `signal`, and every figure beside it is null when
+that signal is not 'measured' — the platform could not reach the tenant's own
+database, so say that rather than describing an empty knowledge base.
+`row_count` is a count and is real at nought, but `avg_faithfulness` and
+`avg_relevance` are null whenever there were no pairs to average, and a null
+average is unknown rather than a low score.
 
 blast_radius is what the agent is authorized to spend and what it has actually
 spent. Keep the configured ceiling and the observed maximum as two separate
@@ -1555,39 +1571,105 @@ def _fetch_red_team_summary_sync(agent_id: str, conn_str: str) -> dict:
         conn.close()
 
 
+def _verified_qa_stats(
+    signal: str,
+    *,
+    row_count: int | None = None,
+    avg_faithfulness: float | None = None,
+    avg_relevance: float | None = None,
+    detail: str | None = None,
+) -> dict:
+    """Build the verified-QA payload, in which a count and an average differ.
+
+    A COUNT over an empty table is a reading. Nought verified pairs is a fact
+    about the tenant, and derive_quality_warnings is right to warn on it. An
+    AVERAGE over those nought rows is not a reading at all, and the shipped
+    `COALESCE(AVG(faithfulness), 0.0)` published it as a score of nought (#121),
+    which is the one thing a faithfulness of 0.0 can never mean.
+
+    So the count travels whenever the query executed, and the averages travel
+    only when there were rows to average. Outside VERIFIED_QA_SIGNAL_MEASURED
+    nothing travels: the read did not happen, and a metric over zero valid
+    observations is unknown rather than a number.
+    """
+    measured = signal == VERIFIED_QA_SIGNAL_MEASURED
+    averaged = measured and bool(row_count)
+    return {
+        "signal": signal,
+        "signal_detail": detail,
+        "row_count": row_count if measured else None,
+        "avg_faithfulness": avg_faithfulness if averaged else None,
+        "avg_relevance": avg_relevance if averaged else None,
+    }
+
+
+def _corpus_stats(
+    signal: str,
+    *,
+    document_count: int | None = None,
+    chunk_count: int | None = None,
+    last_ingested_at: str | None = None,
+    detail: str | None = None,
+) -> dict:
+    """Build the corpus payload. Every figure is a count, so measured decides.
+
+    A count is a reading at nought, which is why this collector's own body has
+    no honest-absence branch. The dishonest state was the Celery task's outage
+    fallback (#131): it claimed nought documents about a tenant DB nobody
+    reached, and the deploy page rendered that as an empty knowledge base.
+    """
+    measured = signal == CORPUS_SIGNAL_MEASURED
+    return {
+        "signal": signal,
+        "signal_detail": detail,
+        "document_count": document_count if measured else None,
+        "chunk_count": chunk_count if measured else None,
+        "last_ingested_at": last_ingested_at if measured else None,
+    }
+
+
 def _fetch_verified_qa_stats_sync(agent_id: str, conn_str: str) -> dict:
-    """Fetch row count and average scores from the tenant DB verified_qa table.
+    """Row count and average scores from the tenant DB verified_qa table.
 
-    Columns are 'faithfulness' and 'relevance' (see alembic_tenant migration 0005).
-    Falls back gracefully if the table doesn't exist or has no rows.
+    Columns are 'faithfulness' and 'relevance' (see alembic_tenant migration
+    0005). AVG is read raw: a NULL, whether from an empty table or from rows
+    nobody scored, arrives as None and stays None all the way to the report.
 
-    Returns dict with keys: row_count, avg_faithfulness, avg_relevance.
+    A read that never executed answers VERIFIED_QA_SIGNAL_UNAVAILABLE and counts
+    nothing. It used to answer with the same zeros an empty table produced, so a
+    missing verified_qa table and a tenant who has written no pairs were one
+    value to every reader downstream.
     """
     conn = psycopg2.connect(conn_str, connect_timeout=10)
     try:
         with conn.cursor() as cur:
             try:
                 cur.execute(
-                    "SELECT COUNT(*), "
-                    "COALESCE(AVG(faithfulness), 0.0), "
-                    "COALESCE(AVG(relevance), 0.0) "
+                    "SELECT COUNT(*), AVG(faithfulness), AVG(relevance) "
                     "FROM verified_qa"
                 )
                 row = cur.fetchone()
-                if row is None or row[0] == 0:
-                    return {"row_count": 0, "avg_faithfulness": 0.0, "avg_relevance": 0.0}
-                return {
-                    "row_count": int(row[0]),
-                    "avg_faithfulness": float(row[1]),
-                    "avg_relevance": float(row[2]),
-                }
+                if row is None:
+                    return _verified_qa_stats(
+                        VERIFIED_QA_SIGNAL_UNAVAILABLE,
+                        detail="the verified_qa aggregate returned no row",
+                    )
+                return _verified_qa_stats(
+                    VERIFIED_QA_SIGNAL_MEASURED,
+                    row_count=int(row[0]),
+                    avg_faithfulness=None if row[1] is None else float(row[1]),
+                    avg_relevance=None if row[2] is None else float(row[2]),
+                )
             except Exception as exc:
                 log.warning(
                     "deployment_service.verified_qa_stats.query_failed",
                     agent_id=agent_id,
                     error=str(exc),
                 )
-                return {"row_count": 0, "avg_faithfulness": 0.0, "avg_relevance": 0.0}
+                return _verified_qa_stats(
+                    VERIFIED_QA_SIGNAL_UNAVAILABLE,
+                    detail=f"the verified_qa read failed: {type(exc).__name__}",
+                )
     finally:
         conn.close()
 
@@ -1595,7 +1677,9 @@ def _fetch_verified_qa_stats_sync(agent_id: str, conn_str: str) -> dict:
 def _fetch_corpus_stats_sync(agent_id: str, conn_str: str) -> dict:
     """Fetch document and chunk counts from the tenant DB.
 
-    Returns dict with keys: document_count, chunk_count, last_ingested_at.
+    Three counts, all of them readings at nought, so this body has one outcome.
+    The signal is on the payload for the Celery task's outage fallback to answer
+    with, and for a reader that must tell nought documents from no read at all.
     """
     conn = psycopg2.connect(conn_str, connect_timeout=10)
     try:
@@ -1614,11 +1698,12 @@ def _fetch_corpus_stats_sync(agent_id: str, conn_str: str) -> dict:
                 ts_row[0].isoformat() if ts_row and ts_row[0] else None
             )
 
-            return {
-                "document_count": document_count,
-                "chunk_count": chunk_count,
-                "last_ingested_at": last_ingested_at,
-            }
+            return _corpus_stats(
+                CORPUS_SIGNAL_MEASURED,
+                document_count=document_count,
+                chunk_count=chunk_count,
+                last_ingested_at=last_ingested_at,
+            )
     finally:
         conn.close()
 
@@ -1915,6 +2000,21 @@ EVAL_SUMMARY_UNAVAILABLE_SIGNAL: dict = _eval_summary(
 RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL: dict = _red_team_summary(
     RED_TEAM_SIGNAL_UNAVAILABLE,
     detail="the red-team signal collector raised",
+)
+
+# The last two plausible zeros in the substitution set (#131). These two gate
+# nothing, which is why they outlived the gated pair, but they are read by the
+# owner's report and by derive_quality_warnings, and
+# `{"row_count": 0, "avg_faithfulness": 0.0, "avg_relevance": 0.0}` told both
+# that a tenant DB nobody reached holds no reviewed answers scoring nought.
+VERIFIED_QA_STATS_UNAVAILABLE_SIGNAL: dict = _verified_qa_stats(
+    VERIFIED_QA_SIGNAL_UNAVAILABLE,
+    detail="the verified-QA collector raised",
+)
+
+CORPUS_STATS_UNAVAILABLE_SIGNAL: dict = _corpus_stats(
+    CORPUS_SIGNAL_UNAVAILABLE,
+    detail="the corpus collector raised",
 )
 
 
@@ -2746,59 +2846,96 @@ VERIFIED_QA_DEPTH_FLOOR = 50
 RED_TEAM_MEDIUM_WARN_ABOVE = 2
 
 
+def _verified_qa_unavailable_warning() -> DeploymentWarning:
+    """The knowledge collector could not read the tenant DB (#131).
+
+    A DISTINCT warning_id because it is a distinct remedy, which is the split
+    this module already makes between eval_never_run and eval_signal_unavailable:
+    "write more verified pairs" and "try again in a few minutes" are different
+    instructions, and the outage used to arrive under the first one.
+    """
+    return DeploymentWarning(
+        warning_id="verified_qa_unavailable",
+        category="knowledge_depth",
+        message=(
+            "We could not read how many reviewed question-and-answer pairs "
+            "this agent has to draw on, so this launch is going ahead without "
+            "knowing that. Nothing here says the number is low, only that "
+            "nobody could count it."
+        ),
+        severity_level="warning",
+    )
+
+
+def _verified_qa_low_count_warning(row_count: int) -> DeploymentWarning:
+    """A corpus that WAS counted and came in under the floor."""
+    return DeploymentWarning(
+        warning_id="verified_qa_low_count",
+        category="knowledge_depth",
+        message=(
+            f"This agent has {row_count} reviewed question-and-answer "
+            f"pair(s) to draw on, fewer than the "
+            f"{VERIFIED_QA_DEPTH_FLOOR} we look for, so it will be "
+            "working things out from your documents more often than "
+            "repeating an answer you have already approved."
+        ),
+        severity_level="warning",
+    )
+
+
+def _red_team_medium_warning(medium_count: int) -> DeploymentWarning:
+    """Open moderate findings from a run that measured something."""
+    return DeploymentWarning(
+        warning_id="red_team_medium_findings",
+        category="security",
+        message=(
+            f"The security check left {medium_count} moderate "
+            "finding(s) open. None of them stops the launch, and "
+            "each is worth reading on the Security page before you "
+            "approve it."
+        ),
+        severity_level="warning",
+    )
+
+
 def derive_quality_warnings(
     verified_qa_stats: dict, red_team_summary: dict
 ) -> list[DeploymentWarning]:
-    """The two prompt-era warn conditions `decide()` cannot see. Never blocking.
+    """The prompt-era warn conditions `decide()` cannot see. Never blocking.
 
-    Pure. Neither condition is about the run's own result, so neither belongs in
-    the rule table: `decide()` reads an EvalResult, a RedTeamResult and a
+    Pure. None of these is about the run's own result, so none belongs in the
+    rule table: `decide()` reads an EvalResult, a RedTeamResult and a
     calibration status, and knowledge depth is a property of the tenant's corpus
     while an open medium finding is a property of the findings table rather than
-    of one run. They warn, they are merged by warning_id like every other derived
-    warning, and they change no outcome.
+    of one run. They warn, they are merged by warning_id like every other
+    derived warning, and they change no outcome.
 
-    MEASUREMENT HONESTY GOVERNS BOTH. A medium count is only read when the
+    MEASUREMENT HONESTY GOVERNS ALL THREE. A medium count is only read when the
     security signal says 'measured', because the counts are null in every other
     state and `None > 2` is not a comparison anyone meant to make. A row count is
-    only read when it is an int, because the collector's own failure substitutes
-    a zero and a zero nobody measured is not a small corpus.
+    only read when it is an int, and until #131 that guard could never fire: the
+    collector's outage substituted a zero, which IS an int, so an unreachable
+    tenant DB told the owner their corpus was thin. The outage carries None now,
+    and says so in a warning of its own.
+
+    A payload with no `signal` at all is read as a measurement. That is every
+    report stored before #131, and the one this function is handed by any caller
+    that predates the two knowledge signals.
     """
     warnings: list[DeploymentWarning] = []
 
+    signal = verified_qa_stats.get("signal")
+    if signal is not None and signal != VERIFIED_QA_SIGNAL_MEASURED:
+        warnings.append(_verified_qa_unavailable_warning())
+
     row_count = verified_qa_stats.get("row_count")
     if isinstance(row_count, int) and row_count < VERIFIED_QA_DEPTH_FLOOR:
-        warnings.append(
-            DeploymentWarning(
-                warning_id="verified_qa_low_count",
-                category="knowledge_depth",
-                message=(
-                    f"This agent has {row_count} reviewed question-and-answer "
-                    f"pair(s) to draw on, fewer than the "
-                    f"{VERIFIED_QA_DEPTH_FLOOR} we look for, so it will be "
-                    "working things out from your documents more often than "
-                    "repeating an answer you have already approved."
-                ),
-                severity_level="warning",
-            )
-        )
+        warnings.append(_verified_qa_low_count_warning(row_count))
 
     if red_team_summary.get("signal") == SHIPPABLE_SIGNAL:
         medium_count = red_team_summary.get("medium_count") or 0
         if medium_count > RED_TEAM_MEDIUM_WARN_ABOVE:
-            warnings.append(
-                DeploymentWarning(
-                    warning_id="red_team_medium_findings",
-                    category="security",
-                    message=(
-                        f"The security check left {medium_count} moderate "
-                        "finding(s) open. None of them stops the launch, and "
-                        "each is worth reading on the Security page before you "
-                        "approve it."
-                    ),
-                    severity_level="warning",
-                )
-            )
+            warnings.append(_red_team_medium_warning(medium_count))
 
     return warnings
 

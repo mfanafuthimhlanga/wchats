@@ -101,6 +101,7 @@ from app.services.deployment_service import (
     _fetch_blast_radius_sync,
     _fetch_eval_summary_sync,
     _fetch_red_team_summary_sync,
+    _fetch_verified_qa_stats_sync,
     _resolve_blast_radius_thresholds,
     apply_signal_evidence_gate,
     derive_blast_radius_warnings,
@@ -3689,3 +3690,99 @@ class TestTheCalibrationBlock:
         a token nothing explained."""
         for reason in ABSENT_REASONS:
             assert reason in _DEPLOYMENT_SYSTEM_PROMPT, reason
+
+
+# ---------------------------------------------------------------------------
+# TestVerifiedQaStatsSignal - a corpus nobody counted is not an empty one (#121)
+# ---------------------------------------------------------------------------
+
+
+class TestVerifiedQaStatsSignal:
+    """`_fetch_verified_qa_stats_sync`, where the averages were defaults.
+
+    `COALESCE(AVG(faithfulness), 0.0)` over an empty table returned 0.0 and the
+    except branch returned that same dict, so three different events reached
+    every downstream reader as one value: nobody has written a verified pair,
+    the read never happened, and every pair scored nought.
+    """
+
+    def _stats(self, fetchone_value=None, execute_error=None):
+        conn = _make_psycopg2_conn(fetchone_value=fetchone_value)
+        if execute_error is not None:
+            conn.cursor.return_value.execute.side_effect = execute_error
+        with patch(
+            "app.services.deployment_service.psycopg2.connect", return_value=conn
+        ):
+            return _fetch_verified_qa_stats_sync("agent-1", "postgresql://tenant")
+
+    def test_scored_rows_carry_the_averages_they_were_read_from(self):
+        stats = self._stats(fetchone_value=(12, 0.82, 0.91))
+
+        assert stats["signal"] == "measured"
+        assert stats["row_count"] == 12
+        assert stats["avg_faithfulness"] == pytest.approx(0.82)
+        assert stats["avg_relevance"] == pytest.approx(0.91)
+
+    def test_no_rows_is_a_counted_nought_with_nothing_averaged(self):
+        """The COUNT is a reading even at nought, so it travels. The averages
+        over nought rows are not, and 0.0 asserted a score no pair received."""
+        stats = self._stats(fetchone_value=(0, None, None))
+
+        assert stats["signal"] == "measured"
+        assert stats["row_count"] == 0
+        assert stats["avg_faithfulness"] is None
+        assert stats["avg_relevance"] is None
+
+    def test_rows_that_scored_nothing_average_to_nothing(self):
+        """Pairs exist and none carries a score. AVG is NULL, and the count
+        beside it is what keeps this apart from an empty table."""
+        stats = self._stats(fetchone_value=(7, None, None))
+
+        assert stats["row_count"] == 7
+        assert stats["avg_faithfulness"] is None
+        assert stats["avg_relevance"] is None
+
+    def test_a_read_that_failed_counted_nothing(self):
+        stats = self._stats(
+            execute_error=psycopg2.errors.UndefinedTable("no relation verified_qa")
+        )
+
+        assert stats["signal"] == "unavailable"
+        assert stats["row_count"] is None
+        assert stats["avg_faithfulness"] is None
+        assert stats["avg_relevance"] is None
+
+    def test_an_outage_and_an_empty_table_are_different_values(self):
+        """The defect in one assertion: these used to be the same dict."""
+        assert self._stats(fetchone_value=(0, None, None)) != self._stats(
+            execute_error=psycopg2.errors.UndefinedTable("no relation verified_qa")
+        )
+
+
+class TestAnUnreadVerifiedCorpusIsReportedAsUnread:
+    """derive_quality_warnings is the only reader of these figures, and its
+    row-count guard was written for a None the collector could never hand it."""
+
+    _UNREAD = {"signal": "unavailable", "row_count": None}
+
+    def test_an_unavailable_signal_warns_that_it_was_not_read(self):
+        warnings = derive_quality_warnings(dict(self._UNREAD), _measured_red_team())
+
+        assert [w.warning_id for w in warnings] == ["verified_qa_unavailable"]
+        assert warnings[0].category == "knowledge_depth"
+        assert warnings[0].severity_level == "warning"
+
+    def test_an_unread_corpus_is_never_also_called_a_thin_one(self):
+        ids = [
+            w.warning_id
+            for w in derive_quality_warnings(dict(self._UNREAD), _measured_red_team())
+        ]
+
+        assert "verified_qa_low_count" not in ids
+
+    def test_a_measured_corpus_warns_on_its_depth_and_not_on_the_read(self):
+        warnings = derive_quality_warnings(
+            {"signal": "measured", "row_count": 12}, _measured_red_team()
+        )
+
+        assert [w.warning_id for w in warnings] == ["verified_qa_low_count"]

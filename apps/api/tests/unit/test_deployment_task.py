@@ -2853,3 +2853,117 @@ class TestTheWaitMeasuresItself:
         assert 29.0 <= value <= 40.0, (
             f"thirty seconds of wait must read as about thirty seconds: {value}"
         )
+
+
+class TestTheKnowledgeCollectorsRefuseLikeTheGatedTwo:
+    """#131: `_collected`'s two remaining fallbacks were exact plausible zeros.
+
+    The eval and red-team halves substitute an 'unavailable' signal the evidence
+    gate refuses to ship on. These two substituted
+    `{"row_count": 0, "avg_faithfulness": 0.0, "avg_relevance": 0.0}` and
+    `{"document_count": 0, "chunk_count": 0, "last_ingested_at": None}`, which
+    the owner's report renders as an empty knowledge base rather than as a read
+    that never happened. Driven through the real except path, because the
+    substitution is the thing under test.
+    """
+
+    def _drive(self):
+        from app.services.deployment_service import (
+            BLAST_RADIUS_DEFAULT_SIGNAL as _BLAST_RADIUS_DEFAULT_SIGNAL,
+        )
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        agent_id = str(uuid.uuid4())
+        mock_run_id = str(uuid.uuid4())
+        mock_db, mock_run = _build_full_happy_path_mock_db(mock_run_id)
+        told = {}
+
+        async def _fake_call_orchestrator_async(
+            signals_json, result_container, *, ledger=None
+        ):
+            told.update(json.loads(signals_json))
+            result_container["report"] = {
+                "recommendation": "ship",
+                "summary": "All good.",
+                "warnings": [],
+            }
+
+        with _past_step_3b(), patch(
+            "app.worker.tasks.runtime.deployment.get_sync_db",
+            _make_sync_db_ctx(mock_db),
+        ), patch(
+            "app.worker.tasks.runtime.deployment.fernet_decrypt",
+            return_value="postgresql://test/tenant",
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_eval_summary_sync",
+            return_value=_measured_eval_signal(),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_red_team_summary_sync",
+            return_value=_measured_red_team_signal(),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_verified_qa_stats_sync",
+            side_effect=RuntimeError("tenant DB unreachable"),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_corpus_stats_sync",
+            side_effect=RuntimeError("tenant DB unreachable"),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
+            return_value=dict(_BLAST_RADIUS_DEFAULT_SIGNAL),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._compute_envelope_hash_sync",
+            return_value="test-envelope-hash",
+        ), patch(
+            "app.worker.tasks.runtime.deployment._call_orchestrator_async",
+            side_effect=_fake_call_orchestrator_async,
+        ):
+            result = run_deployment_checklist.run(agent_id=agent_id)
+
+        return result, mock_run, told
+
+    def test_the_verified_qa_outage_is_persisted_as_an_outage(self):
+        _, mock_run, _ = self._drive()
+        stats = mock_run.report["verified_qa_stats"]
+
+        assert stats["signal"] == "unavailable"
+        assert stats["row_count"] is None
+        assert stats["avg_faithfulness"] is None
+        assert stats["avg_relevance"] is None
+
+    def test_the_corpus_outage_is_persisted_as_an_outage(self):
+        _, mock_run, _ = self._drive()
+        stats = mock_run.report["corpus_stats"]
+
+        assert stats["signal"] == "unavailable"
+        assert stats["document_count"] is None
+        assert stats["chunk_count"] is None
+
+    def test_a_reader_can_tell_an_outage_from_a_tenant_that_has_nothing(self):
+        """The zeros a real empty tenant produces, asserted as NOT what an
+        outage writes. This is the whole of #131."""
+        _, mock_run, _ = self._drive()
+
+        assert mock_run.report["verified_qa_stats"] != {
+            "row_count": 0,
+            "avg_faithfulness": 0.0,
+            "avg_relevance": 0.0,
+        }
+        assert mock_run.report["corpus_stats"] != {
+            "document_count": 0,
+            "chunk_count": 0,
+            "last_ingested_at": None,
+        }
+
+    def test_the_outage_reaches_the_owner_as_a_warning(self):
+        _, mock_run, _ = self._drive()
+        ids = [warning["warning_id"] for warning in mock_run.warnings]
+
+        assert "verified_qa_unavailable" in ids
+        assert "verified_qa_low_count" not in ids, (
+            "a corpus nobody counted is not a thin corpus"
+        )
+
+    def test_the_orchestrator_is_told_the_figures_are_absent(self):
+        _, _, told = self._drive()
+
+        assert told["verified_qa_stats"]["row_count"] is None
+        assert told["corpus_stats"]["document_count"] is None
