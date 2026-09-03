@@ -22,7 +22,7 @@ Dual-DB split (PATTERNS.md — non-negotiable):
 
 Flow (run_deployment_checklist):
     1. Fetch agent from control DB; decrypt conn_str
-    2. Idempotency guard — skip if a running checklist_run for this agent exists within 60 min
+    2. Idempotency guard — skip while a 'running' checklist_run for this agent is still beating
     3. Insert checklist_runs row (status='running') in control DB via ORM
     3b. THE CHECKLIST SEQUENCES THE JOBS IT GRADES (#54, decision 19 rule 5).
        Dispatch BOTH the eval chain and a red-team run, then wait for each to
@@ -136,8 +136,8 @@ def _dispatch_eval_run(agent_id: str) -> bool:
 
     AND NO LONGER CONDITIONAL AT ALL (#54). Step 4b chose between those states by
     reading a signal collected BEFORE the dispatch, the ordering the sequencer
-    removes. The spend bound is the checklist's own 60-minute idempotency guard,
-    one eval per agent per hour, tighter than the conditional ever was.
+    removes. The spend bound is the checklist's own idempotency guard, one eval
+    per live checklist chain, tighter than the conditional ever was.
 
     `generate_eval_suite` runs first because a tenant whose scenario generation
     has never run has nothing to evaluate against; both tasks carry their own
@@ -215,8 +215,8 @@ def _continue_wait(agent_id: str, wait_state: object) -> dict | None:
 
     An unreadable continuation stops, and stopping must not leave the row
     'running' forever (#125): when the state still names its run, that run is
-    marked failed so the 60-minute guard frees up. A state too broken to name
-    one is logged and dropped, which is the #125 residual.
+    marked failed so the guard stops reading it as a live chain. A state too
+    broken to name one is logged and dropped, which is the #125 residual.
     """
     try:
         return _require_wait_state(wait_state)
@@ -410,7 +410,7 @@ def _open_wait(run_id: str, agent_id: str, conn_str: str) -> dict:
     flight for the whole wait rather than one after the other.
 
     NO SECOND IDEMPOTENCY GUARD LIVES HERE, and that is deliberate (#85 family).
-    What absorbs a broker redelivery is the 60-minute 'running' checklist_runs
+    What absorbs a broker redelivery is the beating-'running' checklist_runs
     guard in step 2, which is still holding this run's own row for as long as the
     wait lasts. A guard added here would be a second answer to a question step 2
     has already answered, and the two would drift the way the timeout in BACKLOG
@@ -455,8 +455,29 @@ def _poll_wait(agent_id: str, conn_str: str, state: dict) -> dict:
 #: The stretch after the last poll, which beats nothing: five collectors, the two
 #: record reads, the Orchestrator's turn under ORCHESTRATOR_TIMEOUT_S and the
 #: control DB write. Only the turn carries a bound of its own, so this is a budget
-#: rather than a measurement, and it is the grace added to the ceiling below.
+#: rather than a measurement, and it is one of the four terms `_stale_after_s`
+#: sums. The other three are bounds their own modules already state.
 CHECKLIST_DECIDE_GRACE_S = 900
+
+
+def _eval_run_bound_s() -> float:
+    """The wall clock one eval run can spend, from eval.py's own arithmetic.
+
+    Lazy on _dispatch_eval_run's terms: the eval task module pulls in
+    scenario_service and the Neon client, and the `runtime` worker has already
+    imported every task module by the time a checklist pass runs, so this is a
+    dict lookup there rather than a load.
+    """
+    from app.worker.tasks.runtime.eval import eval_run_bound_s  # noqa: PLC0415
+
+    return eval_run_bound_s()
+
+
+def _red_team_run_bound_s() -> float:
+    """The wall clock one red-team run can spend, from red_team.py's own plan."""
+    from app.worker.tasks.runtime.red_team import red_team_run_bound_s  # noqa: PLC0415
+
+    return red_team_run_bound_s()
 
 
 def _stale_after_s() -> float:
@@ -464,21 +485,30 @@ def _stale_after_s() -> float:
 
     ANCHORED ON THE LAST BEAT, NEVER ON created_at (#129). The guard used to read
     a row created more than sixty minutes ago as gone, and a congested chain
-    outlives that: the ceiling caps the observed WAIT at forty-five minutes, but
-    continuations queue behind the eval and red-team turns they are waiting for on
-    the one documented local worker, and the deciding pass adds the Orchestrator's
-    budget after the last poll. Past minute sixty a second trigger found no live
-    row and started a second checklist for the same agent, and both persisted.
+    outlives that. Past minute sixty a second trigger found no live row and
+    started a second checklist for the same agent, and both persisted.
 
-    The chain beats once per pass, so a live chain is never quiet for longer than
-    the gap between two passes, and that gap is bounded by the ceiling itself: a
-    continuation that finally runs past it stops waiting and goes on to collect.
-    The grace covers the only stretch of the chain that beats nothing.
+    THE GAP BETWEEN TWO BEATS IS THE QUEUE WAIT, NOT THE CEILING, and sizing this
+    number on the ceiling is what the guard was still getting wrong. A pass beats
+    when it RUNS, and a continuation cannot run while the eval chain and the
+    red-team run it dispatched hold the `runtime` slots it shares with them: on
+    the documented solo worker that is both job bounds end to end, five times the
+    ceiling-plus-grace this used to return. The guard reaped a chain that was
+    still working, the chain's next write landed on the reaped row, and two
+    checklists ran on one agent again by a different route.
 
-    Derived rather than configured, for the reason BACKLOG 1.33 records: a second
-    number sized by hand beside the ceiling drifts away from it.
+    So the threshold is the sum of what a pass can be made to wait for: the eval
+    invocation bound, the red-team bound, the wait ceiling and the decide grace,
+    each read from the module that owns it. Derived rather than configured, for
+    the reason BACKLOG 1.33 records: a second number sized by hand beside the
+    first drifts away from it.
     """
-    return settings.CHECKLIST_WAIT_CEILING_S + CHECKLIST_DECIDE_GRACE_S
+    return (
+        _eval_run_bound_s()
+        + _red_team_run_bound_s()
+        + settings.CHECKLIST_WAIT_CEILING_S
+        + CHECKLIST_DECIDE_GRACE_S
+    )
 
 
 def _still_beating(run: ChecklistRun, now: datetime) -> bool:
@@ -488,9 +518,12 @@ def _still_beating(run: ChecklistRun, now: datetime) -> bool:
     a first pass between its insert and its first poll looks like. Reading that
     NULL as "abandoned" would reap a run in the middle of opening its own wait.
 
-    Both ends of the comparison are worker clocks. `_beat` stamps
+    A beat is a worker clock on both ends: `_beat` stamps
     `datetime.now(timezone.utc)` and so does the caller, so the only skew that can
-    matter is between two workers, against a grace measured in minutes.
+    matter is between two workers. THE FALLBACK IS NOT. `created_at` carries the
+    table's `now()` server default, so a row that has never beaten is compared
+    across the control database's clock and this worker's, and the threshold
+    absorbs that difference the same way it absorbs a lost pass.
     """
     last_beat = run.heartbeat_at or run.created_at
     return (now - last_beat).total_seconds() < _stale_after_s()
@@ -723,6 +756,12 @@ def _collected(agent_id: str, event: str, fetch, fallback):
 # onboarding flow never routes to. It softens nothing: the gate still blocks on a
 # signal that is not 'measured', because a measurement that was STARTED is not a
 # measurement.
+#
+# `red_team_dispatched` rides on the security signal for the other half of that
+# sentence. Both did_not_finish warnings told the owner the check "was still
+# running when this readiness check gave up waiting", which describes a job the
+# broker refused as one that is working, so the instruction to wait a little
+# while pointed at nothing.
 
 
 def _collect_signals(
@@ -758,6 +797,7 @@ def _collect_signals(
             lambda: _fetch_red_team_summary_sync(agent_id, conn_str),
             lambda: dict(RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL),
         )
+    red_team_summary["red_team_dispatched"] = state["red_team_dispatched"]
 
     return {
         "eval_summary": eval_summary,
@@ -1073,9 +1113,9 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
 
     Sequence:
         1. Fetch agent from control DB; decrypt conn_str at runtime. Every pass.
-        2. Idempotency guard — skip if a 'running' checklist_run for this agent
-           was created within the last 60 minutes. FIRST PASS ONLY: on a
-           continuation the row it would find is this run's own.
+        2. Idempotency guard — skip while a 'running' checklist_run for this
+           agent is still beating. FIRST PASS ONLY: on a continuation the row it
+           would find is this run's own.
         3. Insert checklist_runs row (status='running') in control DB via ORM.
            First pass only, for the same reason.
         3b. First pass: dispatch the eval chain and the red-team run and open the

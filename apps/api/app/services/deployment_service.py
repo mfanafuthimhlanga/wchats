@@ -2309,8 +2309,8 @@ def _never_evaluated_warning(eval_summary: dict) -> DeploymentWarning:
     )
 
 
-def _eval_did_not_finish_warning() -> DeploymentWarning:
-    """The eval half of a ceiling expiry, told as a wait rather than an outage.
+def _eval_did_not_finish_warning(eval_summary: dict) -> DeploymentWarning:
+    """The eval half of a wait that ended with nothing to read.
 
     Distinct from `eval_signal_unavailable` because the remedy is distinct.
     "Your quality results could not be read" sends the owner looking for a
@@ -2318,6 +2318,12 @@ def _eval_did_not_finish_warning() -> DeploymentWarning:
     from `eval_never_run` too: that one says the platform has just started the
     first measurement, and this one says a measurement it started is still
     going.
+
+    AND THE SIGNAL HAS TWO WAYS IN (#130). `eval_summary_did_not_finish` already
+    told the two apart in `signal_detail`, and this message did not: a broker
+    that refused the dispatch was described to the owner as a check that "was
+    still running", so waiting a little while would never produce one. The state
+    field the collector rides carries which one happened.
     """
     return DeploymentWarning(
         warning_id="eval_did_not_finish",
@@ -2327,6 +2333,10 @@ def _eval_did_not_finish_warning() -> DeploymentWarning:
             "readiness check gave up waiting, so there are no results to "
             "approve on yet. The check keeps running on its own; run the "
             "readiness check again in a little while."
+            if eval_summary.get("eval_dispatched") is not False
+            else "The quality check for this agent was never started, so there "
+            "are no results to approve on yet. Run the readiness check again to "
+            "start one."
         ),
         severity_level="warning",
     )
@@ -2365,7 +2375,7 @@ def _eval_evidence_warnings(eval_summary: dict) -> list[DeploymentWarning]:
         elif eval_signal == EVAL_SIGNAL_NO_RUNS:
             warnings.append(_never_evaluated_warning(eval_summary))
         elif eval_signal == EVAL_SIGNAL_DID_NOT_FINISH:
-            warnings.append(_eval_did_not_finish_warning())
+            warnings.append(_eval_did_not_finish_warning(eval_summary))
         else:
             warnings.append(_signal_unavailable_warning(detail))
     elif eval_summary.get("agent_invoked") is not True:
@@ -2386,29 +2396,21 @@ def _eval_evidence_warnings(eval_summary: dict) -> list[DeploymentWarning]:
     return warnings
 
 
-#: The security half's absent states, one warning each, keyed by the signal.
+#: The security half's absent states whose remedy the signal alone decides.
 #:
-#: FOUR ABSENCES WITH FOUR REMEDIES, and telling them apart is the whole table.
-#: "Never security-tested" sends the owner to start a run; "still going when we
-#: gave up waiting" sends them back in half an hour; "stopped before it
-#: finished" says run it again; "could not be read" describes an outage. Every
-#: one of them was reported as a clean measurement at some point in this
-#: module's history, and every one of them blocks.
+#: FIVE ABSENCES WITH FIVE REMEDIES, and telling them apart is the whole point.
+#: "Never security-tested" sends the owner to start a run; "stopped before it
+#: finished" says run it again; "could not be read" describes an outage; and the
+#: did_not_finish signal splits in two on whether the run was ever dispatched,
+#: which is why `_red_team_did_not_finish_warning` composes that pair instead of
+#: this table. Every one of them was reported as a clean measurement at some
+#: point in this module's history, and every one of them blocks.
 _RED_TEAM_ABSENCE_WARNINGS: dict[str, tuple[str, str]] = {
     RED_TEAM_SIGNAL_NO_RUNS: (
         "red_team_never_run",
         "This agent has never been security-tested, so it cannot be approved "
         "for launch yet. Run a red-team check from the Security page and try "
         "again.",
-    ),
-    # The k=3 red-team bound is roughly forty-five minutes, so this is the state
-    # a slow run lands in rather than an exotic one.
-    RED_TEAM_SIGNAL_DID_NOT_FINISH: (
-        "red_team_did_not_finish",
-        "The security check for this agent was still running when this "
-        "readiness check gave up waiting, so its safety cannot be confirmed "
-        "yet. The check keeps running on its own; run the readiness check "
-        "again in a little while.",
     ),
     RED_TEAM_SIGNAL_RUN_FAILED: (
         "red_team_run_failed",
@@ -2428,13 +2430,43 @@ _RED_TEAM_UNREADABLE_WARNING: tuple[str, str] = (
 )
 
 
-def _red_team_evidence_warnings(red_team_signal: object) -> list[DeploymentWarning]:
+def _red_team_did_not_finish_warning(red_team_summary: dict) -> tuple[str, str]:
+    """The security half of a wait that ended with nothing to read, both ways in.
+
+    The k=3 red-team bound is roughly forty-five minutes, so a run this checklist
+    started and did not see finish is the ordinary case rather than an exotic
+    one, and "come back in a little while" is the right instruction for it. A
+    dispatch the broker refused is the other way into the same signal (#130), and
+    it never became a run at all, so telling that owner to wait describes a job
+    nothing is working on.
+    """
+    if red_team_summary.get("red_team_dispatched") is False:
+        return (
+            "red_team_did_not_finish",
+            "The security check for this agent was never started, so its safety "
+            "cannot be confirmed yet. Run the readiness check again to start "
+            "one.",
+        )
+    return (
+        "red_team_did_not_finish",
+        "The security check for this agent was still running when this "
+        "readiness check gave up waiting, so its safety cannot be confirmed "
+        "yet. The check keeps running on its own; run the readiness check "
+        "again in a little while.",
+    )
+
+
+def _red_team_evidence_warnings(red_team_summary: dict) -> list[DeploymentWarning]:
     """The security half's absent states, one warning each. Empty means measured."""
+    red_team_signal = red_team_summary.get("signal")
     if red_team_signal == SHIPPABLE_SIGNAL:
         return []
-    warning_id, message = _RED_TEAM_ABSENCE_WARNINGS.get(
-        red_team_signal, _RED_TEAM_UNREADABLE_WARNING  # type: ignore[call-overload]  # a non-str signal is unhashable-safe here: every produced signal is a str or None
-    )
+    if red_team_signal == RED_TEAM_SIGNAL_DID_NOT_FINISH:
+        warning_id, message = _red_team_did_not_finish_warning(red_team_summary)
+    else:
+        warning_id, message = _RED_TEAM_ABSENCE_WARNINGS.get(
+            red_team_signal, _RED_TEAM_UNREADABLE_WARNING  # type: ignore[call-overload]  # a non-str signal is unhashable-safe here: every produced signal is a str or None
+        )
     return [
         DeploymentWarning(
             warning_id=warning_id,
@@ -2668,7 +2700,7 @@ def apply_signal_evidence_gate(
         warnings.extend(eval_warnings)
 
     red_team_signal = red_team_summary.get("signal")
-    red_team_warnings = _red_team_evidence_warnings(red_team_signal)
+    red_team_warnings = _red_team_evidence_warnings(red_team_summary)
     if red_team_warnings:
         blocked = True
         warnings.extend(red_team_warnings)

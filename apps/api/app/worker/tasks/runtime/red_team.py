@@ -61,6 +61,7 @@ from app.services.agent_tools import (
 )
 from app.services.red_team_probe import _build_transactional_probe_fn
 from app.services.red_team_service import (
+    ATTACKER_LOOP_TIMEOUT_S,
     VectorObservation,
     run_confused_deputy_agent,
     run_content_injection_agent,
@@ -270,6 +271,22 @@ def _vector_plan(probe_fn, transactional_probe_fn, conn_str: str) -> tuple:
         ),
         ("identity_bypass", run_identity_bypass_agent, {"probe_fn": transactional_probe_fn}),
     )
+
+
+def red_team_run_bound_s() -> float:
+    """The wall clock one red-team run can spend: every vector, k attempts, one budget each.
+
+    The three numbers that decide it live in three places, so this multiplies
+    them where they are rather than restating the product. The plan is built with
+    placeholder probes because only its LENGTH is read here: a vector added to or
+    dropped from `_vector_plan` moves this bound on the same edit.
+
+    The deployment checklist reads it. Its continuations queue behind the
+    red-team run it dispatched, so the stale threshold that decides whether that
+    chain is still alive has to outlast this.
+    """
+    plan = _vector_plan(probe_fn=None, transactional_probe_fn=None, conn_str="")
+    return len(plan) * settings.RED_TEAM_ATTEMPTS_PER_VECTOR * ATTACKER_LOOP_TIMEOUT_S
 
 
 def _attempt_every_vector(

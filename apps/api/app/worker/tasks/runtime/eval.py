@@ -219,6 +219,18 @@ def _agent_turn_timeout_s() -> int:
     return AGENT_TURN_TIMEOUT_S
 
 
+def eval_run_bound_s() -> float:
+    """The wall clock one eval run can spend: every scenario, one turn budget each.
+
+    P2 made a run invoke the customer agent once per scenario, so the worst case
+    is the invocation ceiling multiplied by agent.py's per-turn bound. Two callers
+    read it and both would drift if either wrote the product out: the idempotency
+    window below, and the deployment checklist's stale threshold, which has to
+    outlast the run it queues its own continuations behind.
+    """
+    return AGENT_INVOCATION_MAX_CALLS_PER_RUN * _agent_turn_timeout_s()
+
+
 def _failure_of(exc: BaseException) -> tuple[str, str]:
     """One failed turn's class and what this build says about it (#25). Pure.
 
@@ -904,10 +916,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
     # running: two live agents, two sets of turns, two eval_runs rows. Derived
     # from the same two constants the run stamps on itself rather than guessed
     # beside them.
-    idempotency_window_s = (
-        AGENT_INVOCATION_MAX_CALLS_PER_RUN * _agent_turn_timeout_s()
-        + EVAL_RUN_IDEMPOTENCY_SLACK_S
-    )
+    idempotency_window_s = eval_run_bound_s() + EVAL_RUN_IDEMPOTENCY_SLACK_S
     try:
         _check_conn = psycopg2.connect(conn_str, connect_timeout=5)
         try:

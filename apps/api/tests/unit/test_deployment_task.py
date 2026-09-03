@@ -3064,6 +3064,49 @@ class TestTheIdempotencyGuardKeysOnTheRunNotTheClock:
         session.refresh(run)
         assert run.status == "failed"
 
+    def test_a_chain_queued_behind_the_red_team_run_it_dispatched_is_not_reaped(
+        self, session
+    ):
+        """Prefork concurrency 2: the continuation waits out the red-team run.
+
+        The chain dispatches both jobs onto the same `runtime` queue it runs on,
+        so its next pass cannot execute until a slot frees. With two slots the
+        gap between two beats is one red-team run end to end.
+        """
+        from app.worker.tasks.runtime.red_team import red_team_run_bound_s
+
+        agent_id = uuid.uuid4()
+        gap = red_team_run_bound_s() + 1
+        self._row(session, agent_id, age_s=gap + 60, beat_age_s=gap)
+
+        assert self._guard(session, agent_id) is True, (
+            "the chain is queued behind the red-team run it dispatched, which is "
+            f"{red_team_run_bound_s()}s of silence the guard has to sit through"
+        )
+
+    def test_a_chain_queued_behind_both_jobs_it_dispatched_is_not_reaped(
+        self, session
+    ):
+        """The documented solo worker, and the whole of this defect.
+
+        One execution slot means the continuation queues behind the eval chain
+        AND the red-team run, so the gap between two beats is both bounds end to
+        end. The threshold was the ceiling plus the decide grace, which is
+        shorter than that, so the guard reaped a chain that was still working and
+        a second checklist started beside it.
+        """
+        from app.worker.tasks.runtime.eval import eval_run_bound_s
+        from app.worker.tasks.runtime.red_team import red_team_run_bound_s
+
+        agent_id = uuid.uuid4()
+        gap = eval_run_bound_s() + red_team_run_bound_s() + 1
+        self._row(session, agent_id, age_s=gap + 60, beat_age_s=gap)
+
+        assert self._guard(session, agent_id) is True, (
+            f"a chain queued behind {gap - 1}s of jobs it started itself is "
+            "working, and reaping it lets a second checklist run on this agent"
+        )
+
     def test_a_finished_row_is_not_a_live_run_whatever_its_beat_says(self, session):
         agent_id = uuid.uuid4()
         self._row(session, agent_id, age_s=60, beat_age_s=1, status="complete")
@@ -3077,6 +3120,58 @@ class TestTheIdempotencyGuardKeysOnTheRunNotTheClock:
 
     def test_an_agent_with_no_row_at_all_is_let_through(self, session):
         assert self._guard(session, uuid.uuid4()) is False
+
+
+class TestTheStaleThresholdOutlastsTheJobsTheChainWaitsBehind:
+    """What the guard calls abandoned has to be longer than the queue wait.
+
+    The threshold was CHECKLIST_WAIT_CEILING_S plus the decide grace, and its
+    docstring said a live chain "is never quiet for longer than the gap between
+    two passes, and that gap is bounded by the ceiling itself". The ceiling
+    bounds the WAIT, never the queue: a continuation cannot run at all while the
+    eval and red-team jobs it dispatched hold the `runtime` slots, so the gap
+    between two beats is those jobs' own bounds. The numbers are read from the
+    modules that own them, so a change to any bound moves the test with the code.
+    """
+
+    def _bounds(self):
+        from app.worker.tasks.runtime.eval import eval_run_bound_s
+        from app.worker.tasks.runtime.red_team import red_team_run_bound_s
+
+        return eval_run_bound_s(), red_team_run_bound_s()
+
+    def test_the_threshold_covers_both_job_bounds_and_the_ceiling(self):
+        from app.core.config import settings
+        from app.worker.tasks.runtime.deployment import _stale_after_s
+
+        eval_bound, red_team_bound = self._bounds()
+        queue_gap = eval_bound + red_team_bound + settings.CHECKLIST_WAIT_CEILING_S
+
+        assert _stale_after_s() > queue_gap, (
+            f"a chain can go {queue_gap}s between beats on the documented solo "
+            f"worker and the guard reaps it after {_stale_after_s()}s, so the "
+            "run it reaps is still working"
+        )
+
+    def test_the_threshold_is_read_from_the_bounds_rather_than_sized_beside_them(
+        self,
+    ):
+        """A moved bound has to move the threshold, or the two drift (1.33)."""
+        from unittest.mock import patch as _patch
+
+        from app.worker.tasks.runtime.deployment import _stale_after_s
+
+        before = _stale_after_s()
+        with _patch(
+            "app.worker.tasks.runtime.red_team.ATTACKER_LOOP_TIMEOUT_S", 240.0
+        ):
+            after = _stale_after_s()
+
+        assert after > before, (
+            "doubling the attacker's per-attempt budget doubles how long a "
+            f"continuation waits behind it, and the threshold did not move: "
+            f"{before} then {after}"
+        )
 
 
 class TestEveryPassStampsTheRunsBeat:

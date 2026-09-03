@@ -3154,6 +3154,50 @@ class TestTheCeilingExpirySubstitutes:
         for warning in warnings:
             assert "again" in warning.message.lower()
 
+    def test_a_refused_dispatch_is_not_described_as_a_check_still_running(self):
+        """#130's other half. The detail branched here and the warning did not.
+
+        The owner reads the warning, never `signal_detail`. Telling them a check
+        the broker refused "keeps running on its own" sends them away to wait for
+        a job nothing is working on.
+        """
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship",
+            {
+                **eval_summary_did_not_finish(0.0, dispatched=False),
+                "eval_dispatched": False,
+            },
+            {
+                **red_team_summary_did_not_finish(0.0, dispatched=False),
+                "red_team_dispatched": False,
+            },
+        )
+
+        assert recommendation == "block"
+        by_id = {w.warning_id: w.message for w in warnings}
+        assert sorted(by_id) == ["eval_did_not_finish", "red_team_did_not_finish"]
+        for warning_id, message in by_id.items():
+            assert "still running" not in message, (
+                f"{warning_id} describes a job that was never started as one "
+                f"that is working: {message!r}"
+            )
+            assert "never started" in message, (
+                f"{warning_id} has to name what actually happened: {message!r}"
+            )
+
+    def test_a_started_run_still_reads_as_one_to_come_back_to(self):
+        """The branch is scoped to a refusal, and the ordinary case is a slow run."""
+        _, warnings = apply_signal_evidence_gate(
+            "ship",
+            {**eval_summary_did_not_finish(2700.0), "eval_dispatched": True},
+            {**red_team_summary_did_not_finish(2700.0), "red_team_dispatched": True},
+        )
+
+        for warning in warnings:
+            assert "still running" in warning.message, (
+                f"{warning.warning_id}: {warning.message!r}"
+            )
+
 
 class TestPollTerminalStatuses:
     """One look, driven directly. The loop it replaces held the worker slot."""

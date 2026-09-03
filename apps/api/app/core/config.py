@@ -340,9 +340,11 @@ class Settings(BaseSettings):
     # ceiling, so the report's security half was routinely decided on a job that
     # never finished.
     #
-    # It stays under the checklist's own 60-minute idempotency window. Past that
-    # a second trigger would find no 'running' row while the first was still
-    # waiting and put two checklists on one agent.
+    # It no longer has to stay under a 60-minute idempotency window, because
+    # there is not one: #129 keyed the checklist's guard on a live chain's
+    # heartbeat instead of a row's age, and deployment._stale_after_s derives how
+    # long a chain may go quiet from this ceiling and the two job bounds. Raising
+    # this raises that with it.
     #
     # A half that does not reach terminal inside this still reads as an ABSENT
     # record and blocks. The ceiling bounds how long the platform is willing to
