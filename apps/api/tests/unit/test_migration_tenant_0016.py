@@ -15,12 +15,16 @@ tier, so a mined production failure the owner then answers by hand can be
 `customer_negative` in origin and `human_authored` in label at the same time
 without either statement being overwritten by the other.
 
-THIS MIGRATION HAS NOT BEEN APPLIED. There is no PostgreSQL server on this
-machine — every `-m integration` harness skips, and a skip is UNOBSERVED, never
-a pass. No ALTER TABLE in 0016 has executed against any database, here or
-anywhere. The source-level assertions below are the only observed evidence that
-exists for it, so they are written as constraints on what the migration is
-ALLOWED to contain:
+0016 IS APPLIED on the local `wchats_tenant_probe` cluster, whose
+`alembic_version` reads 0024. "The probe cluster" at the end of this file reads
+the three columns, their nullability and their absent defaults, and the named
+CHECK's two refusals, off that database. What the migration DID is observed
+there.
+
+The source-level assertions in between hold the migration to what it is ALLOWED
+to CONTAIN, which an apply does not: a migration can apply cleanly and still
+carry a DEFAULT that rewrites the meaning of every row written before it. The
+constraints:
 
   - additive columns only  — no DROP/RENAME of anything pre-existing
   - nullable only          — no NOT NULL, no DEFAULT, no backfill
@@ -124,9 +128,8 @@ def test_0016_is_the_sole_child_of_0015_and_the_tree_is_unforked():
     """A fork is invisible here and fatal on a live tenant.
 
     `alembic upgrade head` refuses to run with two heads, so a second child of
-    0015 breaks every subsequent tenant provision — and nothing on this machine
-    would notice, because no migration is ever applied here. Read out of the
-    versions directory rather than restated.
+    0015 breaks every subsequent tenant provision. Read out of the versions
+    directory rather than restated.
     """
     revisions = _all_tenant_revisions()
     assert "0016" in revisions, "0016 was not discovered in alembic_tenant/versions"
@@ -177,8 +180,8 @@ def test_upgrade_adds_each_label_column_nullably(column, ddl_type):
 
 
 def test_upgrade_adds_exactly_three_columns():
-    """Three, not four. Scope is part of the safety argument for a migration
-    that cannot be tested against a database."""
+    """Three, not four. A fourth column arriving here without its own rationale
+    is the drift this section exists to catch."""
     mod = _load_migration()
     adds = re.findall(r"ADD COLUMN", _sql_only(mod.upgrade))
     assert len(adds) == 3, f"expected exactly three ADD COLUMN, found {len(adds)}"
@@ -371,7 +374,7 @@ def test_the_check_refuses_a_human_tier_on_an_empty_answer():
     from leaving one behind.
 
     Free to add: the column is brand new and NULL everywhere, so no existing row
-    can violate it, and the migration has never been applied anywhere.
+    can violate it and the ALTER cannot fail on a live tenant.
     """
     mod = _load_migration()
     normalised = " ".join(_sql_only(mod.upgrade).split())
@@ -399,10 +402,10 @@ def test_the_catalog_lookup_and_the_drop_are_schema_qualified():
     discovered from one table and the DROP applied to whichever the search_path
     resolves — dropping a constraint governing a different table's column.
 
-    0016 inherited that shape and no longer has it. This is unobservable here:
-    there is no PostgreSQL on this machine, no migration has been applied, and
-    the roundtrip below skips. It is a source-level constraint like every other
-    assertion in this file.
+    0016 inherited that shape and no longer has it. A single-schema apply cannot
+    show the difference, because both the qualified and the unqualified form
+    resolve to the same table there, so this stays a source-level constraint
+    like every other assertion in this section.
     """
     mod = _load_migration()
     upgrade_sql = _sql_only(mod.upgrade)
@@ -602,10 +605,10 @@ def test_migration_tenant_0016_db_roundtrip():
     the CHECK refuses a non-human tier and accepts a human one -> downgrade to
     0015 removes them without losing rows -> re-upgrade (idempotent).
 
-    THIS HAS NEVER RUN. There is no PostgreSQL on the development machine, so
-    this test skips, and a skip is unobserved rather than passing. It is written
-    out in full so that the first machine that does have a database gets the
-    real evidence rather than a stub.
+    This one builds and drops its own database, so it stays behind
+    INTEGRATION_TESTS_ENABLED and skips by default. "The probe cluster" at the
+    end of this file runs unconditionally against `wchats_tenant_probe` and is
+    where the observed evidence for 0016 comes from.
     """
     import psycopg2
     from alembic.config import Config
@@ -744,3 +747,177 @@ def test_migration_tenant_0016_db_roundtrip():
                 conn.execute(sa_text(f'DROP DATABASE IF EXISTS "{db_name}"'))
         finally:
             admin_engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# The probe cluster: what 0016 did, read off a database that has it
+# ---------------------------------------------------------------------------
+#
+# `wchats_tenant_probe` on localhost carries the tenant tree at 0024, so 0016 is
+# applied there and its effects are readable. These three tests read them, and
+# they are NOT behind INTEGRATION_TESTS_ENABLED: they create no database, spend
+# nothing, and every write below happens inside a transaction that is rolled back
+# whatever the outcome. A cluster that is not there skips with its reason, which
+# `-rs` prints.
+
+PROBE_DSN = os.environ.get(
+    "TENANT_PROBE_DB_URL",
+    "postgresql://wchats:wchats@localhost:5432/wchats_tenant_probe",
+)
+
+#: The name 0016 chose for its CHECK. Looked up in pg_constraint below rather
+#: than trusted because the migration source spells it.
+LABEL_TIER_CONSTRAINT = "eval_scenarios_label_trust_tier_check_v1"
+
+
+def _probe_connection():
+    """A connection to the probe cluster, or a skip that names what was unreachable."""
+    import psycopg2
+
+    try:
+        return psycopg2.connect(PROBE_DSN)
+    except psycopg2.OperationalError as exc:
+        pytest.skip(f"the tenant probe cluster is unreachable: {exc}")
+
+
+def test_0016_is_applied_on_the_probe_cluster():
+    """The probe cluster's revision descends from 0016, so its schema carries it.
+
+    Read rather than asserted: the two tests below say what the columns and the
+    CHECK look like, and they mean nothing if the database they read never
+    received this migration.
+    """
+    conn = _probe_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT version_num FROM alembic_version")
+            applied = cur.fetchone()[0]
+            cur.execute("SELECT to_regclass('eval_scenarios')")
+            scenarios_table = cur.fetchone()[0]
+    finally:
+        conn.close()
+
+    # The two trees number their revisions independently, so the control DB at
+    # its own 0021 walks the tenant graph and reaches 0016 without ever having
+    # run a line of it. eval_scenarios is a tenant table, and 0005 creates it.
+    assert scenarios_table is not None, (
+        "the DSN names a database with no eval_scenarios table, so it is not a "
+        "tenant database and its revision means nothing here"
+    )
+
+    revisions = _all_tenant_revisions()
+    ancestry = []
+    node = applied
+    while node is not None and node not in ancestry:
+        ancestry.append(node)
+        node = revisions.get(node)
+
+    assert "0016" in ancestry, (
+        f"the probe cluster is at {applied!r}, whose ancestry {ancestry} does not "
+        "reach 0016. Upgrade it before reading anything below as evidence"
+    )
+
+
+def test_0016_columns_are_live_nullable_and_undefaulted():
+    """The three label columns exist on the probe cluster, nullable, with no DEFAULT.
+
+    A DEFAULT on any of them would stamp a labelling claim on every row written
+    before the column existed. The migration's docstring argues that; this reads
+    it off the catalog.
+    """
+    conn = _probe_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT column_name, data_type, is_nullable, column_default "
+                "FROM information_schema.columns "
+                "WHERE table_name = 'eval_scenarios' AND column_name = ANY(%s)",
+                (list(LABEL_COLUMNS),),
+            )
+            found = {row[0]: tuple(row[1:]) for row in cur.fetchall()}
+    finally:
+        conn.close()
+
+    assert set(found) == set(LABEL_COLUMNS), (
+        f"0016 adds {sorted(LABEL_COLUMNS)} and the probe cluster has {sorted(found)}"
+    )
+    assert found["label_trust_tier"] == ("text", "YES", None)
+    assert found["labelled_by"] == ("text", "YES", None)
+    assert found["labelled_at"] == ("timestamp with time zone", "YES", None)
+
+
+def test_0016s_check_refuses_a_model_tier_and_an_empty_reference_answer():
+    """The CHECK is on the probe cluster and both of its arms bite.
+
+    Arm one bounds the vocabulary: a raw UPDATE to 'model_generated' is refused
+    by the database, so the column has no value meaning "a model wrote this".
+    Arm two closes the pairing the tier claims: 'human_authored' beside an empty
+    reference_answer asserts that a person authored nothing.
+
+    The row is inserted and every UPDATE is undone. The connection rolls back on
+    the way out, so the probe cluster ends this test as it started it.
+    """
+    import psycopg2
+
+    question = f"0016 probe {uuid.uuid4().hex[:12]}"
+    conn = _probe_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'eval_scenarios'::regclass AND conname = %s",
+                (LABEL_TIER_CONSTRAINT,),
+            )
+            definition = cur.fetchone()
+            assert definition is not None, (
+                f"{LABEL_TIER_CONSTRAINT} is not on the probe cluster's eval_scenarios"
+            )
+
+            cur.execute(
+                "INSERT INTO eval_scenarios (source, question, reference_answer) "
+                "VALUES ('mined', %s, '')",
+                (question,),
+            )
+
+            outcomes = {}
+            for tier in ("model_generated", "human_authored"):
+                cur.execute("SAVEPOINT before_the_update")
+                try:
+                    cur.execute(
+                        "UPDATE eval_scenarios SET label_trust_tier = %s "
+                        "WHERE question = %s",
+                        (tier, question),
+                    )
+                    outcomes[tier] = "accepted"
+                except psycopg2.errors.CheckViolation as exc:
+                    outcomes[tier] = str(exc)
+                cur.execute("ROLLBACK TO SAVEPOINT before_the_update")
+
+            # The tier and the answer land together, which is the single UPDATE
+            # label_service.record_human_label issues.
+            cur.execute(
+                "UPDATE eval_scenarios SET reference_answer = %s, "
+                "label_trust_tier = 'human_authored' WHERE question = %s",
+                ("We refund within 14 days.", question),
+            )
+            cur.execute(
+                "SELECT label_trust_tier FROM eval_scenarios WHERE question = %s",
+                (question,),
+            )
+            accepted_tier = cur.fetchone()[0]
+    finally:
+        conn.rollback()
+        conn.close()
+
+    assert LABEL_TIER_CONSTRAINT in outcomes["model_generated"], (
+        "the database took a model tier on the label column: "
+        f"{outcomes['model_generated']}"
+    )
+    assert LABEL_TIER_CONSTRAINT in outcomes["human_authored"], (
+        "the database took a human tier over an empty reference_answer: "
+        f"{outcomes['human_authored']}"
+    )
+    assert accepted_tier == "human_authored", (
+        "a human tier written beside a real answer must be accepted, got "
+        f"{accepted_tier!r}"
+    )

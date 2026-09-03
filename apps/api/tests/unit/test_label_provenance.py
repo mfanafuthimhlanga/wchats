@@ -50,12 +50,11 @@ This file covers the two halves of closing that:
    column name — remains possible, and that is the argument for R4 being the
    last line rather than for pretending the first three are exhaustive.
 
-What is NOT proven here, plainly: migration 0016 has not been applied. There is
-no PostgreSQL server on this machine, every `-m integration` harness skips, and
-a skip is unobserved rather than passing. Nothing below has seen a real
-`eval_scenarios` row, a real CHECK constraint rejection, or a real Celery worker.
-The SQL is asserted at the string level and the guards are exercised against
-real Celery and ContextVar state in-process.
+What is NOT proven here, plainly: nothing below reads a real `eval_scenarios`
+row or watches the database refuse one. The SQL is asserted at the string level,
+and the guards run against real Celery and ContextVar state in-process. The
+database's own half of the wall is read off the local probe cluster by
+`tests/unit/test_migration_tenant_0016.py`, under "The probe cluster".
 """
 
 from __future__ import annotations

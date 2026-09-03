@@ -1,8 +1,9 @@
 """BACKLOG 7.34 — the capture records what the worker stored, chunks included.
 
 The rule under test is the one that decides what a judge is shown, and it is the
-same rule `_persisted_chunks` applies on the way in. Kept testable on a machine
-with no PostgreSQL by shaping the row separately from fetching it.
+same rule `_persisted_chunks` applies on the way in. `shape_tool_call` is split
+from the query that feeds it, so the rule is exercised on rows this file writes
+rather than on whatever a corpus happens to hold.
 """
 
 from __future__ import annotations

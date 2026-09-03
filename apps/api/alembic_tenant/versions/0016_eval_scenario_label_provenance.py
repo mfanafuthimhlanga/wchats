@@ -106,15 +106,17 @@ Context:
         `source` is left saying exactly what it said before: where the question
         came from.
 
-Cannot be applied on this machine:
-    There is no PostgreSQL server here — every `-m integration` harness skips,
-    and a skip is UNOBSERVED, never a pass. No ALTER TABLE in this file has been
-    executed against any database. The source-level assertions in
-    tests/unit/test_migration_tenant_0016.py are the only observed evidence that
-    exists for it, and they constrain what this migration is ALLOWED to contain:
-    additive columns only, nullable only, no DEFAULT, no backfill, no
-    pre-existing object touched, and a downgrade that drops only what upgrade
-    added.
+Applied and read back:
+    The local `wchats_tenant_probe` cluster carries the tenant tree at 0024, so
+    this revision is applied there. "The probe cluster" at the end of
+    tests/unit/test_migration_tenant_0016.py reads the three columns, their
+    nullability, their absent defaults and both arms of the CHECK straight off
+    that database on every unit run.
+
+    The source-level assertions in the same file hold this migration to what it
+    is ALLOWED to contain, which an apply does not: additive columns only,
+    nullable only, no DEFAULT, no backfill, no pre-existing object touched, and
+    a downgrade that drops only what upgrade added.
 
     Follows the established raw-SQL convention (mirrors 0009-0015) — no
     SQLAlchemy ORM model, consistent with every other tenant-DB table.
@@ -169,9 +171,8 @@ def upgrade() -> None:
     # carried eval_scenarios in more than one schema, the name would be
     # discovered from one table and the DROP applied to whichever the
     # search_path resolves — dropping a constraint governing a different
-    # table's column. 0016 has never been applied anywhere, so fixing the
-    # inherited gap here is free; 0011's copy is deployed and is a separate
-    # decision.
+    # table's column. The gap was closed here before this revision went
+    # anywhere; 0011's copy is deployed and is a separate decision.
     # ------------------------------------------------------------------
     op.execute(f"""
         DO $$
