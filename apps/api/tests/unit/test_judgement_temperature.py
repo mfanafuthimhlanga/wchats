@@ -28,7 +28,6 @@ not proven by anything in this file and needs a live run to establish.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -78,6 +77,13 @@ class TestAVerdictSamplesAtZero:
         Sampling it means rho moves between runs for reasons that have nothing to
         do with the rubric or the label, which is indistinguishable from a judge
         that disagrees with the human.
+
+        Driven through the factory double since #154. It built its own
+        `anthropic.Anthropic()` and answered in JSON prose until then, which is
+        why this test used to patch a provider SDK while its seven neighbours
+        patched `make_client`. `tests/unit/test_calibration_judge.py` covers the
+        rest of the request; the temperature stays here, beside the split this
+        module exists to assert.
         """
         import tests.evals.judge as judge_module
 
@@ -85,14 +91,17 @@ class TestAVerdictSamplesAtZero:
 
         def _create(**kwargs):
             captured.update(kwargs)
-            return SimpleNamespace(content=[SimpleNamespace(text=(
-                '{"dimension": "grounding_fidelity", "verdict": "PASS", '
-                '"score": 5, "reason": "Traceable."}'
-            ))])
+            return _verdict("submit_verdict", {
+                "dimension": "grounding_fidelity",
+                "verdict": "PASS",
+                "score": 5,
+                "reason": "Traceable.",
+            })
 
-        client = SimpleNamespace(messages=SimpleNamespace(create=_create))
-        with patch("anthropic.Anthropic", MagicMock(return_value=client)):
-            verdict = judge_module.judge("grounding_fidelity", "USER: q\nAGENT: a", [])
+        with factory(openai_client(create=_create)):
+            verdict = judge_module.judge(
+                "grounding_fidelity", "USER: q\nAGENT: a", [], ledger()
+            )
 
         assert verdict["verdict"] == "PASS", f"the stub was not reached: {verdict}"
         assert captured.get("temperature") == JUDGEMENT_TEMPERATURE, (
