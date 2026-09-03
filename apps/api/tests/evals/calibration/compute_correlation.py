@@ -76,7 +76,10 @@ Requirements:
       `human_score` (1-5) is optional and feeds the reported Spearman only
     - human_scores_pass2.csv holds the SAME rows labelled a second time, blind.
       Emit it with --emit-second-pass; it is what measures the ceiling
-    - ANTHROPIC_API_KEY set in environment
+    - the judge's environment, which `--check` names one line at a time:
+      OPENAI_API_KEY for the model its route sends to, plus
+      CALIBRATION_TENANT_ID and CALIBRATION_TENANT_DSN for the model_calls
+      rows it writes
 
 WHAT A RUN LEAVES BEHIND (ticket #53)
     `calibration.json`, beside the sheets, holding this run's status, verdict
@@ -237,6 +240,17 @@ MIN_MINORITY_ROWS = 2
 # A correlation over a fifth of the labelled rows is not a measurement of the
 # set the human scored, so it reports NOT CALIBRATED YET rather than a verdict.
 MIN_PAIR_RATE = 0.8
+
+#: The judge's environment, in the order `--check` prints it.
+#:
+#: Spelled here rather than imported, because every app import in this module is
+#: lazy so that `--help` and a typo'd flag stay free of them, and these three
+#: strings are read at CLI print time. `OPENAI_API_KEY` is the Settings field the
+#: judge's key arrives in; the other two are what `tests.evals.judge` reads out of
+#: os.environ, and `test_calibration_harness.py` pins both spellings against that
+#: module's own constants so the two files cannot drift.
+JUDGE_KEY_ENV = "OPENAI_API_KEY"
+JUDGE_LEDGER_ENV = ("CALIBRATION_TENANT_ID", "CALIBRATION_TENANT_DSN")
 
 # ---------------------------------------------------------------------------
 # Exit codes and the statuses they encode
@@ -651,9 +665,9 @@ def readiness() -> dict:
 
     Answers the question that is actually blocking: not "is the judge
     calibrated" (it cannot be, yet) but "what is stopping anyone from finding
-    out". Every check here is local — no network, no ANTHROPIC_API_KEY, no
-    judge call — so it is safe to run anywhere, including a machine with none
-    of the runtime services.
+    out". Every check here is local — no network, no judge call, nothing sent
+    anywhere — so it is safe to run on a machine with none of the runtime
+    services. It reads the judge's credentials; it never uses them.
 
     `human_scores_valid` is reported beside `human_scores_attempted` rather than
     as a bare count, and `blocking` never says "the human scores are missing" as
@@ -666,7 +680,12 @@ def readiness() -> dict:
         `ready_to_calibrate` — True only when a judge run could actually produce
         MIN_PAIRS usable pairs.
     """
-    from tests.evals.judge import JUDGE_RUBRICS  # noqa: PLC0415  (avoid import at CLI parse time)
+    # Lazy, so `--help` and a typo'd flag cost no app import (avoid import at CLI parse time).
+    from app.core.model_client import (  # noqa: PLC0415
+        OPENAI_PROVIDER,
+        resolve_credentials,
+    )
+    from tests.evals.judge import JUDGE_RUBRICS  # noqa: PLC0415
 
     scenario_files = sorted(SCENARIOS_DIR.glob("S-*.json"))
     scenario_ids = {p.name.split("_")[0] for p in scenario_files}
@@ -743,11 +762,24 @@ def readiness() -> dict:
     minority = min(passes, fails)
     balance_is_workable = minority >= MIN_MINORITY_ROWS
 
-    # `--check` is documented as saying which inputs are missing, and the run
-    # needs this one. It is read from os.environ, not from .env: the settings
-    # loader and the Anthropic client read different places, which has cost four
-    # debugging cycles in this repo (CLAUDE.md, 1.28).
-    api_key_exported = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    # `--check` is documented as saying which inputs are missing, and a run needs
+    # all three of these. #154 moved the judge onto `app.core.model_client`, so
+    # the names moved with it: it reaches OpenAI through PURPOSE_ROUTES and bills
+    # its rows to a tenant the operator names.
+    #
+    # TWO PLACES, AND THE SPLIT IS REAL. The KEY is read through
+    # `resolve_credentials`, which takes it from Settings, and pydantic fills
+    # Settings from `.env` — so an unexported key still authenticates. That is
+    # the INVERSE of what this line said for eight days. It read os.environ
+    # because the Agent SDK's client read os.environ while pydantic read `.env`,
+    # a gap that cost four debugging cycles (CLAUDE.md, 1.28), and #49 removed
+    # that SDK. The two LEDGER variables are read straight from os.environ by
+    # `tests.evals.judge.calibration_ledger`, so for those `.env` is not enough.
+    judge_key_present = bool(resolve_credentials(OPENAI_PROVIDER).api_key)
+    judge_ledger_env_missing = [
+        name for name in JUDGE_LEDGER_ENV if not os.environ.get(name, "").strip()
+    ]
+    judge_can_run = judge_key_present and not judge_ledger_env_missing
 
     return {
         "scenarios_present": len(scenario_files),
@@ -767,7 +799,9 @@ def readiness() -> dict:
         "label_fail_rows": fails,
         "minority_label_rows": minority,
         "balance_is_workable": balance_is_workable,
-        "api_key_exported": api_key_exported,
+        "judge_key_present": judge_key_present,
+        "judge_ledger_env_missing": judge_ledger_env_missing,
+        "judge_can_run": judge_can_run,
         "deflected_responses": deflected,
         "scorable_rows": scorable_rows,
         "human_scores_attempted": parsed["attempted"],
@@ -784,7 +818,7 @@ def readiness() -> dict:
         # locally, so none of them should be discovered after the money is spent.
         "ready_to_calibrate": (
             not blocking and not awaiting_owner and balance_is_workable
-            and api_key_exported
+            and judge_can_run
         ),
     }
 
@@ -815,11 +849,17 @@ def print_readiness(report: dict) -> int:
            f"   NOT ENOUGH: {MIN_MINORITY_ROWS} rows must carry each label")
     )
     print(
-        "  ANTHROPIC_API_KEY          : "
-        + ("exported" if report["api_key_exported"] else
-           "NOT in os.environ. Present in .env is not enough: the settings "
-           "loader and the Anthropic client read different places (1.28)")
+        f"  {JUDGE_KEY_ENV:<26} : "
+        + ("set" if report["judge_key_present"] else
+           "NOT set. Settings reads it from .env, so it needs no export - but "
+           "it does need a value, and the judge routes to OpenAI since #154")
     )
+    for name in JUDGE_LEDGER_ENV:
+        print(
+            f"  {name:<26} : "
+            + ("exported" if name not in report["judge_ledger_env_missing"] else
+               "NOT in os.environ (.env is not enough - judge.py reads it there)")
+        )
 
     # Every row either sheet could not read, by name and with its reason.
     # These were computed and thrown away, so a sheet whose verdicts read
