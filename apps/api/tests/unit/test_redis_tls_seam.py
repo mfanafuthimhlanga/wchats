@@ -8,7 +8,8 @@ any certificate offered to it.
 What is pinned here:
 
   * ``redis_ssl_kwargs`` itself, over the three inputs it can receive, plus the
-    once per process shape of the warning it logs when verification is dropped.
+    once per process shape of the warning it logs when verification is dropped and
+    the host it is keyed and logged on, which a password must never reach.
   * The three call sites that build their arguments inside a function, driven through
     that function with a ``rediss://`` URL and the flag off. Each asserts the
     arguments that reached ``from_url``, not the source that produced them. One of
@@ -136,6 +137,59 @@ class TestRedisSslKwargs:
         assert mock_log.warning.call_count == 1, (
             f"The seam warned {mock_log.warning.call_count} times for two connections to "
             "the same URL. The exposure is a property of the process, not of the request."
+        )
+
+    def test_the_warning_names_the_host_and_never_the_password(self):
+        """The log line carries the host and port, not a slice of the URL.
+
+        ``rediss://:PASSWORD@host:6380/0`` puts the credential inside the first forty
+        characters, so a warning keyed and logged on ``url[:40]`` both wrote the
+        password into the log and held it in a cache for the life of the process.
+        """
+        import app.core.redis_tls as seam  # noqa: PLC0415
+
+        secret = "s3cret-upstash-token"
+        url = f"rediss://:{secret}@named-host.example.invalid:6380/0"
+
+        seam._warn_tls_verification_disabled.cache_clear()
+
+        with (
+            patch.object(seam.settings, "REDIS_TLS_INSECURE", True, create=True),
+            patch.object(seam, "log") as mock_log,
+        ):
+            redis_ssl_kwargs(url)
+
+        call = mock_log.warning.call_args
+        assert call.kwargs.get("host") == "named-host.example.invalid", (
+            f"Expected the warning to name the host, got {call.kwargs!r}."
+        )
+        assert call.kwargs.get("port") == 6380
+        assert secret not in repr(call), (
+            f"The warning carried the Redis password: {call!r}. A prefix of a "
+            "rediss://:PASSWORD@host URL is the credential."
+        )
+
+    def test_a_rotated_password_on_one_host_does_not_warn_again(self):
+        """The cache key is the host and port, so it survives a credential change.
+
+        Keyed on the URL, a rotated password was a new key and a second warning for an
+        exposure that had not changed.
+        """
+        import app.core.redis_tls as seam  # noqa: PLC0415
+
+        host = "rotated.example.invalid:6380"
+        seam._warn_tls_verification_disabled.cache_clear()
+
+        with (
+            patch.object(seam.settings, "REDIS_TLS_INSECURE", True, create=True),
+            patch.object(seam, "log") as mock_log,
+        ):
+            redis_ssl_kwargs(f"rediss://:old-token@{host}/0")
+            redis_ssl_kwargs(f"rediss://:new-token@{host}/0")
+
+        assert mock_log.warning.call_count == 1, (
+            f"The seam warned {mock_log.warning.call_count} times for one host. "
+            "The exposure belongs to the host, not to the credential."
         )
 
 
