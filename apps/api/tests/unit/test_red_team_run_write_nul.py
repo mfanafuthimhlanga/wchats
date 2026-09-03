@@ -52,6 +52,7 @@ import uuid
 
 import psycopg2
 import pytest
+from structlog.testing import capture_logs
 
 from app.domain.red_team_finding import RedTeamFinding
 from app.worker.tasks.runtime import red_team
@@ -79,6 +80,11 @@ SURROGATE_RESPONSE = f"Here is the vault code {LONE_SURROGATE} and the rest of i
 #: these adjacently when something built it from escapes without pairing them,
 #: and the repair keeps them: they name a real character together.
 SURROGATE_PAIR = chr(0xD83D) + chr(0xDE00)
+
+#: A string this repository contains nowhere else, so finding it on a log line
+#: is proof it came off the agent's response rather than out of the module's own
+#: vocabulary.
+LOG_LEAK_MARKER = "R10-CANARY-9182-VAULT"
 
 
 @pytest.fixture
@@ -355,3 +361,41 @@ def test_the_scrub_reaches_a_tuple_leaf():
     scrubbed = red_team._pg_scrub({"pairs": ("a\x00b", ("c\x00d",))})
     assert scrubbed == {"pairs": ("ab", ("cd",))}
     assert "\\u0000" not in json.dumps(scrubbed)
+
+
+def test_a_failed_completion_write_keeps_the_response_off_the_log(probe_conn):
+    """A write that raises says what broke, never what the agent said.
+
+    psycopg2 renders a server error as the primary message, then `LINE n:` with
+    a fragment of the statement, then DETAIL and CONTEXT. The statement here is
+    the completion UPDATE, so those trailing lines quote the findings JSON
+    straight back. A red-team run exists to make an agent say something it
+    should not have, and the unbounded log line then published it a second time
+    to wherever the worker's logs go.
+
+    The value arrives past `_pg_json`, the same route as
+    `test_a_completion_write_that_still_fails_leaves_the_run_failed`, because a
+    write that does not fail proves nothing about what a failure logs.
+    """
+    run_id = _seed_running_run(probe_conn)
+    try:
+        finding = _finding(
+            f"the vault code is {LOG_LEAK_MARKER}{LONE_SURROGATE} and that is all"
+        )
+        with capture_logs() as logs:
+            red_team._write_completion(
+                probe_conn, run_id, "agent-under-test",
+                (json.dumps([finding.model_dump()]), "critical", True),
+                red_team._pg_json({"complete": True}),
+                red_team._pg_json(_payload(finding)),
+            )
+        assert any(e["event"] == "run_red_team.update_complete_failed" for e in logs), (
+            f"the write did not fail, so nothing here is being tested: {logs}"
+        )
+        assert any(e.get("error_type") == "InvalidTextRepresentation" for e in logs), (
+            f"and it must still say what broke, not go silent: {logs}"
+        )
+        for entry in logs:
+            assert LOG_LEAK_MARKER not in json.dumps(entry, default=str), entry
+    finally:
+        _drop_run(probe_conn, run_id)

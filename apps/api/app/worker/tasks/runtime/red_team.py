@@ -414,6 +414,28 @@ def _pg_scrub(value: object) -> object:
     return value
 
 
+#: How much of an exception message a log line in this module may carry.
+_LOG_ERROR_CHAR_CAP = 200
+
+
+def _log_error_detail(exc: BaseException) -> str:
+    """What a log line is allowed to say about an exception raised by a write.
+
+    psycopg2 renders a server error as the primary message, then `LINE n:` with
+    a fragment of the statement, then DETAIL and CONTEXT. Every statement this
+    module fails on carries the agent's own response as a parameter, so those
+    trailing lines quote it straight back. A red-team run exists to make an
+    agent say something it should not have, and an unbounded `str(exc)` on a
+    warning published it a second time to wherever the worker's logs go.
+
+    Postgres keeps values out of the primary message by design and puts them in
+    DETAIL, so the first line is the part that describes the failure rather than
+    the data, and the cap bounds anything that does not follow that convention.
+    The result is scrubbed as well, because a log sink is a text field too.
+    """
+    return _pg_text(str(exc).strip().partition("\n")[0])[:_LOG_ERROR_CHAR_CAP]
+
+
 def _pg_json(payload: object) -> str:
     """The jsonb literal for a payload every string of which is storable.
 
@@ -559,7 +581,8 @@ def _write_completion(conn, run_id: str, agent_id: str, base_params: tuple,
             "run_red_team.update_complete_failed",
             agent_id=agent_id,
             run_id=run_id,
-            error=str(update_exc),
+            error_type=error_type,
+            error=_log_error_detail(update_exc),
         )
     _fail_run(conn, run_id, agent_id, error_type)
 
@@ -903,9 +926,9 @@ def run_red_team(self, agent_id: str) -> dict:
         except Exception as programme_exc:
             log.warning(
                 "run_red_team.programme_write_failed",
-                agent_id=agent_id,
-                run_id=run_id,
-                error=str(programme_exc),
+                agent_id=agent_id, run_id=run_id,
+                error_type=type(programme_exc).__name__,
+                error=_log_error_detail(programme_exc),
             )
 
         # ------------------------------------------------------------------
@@ -946,9 +969,9 @@ def run_red_team(self, agent_id: str) -> dict:
         except Exception as findings_exc:
             log.warning(
                 "run_red_team.findings_write_failed",
-                agent_id=agent_id,
-                run_id=run_id,
-                error=str(findings_exc),
+                agent_id=agent_id, run_id=run_id,
+                error_type=type(findings_exc).__name__,
+                error=_log_error_detail(findings_exc),
             )
 
         # ------------------------------------------------------------------
