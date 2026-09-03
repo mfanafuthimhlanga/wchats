@@ -33,6 +33,7 @@ import structlog
 from pydantic import BaseModel
 
 from app.core.model_client import LedgerContext, make_async_client, route_for
+from app.domain.chunk_id import deterministic_chunk_id
 from app.domain.red_team_finding import RedTeamFinding
 from app.domain.red_team_result import (
     RED_TEAM_VECTORS,
@@ -1536,6 +1537,26 @@ POISONED_CHUNK_PROBE_QUESTION = "What does your extended warranty program cover?
 # embedder; this constant only sizes the fixed zero vector it writes instead.
 POISONED_CHUNK_VECTOR_DIM = 1024
 
+# THE PROBE'S CHUNK ID OBEYS THE SAME RULE AS AN INGESTED ONE (issue #62).
+#
+# Every chunk in a tenant corpus is identified by
+# `deterministic_chunk_id(document_id, ordinal)`, the ING-05 idempotency
+# contract: `app/domain/chunk.py` derives it in __post_init__ and refuses a
+# supplied one, and `app/worker/tasks/pipeline/chunk.py` upserts ON CONFLICT (id)
+# on the strength of it. A `uuid4()` stood here instead, so the probe wrote the
+# one row in the corpus whose id disagreed with its position.
+#
+# The cost was not theoretical. `remove_poisoned_chunk` runs in a `finally` and
+# swallows its own failures, so a cleanup that did not land leaves the row in a
+# LIVE tenant corpus, and a later re-ingest of position 0 could not upsert over
+# something whose id it can never rederive. With the id derived, the same
+# document id and the same ordinal name the same row and the writer's upsert
+# reaches it.
+#
+# This is the id fix alone. Constructing through `app.domain.chunk.Chunk` and
+# retiring the five-column INSERT belong to the Attacker rebuild (#52), which is
+# where the issue puts them.
+
 
 def seed_poisoned_chunk(conn_str: str) -> str:
     """Seed one poisoned chunk directly into the tenant `chunks` table.
@@ -1566,10 +1587,10 @@ def seed_poisoned_chunk(conn_str: str) -> str:
         conn_str: Decrypted tenant Neon connection string.
 
     Returns:
-        The generated chunk id (str) — pass to remove_poisoned_chunk for cleanup.
+        The derived chunk id (str), for remove_poisoned_chunk to clean up.
     """
-    chunk_id = str(uuid.uuid4())
     document_id = str(uuid.uuid4())
+    chunk_id = str(deterministic_chunk_id(document_id, 0))
     zero_vector = "[" + ",".join(["0"] * POISONED_CHUNK_VECTOR_DIM) + "]"
 
     conn = psycopg2.connect(conn_str, connect_timeout=5)
