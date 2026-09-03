@@ -2898,6 +2898,32 @@ def _red_team_medium_warning(medium_count: int) -> DeploymentWarning:
     )
 
 
+def _knowledge_depth_warnings(verified_qa_stats: dict) -> list[DeploymentWarning]:
+    """At most one warning about the verified corpus, because at most one holds.
+
+    An unread signal ENDS the question, which is why this returns rather than
+    falling through. A payload the collector built carries None in `row_count`
+    beside an unread signal, so the depth check below is unreachable there, but
+    a payload a caller builds by hand can carry a zero, and a zero IS an int.
+    The owner then read "nobody could count your pairs" and "you have too few
+    pairs" one under the other: two remedies, and only one of them applies to a
+    tenant database nobody reached.
+
+    A payload with no `signal` at all is read as a measurement. That is every
+    report stored before #131, and the one this function is handed by any caller
+    that predates the two knowledge signals.
+    """
+    signal = verified_qa_stats.get("signal")
+    if signal is not None and signal != VERIFIED_QA_SIGNAL_MEASURED:
+        return [_verified_qa_unavailable_warning()]
+
+    row_count = verified_qa_stats.get("row_count")
+    if isinstance(row_count, int) and row_count < VERIFIED_QA_DEPTH_FLOOR:
+        return [_verified_qa_low_count_warning(row_count)]
+
+    return []
+
+
 def derive_quality_warnings(
     verified_qa_stats: dict, red_team_summary: dict
 ) -> list[DeploymentWarning]:
@@ -2913,24 +2939,10 @@ def derive_quality_warnings(
     MEASUREMENT HONESTY GOVERNS ALL THREE. A medium count is only read when the
     security signal says 'measured', because the counts are null in every other
     state and `None > 2` is not a comparison anyone meant to make. A row count is
-    only read when it is an int, and until #131 that guard could never fire: the
-    collector's outage substituted a zero, which IS an int, so an unreachable
-    tenant DB told the owner their corpus was thin. The outage carries None now,
-    and says so in a warning of its own.
-
-    A payload with no `signal` at all is read as a measurement. That is every
-    report stored before #131, and the one this function is handed by any caller
-    that predates the two knowledge signals.
+    only read when the signal beside it says somebody read one, which is what
+    `_knowledge_depth_warnings` decides.
     """
-    warnings: list[DeploymentWarning] = []
-
-    signal = verified_qa_stats.get("signal")
-    if signal is not None and signal != VERIFIED_QA_SIGNAL_MEASURED:
-        warnings.append(_verified_qa_unavailable_warning())
-
-    row_count = verified_qa_stats.get("row_count")
-    if isinstance(row_count, int) and row_count < VERIFIED_QA_DEPTH_FLOOR:
-        warnings.append(_verified_qa_low_count_warning(row_count))
+    warnings: list[DeploymentWarning] = _knowledge_depth_warnings(verified_qa_stats)
 
     if red_team_summary.get("signal") == SHIPPABLE_SIGNAL:
         medium_count = red_team_summary.get("medium_count") or 0

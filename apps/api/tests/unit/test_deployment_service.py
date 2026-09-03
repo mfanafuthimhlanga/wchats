@@ -3758,10 +3758,26 @@ class TestVerifiedQaStatsSignal:
         assert stats["avg_relevance"] is None
 
     def test_an_outage_and_an_empty_table_are_different_values(self):
-        """The defect in one assertion: these used to be the same dict."""
-        assert self._stats(fetchone_value=(0, None, None)) != self._stats(
+        """The defect in one test, named key by key rather than by inequality.
+
+        `outage != empty` is weaker than it looks. The two payloads carry a
+        `signal_detail` that differs whatever else is wrong with them, so the
+        comparison stays true while the outage claims a measurement of nought
+        pairs, which is #131 exactly. Every field a reader acts on is asserted
+        here instead.
+        """
+        outage = self._stats(
             execute_error=psycopg2.errors.UndefinedTable("no relation verified_qa")
         )
+        empty = self._stats(fetchone_value=(0, None, None))
+
+        assert outage["signal"] == "unavailable"
+        assert outage["row_count"] is None
+        assert outage["avg_faithfulness"] is None
+        assert outage["avg_relevance"] is None
+
+        assert empty["signal"] == "measured"
+        assert empty["row_count"] == 0
 
 
 class TestAnUnreadVerifiedCorpusIsReportedAsUnread:
@@ -3784,6 +3800,22 @@ class TestAnUnreadVerifiedCorpusIsReportedAsUnread:
         ]
 
         assert "verified_qa_low_count" not in ids
+
+    def test_a_zero_beside_an_unread_signal_is_still_not_a_thin_corpus(self):
+        """The payload built by hand rather than by the collector.
+
+        `_verified_qa_stats` never puts a count beside an unread signal, so the
+        test above passes on a None the constructor supplied. This one supplies
+        the zero a caller can write, and a zero IS an int, so the depth check
+        used to fire underneath the outage warning and tell the owner to write
+        more pairs about a database nobody reached. Two remedies, one of which
+        does not apply.
+        """
+        warnings = derive_quality_warnings(
+            {"signal": "unavailable", "row_count": 0}, _measured_red_team()
+        )
+
+        assert [w.warning_id for w in warnings] == ["verified_qa_unavailable"]
 
     def test_a_measured_corpus_warns_on_its_depth_and_not_on_the_read(self):
         warnings = derive_quality_warnings(
