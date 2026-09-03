@@ -15,7 +15,10 @@ What is pinned here:
     them also proves the query strip, without which a ``?ssl_cert_reqs=none`` on the
     URL would beat the seam.
   * The eleven that build their arguments at module import as a constant, imported in
-    a subprocess under a ``rediss://`` URL and compared to the seam's answer.
+    a subprocess under a ``rediss://`` URL that carries ``?ssl_cert_reqs=none``. Each
+    one is read through the connection it actually built, so the strip that keeps the
+    query away from redis-py and kombu is pinned at every one of them rather than at
+    the one call site that happened to have a test.
   * Celery's own reading of the dict, on the broker side and the result backend side,
     for both schemes.
 
@@ -44,6 +47,11 @@ from app.core.redis_tls import redis_ssl_kwargs
 
 RE_DISS = "rediss://example.upstash.io:6380/0"
 REDIS = "redis://localhost:6379/0"
+
+# What the subprocess below runs under. The query is the attack: redis-py's parse_url
+# and kombu both read ``ssl_cert_reqs`` out of a URL and let it beat the argument, so a
+# site that forwards the URL whole gets CERT_NONE no matter what the seam returned.
+RE_DISS_DIRTY = "rediss://:pw@example.upstash.io:6380/0?ssl_cert_reqs=none"
 
 # The eleven modules that build their ssl arguments once, at import, as a constant.
 MODULE_LEVEL_SITES = (
@@ -359,6 +367,7 @@ class TestCeleryTakesTheSeamDict:
 
 _MODULE_LEVEL_PROBE = """
 import importlib
+import ssl
 import sys
 
 from app.core.redis_tls import redis_ssl_kwargs
@@ -368,6 +377,21 @@ for name in sys.argv[1:]:
 
 checked = []
 bad = []
+
+
+def verifies(site, where, cert_reqs, check_hostname):
+    if cert_reqs != ssl.CERT_REQUIRED:
+        bad.append(
+            site + ": " + where + " ssl_cert_reqs=" + repr(cert_reqs)
+            + ", expected CERT_REQUIRED " + repr(ssl.CERT_REQUIRED)
+        )
+    if check_hostname is not True:
+        bad.append(
+            site + ": " + where + " ssl_check_hostname=" + repr(check_hostname)
+            + ", expected True"
+        )
+
+
 for name in sorted(sys.modules):
     mod = sys.modules[name]
     if not name.startswith("app.") or not hasattr(mod, "_ssl_opts"):
@@ -377,12 +401,46 @@ for name in sorted(sys.modules):
         bad.append(name + ": _ssl_opts with no cleaned url to check it against")
         continue
     checked.append(name)
+
+    # The spelling: the constant is the seam's answer, not a hand written dict.
     want = redis_ssl_kwargs(url)
     got = mod._ssl_opts
     if got != want:
         bad.append(
             name + ": _ssl_opts=" + repr(got) + " but redis_ssl_kwargs(url)=" + repr(want)
         )
+
+    # The behaviour: the client this module built at import verifies the certificate.
+    # A dict equal to the seam proves nothing on its own, because the URL the client
+    # was built from can still carry a query that overrides it.
+    client = getattr(mod, "_redis", None)
+    if client is not None:
+        pool_kwargs = client.connection_pool.connection_kwargs
+        verifies(
+            name,
+            "connection_pool.connection_kwargs",
+            pool_kwargs.get("ssl_cert_reqs"),
+            pool_kwargs.get("ssl_check_hostname"),
+        )
+
+# celery_app builds no client of its own. Its two sides read the dict separately:
+# kombu builds the broker connection, redis-py builds the result backend.
+from app.worker.celery_app import celery_app
+
+broker_ssl = celery_app.connection_for_write().ssl or {}
+verifies(
+    "app.worker.celery_app",
+    "connection_for_write().ssl",
+    broker_ssl.get("ssl_cert_reqs"),
+    broker_ssl.get("ssl_check_hostname"),
+)
+backend_params = celery_app.backend.connparams
+verifies(
+    "app.worker.celery_app",
+    "backend.connparams",
+    backend_params.get("ssl_cert_reqs"),
+    backend_params.get("ssl_check_hostname"),
+)
 
 print("CHECKED " + " ".join(checked))
 for line in bad:
@@ -394,25 +452,37 @@ sys.exit(1 if bad else 0)
 class TestModuleLevelSitesTakeTheSeamDict:
     """The eleven sites whose ssl arguments are a module constant, imported for real.
 
-    The import-linter contract "ssl has one home" stops a site writing
-    ``ssl.CERT_NONE``, because it cannot import ``ssl``. It does not stop the string
-    spelling: redis-py 6.4.0 accepts ``ssl_cert_reqs="none"`` and maps it to
-    ``ssl.CERT_NONE`` in ``RedisSSLContext``, so a hand-written
-    ``{"ssl_cert_reqs": "none"}`` needs no import and passes the contract. Here each
-    site's constant has to equal what ``redis_ssl_kwargs`` returns for that site's own
-    cleaned URL, which no hand-written dict matches.
+    Two things are pinned per site, because either one alone is satisfiable while the
+    connection still drops verification.
 
-    A module constant is fixed at import, so this runs in a subprocess with
-    ``REDIS_URL`` set to a ``rediss://`` URL and ``REDIS_TLS_INSECURE`` false.
-    Reloading eleven modules in this process would rebind ``celery_app`` and
-    re-register every task on the live app for the rest of the session.
+    The spelling. The import-linter contract "ssl has one home" stops a site writing
+    ``ssl.CERT_NONE``, because it cannot import ``ssl``. It does not stop the string:
+    redis-py 6.4.0 accepts ``ssl_cert_reqs="none"`` and maps it to ``ssl.CERT_NONE`` in
+    ``RedisSSLContext``, so a hand-written ``{"ssl_cert_reqs": "none"}`` needs no import
+    and passes the contract. Here each site's constant has to equal what
+    ``redis_ssl_kwargs`` returns for that site's own cleaned URL.
+
+    The behaviour. ``REDIS_URL`` here carries ``?ssl_cert_reqs=none``, so the dict being
+    right is not enough: redis-py's ``parse_url`` and kombu both read that key out of the
+    URL and let it beat the argument, and Celery's result backend applies the URL after
+    ``connparams.update(ssl)`` in ``celery/backends/redis.py::_params_from_url``. Each
+    site is therefore read through the connection it actually built, not through the dict
+    it passed. For the ten task modules that is
+    ``_redis.connection_pool.connection_kwargs``; for ``celery_app`` it is the kombu
+    broker connection and the redis-py result backend, one each.
+
+    A module constant is fixed at import, so this runs in a subprocess with ``REDIS_URL``
+    set to that URL and ``REDIS_TLS_INSECURE`` false. Reloading eleven modules in this
+    process would rebind ``celery_app`` and re-register every task on the live app for
+    the rest of the session. Nothing here opens a socket: redis-py builds its pool
+    lazily, and kombu and the Celery backend build their parameters without connecting.
     """
 
     def test_every_module_level_site_matches_the_seam(self):
         api_root = str(Path(app.__file__).resolve().parent.parent)
         env = {
             **os.environ,
-            "REDIS_URL": RE_DISS,
+            "REDIS_URL": RE_DISS_DIRTY,
             "REDIS_TLS_INSECURE": "False",
             "PYTHONPATH": api_root,
         }
@@ -429,8 +499,9 @@ class TestModuleLevelSitesTakeTheSeamDict:
         stdout = proc.stdout.strip()
 
         assert proc.returncode == 0, (
-            "A module-level site built its ssl arguments itself instead of taking them "
-            f"from redis_ssl_kwargs.\n{stdout}\n{proc.stderr[-2000:]}"
+            "A module-level site either built its ssl arguments itself instead of taking "
+            "them from redis_ssl_kwargs, or forwarded the URL query to the connection so "
+            f"that ?ssl_cert_reqs=none decided the mode.\n{stdout}\n{proc.stderr[-2000:]}"
         )
 
         checked: list[str] = []
