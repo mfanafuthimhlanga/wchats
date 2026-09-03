@@ -81,9 +81,14 @@ BROKER_VISIBILITY_TIMEOUT_S = 7200
 celery_app = Celery("wchats")
 
 _redis_url = settings.REDIS_URL
-# Strip the query string before the scheme is read. redis-py's parse_url forwards an
-# ssl_cert_reqs query key and lets it beat the keyword argument, so a URL carrying one
-# would pick the verification mode instead of redis_ssl_kwargs.
+# Strip the query string before either connection is built. Neither of Celery's two
+# Redis paths reaches redis-py's from_url, and both read ssl_cert_reqs out of the URL
+# and let it win. On the broker side kombu.utils.url.parse_url turns ?ssl_cert_reqs=none
+# into an ssl dict, and Connection.__init__ updates its params with it, replacing
+# broker_use_ssl whole, so ssl_check_hostname is dropped along with the mode. On the
+# result backend celery.backends.redis.RedisBackend applies _params_from_url after
+# connparams.update(ssl), and that pops the same query key over redis_backend_use_ssl.
+# Measured on celery 5.6.3 and kombu 5.6.2.
 _redis_url_clean = _redis_url.split("?")[0] if "?" in _redis_url else _redis_url
 _ssl_opts = redis_ssl_kwargs(_redis_url_clean)
 

@@ -39,6 +39,11 @@ Five findings on `f8844d9`, each verified by probe before it was fixed.
 - `deps.py` and the seam docstring said redis-py never reads `ssl_cert_reqs` from the URL.
   It does, and it lets the URL win, so the query strip is a control rather than tidiness.
   Both comments say that now, and a test drives a dirty URL through the real `from_url`.
+  Celery does the same on both of its sides, neither of which reaches `from_url`:
+  `kombu.utils.url.parse_url` turns the query into an `ssl` dict that
+  `Connection.__init__` puts over `broker_use_ssl`, dropping `ssl_check_hostname` with
+  the mode, and `RedisBackend._params_from_url` pops the same key over
+  `redis_backend_use_ssl` after `connparams.update(ssl)`.
 - `get_async_redis` builds a client per request, so the warning was one log line per API
   request. It is behind `lru_cache` on the URL prefix now.
 - The prose carried an em dash on the RED line, an arithmetic error in the pass count, and
