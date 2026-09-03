@@ -1559,12 +1559,14 @@ POISONED_CHUNK_VECTOR_DIM = 1024
 # on the strength of it. A `uuid4()` stood here instead, so the probe wrote the
 # one row in the corpus whose id disagreed with its position.
 #
-# The cost was not theoretical. `remove_poisoned_chunk` runs in a `finally` and
-# swallows its own failures, so a cleanup that did not land leaves the row in a
-# LIVE tenant corpus, and a later re-ingest of position 0 could not upsert over
-# something whose id it can never rederive. With the id derived, the same
-# document id and the same ordinal name the same row and the writer's upsert
-# reaches it.
+# This is a consistency fix, not a collision fix. The probe seeds its own
+# throwaway `documents` row under a fresh uuid4, so position 0 of that document
+# is only ever the probe's own chunk and no tenant chunk shares the document.
+# `remove_poisoned_chunk` deletes both rows. What the derived id buys is that
+# every row in the table now answers to the same rule, including the rows a
+# swallowed cleanup failure leaves behind: `remove_poisoned_chunk` runs in a
+# `finally` and logs rather than raises, and an id nothing can rederive is one
+# no later writer could reach.
 #
 # This is the id fix alone. Constructing through `app.domain.chunk.Chunk` and
 # retiring the five-column INSERT belong to the Attacker rebuild (#52), which is
