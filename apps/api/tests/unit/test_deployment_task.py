@@ -79,6 +79,36 @@ def _deployment_patch(name, **kwargs):
     return patch("app.worker.tasks.runtime.deployment." + name, **kwargs)
 
 
+def _fence_updates(mock_db, mock_run):
+    """Make this mock_db honour the chain's own WHERE status = 'running' fence.
+
+    A MagicMock answers every statement with a truthy result, so a fence written
+    against one can never be observed to hold and a test of it would be a
+    tautology. This applies an UPDATE's values to `mock_run` only while the row
+    still says 'running', the way Postgres would, and hands back the run id or
+    nothing accordingly. Every other statement — the guard's SELECT — falls
+    through to the mock's own scripted answer.
+    """
+    from sqlalchemy.sql.dml import Update
+
+    scripted = mock_db.execute.return_value
+
+    def _execute(statement, *_args, **_kwargs):
+        if not isinstance(statement, Update):
+            return scripted
+        result = MagicMock()
+        if mock_run.status != "running":
+            result.first.return_value = None
+            return result
+        for column, bound in statement._values.items():
+            setattr(mock_run, column.key, getattr(bound, "value", bound))
+        result.first.return_value = (mock_run.id,)
+        return result
+
+    mock_db.execute.side_effect = _execute
+    return mock_db
+
+
 def _ship_verdict():
     """A Verdict with no reasons, which is what `decide()` returns for a clean run."""
     from app.domain.verdict import Outcome, Verdict
@@ -253,6 +283,7 @@ class TestRunDeploymentChecklistHappyPath:
 
         mock_db.get.side_effect = _db_get
         mock_db.execute.return_value.scalar_one_or_none.return_value = None
+        _fence_updates(mock_db, mock_run)
         # Simulate db.refresh setting the run.id after INSERT
         mock_db.refresh.side_effect = lambda obj: setattr(obj, "id", mock_run_id)
 
@@ -357,6 +388,7 @@ class TestRunDeploymentChecklistHappyPath:
 
         mock_db.get.side_effect = _db_get
         mock_db.execute.return_value.scalar_one_or_none.return_value = None
+        _fence_updates(mock_db, mock_run)
         mock_db.refresh.side_effect = lambda obj: setattr(obj, "id", mock_run_id)
 
         async def _capture(signals_json, result_container, *, ledger=None):
@@ -466,6 +498,7 @@ class TestRunDeploymentChecklistFailurePath:
 
         mock_db.get.side_effect = _db_get
         mock_db.execute.return_value.scalar_one_or_none.return_value = None
+        _fence_updates(mock_db, mock_run)
         mock_db.refresh.side_effect = lambda obj: setattr(obj, "id", mock_run_id)
 
         empty_eval = _measured_eval_signal()
@@ -566,6 +599,7 @@ def _build_full_happy_path_mock_db(mock_run_id):
     mock_db.get.side_effect = _db_get
     mock_db.execute.return_value.scalar_one_or_none.return_value = None
     mock_db.refresh.side_effect = lambda obj: setattr(obj, "id", mock_run_id)
+    _fence_updates(mock_db, mock_run)
     return mock_db, mock_run
 
 
@@ -1520,7 +1554,14 @@ def _sequenced_world(eval_polls, red_team_polls):
 
 
 def _drive_sequenced(
-    fetchers, collectors, *, ceiling_s=2700, mock_log=None, dispatch=None, verdict=None
+    fetchers,
+    collectors,
+    *,
+    ceiling_s=2700,
+    mock_log=None,
+    dispatch=None,
+    verdict=None,
+    on_orchestrate=None,
 ):
     """Run the real task to settlement, driving every continuation by hand.
 
@@ -1541,6 +1582,10 @@ def _drive_sequenced(
     queued: list[dict] = []
 
     async def _report(signals_json, result_container, *, ledger=None):
+        # `on_orchestrate` is the window between the last beat and the completing
+        # write, which is where the guard actually reaps a deciding pass.
+        if on_orchestrate is not None:
+            on_orchestrate(mock_run)
         result_container["report"] = {
             "recommendation": "ship",
             "summary": "All good.",
@@ -1993,7 +2038,17 @@ class TestTheWaitIsAChainOfMessages:
         assert self.mock_db.add.call_count == first_adds, (
             "a continuation inserted a second checklist_runs row"
         )
-        assert self.mock_db.execute.call_count == 0, (
+        # The guard is the only SELECT a pass makes. A continuation's writes are
+        # UPDATEs now that every one of them is fenced (`_claimed`), so counting
+        # every statement would count the beat and read it as a second guard.
+        from sqlalchemy.sql.selectable import Select
+
+        selects = [
+            call
+            for call in self.mock_db.execute.call_args_list
+            if call.args and isinstance(call.args[0], Select)
+        ]
+        assert selects == [], (
             "a continuation re-ran the idempotency guard and would skip itself"
         )
 
@@ -3207,6 +3262,165 @@ class TestEveryPassStampsTheRunsBeat:
         assert isinstance(mock_run.heartbeat_at, datetime), (
             "a pass that reached the tenant DB has to say so on its row, or the "
             f"guard reads the chain as abandoned: {mock_run.heartbeat_at!r}"
+        )
+
+    def test_a_continuation_stamps_its_own_beat_too(self):
+        """The pass that actually goes quiet is a continuation, not the first.
+
+        The first pass beats seconds after the insert, when the row's created_at
+        already reads as fresh. Every beat that matters to the guard comes from a
+        continuation, and this pins that one directly rather than through the
+        shared `_polled` the first-pass test happens to exercise.
+        """
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        mock_db, mock_run = _build_full_happy_path_mock_db("run-1")
+        mock_run.heartbeat_at = None
+        with ExitStack() as stack:
+            for one in [
+                _deployment_patch("get_sync_db", new=_make_sync_db_ctx(mock_db)),
+                _deployment_patch(
+                    "fernet_decrypt", return_value="postgresql://test/tenant"
+                ),
+                _deployment_patch("_dispatch_eval_run", return_value=True),
+                _deployment_patch("_dispatch_red_team_run", return_value=True),
+                _deployment_patch("latest_eval_run_status_since", return_value=None),
+                _deployment_patch(
+                    "latest_red_team_run_status_since", return_value=None
+                ),
+                _deployment_patch("_requeue_wait", return_value=True),
+            ]:
+                stack.enter_context(one)
+            result = run_deployment_checklist.run(
+                agent_id=str(uuid.uuid4()),
+                wait_state=_continuation_state("run-1"),
+            )
+
+        assert result["status"] == "waiting"
+        assert isinstance(mock_run.heartbeat_at, datetime), (
+            "a continuation queued behind the jobs it dispatched is exactly the "
+            "chain the guard is deciding about, and it has to say it ran: "
+            f"{mock_run.heartbeat_at!r}"
+        )
+
+
+def _continuation_state(run_id):
+    """The state a continuation carries, shaped the way `_open_wait` writes it."""
+    return {
+        "run_id": run_id,
+        "since": "2026-08-30T12:00:00+00:00",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "statuses": {"eval": None, "red_team": None},
+        "eval_dispatched": True,
+        "red_team_dispatched": True,
+    }
+
+
+class TestAReapedRunIsNeverWrittenOverByItsOwnChain:
+    """#129's other direction: the guard closes a row and the chain reopens it.
+
+    The guard reaps a chain it reads as abandoned, and the next trigger starts a
+    fresh checklist for the agent. The reaped chain was never dead — it was
+    queued — so its next pass stamped a beat onto the row it no longer owned and
+    its deciding pass flipped that row to 'complete'. Two complete checklists on
+    one agent, which is the outcome the guard exists to prevent, reached from
+    inside it.
+
+    Every write the chain makes is now fenced on the row still saying 'running',
+    so a reaped run takes nothing further from it.
+    """
+
+    def _drive_continuation(self, mock_run_status, *, mock_log=None):
+        """One continuation pass against a row in the state the guard left it."""
+        from app.worker.tasks.runtime import deployment as deployment_task
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        mock_db, mock_run = _build_full_happy_path_mock_db("run-1")
+        mock_run.status = mock_run_status
+        mock_run.heartbeat_at = None
+        requeued = []
+
+        with ExitStack() as stack:
+            for one in [
+                _deployment_patch("get_sync_db", new=_make_sync_db_ctx(mock_db)),
+                _deployment_patch(
+                    "fernet_decrypt", return_value="postgresql://test/tenant"
+                ),
+                _deployment_patch("latest_eval_run_status_since", return_value=None),
+                _deployment_patch(
+                    "latest_red_team_run_status_since", return_value=None
+                ),
+                _deployment_patch(
+                    "_requeue_wait",
+                    new=lambda _agent_id, state: requeued.append(state) or True,
+                ),
+            ]:
+                stack.enter_context(one)
+            if mock_log is not None:
+                stack.enter_context(patch.object(deployment_task, "log", mock_log))
+            result = run_deployment_checklist.run(
+                agent_id=str(uuid.uuid4()),
+                wait_state=_continuation_state("run-1"),
+            )
+        return result, mock_run, requeued
+
+    def test_a_deciding_pass_whose_row_was_reaped_does_not_complete_it(self):
+        """The adversary's probe B. The reap lands during the narration turn."""
+        _, fetchers, collectors = _sequenced_world(eval_polls=0, red_team_polls=0)
+
+        result, mock_run, _ = _drive_sequenced(
+            fetchers,
+            collectors,
+            on_orchestrate=lambda run: setattr(run, "status", "failed"),
+        )
+
+        assert mock_run.status == "failed", (
+            "the guard closed this row out and a second checklist holds the "
+            f"agent now; completing it puts two reports on one: {mock_run.status}"
+        )
+        assert result == {"status": "reaped", "run_id": mock_run.id}, (
+            f"a pass that wrote nothing must not report a recommendation: {result}"
+        )
+
+    def test_a_continuation_whose_row_was_reaped_stops_before_it_re_queues(self):
+        """The beat is where a queued chain finds out, and it stops there."""
+        result, mock_run, requeued = self._drive_continuation("failed")
+
+        assert requeued == [], (
+            "a chain whose row was reaped must not keep the wait alive; the "
+            f"agent already has a live checklist: {requeued}"
+        )
+        assert result == {}, f"nothing was written, so nothing is reported: {result}"
+        assert mock_run.heartbeat_at is None, (
+            "the beat landed on a row this chain no longer owns, which is what "
+            "made the guard read the reaped run as alive again"
+        )
+
+    def test_the_reaped_chain_says_so_once_in_the_log(self):
+        mock_log = MagicMock()
+
+        self._drive_continuation("failed", mock_log=mock_log)
+
+        reaped = [
+            call
+            for call in mock_log.warning.call_args_list
+            if call.args
+            and call.args[0] == "run_deployment_checklist.run_reaped_while_live"
+        ]
+        assert len(reaped) == 1, (
+            f"expected one run_reaped_while_live warning: "
+            f"{mock_log.warning.call_args_list}"
+        )
+        assert reaped[0].kwargs["run_id"] == "run-1"
+
+    def test_a_row_still_running_is_still_this_chains_to_write(self):
+        """The fence is scoped to a reap. An ordinary continuation carries on."""
+        result, mock_run, requeued = self._drive_continuation("running")
+
+        assert result["status"] == "waiting", result
+        assert len(requeued) == 1
+        assert isinstance(mock_run.heartbeat_at, datetime), (
+            f"a live chain still beats: {mock_run.heartbeat_at!r}"
         )
 
 

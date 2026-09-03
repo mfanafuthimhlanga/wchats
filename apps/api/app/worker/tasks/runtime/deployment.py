@@ -61,7 +61,7 @@ import json
 from datetime import datetime, timezone
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.core.config import settings
 from app.core.database import get_sync_db
@@ -579,20 +579,61 @@ def _a_run_is_already_live(agent_id: str) -> bool:
         return False
 
 
-def _beat(agent_id: str, run_id: str) -> None:
+def _claimed(db, run_id: str, **values) -> bool:
+    """Write these columns onto this run, and only while the row says 'running'.
+
+    THE CHAIN STOPS OWNING ITS ROW THE MOMENT THE GUARD REAPS IT. Every write the
+    chain makes now reads the status it is writing over in the same statement, so
+    a row another trigger closed out takes nothing further from this chain: zero
+    rows back means the run was reaped. An unconditional UPDATE by primary key
+    stamped a beat onto the reaped row and then flipped it to 'complete', which
+    is the two-checklists-on-one-agent outcome the guard exists to prevent,
+    reached from the other side.
+
+    The fence is the WHERE clause rather than a status read before the write,
+    because between that read and that write is exactly where the guard runs.
+    """
+    claimed = db.execute(
+        update(ChecklistRun)
+        .where(ChecklistRun.id == run_id, ChecklistRun.status == "running")
+        .values(**values)
+        .returning(ChecklistRun.id)
+    ).first()
+    db.commit()
+    return claimed is not None
+
+
+def _log_reaped(agent_id: str, run_id: str, write: str) -> None:
+    """The one thing a chain says when it finds its own row already closed."""
+    log.warning(
+        "run_deployment_checklist.run_reaped_while_live",
+        agent_id=agent_id,
+        run_id=run_id,
+        write=write,
+        detail=(
+            "the guard read this chain as abandoned and closed its row out; the "
+            "chain stops here rather than writing over the run that replaced it"
+        ),
+    )
+
+
+def _beat(agent_id: str, run_id: str) -> bool:
     """Say on the row that this pass ran, so the guard can read the chain as live.
 
-    Once per pass, from the worker clock the guard compares against. A beat that
-    fails costs freshness and nothing else: the row keeps its previous beat and
-    the grace in `_stale_after_s` absorbs a lost pass, so a control DB blip never
-    turns into a checklist reaped out from under itself.
+    Once per pass, from the worker clock the guard compares against. Returns
+    False only when the row is no longer this chain's to write.
+
+    A beat that FAILS is not that, and returns True. It costs freshness and
+    nothing else: the row keeps its previous beat and `_stale_after_s` absorbs a
+    lost pass, so a control DB blip never turns into a checklist reaped out from
+    under itself. A beat that reaches the row and finds it closed is the opposite
+    kind of news, and the chain ends on it.
     """
     try:
         with get_sync_db() as db:
-            run_obj = db.get(ChecklistRun, run_id)
-            if run_obj:
-                run_obj.heartbeat_at = datetime.now(timezone.utc)
-                db.commit()
+            still_ours = _claimed(
+                db, run_id, heartbeat_at=datetime.now(timezone.utc)
+            )
     except Exception as exc:
         log.warning(
             "run_deployment_checklist.heartbeat_failed",
@@ -600,6 +641,10 @@ def _beat(agent_id: str, run_id: str) -> None:
             run_id=run_id,
             error=str(exc) or repr(exc),
         )
+        return True
+    if not still_ours:
+        _log_reaped(agent_id, run_id, "heartbeat")
+    return still_ours
 
 
 def _insert_run(agent_id: str) -> str:
@@ -657,6 +702,13 @@ def _polled(agent_id: str, conn_str: str, state: dict | None) -> dict | None:
     that beat to tell a chain still working from one nothing will ever finish,
     and reaching the tenant DB is the strongest thing a pass can say about
     itself.
+
+    AND THE BEAT IS WHERE THE CHAIN LEARNS IT WAS REAPED. The write is fenced on
+    the row still saying 'running', so a beat that lands nowhere means the guard
+    already closed this run out and something else is running for this agent.
+    None stops the pass there: nothing is re-queued, nothing is collected and
+    nothing is completed. The one look already taken is spent, which is a tenant
+    DB read rather than a wrong report.
     """
     if state is None:
         return None
@@ -672,7 +724,8 @@ def _polled(agent_id: str, conn_str: str, state: dict | None) -> dict | None:
         )
         _persist_failed(agent_id, state["run_id"], exc)
         return None
-    _beat(agent_id, state["run_id"])
+    if not _beat(agent_id, state["run_id"]):
+        return None
     return polled
 
 
@@ -1035,7 +1088,12 @@ def _narration(agent_id: str, run_id: str, result_container: dict) -> tuple[str,
 
 
 def _persist_failed(agent_id: str, run_id: str, exc: Exception) -> None:
-    """Mark the run failed, and never let that write hide the original failure."""
+    """Mark the run failed, and never let that write hide the original failure.
+
+    Fenced like every other write this chain makes: a row the guard already
+    reaped is not this chain's to close, and the reap wrote 'failed' onto it
+    anyway.
+    """
     log.error(
         "run_deployment_checklist.failed",
         agent_id=agent_id,
@@ -1045,10 +1103,7 @@ def _persist_failed(agent_id: str, run_id: str, exc: Exception) -> None:
     )
     try:
         with get_sync_db() as db:
-            run_obj = db.get(ChecklistRun, run_id)
-            if run_obj:
-                run_obj.status = "failed"
-                db.commit()
+            still_ours = _claimed(db, run_id, status="failed")
     except Exception as update_exc:
         log.warning(
             "run_deployment_checklist.update_failed_status_error",
@@ -1056,12 +1111,20 @@ def _persist_failed(agent_id: str, run_id: str, exc: Exception) -> None:
             run_id=run_id,
             error=str(update_exc),
         )
+        return
+    if not still_ours:
+        _log_reaped(agent_id, run_id, "failed")
 
 
 def _persist_complete(
     run_id: str, report, signals: dict, verdict: Verdict, envelope_hash, warnings: list
-) -> None:
+) -> bool:
     """One transaction: status, recommendation, report, warnings and the hash.
+
+    Returns False when the row was reaped while this chain was working, in which
+    case nothing is written: a run the guard closed out has already been replaced
+    by the checklist that started in its place, and completing it would put two
+    reports on one agent.
 
     BLR-02: the hash lands with the rest. Acknowledgement (the sibling timestamp
     column) is never stamped here, because that is the owner's act at approve
@@ -1072,21 +1135,33 @@ def _persist_complete(
     see every rule that produced it rather than the one word it came to.
     """
     with get_sync_db() as db:
-        run_obj = db.get(ChecklistRun, run_id)
-        if run_obj is None:
-            return
-        run_obj.status = "complete"
-        run_obj.recommendation = report.recommendation
-        run_obj.report = {
-            **signals,
-            "verdict": verdict.payload,
-            "summary": report.summary,
-            "recommendation": report.recommendation,
-        }
-        run_obj.warnings = [warning.model_dump() for warning in warnings]
-        run_obj.envelope_hash = envelope_hash
-        db.commit()
-        db.refresh(run_obj)
+        return _claimed(
+            db,
+            run_id,
+            status="complete",
+            recommendation=report.recommendation,
+            report={
+                **signals,
+                "verdict": verdict.payload,
+                "summary": report.summary,
+                "recommendation": report.recommendation,
+            },
+            warnings=[warning.model_dump() for warning in warnings],
+            envelope_hash=envelope_hash,
+        )
+
+
+def _failed_and_handed_back(task, agent_id: str, run_id: str, exc: Exception) -> dict:
+    """Close the run out and hand the message back to the broker if it can be.
+
+    The two places the task's own failures land say exactly this, so they say it
+    once. `task.retry()` returns the exception to raise rather than raising it,
+    and raising it from here propagates out of the task body unchanged.
+    """
+    _persist_failed(agent_id, run_id, exc)
+    if task.request.retries < task.max_retries:
+        raise task.retry(exc=exc, countdown=2 ** task.request.retries)
+    return {}
 
 
 @celery_app.task(
@@ -1148,6 +1223,10 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
         {"status": "complete", "run_id": str, "recommendation": str}  on success.
         {"status": "waiting", "run_id": str, "pending": [str], ...}   while a job runs.
         {"status": "already_running"}                                  on idempotent skip.
+        {"status": "reaped", "run_id": str}   when the guard closed this run out
+            while it was working and a later checklist holds the agent. Every
+            write the chain makes is fenced on the row still saying 'running', so
+            this pass writes nothing rather than reopening a closed run.
         {}                                                             on retry exhaustion.
     """
     # ------------------------------------------------------------------
@@ -1213,10 +1292,7 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
     try:
         verdict = _compute_verdict(agent_id, conn_str, state)
     except Exception as exc:
-        _persist_failed(agent_id, run_id, exc)
-        if self.request.retries < self.max_retries:
-            raise self.retry(exc=exc, countdown=2 ** self.request.retries)
-        return {}
+        return _failed_and_handed_back(self, agent_id, run_id, exc)
 
     # ------------------------------------------------------------------
     # Step 5 - the narration turn, under ORCHESTRATOR_TIMEOUT_S. The shim awaits
@@ -1291,9 +1367,10 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
             + derive_blast_radius_warnings(signals["blast_radius"])
             + derive_quality_warnings(signals["verified_qa_stats"], red_team_summary),
         )
-        _persist_complete(
+        if not _persist_complete(
             run_id, report, signals, verdict, envelope_hash, merged_warnings
-        )
+        ):
+            return {"status": "reaped", "run_id": run_id}
 
         log.info(
             "run_deployment_checklist.complete",
@@ -1318,10 +1395,7 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
         # read. What reaches this block is a record read that raised, a decide()
         # refusal, or a control-DB write that failed, and none reached a decision.
         # ------------------------------------------------------------------
-        _persist_failed(agent_id, run_id, exc)
-        if self.request.retries < self.max_retries:
-            raise self.retry(exc=exc, countdown=2 ** self.request.retries)
-        return {}
+        return _failed_and_handed_back(self, agent_id, run_id, exc)
 
 
 def _orchestrator_ledger(
