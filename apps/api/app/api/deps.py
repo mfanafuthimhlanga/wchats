@@ -250,8 +250,11 @@ async def get_async_redis():
     Creates a connection from REDIS_URL for each request and closes it
     in the finally block to ensure proper cleanup.
     """
-    # Strip query params — redis-py reads ssl_cert_reqs from keyword arguments, never
-    # from the URL; redis_ssl_kwargs then decides TLS from REDIS_TLS_INSECURE.
+    # Strip the query string before redis-py sees the URL. parse_url forwards an
+    # ssl_cert_reqs query key as a string, from_url lets URL options overwrite the
+    # keyword arguments, and RedisSSLContext maps "none" to ssl.CERT_NONE, so a
+    # REDIS_URL carrying ?ssl_cert_reqs=none would beat redis_ssl_kwargs and drop
+    # certificate verification. The strip is what prevents that.
     _url = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
     _kwargs: dict = {"decode_responses": True, **redis_ssl_kwargs(_url)}
     client = aioredis.Redis.from_url(_url, **_kwargs)

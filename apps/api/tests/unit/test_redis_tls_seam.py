@@ -62,7 +62,7 @@ class TestRedisSslKwargs:
     """redis_ssl_kwargs over the three inputs it can receive."""
 
     def test_plain_redis_url_gets_no_ssl_arguments(self):
-        """A redis:// URL has no TLS socket, and Celery raises on ssl arguments there."""
+        """A redis:// URL has no TLS socket, so there is nothing to configure."""
         assert redis_ssl_kwargs(REDIS) == {}
 
     def test_rediss_url_verifies_by_default(self):
@@ -130,6 +130,44 @@ class TestCallSitesVerifyByDefault:
             f"expected ssl.CERT_REQUIRED ({ssl.CERT_REQUIRED!r})."
         )
         assert captured.get("ssl_check_hostname") is True
+
+    def test_api_url_query_cannot_downgrade_the_connection(self):
+        """A ``?ssl_cert_reqs=none`` on REDIS_URL must never reach redis-py.
+
+        On redis-py 6.4.0 ``parse_url`` forwards the query key as a string,
+        ``from_url`` lets the URL options overwrite the keyword arguments, and
+        ``RedisSSLContext`` maps ``"none"`` to ``ssl.CERT_NONE``. So the query would
+        beat the seam's ``CERT_REQUIRED`` if the site did not strip it. This drives the
+        real ``from_url`` and reads the pool the client was actually built with, rather
+        than the arguments the site passed.
+        """
+        import app.api.deps as deps  # noqa: PLC0415
+
+        dirty = f"{RE_DISS}?ssl_cert_reqs=none"
+        pools: list = []
+
+        async def _drain():
+            with (
+                patch.object(deps.settings, "REDIS_URL", dirty),
+                patch.object(deps.settings, "REDIS_TLS_INSECURE", False, create=True),
+            ):
+                agen = deps.get_async_redis()
+                client = await agen.__anext__()
+                pools.append(client.connection_pool)
+                await agen.aclose()
+
+        asyncio.run(_drain())
+
+        pool = pools[0]
+        assert pool.connection_kwargs.get("ssl_cert_reqs") == ssl.CERT_REQUIRED, (
+            f"redis-py was built with ssl_cert_reqs="
+            f"{pool.connection_kwargs.get('ssl_cert_reqs')!r} from {dirty!r}. "
+            "The query string has to be stripped before from_url sees the URL."
+        )
+
+        conn = pool.connection_class(**pool.connection_kwargs)
+        assert conn.cert_reqs == ssl.CERT_REQUIRED
+        assert conn.ssl_context.check_hostname is True
 
     def test_agent_tools_qembed_redis(self):
         """app/services/agent_tools.py — the query-embedding cache client."""

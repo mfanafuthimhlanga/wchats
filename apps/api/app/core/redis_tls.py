@@ -21,10 +21,9 @@ log = structlog.get_logger(__name__)
 def redis_ssl_kwargs(url: str) -> dict:
     """The ssl arguments a Redis connection to ``url`` should be opened with.
 
-    Empty for a plain ``redis://`` URL. redis-py has no TLS socket to configure
-    there, and Celery raises ``ValueError`` when an ssl argument reaches a
-    ``redis://`` scheme, so the empty dict is the correct answer rather than a
-    shortcut.
+    Empty for a plain ``redis://`` URL, which has no TLS socket to configure.
+    kombu reads Celery's two ssl options under ``if conninfo.ssl:``, so the empty
+    dict is skipped there rather than rejected.
 
     For ``rediss://`` the default verifies the server certificate and checks the
     hostname against it. ``REDIS_TLS_INSECURE=True`` drops to ``ssl.CERT_NONE``
@@ -33,9 +32,14 @@ def redis_ssl_kwargs(url: str) -> dict:
 
     The dict this returns is accepted both as keyword arguments to
     ``redis.from_url`` / ``redis.asyncio.Redis.from_url`` and as Celery's
-    ``broker_use_ssl`` and ``redis_backend_use_ssl`` values. Pass the URL with
-    its query string already stripped: redis-py reads ``ssl_cert_reqs`` from
-    keyword arguments only, never from the URL.
+    ``broker_use_ssl`` and ``redis_backend_use_ssl`` values.
+
+    Pass the URL with its query string already stripped. On redis-py 6.4.0
+    ``parse_url`` forwards an ``ssl_cert_reqs`` query key as a string, ``from_url``
+    lets the URL options overwrite the keyword arguments, and ``RedisSSLContext``
+    maps the string ``"none"`` to ``ssl.CERT_NONE``. A URL carrying
+    ``?ssl_cert_reqs=none`` therefore beats whatever this function returns, and
+    stripping the query is what stops it.
     """
     if not url.startswith("rediss://"):
         return {}
