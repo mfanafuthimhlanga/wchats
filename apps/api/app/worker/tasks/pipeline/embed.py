@@ -78,6 +78,7 @@ from app.models.agent import Agent
 from app.models.job import Job
 from app.services.embedding_service import EMBEDDING_MODEL, embed_chunks
 from app.services.events import emit
+from app.services.job_failure import retry_or_fail_the_job
 from app.worker.celery_app import celery_app
 from app.worker.tasks.pipeline.chain_edge import job_in_job_out
 
@@ -337,26 +338,14 @@ def embed_and_migrate(self, job: IngestionJob) -> IngestionJob:
             )
 
             # On final retry exhaustion, mark job failed and RE-RAISE so Celery
-            # records the task as FAILURE. Previously this branch swallowed the
+            # records the task as FAILURE. This branch once swallowed the
             # exception and fell through to `return {...success dict...}`,
             # producing a phantom success: the embed step would "succeed" with
             # 0 chunks embedded (e.g. VOYAGE_API_KEY AuthenticationError exhausting
             # tenacity retries → RetryError). The job must be marked failed, not
-            # silently completed.
-            if self.request.retries >= self.max_retries:
-                try:
-                    job_row.status = "failed"
-                    job_row.error = str(exc)
-                    job_row.finished_at = datetime.now(timezone.utc)
-                    db.commit()
-                    emit(job_id, "job.failed", {"error": str(exc)}, db, _redis)
-                except Exception:
-                    pass
-                # Re-raise the original error: Celery marks the task FAILURE and
-                # the chain stops here rather than forwarding a success dict.
-                raise
-            else:
-                raise self.retry(exc=exc, countdown=2**self.request.retries)
+            # silently completed. The shape embed spelled here is now the shape
+            # every pipeline task shares (#63).
+            retry_or_fail_the_job(self, exc, job_id, db, _redis, 2**self.request.retries)
 
         finally:
             tenant_conn.close()

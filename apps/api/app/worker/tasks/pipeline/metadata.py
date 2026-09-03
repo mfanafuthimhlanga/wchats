@@ -112,7 +112,6 @@ Threat mitigations (T-02-04):
 """
 
 import ssl
-from datetime import datetime, timezone
 
 import psycopg2
 import redis as redis_lib
@@ -125,8 +124,8 @@ from app.core.security import fernet_decrypt, require_ciphertext
 from app.domain.chunk_metadata import ChunkMetadata
 from app.domain.ingestion_job import IngestionJob
 from app.models.agent import Agent
-from app.models.job import Job
 from app.services.events import emit
+from app.services.job_failure import fail_the_job, retry_or_fail_the_job
 from app.services.metadata_service import BATCH_SIZE, enrich_chunks_batch
 from app.worker.celery_app import celery_app
 from app.worker.tasks.pipeline.chain_edge import job_in_job_out
@@ -304,26 +303,8 @@ def _refuse_a_run_that_enriched_nothing(db, job_id: str, seen: int, enriched: in
         return
     reason = f"generate_metadata enriched nothing: chunks_seen={seen}, chunks_enriched={enriched}"
     log.error("generate_metadata.nothing_enriched", chunks_seen=seen, chunks_enriched=enriched)
-    _fail_the_job(db, job_id, reason)
+    fail_the_job(job_id, reason, db, _redis)
     raise MetadataEnrichmentFailed(reason)
-
-
-def _fail_the_job(db, job_id: str, reason: str) -> None:
-    """Mark the job failed and emit the terminal job.failed event.
-
-    The same mechanism provision, migrations and embed use: the job row carries
-    the reason, and job.failed is what the SSE stream and the admin ingest page
-    treat as terminal.
-    """
-    # job_row, not job: `job` is the IngestionJob the chain carries, and this is
-    # the control DB row. Same two names embed.py uses.
-    job_row = db.get(Job, job_id)
-    if job_row is not None:
-        job_row.status = "failed"
-        job_row.error = reason
-        job_row.finished_at = datetime.now(timezone.utc)
-        db.commit()
-    emit(job_id, "job.failed", {"error": reason}, db, _redis)
 
 
 @celery_app.task(
@@ -385,7 +366,7 @@ def generate_metadata(self, job: IngestionJob) -> IngestionJob:
             except Exception:
                 pass
             log.error("generate_metadata.unexpected_error", error_type=type(exc).__name__, error=str(exc))
-            raise self.retry(exc=exc, countdown=2**self.request.retries)
+            retry_or_fail_the_job(self, exc, job_id, db, _redis, 2**self.request.retries)
         finally:
             tenant_conn.close()
 

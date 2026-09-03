@@ -30,8 +30,11 @@ Return value:
 
 Failure modes (prd-M1.md §7.1):
     4xx  → fatal: sets agent.status="failed", job.status="failed", emits job.failed; no retry
-    5xx / timeout → exponential backoff via self.retry(countdown=2**retries), max 3x
-    MaxRetriesExceededError → caught explicitly; sets agent.status="failed", job.status="failed"
+    5xx / timeout → exponential backoff via _retry_or_fail(countdown=2**retries), max 3x
+    last attempt raised → _retry_or_fail sets agent.status="failed", job.status="failed"
+                          and emits job.failed. Celery re-raises the exception rather
+                          than MaxRetriesExceededError when retry() was handed one, so
+                          this is a state check, never an exception handler (#63).
 
 Threat mitigations:
     T-03-01: Return value contains only agent_id and project_id — no connection URI.
@@ -58,7 +61,6 @@ from datetime import datetime, timezone
 import redis as redis_lib
 import requests as req_lib
 import structlog
-from celery.exceptions import MaxRetriesExceededError
 
 from app.core.config import settings
 from app.core.database import get_sync_db
@@ -67,6 +69,7 @@ from app.models.agent import Agent
 from app.models.job import Job
 from app.models.tenant import Tenant
 from app.services.events import emit
+from app.services.job_failure import failure_reason, retries_are_spent
 from app.services.neon import _NEON_API_BASE, NeonHTTPError, _neon_headers, _project_slug, create_neon_project
 from app.worker.celery_app import celery_app
 
@@ -82,8 +85,8 @@ _redis = redis_lib.from_url(_url_clean, **_ssl_opts)
 def _mark_failed(agent: Agent, job: Job, db, reason: str) -> None:
     """Set agent and job to failed and emit job.failed event.
 
-    Extracted to a helper so the same cleanup runs from both the 4xx fatal
-    path and the MaxRetriesExceededError path.
+    Extracted to a helper so the same cleanup runs from both the 4xx fatal path
+    and the retry-exhaustion path in _retry_or_fail.
     """
     agent.status = "failed"
     job.status = "failed"
@@ -91,6 +94,28 @@ def _mark_failed(agent: Agent, job: Job, db, reason: str) -> None:
     job.finished_at = datetime.now(timezone.utc)
     db.commit()
     emit(job.id, "job.failed", {"error": reason}, db, _redis)
+
+
+def _retry_or_fail(task, exc: BaseException, agent: Agent, job: Job, db, what: str):
+    """Retry provisioning, or end it visibly once the last attempt has raised.
+
+    Never returns. This replaced four copies of
+
+        try:
+            raise self.retry(exc=exc, countdown=...)
+        except MaxRetriesExceededError:
+            _mark_failed(...)
+            raise
+
+    which never ran their cleanup. Celery's Task.retry re-raises the exception it
+    was handed rather than MaxRetriesExceededError, so the handler matched nothing
+    and provisioning died with the agent still 'provisioning', the job row still
+    'running', and no job.failed on the stream (#63).
+    """
+    if retries_are_spent(task):
+        _mark_failed(agent, job, db, "%s failed after %d retries (%s)" % (what, task.max_retries, failure_reason(exc)))
+        raise exc
+    raise task.retry(exc=exc, countdown=2 ** task.request.retries)
 
 
 @celery_app.task(
@@ -206,18 +231,10 @@ def provision_neon(self, tenant_id: str, agent_id: str) -> dict:
                 if 400 <= exc.status_code < 500:
                     _mark_failed(agent, job, db, f"Neon API {exc.status_code} on URI fetch")
                     raise Exception(f"Neon API fatal {exc.status_code} on URI fetch — chain aborted") from exc
-                try:
-                    raise self.retry(exc=exc, countdown=2 ** self.request.retries)
-                except MaxRetriesExceededError:
-                    _mark_failed(agent, job, db, f"Neon URI fetch failed after {self.max_retries} retries")
-                    raise
+                _retry_or_fail(self, exc, agent, job, db, "Neon URI fetch")
             except Exception as exc:
                 log.warning("provision_neon.uri_fetch_unexpected_error", agent_id=agent_id, project_id=project_id)
-                try:
-                    raise self.retry(exc=exc, countdown=2 ** self.request.retries)
-                except MaxRetriesExceededError:
-                    _mark_failed(agent, job, db, f"Neon URI fetch failed after {self.max_retries} retries (unexpected error)")
-                    raise
+                _retry_or_fail(self, exc, agent, job, db, "Neon URI fetch")
         else:
             # ------------------------------------------------------------------
             # Fresh start: Call Neon API to create the project + fetch URIs
@@ -244,19 +261,11 @@ def provision_neon(self, tenant_id: str, agent_id: str) -> dict:
                 if 400 <= exc.status_code < 500:
                     _mark_failed(agent, job, db, f"Neon API {exc.status_code} error")
                     raise Exception(f"Neon API fatal {exc.status_code} — chain aborted") from exc
-                try:
-                    raise self.retry(exc=exc, countdown=2 ** self.request.retries)
-                except MaxRetriesExceededError:
-                    _mark_failed(agent, job, db, f"Neon project creation failed after {self.max_retries} retries")
-                    raise
+                _retry_or_fail(self, exc, agent, job, db, "Neon project creation")
             except Exception as exc:
                 # Network error, timeout, etc. — not a Neon HTTP error.
                 log.warning("provision_neon.unexpected_error", agent_id=agent_id)
-                try:
-                    raise self.retry(exc=exc, countdown=2 ** self.request.retries)
-                except MaxRetriesExceededError:
-                    _mark_failed(agent, job, db, f"Neon project creation failed after {self.max_retries} retries (network error)")
-                    raise
+                _retry_or_fail(self, exc, agent, job, db, "Neon project creation")
 
             project_id = result["id"]
 

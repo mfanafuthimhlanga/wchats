@@ -48,6 +48,7 @@ from app.core.security import fernet_decrypt
 from app.domain.ingestion_job import IngestionJob
 from app.models.agent import Agent
 from app.services.events import emit
+from app.services.job_failure import retry_or_fail_the_job
 from app.services.retrieval_service import RetrievalStrategy
 from app.services.strategy_service import _fetch_corpus_signals_sync, run_strategist
 from app.worker.celery_app import celery_app
@@ -136,9 +137,8 @@ def synthesize_retrieval_strategy(self, job: IngestionJob) -> IngestionJob:
             agent_id=agent_id,
             error=str(exc),
         )
-        if self.request.retries >= self.max_retries:
-            raise
-        raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+        with get_sync_db() as failure_db:
+            retry_or_fail_the_job(self, exc, job_id, failure_db, _redis, 2 ** self.request.retries)
 
     # ------------------------------------------------------------------
     # Step 3 — Collect corpus signals from tenant DB (psycopg2 sync)
@@ -151,9 +151,8 @@ def synthesize_retrieval_strategy(self, job: IngestionJob) -> IngestionJob:
             agent_id=agent_id,
             error=str(exc),
         )
-        if self.request.retries >= self.max_retries:
-            raise
-        raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+        with get_sync_db() as failure_db:
+            retry_or_fail_the_job(self, exc, job_id, failure_db, _redis, 2 ** self.request.retries)
 
     signals_json = json.dumps(signals)
 
@@ -206,9 +205,8 @@ def synthesize_retrieval_strategy(self, job: IngestionJob) -> IngestionJob:
             agent_id=agent_id,
             error=str(exc),
         )
-        if self.request.retries >= self.max_retries:
-            raise
-        raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+        with get_sync_db() as failure_db:
+            retry_or_fail_the_job(self, exc, job_id, failure_db, _redis, 2 ** self.request.retries)
 
     # ------------------------------------------------------------------
     # Step 7 — Log completion and return chain pass-through

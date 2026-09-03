@@ -30,10 +30,11 @@ None guard on job query:
 Connection probe (RESEARCH.md Pitfall 3):
     Neon reports operations "finished" before the compute endpoint is query-ready.
     wait_for_neon_ready() probes the direct URI with SELECT 1 before Alembic runs.
-    Probe exhaustion → retriable (self.retry with exponential backoff).
+    Probe exhaustion → retriable (retry_or_fail_the_job with exponential backoff).
 
 Failure modes (prd-M1.md §7.2):
-    Connection failure → retry 3x exponential backoff (via wait_for_neon_ready → RuntimeError)
+    Connection failure → retry 3x exponential backoff (via wait_for_neon_ready → RuntimeError),
+                         then the same ending as a migration error (#63)
     Migration error   → fatal: sets agent.status="failed", job.status="failed", emits job.failed
 
 Event emission order:
@@ -57,6 +58,7 @@ from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.models.job import Job
 from app.services.events import emit
+from app.services.job_failure import retry_or_fail_the_job
 from app.services.migrations import get_current_alembic_revision, run_tenant_migrations
 from app.services.neon import wait_for_neon_ready
 from app.worker.celery_app import celery_app
@@ -143,7 +145,7 @@ def apply_migrations(self, result: dict) -> None:
                 agent_id=agent_id,
                 attempt=self.request.retries,
             )
-            raise self.retry(exc=exc, countdown=2**self.request.retries)
+            retry_or_fail_the_job(self, exc, job.id, db, _redis, 2**self.request.retries, agent)
 
         # ------------------------------------------------------------------
         # Run Alembic migrations
