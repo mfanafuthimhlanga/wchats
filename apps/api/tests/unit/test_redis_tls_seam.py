@@ -24,13 +24,33 @@ RED observed 2026-09-03 on the unfixed tree: the three call-site tests failed wi
 from __future__ import annotations
 
 import asyncio
+import os
 import ssl
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import app
 from app.core.redis_tls import redis_ssl_kwargs
 
 RE_DISS = "rediss://example.upstash.io:6380/0"
 REDIS = "redis://localhost:6379/0"
+
+# The eleven modules that build their ssl arguments once, at import, as a constant.
+MODULE_LEVEL_SITES = (
+    "app.worker.celery_app",
+    "app.worker.tasks.pipeline.chunk",
+    "app.worker.tasks.pipeline.embed",
+    "app.worker.tasks.pipeline.metadata",
+    "app.worker.tasks.pipeline.migrations",
+    "app.worker.tasks.pipeline.parse",
+    "app.worker.tasks.pipeline.provision",
+    "app.worker.tasks.pipeline.strategy",
+    "app.worker.tasks.runtime.agent",
+    "app.worker.tasks.runtime.retrieve",
+    "app.worker.tasks.runtime.validators",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -255,3 +275,94 @@ class TestCeleryTakesTheSeamDict:
         assert booted.conf.broker_use_ssl == {}
         assert booted.conf.redis_backend_use_ssl == {}
         assert not booted.connection_for_write().ssl
+
+
+# ---------------------------------------------------------------------------
+# The eleven call sites that build their arguments at module import
+# ---------------------------------------------------------------------------
+
+_MODULE_LEVEL_PROBE = """
+import importlib
+import sys
+
+from app.core.redis_tls import redis_ssl_kwargs
+
+for name in sys.argv[1:]:
+    importlib.import_module(name)
+
+checked = []
+bad = []
+for name in sorted(sys.modules):
+    mod = sys.modules[name]
+    if not name.startswith("app.") or not hasattr(mod, "_ssl_opts"):
+        continue
+    url = getattr(mod, "_url_clean", None) or getattr(mod, "_redis_url_clean", None)
+    if url is None:
+        bad.append(name + ": _ssl_opts with no cleaned url to check it against")
+        continue
+    checked.append(name)
+    want = redis_ssl_kwargs(url)
+    got = mod._ssl_opts
+    if got != want:
+        bad.append(
+            name + ": _ssl_opts=" + repr(got) + " but redis_ssl_kwargs(url)=" + repr(want)
+        )
+
+print("CHECKED " + " ".join(checked))
+for line in bad:
+    print("MISMATCH " + line)
+sys.exit(1 if bad else 0)
+"""
+
+
+class TestModuleLevelSitesTakeTheSeamDict:
+    """The eleven sites whose ssl arguments are a module constant, imported for real.
+
+    The import-linter contract "ssl has one home" stops a site writing
+    ``ssl.CERT_NONE``, because it cannot import ``ssl``. It does not stop the string
+    spelling: redis-py 6.4.0 accepts ``ssl_cert_reqs="none"`` and maps it to
+    ``ssl.CERT_NONE`` in ``RedisSSLContext``, so a hand-written
+    ``{"ssl_cert_reqs": "none"}`` needs no import and passes the contract. Here each
+    site's constant has to equal what ``redis_ssl_kwargs`` returns for that site's own
+    cleaned URL, which no hand-written dict matches.
+
+    A module constant is fixed at import, so this runs in a subprocess with
+    ``REDIS_URL`` set to a ``rediss://`` URL and ``REDIS_TLS_INSECURE`` false.
+    Reloading eleven modules in this process would rebind ``celery_app`` and
+    re-register every task on the live app for the rest of the session.
+    """
+
+    def test_every_module_level_site_matches_the_seam(self):
+        api_root = str(Path(app.__file__).resolve().parent.parent)
+        env = {
+            **os.environ,
+            "REDIS_URL": RE_DISS,
+            "REDIS_TLS_INSECURE": "False",
+            "PYTHONPATH": api_root,
+        }
+
+        proc = subprocess.run(  # noqa: S603
+            [sys.executable, "-c", _MODULE_LEVEL_PROBE, *MODULE_LEVEL_SITES],
+            capture_output=True,
+            text=True,
+            cwd=api_root,
+            env=env,
+            timeout=600,
+            check=False,
+        )
+        stdout = proc.stdout.strip()
+
+        assert proc.returncode == 0, (
+            "A module-level site built its ssl arguments itself instead of taking them "
+            f"from redis_ssl_kwargs.\n{stdout}\n{proc.stderr[-2000:]}"
+        )
+
+        checked: list[str] = []
+        for line in stdout.splitlines():
+            if line.startswith("CHECKED "):
+                checked = line.split()[1:]
+        missing = sorted(set(MODULE_LEVEL_SITES) - set(checked))
+        assert not missing, (
+            f"These sites never reached the comparison: {missing}.\n{stdout}\n"
+            f"{proc.stderr[-2000:]}"
+        )

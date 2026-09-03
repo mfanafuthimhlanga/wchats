@@ -20,21 +20,29 @@ something everywhere instead of in one module out of fourteen.
   import `ssl`, `app.core.redis_tls` excepted.
 - `apps/api/tests/unit/test_redis_tls_seam.py` (new): the seam over its three inputs, the
   three factories that build arguments inside a function driven with a `rediss://` URL and
-  the flag off, and Celery's own validation of the dict for both schemes.
+  the flag off, Celery's own reading of the dict on both the broker and the backend side
+  for both schemes, and the eleven module-level sites imported in a subprocess under a
+  `rediss://` URL.
 - `apps/api/tests/unit/test_capability_enforcement.py`: the WR-04 warning test patches
   `app.core.redis_tls.log`, since that is where the warning is emitted now.
 
 ## Decisions
 
-- The gate is an import-linter contract, not a grep for `CERT_NONE` and not a source-scan
-  test. `ssl` had exactly one use in this tree, choosing a verification mode, so banning
-  the import bans every spelling of the mistake. It also keeps
-  `SOURCE_ASSERTION_BASELINE` untouched, which `tests/unit/test_gates.py` goes red on
-  additions to.
-- Eleven of the fourteen sites build `_ssl_opts` at module import as a constant. Reloading
-  eleven modules under patched settings costs more on a 4 GB box than the contract does,
-  and the contract is the stronger guard: it fails on the import, before any value exists.
-  The three sites with a factory function are driven for real.
+- Two guards, because one spelling escapes each. The import-linter contract bans the
+  import spellings: `ssl` had exactly one use in this tree, choosing a verification mode,
+  so a module that cannot import it cannot write `ssl.CERT_NONE`. It does not ban the
+  string, and redis-py 6.4.0 accepts `ssl_cert_reqs="none"` and maps it to `CERT_NONE` in
+  `RedisSSLContext`, so a hand-written `{"ssl_cert_reqs": "none"}` imports nothing and
+  passes. `TestModuleLevelSitesTakeTheSeamDict` bans that one: each site's `_ssl_opts`
+  has to equal `redis_ssl_kwargs` of its own cleaned URL. Neither is a source-scan test,
+  so `SOURCE_ASSERTION_BASELINE` stays untouched and `tests/unit/test_gates.py` stays
+  green.
+- Eleven of the fourteen sites build `_ssl_opts` at module import as a constant, so their
+  value is fixed before any test can patch settings. They are checked in a subprocess with
+  `REDIS_URL` set to a `rediss://` URL and `REDIS_TLS_INSECURE` false, which imports them
+  for real. Reloading eleven modules in the pytest process would rebind `celery_app` and
+  re-register every task on the live app for the rest of the session. The three sites with
+  a factory function are driven in process.
 - `celery_app.py` passes `broker_use_ssl` and `redis_backend_use_ssl` with no guard. The
   first version kept an `if _ssl_opts` around them and said Celery raises
   `E_REDIS_SSL_PARAMS_AND_SCHEME_MISMATCH` when an ssl option reaches a `redis://` scheme.
