@@ -221,6 +221,19 @@ def _judge_returning(
     return _judge
 
 
+def _run_report(judge_fn, capsys):
+    """Drive the run and the report it prints, past main's readiness gate.
+
+    F2 put `readiness()` in front of the loop, so a tree readiness refuses no
+    longer reaches the report through `main`. What the report SAYS over a run
+    that did happen is a behaviour of its own, and these are the two halves
+    `main` calls once it is satisfied the run can go ahead.
+    """
+    result = cc.compute_correlation(judge_fn)
+    code = cc.print_run_report(result)
+    return code, capsys.readouterr().out
+
+
 _FOUR_ROWS = [
     ("S-101", "grounding_fidelity", "1"),
     ("S-102", "grounding_fidelity", "2"),
@@ -892,6 +905,68 @@ class TestReadiness:
 
         assert cc.main(["--check"]) == cc.EXIT_NOT_CALIBRATED_YET
 
+    def test_a_run_refuses_before_the_loop_when_the_ledger_ids_are_unset(
+        self, calibration_tree, monkeypatch, capsys
+    ):
+        """F2, adversarial review 2026-09-03.
+
+        `readiness()` ran under `--check` and nowhere else, so a shell without
+        `CALIBRATION_TENANT_ID` reached the loop, asked the judge once per
+        labelled row, turned every one of them into an ERROR verdict off the
+        `calibration_ledger()` ValueError, and reported NOT CALIBRATED YET about
+        a judge that had never been asked anything. Every input readiness reads
+        is local, so none of that had to be discovered by spending.
+        """
+        import tests.evals.judge as judge_module
+
+        calibration_tree(_FOUR_ROWS)
+        monkeypatch.delenv(judge_module.TENANT_ID_ENV, raising=False)
+
+        # Answers PASS rather than raising, so the failure this test reports is
+        # "the judge was asked" and never a crash on the way back.
+        called: list = []
+
+        def _recording_judge(dimension, transcript, tool_calls_log):
+            called.append(dimension)
+            return {
+                "dimension": dimension, "verdict": "PASS", "score": 5,
+                "reason": "this double should never be asked", "judge_identity": None,
+            }
+
+        monkeypatch.setattr(judge_module, "judge", _recording_judge)
+
+        exit_code = cc.main([])
+        out = capsys.readouterr().out
+
+        assert called == [], (
+            "the judge was asked over an environment `--check` would have refused"
+        )
+        assert exit_code == cc.EXIT_NOT_CALIBRATED_YET, out
+        assert exit_code != cc.EXIT_CALIBRATED, out
+        assert judge_module.TENANT_ID_ENV in out, (
+            "a refusal has to name the input that stopped it, the way --check does"
+        )
+
+    def test_a_ready_tree_still_reaches_the_judge(
+        self, calibration_tree, monkeypatch, capsys
+    ):
+        """The other half, so the refusal above cannot pass by refusing everything."""
+        import tests.evals.judge as judge_module
+
+        calibration_tree(_FOUR_ROWS)
+        monkeypatch.setattr(
+            judge_module, "judge",
+            _judge_returning({"S-101": 1, "S-102": 2, "S-103": 4, "S-104": 5}),
+        )
+
+        exit_code = cc.main([])
+        out = capsys.readouterr().out
+
+        assert exit_code == cc.EXIT_CALIBRATED, out
+        assert "Calibration readiness" in out, (
+            "the readiness block a run prints is the block --check prints"
+        )
+
 
 # ---------------------------------------------------------------------------
 # BACKLOG 8.1 — calibration reads run 0, because run 0 is the row the human scored
@@ -1404,7 +1479,7 @@ class TestWhatTheOwnerActuallySees:
     ):
         """A part that was never measured must not render as a part that failed."""
         calibration_tree(_TWENTY_BALANCED, second_pass=None)
-        code, out = self._run(monkeypatch, capsys, _judge_wrong_about(0))
+        code, out = _run_report(_judge_wrong_about(0), capsys)
 
         assert code == cc.EXIT_NOT_CALIBRATED_YET, out
         assert "never measured" in out, "an absent ceiling says so on its own line"
@@ -1427,7 +1502,7 @@ class TestWhatTheOwnerActuallySees:
         was 1.000 four lines above, and the remedy it named - relabel a scenario
         the other way - means writing a verdict the owner does not believe."""
         calibration_tree(_TWENTY_BALANCED, second_pass=None)
-        _code, out = self._run(monkeypatch, capsys, _judge_wrong_about(0))
+        _code, out = _run_report(_judge_wrong_about(0), capsys)
 
         assert "NOT CALIBRATED YET" in out
         assert "one label was used for every row" not in out
@@ -1441,9 +1516,12 @@ class TestWhatTheOwnerActuallySees:
         paths where nothing had been computed, contradicting the matrix three
         lines above it."""
         calibration_tree(_FOUR_ROWS, capture={"S-101", "S-102"})
-        _code, out = self._run(
-            monkeypatch, capsys,
-            _judge_returning({"S-101": 1, "S-102": 2, "S-103": 4, "S-104": 5}),
+        _code, out = _run_report(
+            _judge_returning({"S-101": 1, "S-102": 2, "S-103": 4, "S-104": 5}), capsys
+        )
+
+        assert "Calibration run" in out, (
+            "a report that printed nothing would satisfy every negative below"
         )
 
         assert "one label on both sides" not in out
@@ -1722,11 +1800,7 @@ class TestEveryReasonReachesTheReader:
         printing it under the headline that asks 'why'."""
         calibration_tree(_TWENTY_BALANCED, second_pass=None)
 
-        import tests.evals.judge as judge_module
-
-        monkeypatch.setattr(judge_module, "judge", _judge_wrong_about(0))
-        cc.main([])
-        out = capsys.readouterr().out
+        _code, out = _run_report(_judge_wrong_about(0), capsys)
 
         _, _, after = out.partition("NOT CALIBRATED YET")
         assert "no second labelling pass" in after, (

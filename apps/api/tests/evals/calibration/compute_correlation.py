@@ -51,6 +51,10 @@ Usage:
     says which inputs the harness has and which it is missing, which is the
     question worth asking before spending a judge call per row.
 
+    A RUN ASKS THAT QUESTION TOO, and refuses when the answer is NOT READY. The
+    difference between the two is what happens after the block prints: --check
+    stops either way, a run continues only from READY.
+
 WHOSE COLUMN human_score IS
     The owner's, and no one else's. Every cell ships empty by design. An
     agent-filled calibration set would silently destroy the only instrument
@@ -280,7 +284,8 @@ KNOWN_FLAGS = ("--check", "--emit-second-pass")
 USAGE = (
     "compute_correlation.py - calibrate the LLM judge against human labels",
     "",
-    "  (no arguments)        run the calibration. COSTS one judge call per labelled row.",
+    "  (no arguments)        run the calibration. COSTS one judge call per labelled row,",
+    "                        and refuses before the first one unless readiness says READY.",
     "  --check               report which inputs are present. No judge calls, no network.",
     "  --emit-second-pass    write the blind second-pass sheet, shuffled and empty.",
     "",
@@ -1579,48 +1584,18 @@ def write_calibration_artifact(result: dict, path: pathlib.Path) -> pathlib.Path
     return path
 
 
-def main(argv: list[str] | None = None) -> int:
-    """CLI entry point. Returns the exit code rather than calling sys.exit."""
-    args = sys.argv[1:] if argv is None else argv
+def print_run_report(result: dict) -> int:
+    """Render a finished run and return the exit code its status implies.
 
-    # A run costs one judge call per labelled row. `--help`, `-h` and every typo
-    # of `--check` used to fall straight through to that, spend the money, and
-    # exit 1 - which a shell reads as "the judge is not calibrated". Unknown
-    # arguments now refuse before anything is imported or billed.
-    unknown = [a for a in args if a not in KNOWN_FLAGS]
-    if unknown or "--help" in args or "-h" in args:
-        for line in USAGE:
-            print(line)
-        return EXIT_SETUP_ERROR if unknown else EXIT_READY_TO_CALIBRATE
+    Split out of `main` when F2 put `readiness()` in front of the loop. A tree
+    readiness refuses no longer reaches this through `main`, and what a report
+    says over a run that DID happen is a behaviour of its own (the "never
+    measured" wording, the three verdict lines, a headline that must not invent
+    a cause), so it needs a seam a test can drive without an environment.
 
-    if "--emit-second-pass" in args:
-        code, messages = emit_second_pass()
-        for message in messages:
-            print(message)
-        return code
-
-    if "--check" in args:
-        return print_readiness(readiness())
-
-    from tests.evals.judge import judge  # noqa: PLC0415
-
-    try:
-        result = compute_correlation(judge)
-    except Exception as exc:
-        write_harness_raised(CALIBRATION_ARTIFACT_JSON, exc)
-        raise
-
-    # Before the report, so a run that dies formatting its own output still
-    # leaves the record. An OSError here is a disk problem rather than a judge
-    # problem, and it may not cost the operator the report they paid for.
-    try:
-        write_calibration_artifact(result, CALIBRATION_ARTIFACT_JSON)
-    except OSError as exc:
-        print(f"Could not write {CALIBRATION_ARTIFACT_JSON.name}: {exc}\n")
-    except Exception as exc:
-        write_harness_raised(CALIBRATION_ARTIFACT_JSON, exc)
-        raise
-
+    Args:
+        result: what `compute_correlation` returned.
+    """
     print(
         f"Calibration run - {result['valid']} scored / {result['attempted']} rows present\n"
     )
@@ -1721,6 +1696,60 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     return EXIT_CODE_FOR_STATUS[status]
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point. Returns the exit code rather than calling sys.exit."""
+    args = sys.argv[1:] if argv is None else argv
+
+    # A run costs one judge call per labelled row. `--help`, `-h` and every typo
+    # of `--check` used to fall straight through to that, spend the money, and
+    # exit 1 - which a shell reads as "the judge is not calibrated". Unknown
+    # arguments now refuse before anything is imported or billed.
+    unknown = [a for a in args if a not in KNOWN_FLAGS]
+    if unknown or "--help" in args or "-h" in args:
+        for line in USAGE:
+            print(line)
+        return EXIT_SETUP_ERROR if unknown else EXIT_READY_TO_CALIBRATE
+
+    if "--emit-second-pass" in args:
+        code, messages = emit_second_pass()
+        for message in messages:
+            print(message)
+        return code
+
+    # F2, adversarial review 2026-09-03. `readiness()` ran under `--check` and
+    # nowhere else, so a shell missing one of the two ledger variables reached the
+    # loop, asked the judge once per labelled row, turned every answer into an
+    # ERROR verdict off the `calibration_ledger()` ValueError, and reported NOT
+    # CALIBRATED YET about a judge that had never been asked anything. Every input
+    # readiness reads is on this disk or in this environment, so the run answers
+    # the free question first and the operator reads the same block either way.
+    report = readiness()
+    readiness_code = print_readiness(report)
+    if "--check" in args or not report["ready_to_calibrate"]:
+        return readiness_code
+
+    from tests.evals.judge import judge  # noqa: PLC0415
+
+    try:
+        result = compute_correlation(judge)
+    except Exception as exc:
+        write_harness_raised(CALIBRATION_ARTIFACT_JSON, exc)
+        raise
+
+    # Before the report, so a run that dies formatting its own output still
+    # leaves the record. An OSError here is a disk problem rather than a judge
+    # problem, and it may not cost the operator the report they paid for.
+    try:
+        write_calibration_artifact(result, CALIBRATION_ARTIFACT_JSON)
+    except OSError as exc:
+        print(f"Could not write {CALIBRATION_ARTIFACT_JSON.name}: {exc}\n")
+    except Exception as exc:
+        write_harness_raised(CALIBRATION_ARTIFACT_JSON, exc)
+        raise
+
+    return print_run_report(result)
 
 
 if __name__ == "__main__":
