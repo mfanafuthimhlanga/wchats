@@ -975,8 +975,11 @@ def steps(mode):
     ]
     if mode == "fast":
         return fast
+    # -rs prints every skip with its reason. Under -q alone a test that stopped
+    # running because its database or its marker went missing is one more dot,
+    # and a skip is unobserved rather than passing.
     return fast + [
-        ("unit tests", lambda: run([PYTHON, "-m", "pytest", "tests/unit", "-q"])),
+        ("unit tests", lambda: run([PYTHON, "-m", "pytest", "tests/unit", "-q", "-rs"])),
     ]
 
 
