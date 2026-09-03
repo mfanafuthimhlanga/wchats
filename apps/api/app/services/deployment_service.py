@@ -1344,26 +1344,40 @@ COVERAGE_SOURCE_CURRENT_BUILD = "current_build"
 #: needs it.
 RED_TEAM_RUN_STATUS_COMPLETE = "complete"
 
-#: The newest run that FINISHED, and its status. `status <> 'running'` is the
-#: whole correction (#54 review): without it the 'running' row `run_red_team`
-#: INSERTs before it attacks anything satisfied "a run exists", and the collector
-#: answered MEASURED with zero open findings for an agent nothing had ever
-#: probed. Same STATUS predicate and reasoning as `_LATEST_RUN_SQL` on the eval
-#: half, minus its kind filter: this read is not agent-scoped, so on a tenant DB
-#: carrying two agents it returns the other one's newest finished run (#127).
-#: A status this query has not heard of is still terminal, so it is
-#: excluded by naming the one non-terminal status rather than by listing the
-#: terminal ones.
+#: The newest run of THIS AGENT'S that finished, and its status. Two predicates,
+#: each closing a way the security half used to answer about a run it was not
+#: asked about.
+#:
+#: `status <> 'running'` is the #54 review's correction: without it the 'running'
+#: row `run_red_team` INSERTs before it attacks anything satisfied "a run
+#: exists", and the collector answered MEASURED with zero open findings for an
+#: agent nothing had ever probed. A status this query has not heard of is still
+#: terminal, so the one non-terminal name is excluded rather than the terminal
+#: ones listed.
+#:
+#: `kind = %s` is #127's, and it is the eval half's filter arriving on the
+#: security half. `red_team_runs` has no agent_id column, so 'm7:{agent_id}' is
+#: the scope, matching what `run_red_team` INSERTs and what its own idempotency
+#: guard reads. Without it, two agents on one tenant DB share this read: A's own
+#: wait sees its run fail, because the since-readers ARE kind-scoped, and then
+#: this query hands back B's completed run so A's report carries B's coverage as
+#: measured. decide() reads the right record by id, so the verdict was safe; the
+#: gate's coverage checks and the owner-facing summary were not.
 _RED_TEAM_LATEST_SQL = (
     "SELECT started_at, status, coverage FROM red_team_runs "
-    "WHERE status <> 'running' ORDER BY started_at DESC LIMIT 1"
+    "WHERE kind = %s AND status <> 'running' "
+    "ORDER BY started_at DESC LIMIT 1"
 )
 
 #: The same row on a tenant DB provisioned before alembic_tenant 0015 gave
-#: `red_team_runs` its `coverage` column.
+#: `red_team_runs` its `coverage` column. Kind-scoped too: a degraded read must
+#: lose the run's own coverage and nothing else. `kind` needs no rung of its own
+#: at either width, because `red_team_runs` has carried it NOT NULL since
+#: alembic_tenant 0001 created the table.
 _RED_TEAM_LATEST_PRE_0015_SQL = (
     "SELECT started_at, status FROM red_team_runs "
-    "WHERE status <> 'running' ORDER BY started_at DESC LIMIT 1"
+    "WHERE kind = %s AND status <> 'running' "
+    "ORDER BY started_at DESC LIMIT 1"
 )
 
 
@@ -1442,18 +1456,28 @@ def _coverage_from_run(stored: object) -> dict | None:
 
 
 def _latest_red_team_run(cur, conn, agent_id: str) -> tuple[tuple | None, object]:
-    """The newest FINISHED red-team run, and whatever coverage it recorded.
+    """This agent's newest FINISHED red-team run, and whatever coverage it recorded.
 
-    `coverage` arrived with migration 0015 and a tenant provisioned before it
-    does not have the column (tenant DBs are migrated at PROVISION time only).
-    Same narrow-except degradation shape as the eval collector's pre-0013
-    fallback: UndefinedColumn drops the run's own coverage and nothing else.
+    Two rungs, and each says which tenant DBs it serves. The wide query serves a
+    tenant migrated to alembic_tenant 0015 or later, where `red_team_runs` has
+    its `coverage` column. The narrow one serves a tenant provisioned before it,
+    since tenant DBs are migrated at PROVISION time only. Same narrow-except
+    degradation as the eval collector's pre-0022 and pre-0013 fallbacks:
+    UndefinedColumn costs the run's own coverage and nothing else, and a broad
+    except would hide a real read failure behind a payload that looks like a
+    successful degraded read.
+
+    BOTH RUNGS ARE KIND-SCOPED (#127). A degradation that drops a column must not
+    also drop the agent, or a pre-0015 tenant answers with the run belonging to
+    whichever agent finished last.
 
     Returns (row, stored_coverage) where row is (started_at, status) or
-    (started_at, status, coverage). A None row means no run has finished.
+    (started_at, status, coverage). A None row means no run of this agent's has
+    finished.
     """
+    kind = (f"m7:{agent_id}",)
     try:
-        cur.execute(_RED_TEAM_LATEST_SQL)
+        cur.execute(_RED_TEAM_LATEST_SQL, kind)
         run_row = cur.fetchone()
         return run_row, (run_row[2] if run_row is not None else None)
     except psycopg2.errors.UndefinedColumn:
@@ -1464,11 +1488,11 @@ def _latest_red_team_run(cur, conn, agent_id: str) -> tuple[tuple | None, object
             "deployment_service.red_team_summary.coverage_column_absent",
             agent_id=agent_id,
             detail=(
-                "tenant DB predates alembic_tenant 0015 — the run's own "
+                "tenant DB predates alembic_tenant 0015, so the run's own "
                 "coverage cannot be read"
             ),
         )
-        cur.execute(_RED_TEAM_LATEST_PRE_0015_SQL)
+        cur.execute(_RED_TEAM_LATEST_PRE_0015_SQL, kind)
         return cur.fetchone(), None
 
 

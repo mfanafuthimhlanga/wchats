@@ -4141,3 +4141,130 @@ class TestTheSinceReadersAgainstTheProbeCluster:
             self._read(probe_conn, latest_eval_run_status_since, str(uuid.uuid4()))
             is None
         )
+
+
+# ---------------------------------------------------------------------------
+# TestTheRedTeamCollectorAgainstTheProbeCluster - two agents, one tenant DB
+# ---------------------------------------------------------------------------
+
+
+class TestTheRedTeamCollectorAgainstTheProbeCluster:
+    """#127: the security half's latest-run read was not agent-scoped.
+
+    `_LATEST_RUN_SQL` on the eval half filters `kind = 'm6:{agent_id}'` precisely
+    so a second agent sharing a tenant DB is not read as this one.
+    `_RED_TEAM_LATEST_SQL` filtered `status <> 'running'` alone. Two agents A and
+    B on one tenant DB: A's own wait sees its run fail, because the since-readers
+    ARE kind-scoped, and then the collector's latest read returns B's completed
+    run and A's report carries B's coverage as measured. decide() reads the right
+    record, so the verdict is safe; the gate's coverage checks and the owner's
+    summary are not.
+
+    A MOCK CANNOT SEE THIS. A scripted `fetchone` hands back whichever row the
+    test chose and the predicate is never evaluated, so the query cannot be shown
+    to pick the wrong agent's run. These execute the statement against two agents'
+    rows in one database.
+
+    Every row is written under a kind unique to the test, so nothing existing is
+    deleted, and the transaction is rolled back.
+    """
+
+    @pytest.fixture
+    def probe_conn(self):
+        try:
+            conn = psycopg2.connect(PROBE_DB_URL, connect_timeout=5)
+        except psycopg2.OperationalError as exc:
+            pytest.skip(f"no local tenant probe cluster at {PROBE_DB_URL}: {exc}")
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT to_regclass('red_team_runs'), to_regclass('red_team_findings')"
+                )
+                if None in cur.fetchone():
+                    pytest.skip(
+                        "the probe database has no red_team tables: run "
+                        "run_tenant_migrations against it first"
+                    )
+                # The open-finding counts are read across the whole table and
+                # this DELETE is inside the transaction the teardown rolls back,
+                # so rows that were here before the test are here after it.
+                cur.execute("DELETE FROM red_team_findings")
+            yield conn
+        finally:
+            conn.rollback()
+            conn.close()
+
+    def _run(self, conn, agent_id, status, seconds):
+        """One red_team_runs row for this agent, at a fixed distance from a mark."""
+        from datetime import timedelta, timezone
+
+        started = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc) + timedelta(
+            seconds=seconds
+        )
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO red_team_runs (kind, started_at, status) "
+                "VALUES (%s, %s, %s) RETURNING id::text",
+                (f"m7:{agent_id}", started, status),
+            )
+            return cur.fetchone()[0]
+
+    def _summary(self, conn, agent_id):
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=_LendConnection(conn),
+        ):
+            return _fetch_red_team_summary_sync(agent_id, PROBE_DB_URL)
+
+    def test_another_agents_completed_run_is_not_this_agents_security_summary(
+        self, probe_conn
+    ):
+        """A has never been probed. B, on the same tenant DB, has."""
+        agent_a, agent_b = str(uuid.uuid4()), str(uuid.uuid4())
+        self._run(probe_conn, agent_b, "complete", 20)
+
+        summary = self._summary(probe_conn, agent_a)
+
+        assert summary["signal"] == "no_runs", (
+            "an agent nothing has ever attacked must read as unmeasured, not as "
+            f"whatever the agent beside it scored: {summary}"
+        )
+        assert summary["critical_count"] is None, (
+            "every count outside the measured state is None, because a zero "
+            f"nobody measured is not a zero: {summary}"
+        )
+
+    def test_this_agents_own_failed_run_is_what_its_report_carries(self, probe_conn):
+        """A's own newest run failed while B's completed. A's report says failed."""
+        agent_a, agent_b = str(uuid.uuid4()), str(uuid.uuid4())
+        self._run(probe_conn, agent_a, "failed", 10)
+        self._run(probe_conn, agent_b, "complete", 20)
+
+        summary = self._summary(probe_conn, agent_a)
+
+        assert summary["signal"] == "run_failed", (
+            f"A's own newest run is the one its report is about: {summary}"
+        )
+
+    def test_an_agents_own_completed_run_is_still_read(self, probe_conn):
+        """The scoping closes a read; it must not close the right one."""
+        agent_a, agent_b = str(uuid.uuid4()), str(uuid.uuid4())
+        self._run(probe_conn, agent_a, "complete", 10)
+        self._run(probe_conn, agent_b, "failed", 20)
+
+        summary = self._summary(probe_conn, agent_a)
+
+        assert summary["signal"] == "measured", (
+            f"A ran to completion, so A's numbers are readable: {summary}"
+        )
+        assert summary["critical_count"] == 0
+        assert summary["last_run_at"] is not None
+
+    def test_an_in_flight_run_of_this_agents_is_still_not_a_measurement(
+        self, probe_conn
+    ):
+        """The status predicate survives the kind predicate landing beside it."""
+        agent_a = str(uuid.uuid4())
+        self._run(probe_conn, agent_a, "running", 10)
+
+        assert self._summary(probe_conn, agent_a)["signal"] == "no_runs"
