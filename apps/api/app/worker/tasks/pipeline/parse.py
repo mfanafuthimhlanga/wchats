@@ -36,7 +36,6 @@ Threat mitigations:
 """
 
 import hashlib
-import ssl
 import time
 from pathlib import Path
 
@@ -47,6 +46,7 @@ import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import fernet_decrypt, require_ciphertext
 
 # noqa: F401 on `parse_document` — this module only calls `parse_document_from_bytes`,
@@ -65,9 +65,9 @@ from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
 
-# Module-level sync Redis client — strip query params; pass ssl_cert_reqs as constant.
+# Module-level sync Redis client — strip query params; redis_ssl_kwargs decides TLS.
 _url_clean = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
-_ssl_opts: dict = {"ssl_cert_reqs": ssl.CERT_NONE} if _url_clean.startswith("rediss://") else {}
+_ssl_opts: dict = redis_ssl_kwargs(_url_clean)
 _redis = redis_lib.from_url(_url_clean, **_ssl_opts)
 
 

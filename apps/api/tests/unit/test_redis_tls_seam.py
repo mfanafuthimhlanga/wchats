@@ -1,0 +1,211 @@
+"""Issue #144: every Redis connection takes its TLS posture from one seam.
+
+Fourteen modules built Redis connection arguments. Thirteen wrote ``ssl.CERT_NONE``
+for any ``rediss://`` URL and never read ``REDIS_TLS_INSECURE``, so the setting that
+exists to keep verification on decided nothing, and a TLS broker on staging accepted
+any certificate offered to it.
+
+Two things are pinned here and one is pinned in pyproject.toml:
+
+  * ``redis_ssl_kwargs`` itself, over the three inputs it can receive.
+  * The three call sites that build their arguments inside a function, driven through
+    that function with a ``rediss://`` URL and the flag off. Each asserts the
+    arguments that reached ``from_url``, not the source that produced them.
+  * The remaining eleven build their arguments at module import as a constant. The
+    import-linter contract "ssl has one home" covers those: no module under ``app``
+    except the seam may import ``ssl``, so none of them can name a verification mode.
+    ``scripts/gates.py static`` runs it.
+
+RED observed 2026-09-03 on the unfixed tree: the three call-site tests failed with
+``ssl_cert_reqs`` 0 (CERT_NONE) against 2 (CERT_REQUIRED), and lint-imports reported
+"ssl has one home" BROKEN naming all fourteen edges.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import ssl
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from app.core.redis_tls import redis_ssl_kwargs
+
+RE_DISS = "rediss://example.upstash.io:6380/0"
+REDIS = "redis://localhost:6379/0"
+
+
+# ---------------------------------------------------------------------------
+# The seam
+# ---------------------------------------------------------------------------
+
+
+class TestRedisSslKwargs:
+    """redis_ssl_kwargs over the three inputs it can receive."""
+
+    def test_plain_redis_url_gets_no_ssl_arguments(self):
+        """A redis:// URL has no TLS socket, and Celery raises on ssl arguments there."""
+        assert redis_ssl_kwargs(REDIS) == {}
+
+    def test_rediss_url_verifies_by_default(self):
+        """REDIS_TLS_INSECURE defaults to False, so the certificate and hostname are checked."""
+        import app.core.redis_tls as seam  # noqa: PLC0415
+
+        with patch.object(seam.settings, "REDIS_TLS_INSECURE", False, create=True):
+            kwargs = redis_ssl_kwargs(RE_DISS)
+
+        assert kwargs == {"ssl_cert_reqs": ssl.CERT_REQUIRED, "ssl_check_hostname": True}
+
+    def test_rediss_url_relaxes_only_on_the_flag_and_warns(self):
+        """REDIS_TLS_INSECURE=True is the one route to CERT_NONE, and it logs the exposure."""
+        import app.core.redis_tls as seam  # noqa: PLC0415
+
+        with (
+            patch.object(seam.settings, "REDIS_TLS_INSECURE", True, create=True),
+            patch.object(seam, "log") as mock_log,
+        ):
+            kwargs = redis_ssl_kwargs(RE_DISS)
+
+        assert kwargs == {"ssl_cert_reqs": ssl.CERT_NONE}
+        mock_log.warning.assert_called_once()
+        event_name = mock_log.warning.call_args[0][0]
+        assert "tls" in event_name.lower(), (
+            f"Expected a TLS-related warning event, got {event_name!r}. "
+            "Dropping verification must be visible in the logs of whatever opened the connection."
+        )
+
+
+# ---------------------------------------------------------------------------
+# The call sites that build their arguments inside a function
+# ---------------------------------------------------------------------------
+
+
+class TestCallSitesVerifyByDefault:
+    """Each factory, driven with a rediss:// URL and REDIS_TLS_INSECURE off."""
+
+    def test_api_get_async_redis(self):
+        """app/api/deps.py — the api's own Redis, behind SSE and rate limiting."""
+        import app.api.deps as deps  # noqa: PLC0415
+
+        captured: dict = {}
+
+        def _fake_from_url(url, **kwargs):
+            captured.update(kwargs)
+            client = MagicMock()
+            client.aclose = AsyncMock()
+            return client
+
+        async def _drain():
+            with (
+                patch.object(deps.aioredis.Redis, "from_url", side_effect=_fake_from_url),
+                patch.object(deps.settings, "REDIS_URL", RE_DISS),
+                patch.object(deps.settings, "REDIS_TLS_INSECURE", False, create=True),
+            ):
+                agen = deps.get_async_redis()
+                await agen.__anext__()
+                await agen.aclose()
+
+        asyncio.run(_drain())
+
+        assert captured.get("ssl_cert_reqs") == ssl.CERT_REQUIRED, (
+            f"app/api/deps.py passed ssl_cert_reqs={captured.get('ssl_cert_reqs')!r}, "
+            f"expected ssl.CERT_REQUIRED ({ssl.CERT_REQUIRED!r})."
+        )
+        assert captured.get("ssl_check_hostname") is True
+
+    def test_agent_tools_qembed_redis(self):
+        """app/services/agent_tools.py — the query-embedding cache client."""
+        import app.services.agent_tools as agent_tools  # noqa: PLC0415
+
+        agent_tools._qembed_redis = None
+        captured: dict = {}
+
+        def _fake_from_url(url, **kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        try:
+            with (
+                patch.object(agent_tools.redis_lib, "from_url", side_effect=_fake_from_url),
+                patch.object(agent_tools.settings, "REDIS_URL", RE_DISS),
+                patch.object(agent_tools.settings, "REDIS_TLS_INSECURE", False, create=True),
+            ):
+                agent_tools._get_qembed_redis()
+        finally:
+            agent_tools._qembed_redis = None
+
+        assert captured.get("ssl_cert_reqs") == ssl.CERT_REQUIRED, (
+            f"app/services/agent_tools.py passed ssl_cert_reqs={captured.get('ssl_cert_reqs')!r}, "
+            f"expected ssl.CERT_REQUIRED ({ssl.CERT_REQUIRED!r})."
+        )
+        assert captured.get("ssl_check_hostname") is True
+
+    def test_enforcement_rate_limit_redis(self):
+        """app/services/transactional/enforcement.py — the one site that already read the flag."""
+        import app.services.transactional.enforcement as enf  # noqa: PLC0415
+
+        enf._rate_limit_redis = None
+        captured: dict = {}
+
+        def _fake_from_url(url, **kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        try:
+            with (
+                patch.object(enf.redis_lib, "from_url", side_effect=_fake_from_url),
+                patch.object(enf.settings, "REDIS_URL", RE_DISS),
+                patch.object(enf.settings, "REDIS_TLS_INSECURE", False, create=True),
+            ):
+                enf._get_redis()
+        finally:
+            enf._rate_limit_redis = None
+
+        assert captured.get("ssl_cert_reqs") == ssl.CERT_REQUIRED
+        assert captured.get("ssl_check_hostname") is True
+
+
+# ---------------------------------------------------------------------------
+# Celery, the site the staging warning came from
+# ---------------------------------------------------------------------------
+
+
+class TestCeleryTakesTheSeamDict:
+    """app/worker/celery_app.py passes the seam's dict as broker_use_ssl.
+
+    Celery reads those two options through its own validation rather than handing
+    them to redis-py untouched, so the seam's dict is driven through a real Celery
+    app here instead of being compared to a literal.
+    """
+
+    def test_rediss_backend_gets_cert_required_and_an_ssl_connection(self):
+        from celery import Celery  # noqa: PLC0415
+
+        import app.core.redis_tls as seam  # noqa: PLC0415
+
+        url = "rediss://:pw@example.upstash.io:6380/0"
+        with patch.object(seam.settings, "REDIS_TLS_INSECURE", False, create=True):
+            opts = redis_ssl_kwargs(url)
+
+        app = Celery("test_redis_tls_seam")
+        app.conf.update(
+            broker_url=url,
+            result_backend=url,
+            broker_use_ssl=opts,
+            redis_backend_use_ssl=opts,
+        )
+
+        connparams = app.backend.connparams
+        assert connparams["ssl_cert_reqs"] == ssl.CERT_REQUIRED
+        assert connparams["ssl_check_hostname"] is True
+        assert connparams["connection_class"].__name__ == "SSLConnection"
+
+    def test_plain_redis_backend_takes_no_ssl_options(self):
+        """Celery raises on any ssl option under redis://, so {} is the required answer."""
+        from celery import Celery  # noqa: PLC0415
+
+        assert redis_ssl_kwargs(REDIS) == {}
+
+        app = Celery("test_redis_tls_seam_plain")
+        app.conf.update(broker_url=REDIS, result_backend=REDIS)
+
+        connparams = app.backend.connparams
+        assert "ssl_cert_reqs" not in connparams

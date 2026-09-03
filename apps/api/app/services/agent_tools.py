@@ -37,7 +37,6 @@ import hashlib
 import json
 import math
 import re
-import ssl
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import replace
@@ -48,6 +47,7 @@ import redis as redis_lib
 import structlog
 
 from app.core.config import settings
+from app.core.redis_tls import redis_ssl_kwargs
 from app.domain.context_frame import (
     RETRIEVED_CONTEXT_FOOTER as _RETRIEVED_CONTEXT_FOOTER,
 )
@@ -88,11 +88,7 @@ def _get_qembed_redis() -> redis_lib.Redis:
             if "?" in settings.REDIS_URL
             else settings.REDIS_URL
         )
-        _ssl_opts: dict = (
-            {"ssl_cert_reqs": ssl.CERT_NONE}
-            if _url_clean.startswith("rediss://")
-            else {}
-        )
+        _ssl_opts: dict = redis_ssl_kwargs(_url_clean)
         _qembed_redis = redis_lib.from_url(_url_clean, **_ssl_opts)
     return _qembed_redis
 

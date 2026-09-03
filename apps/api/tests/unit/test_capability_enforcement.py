@@ -777,7 +777,11 @@ class TestEnforcementSplit:
         )
 
     def test_wr04_redis_tls_insecure_true_relaxes_and_warns(self):
-        """WR-04: REDIS_TLS_INSECURE=True allows cert relaxation and MUST emit a warning log."""
+        """WR-04: REDIS_TLS_INSECURE=True allows cert relaxation and MUST emit a warning log.
+
+        Issue #144 moved the decision into app.core.redis_tls, so the warning is now
+        emitted there; this factory reaching it is the thing under test.
+        """
         import app.services.transactional.enforcement as enf_module  # noqa: PLC0415
 
         enf_module._rate_limit_redis = None
@@ -789,7 +793,7 @@ class TestEnforcementSplit:
             patch("app.services.transactional.enforcement.redis_lib.from_url", side_effect=_fake_from_url),
             patch.object(enf_module.settings, "REDIS_URL", "rediss://example.upstash.io:6380/0"),
             patch.object(enf_module.settings, "REDIS_TLS_INSECURE", True, create=True),
-            patch("app.services.transactional.enforcement.log") as mock_log,
+            patch("app.core.redis_tls.log") as mock_log,
         ):
             enf_module._get_redis()
 

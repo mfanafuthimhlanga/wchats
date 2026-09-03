@@ -16,7 +16,6 @@ Threat mitigations:
 """
 
 import secrets
-import ssl
 
 import redis.asyncio as aioredis
 import structlog
@@ -29,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.clerk_jwt import verify_clerk_jwt
 from app.core.config import settings
 from app.core.database import get_async_db
+from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import hmac_key_prefix, verify_api_key
 from app.models.tenant import Tenant
 
@@ -250,12 +250,10 @@ async def get_async_redis():
     Creates a connection from REDIS_URL for each request and closes it
     in the finally block to ensure proper cleanup.
     """
-    # Strip query params — ssl_cert_reqs=CERT_NONE is not parsed by redis-py from URL;
-    # must be passed as a Python ssl constant kwarg (same pattern as celery_app.py).
+    # Strip query params — redis-py reads ssl_cert_reqs from keyword arguments, never
+    # from the URL; redis_ssl_kwargs then decides TLS from REDIS_TLS_INSECURE.
     _url = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
-    _kwargs: dict = {"decode_responses": True}
-    if _url.startswith("rediss://"):
-        _kwargs["ssl_cert_reqs"] = ssl.CERT_NONE
+    _kwargs: dict = {"decode_responses": True, **redis_ssl_kwargs(_url)}
     client = aioredis.Redis.from_url(_url, **_kwargs)
     try:
         yield client

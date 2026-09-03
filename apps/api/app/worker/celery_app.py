@@ -45,7 +45,6 @@ worker_pool — ENVIRONMENT-conditional (PROD-15 / Landmine 3):
 """
 
 import socket
-import ssl
 
 import structlog
 from celery import Celery, signals
@@ -53,6 +52,7 @@ from celery.schedules import crontab
 from kombu import Exchange, Queue
 
 from app.core.config import settings
+from app.core.redis_tls import redis_ssl_kwargs
 
 # ---------------------------------------------------------------------------
 # How long the broker waits before deciding a delivered message was lost
@@ -84,9 +84,9 @@ _redis_url = settings.REDIS_URL
 # Strip ssl_cert_reqs from URL — configured explicitly via broker_use_ssl /
 # redis_backend_use_ssl so Celery 5.x receives the Python ssl constant, not a string.
 _redis_url_clean = _redis_url.split("?")[0] if "?" in _redis_url else _redis_url
-_ssl_opts = (
-    {"ssl_cert_reqs": ssl.CERT_NONE} if _redis_url_clean.startswith("rediss://") else None
-)
+# Empty for a plain redis:// URL, and Celery raises E_REDIS_SSL_PARAMS_AND_SCHEME_MISMATCH
+# if an ssl option reaches that scheme, so the empty dict stays out of conf below.
+_ssl_opts = redis_ssl_kwargs(_redis_url_clean)
 
 celery_app.conf.update(
     # Broker and result backend — both point to Redis
