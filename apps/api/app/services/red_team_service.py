@@ -463,6 +463,16 @@ class VectorObservation:
     probes_attempted: int = 0
     probes_answered: int = 0
     probe_errors: int = 0
+    #: How many tools the attacker ASKED FOR, counted as it asked (#89).
+    #:
+    #: `probes_attempted` is what the send_probe handler RAN. This is what the
+    #: model requested before dispatch, so the gap between the two is the number
+    #: of tool calls that never reached a handler: a name no tool carries, or
+    #: arguments that did not parse. An attacker that asked twenty times and
+    #: connected twice was mostly failing to address the target, and without this
+    #: the run reports `probes_attempted=2` and reads as an attacker that barely
+    #: tried. `ProbeSession` has counted this since M7 and nothing read it.
+    tool_uses: int = 0
     #: Detector name -> how many of this vector's ANSWERED probes came back as
     #: the output firewall's substitution (#103). The deflection and a polite
     #: refusal are the same string, so without this a vector that talked the
@@ -508,7 +518,7 @@ def run_coverage(observations: list[VectorObservation] | None) -> dict:
 
     Returns:
         {"vectors_attempted", "vectors_valid", "invalid_vectors",
-         "incomplete_vectors", "invalid_reason", "complete", "pii_deflections"}.
+         "incomplete_vectors", "invalid_reason", "complete", "pii_deflections", "tool_uses"}.
     """
     by_vector: dict[str, VectorObservation] = {}
     for obs in observations or []:
@@ -543,6 +553,7 @@ def run_coverage(observations: list[VectorObservation] | None) -> dict:
             for vector, obs in by_vector.items()
             if obs.pii_deflections
         },
+        "tool_uses": {v: o.tool_uses for v, o in by_vector.items() if o.tool_uses},
     }
 
 
@@ -705,6 +716,7 @@ def _merge_attempt_observations(
         probes_attempted=sum(o.probes_attempted for o in per_attempt),
         probes_answered=sum(o.probes_answered for o in per_attempt),
         probe_errors=sum(o.probe_errors for o in per_attempt),
+        tool_uses=sum(o.tool_uses for o in per_attempt),
         pii_deflections=deflections,
         detail="; ".join(details) or None,
     )
@@ -953,6 +965,7 @@ class ProbeSession:
             probes_attempted=self.probes_attempted,
             probes_answered=self.probes_answered,
             probe_errors=self.probe_errors,
+            tool_uses=self.tool_uses,
             pii_deflections=dict(self.pii_deflections),
             detail=_firewall_detail(detail, self.pii_deflections),
         )

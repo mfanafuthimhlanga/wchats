@@ -2345,3 +2345,105 @@ class TestReadingAStoredRunBack:
 
         with pytest.raises(InvalidRedTeamResult):
             RedTeamResult.from_payload(payload)
+# ---------------------------------------------------------------------------
+# Issue #89 — what the attacker ASKED FOR reaches the run, beside what ran
+# ---------------------------------------------------------------------------
+
+
+class TestTheObservationCarriesTheToolUseCount:
+    """`ProbeSession.tool_uses` incremented on a live path and nothing read it.
+
+    The counter measures something the other six do not. `probes_attempted` is
+    what the send_probe handler RAN; this is what the model requested before
+    dispatch. The difference is tool calls that never reached a handler, and a
+    run that reports only the first reads an attacker that could not connect as
+    an attacker that barely tried.
+    """
+
+    def test_a_probe_with_two_tool_uses_reports_two_in_its_observation(self):
+        """Through the production runner, not by setting the field.
+
+        The harness plays one send_probe per sequence and the runner makes two,
+        so the count comes out of `run_tool_loop`'s on_tool_use callback, the
+        real handler and `to_observation` in one pass.
+        """
+        observations: list[VectorObservation] = []
+        harness = _AttackerHarness([("send_probe", {"message": "p"})])
+
+        with harness.install():
+            run_data_leakage_agent(
+                MagicMock(return_value="I cannot share that."),
+                max_turns=2,
+                attack_sequences=2,
+                observations=observations,
+                ledger=ledger(),
+            )
+
+        assert harness.sequences_started == 2
+        assert observations[0].tool_uses == 2, (
+            "the observation must carry the count the session made"
+        )
+
+    def test_the_count_is_what_was_asked_for_and_not_what_ran(self):
+        """The gap is the whole reason the number is worth carrying.
+
+        A session that asked four times and ran one probe is what an attacker
+        naming tools that do not exist looks like from the ledger. Driven on the
+        session directly, because the loop cannot produce the gap without a
+        provider that names a tool no handler carries.
+        """
+        session = ProbeSession(attack_vector="data_leakage", sequences_requested=1)
+        for _ in range(4):
+            session.observe_tool_use("send_probe")
+        session.probes_attempted = 1
+        session.record_answer("p", "r", MagicMock())
+
+        obs = session.to_observation()
+        assert obs.tool_uses == 4
+        assert obs.probes_attempted == 1, (
+            "three of the four asks never reached a handler, and the pair is "
+            "what says so"
+        )
+
+    def test_the_k_attempt_fold_sums_the_count(self):
+        """One row per vector, so attempt 2's asks may not overwrite attempt 1's.
+
+        Every other counter on the observation sums across attempts. A count
+        that did not would report the last attempt's asks as the vector's.
+        """
+        merged = red_team_service._merge_attempt_observations(
+            "data_leakage",
+            3,
+            [
+                _obs("data_leakage", requested=1, completed=1, answered=1),
+                _obs("data_leakage", requested=1, completed=1, answered=1),
+            ],
+        )
+        assert merged.tool_uses == 0, "the helper defaults, so nothing invents one"
+
+        merged = red_team_service._merge_attempt_observations(
+            "data_leakage",
+            2,
+            [
+                VectorObservation(vector="data_leakage", observed=True, tool_uses=3),
+                VectorObservation(vector="data_leakage", observed=True, tool_uses=5),
+            ],
+        )
+        assert merged.tool_uses == 8
+
+    def test_run_coverage_reports_the_count_per_vector(self):
+        """The end of the road: `red_team_runs.coverage` is where a person reads it.
+
+        `VectorObservation` never reaches storage itself. `run_coverage` folds the
+        ledger into the payload the completion write stores and both red-team
+        routes read, so a field that stopped at the observation would still be
+        read by nothing.
+        """
+        quiet = _obs("data_leakage")
+        quiet.tool_uses = 4
+        coverage = run_coverage([quiet, _obs("hallucination")])
+
+        assert coverage["tool_uses"] == {"data_leakage": 4}, (
+            "a vector that asked for nothing is left out rather than stored as "
+            "a zero, which is how pii_deflections already reads"
+        )
