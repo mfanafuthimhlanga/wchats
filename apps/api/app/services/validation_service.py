@@ -24,7 +24,7 @@ from pydantic import BaseModel, field_validator
 
 from app.core.model_client import LedgerContext, route_for
 from app.domain.context_frame import frame_retrieved_context
-from app.services.tool_loop import first_choice, forced_tool_arguments
+from app.services.tool_loop import ForcedToolCallTruncated, forced_tool_arguments
 
 log = structlog.get_logger(__name__)
 
@@ -78,19 +78,23 @@ class CitationSpan(BaseModel):
     supported: bool
 
 
-class AuditorVerdictTruncated(RuntimeError):
-    """The Auditor's tool call was cut off at max_tokens (BACKLOG 5.14).
+#: The Auditor's truncation error, under the name three modules already import.
+#:
+#: BACKLOG 5.14 raised this for the Auditor alone. The other six forced-tool
+#: sites hit the same wire fact and reported it as "returned no submit_verdict
+#: tool call", so the class moved to `tool_loop` beside the function that raises
+#: it and all seven now say the same thing. The old name stays an alias because
+#: `test_auditor_truncation.py` and the eval harness import it.
+AuditorVerdictTruncated = ForcedToolCallTruncated
 
-    Distinct from a validation error on purpose. A truncated verdict is a
-    *budget* failure and its remedy is the ceiling or the span cap; a schema
-    violation is a *prompt* failure. Collapsing the two into one pydantic
-    "Field required" message is what made this defect look like a model-quality
-    problem for the whole time the Auditor was being handed an empty context.
-
-    Above all: a truncated verdict is NOT an `ungrounded` verdict. Nothing may
-    record it as one — missing data is never passing data, and it is never
-    failing data either.
-    """
+#: The sentence the Auditor's reader needs beside the budget fact. A truncated
+#: verdict is not an `ungrounded` verdict, and the measurement layer breaks the
+#: moment anything records it as one.
+_AUDITOR_TRUNCATION_NOTE = (
+    f"The ceiling is {AUDITOR_MAX_TOKENS} output tokens and the span cap is "
+    f"{AUDITOR_MAX_CITATION_SPANS}. A truncated verdict is NOT an ungrounded "
+    "response — do not record it as a verdict."
+)
 
 
 class AuditorVerdict(BaseModel):
@@ -373,21 +377,15 @@ def call_auditor(
         tools=[_AUDITOR_TOOL],
         tool_choice={"type": "function", "function": {"name": "submit_verdict"}},
     )
-    # BACKLOG 5.14: check for truncation BEFORE validating. A tool call cut off
-    # at the ceiling arrives as a partial dict, and model_validate then reports
-    # "citation_spans Field required" — which reads exactly like a model that
-    # ignored its schema. The two failures need different fixes (raise the
-    # ceiling vs. change the prompt), so they must not share an error.
-    choice = first_choice(response)
-    if choice is not None and choice.finish_reason == "length":
-        raise AuditorVerdictTruncated(
-            f"the Auditor's tool call hit max_completion_tokens ({AUDITOR_MAX_TOKENS}) "
-            "and was truncated mid-JSON, so the verdict is incomplete. This is a budget "
-            "failure, NOT an ungrounded response and NOT a malformed model output — "
-            "do not record it as a verdict."
-        )
-
-    arguments = forced_tool_arguments(response, "submit_verdict")
+    # BACKLOG 5.14: truncation is read BEFORE the arguments are validated, and
+    # `forced_tool_arguments` is where that happens for all seven forced-tool
+    # sites. A tool call cut off at the ceiling arrives as a partial dict, and
+    # model_validate then reports "citation_spans Field required" — which reads
+    # exactly like a model that ignored its schema. The two failures need
+    # different fixes (raise the ceiling vs. change the prompt).
+    arguments = forced_tool_arguments(
+        response, "submit_verdict", truncation_note=_AUDITOR_TRUNCATION_NOTE
+    )
     if arguments is None:
         raise ValueError("The judge returned no submit_verdict tool call")
     return AuditorVerdict.model_validate(arguments)

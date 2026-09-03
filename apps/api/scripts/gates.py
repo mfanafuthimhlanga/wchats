@@ -260,7 +260,7 @@ LIZARD_BASELINE = {
     ("app/services/transactional/provider_adapter.py", "get_adapter_for_skill"): (10, 150),
     ("app/services/transactional/tools.py", "_execute_adapter_and_audit"): (3, 142),
     ("app/services/transactional/tools.py", "_execute_transactional_tool"): (34, 793),
-    ("app/services/validation_service.py", "call_auditor"): (4, 94),
+    ("app/services/validation_service.py", "call_auditor"): (2, 88),
     ("app/services/validation_service.py", "call_strategist"): (6, 77),
     ("app/worker/tasks/pipeline/chunk.py", "chunk_documents"): (15, 216),
     ("app/worker/tasks/pipeline/embed.py", "embed_and_migrate"): (15, 265),

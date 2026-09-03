@@ -247,4 +247,8 @@ def run_strategist(
             result_container["strategy"] = arguments
             return
     except Exception as exc:
-        log.warning("run_strategist.failed", error=str(exc))
+        # The type as well as the text. This site swallows so the task falls back to
+        # RetrievalStrategy() defaults, so the log is the only place the failure is
+        # named, and `ForcedToolCallTruncated` there means the 500-token ceiling is
+        # too low for the strategy JSON rather than that the model refused.
+        log.warning("run_strategist.failed", error=str(exc), error_type=type(exc).__name__)
