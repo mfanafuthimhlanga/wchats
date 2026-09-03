@@ -50,7 +50,7 @@ from app.worker.celery_app import celery_app
 log = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Module-level sync Redis client — strip query params; redis_ssl_kwargs decides TLS.
+# Module-level sync Redis client. Strip the query string, then redis_ssl_kwargs decides TLS.
 # ---------------------------------------------------------------------------
 _url_clean = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
 _ssl_opts: dict = redis_ssl_kwargs(_url_clean)

@@ -69,7 +69,7 @@ from app.worker.tasks.pipeline.chain_edge import job_in_job_out
 
 log = structlog.get_logger(__name__)
 
-# Module-level sync Redis client — strip query params; redis_ssl_kwargs decides TLS.
+# Module-level sync Redis client. Strip the query string, then redis_ssl_kwargs decides TLS.
 _url_clean = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
 _ssl_opts: dict = redis_ssl_kwargs(_url_clean)
 _redis = redis_lib.from_url(_url_clean, **_ssl_opts)

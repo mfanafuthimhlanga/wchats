@@ -5,20 +5,28 @@ for any ``rediss://`` URL and never read ``REDIS_TLS_INSECURE``, so the setting 
 exists to keep verification on decided nothing, and a TLS broker on staging accepted
 any certificate offered to it.
 
-Two things are pinned here and one is pinned in pyproject.toml:
+What is pinned here:
 
-  * ``redis_ssl_kwargs`` itself, over the three inputs it can receive.
+  * ``redis_ssl_kwargs`` itself, over the three inputs it can receive, plus the
+    once per process shape of the warning it logs when verification is dropped.
   * The three call sites that build their arguments inside a function, driven through
     that function with a ``rediss://`` URL and the flag off. Each asserts the
-    arguments that reached ``from_url``, not the source that produced them.
-  * The remaining eleven build their arguments at module import as a constant. The
-    import-linter contract "ssl has one home" covers those: no module under ``app``
-    except the seam may import ``ssl``, so none of them can name a verification mode.
-    ``scripts/gates.py static`` runs it.
+    arguments that reached ``from_url``, not the source that produced them. One of
+    them also proves the query strip, without which a ``?ssl_cert_reqs=none`` on the
+    URL would beat the seam.
+  * The eleven that build their arguments at module import as a constant, imported in
+    a subprocess under a ``rediss://`` URL and compared to the seam's answer.
+  * Celery's own reading of the dict, on the broker side and the result backend side,
+    for both schemes.
 
-RED observed 2026-09-03 on the unfixed tree: the three call-site tests failed with
-``ssl_cert_reqs`` 0 (CERT_NONE) against 2 (CERT_REQUIRED), and lint-imports reported
-"ssl has one home" BROKEN naming all fourteen edges.
+The import-linter contract "ssl has one home" in pyproject.toml is the other half: no
+module under ``app`` except the seam may import ``ssl``. ``scripts/gates.py static``
+runs it. It bans the import spellings; the module-level test bans the dict spelling.
+
+RED observed 2026-09-03 on the unfixed tree: two of the three call-site tests failed
+with ``ssl_cert_reqs`` 0 (CERT_NONE) against 2 (CERT_REQUIRED), the third being
+enforcement, which already read the flag, and lint-imports reported "ssl has one home"
+BROKEN naming all fourteen edges.
 """
 
 from __future__ import annotations
@@ -132,7 +140,7 @@ class TestCallSitesVerifyByDefault:
     """Each factory, driven with a rediss:// URL and REDIS_TLS_INSECURE off."""
 
     def test_api_get_async_redis(self):
-        """app/api/deps.py — the api's own Redis, behind SSE and rate limiting."""
+        """app/api/deps.py, the api's own Redis behind SSE and rate limiting."""
         import app.api.deps as deps  # noqa: PLC0415
 
         captured: dict = {}
@@ -200,7 +208,7 @@ class TestCallSitesVerifyByDefault:
         assert conn.ssl_context.check_hostname is True
 
     def test_agent_tools_qembed_redis(self):
-        """app/services/agent_tools.py — the query-embedding cache client."""
+        """app/services/agent_tools.py, the query embedding cache client."""
         import app.services.agent_tools as agent_tools  # noqa: PLC0415
 
         agent_tools._qembed_redis = None
@@ -227,7 +235,7 @@ class TestCallSitesVerifyByDefault:
         assert captured.get("ssl_check_hostname") is True
 
     def test_enforcement_rate_limit_redis(self):
-        """app/services/transactional/enforcement.py — the one site that already read the flag."""
+        """app/services/transactional/enforcement.py, the one site that already read the flag."""
         import app.services.transactional.enforcement as enf  # noqa: PLC0415
 
         enf._rate_limit_redis = None
