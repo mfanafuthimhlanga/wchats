@@ -3847,9 +3847,11 @@ _ZERO_VECTOR = "array_fill(0::real, ARRAY[1024])::vector"
 class _LendConnection:
     """Hands the collector a connection this test owns and refuses its close().
 
-    `_fetch_verified_qa_stats_sync` closes whatever `psycopg2.connect` gave it,
-    and this test needs the connection to outlive the call so it can ROLL BACK.
-    So `cursor` is the real one on the real socket, and only `close` is absent.
+    `_fetch_verified_qa_stats_sync` closes whatever `psycopg2.connect` gave it.
+    A real close would discard the transaction too, so the rollback does not
+    depend on this; the no-op keeps the fixture's own rollback from raising
+    `InterfaceError` on a connection the collector already closed. `cursor` is
+    the real one on the real socket, and only `close` is absent.
     """
 
     def __init__(self, conn):

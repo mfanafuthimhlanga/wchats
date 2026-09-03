@@ -2937,11 +2937,12 @@ def derive_quality_warnings(
     of one run. They warn, they are merged by warning_id like every other
     derived warning, and they change no outcome.
 
-    MEASUREMENT HONESTY GOVERNS ALL THREE. A medium count is only read when the
-    security signal says 'measured', because the counts are null in every other
-    state and `None > 2` is not a comparison anyone meant to make. A row count is
-    only read when the signal beside it says somebody read one, which is what
-    `_knowledge_depth_warnings` decides.
+    Measurement honesty governs both conditions. A medium count is only read
+    when the security signal says 'measured', because the counts are null in
+    every other state and `None > 2` is not a comparison anyone meant to make.
+    The two knowledge-depth warnings (unread, then thin) live in
+    `_knowledge_depth_warnings`, which reads the row count only when the signal
+    beside it says somebody counted one.
     """
     warnings: list[DeploymentWarning] = _knowledge_depth_warnings(verified_qa_stats)
 
