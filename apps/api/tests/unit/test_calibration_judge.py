@@ -40,12 +40,26 @@ JUDGEMENT_TEMPERATURE = 0
 
 DIMENSION = "grounding_fidelity"
 
+#: One conversation, spelled once. What the judge is asked ABOUT is not what
+#: any test here asserts on.
+TRANSCRIPT = "USER: what is Yirgacheffe?\nAGENT: R 480/kg."
+
 _VERDICT = {
     "dimension": DIMENSION,
     "verdict": "PASS",
     "score": 5,
     "reason": "Every price claim traces to a retrieved chunk.",
 }
+
+
+@pytest.fixture(autouse=True)
+def _no_client_survives_a_test():
+    """The run cache is module state, so every test starts and ends empty."""
+    import tests.evals.judge as judge_module
+
+    judge_module.close_judge_clients()
+    yield
+    judge_module.close_judge_clients()
 
 
 def _drive(reply):
@@ -246,4 +260,65 @@ class TestTheRouteThisJudgeRunsOn:
         )
         assert hasattr(client.chat, "completions"), (
             "the raw factory path has to hand this judge a chat.completions client"
+        )
+
+
+class TestOneClientPerRun:
+    """F10, adversarial review 2026-09-03.
+
+    `request_verdict` asked `LedgerContext.client(...)` once per verdict, and
+    `make_client` builds a fresh `httpx.Client` on every call. A 100 row
+    calibration run therefore opened 100 connection pools, closed none, and paid
+    a TCP and TLS handshake for each of the 100 verdicts it was already paying
+    the model for.
+    """
+
+    def test_two_verdicts_in_one_run_share_one_client(self):
+        import tests.evals.judge as judge_module
+
+        sent: list = []
+
+        def _create(**kwargs):
+            sent.append(kwargs["model"])
+            return _verdict_reply()
+
+        context = ledger()
+        with factory(openai_client(create=_create)) as built:
+            judge_module.judge(DIMENSION, TRANSCRIPT, [], context)
+            judge_module.judge(DIMENSION, TRANSCRIPT, [], context)
+
+        assert len(sent) == 2, "both verdicts have to reach the wire"
+        assert built.call_count == 1, (
+            f"the run built {built.call_count} clients for 2 verdicts, and every "
+            "one of them is an httpx pool nothing closes"
+        )
+
+    def test_a_second_run_gets_its_own_client(self):
+        """The cache is keyed on the ledger, so a run billed to other ids never
+        reuses the pool, or the recorder, of the run before it."""
+        import tests.evals.judge as judge_module
+
+        with factory(openai_client(create=lambda **k: _verdict_reply())) as built:
+            judge_module.judge(DIMENSION, TRANSCRIPT, [], ledger())
+            judge_module.judge(DIMENSION, TRANSCRIPT, [], ledger())
+
+        assert built.call_count == 2, (
+            "two runs shared one client, so the second run's rows went to the "
+            "first run's recorder"
+        )
+
+    def test_closing_the_run_releases_the_client(self):
+        """`main()` closes at the end of a run. A cache nothing empties is the
+        same leak one directory further out."""
+        import tests.evals.judge as judge_module
+
+        context = ledger()
+        with factory(openai_client(create=lambda **k: _verdict_reply())) as built:
+            judge_module.judge(DIMENSION, TRANSCRIPT, [], context)
+            judge_module.close_judge_clients()
+            judge_module.judge(DIMENSION, TRANSCRIPT, [], context)
+
+        assert built.call_count == 2, (
+            "the closed client was handed out again, so its pool is gone and "
+            "every verdict after it has nothing to send on"
         )

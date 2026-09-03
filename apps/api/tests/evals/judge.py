@@ -203,6 +203,55 @@ def calibration_ledger() -> LedgerContext:
     return LedgerContext(tenant_id=tenant_id, recorder=ledger_recorder(dsn))
 
 
+#: The client each run's verdicts share, keyed on the ledger they are billed to.
+#:
+#: F10, adversarial review 2026-09-03. `request_verdict` asked
+#: `LedgerContext.client(...)` once per verdict and `make_client` builds a fresh
+#: `httpx.Client` every time it is asked, so a 100 row calibration run opened 100
+#: connection pools, closed none, and paid a TCP and TLS handshake for each of
+#: the 100 verdicts it was already paying the model for.
+#:
+#: Keyed on the ledger rather than global, because the key is what a row is
+#: billed to and where it is written. Two runs against different ids must not
+#: share a client, or the second run's rows reach the first run's recorder.
+_CLIENTS: dict[tuple, Any] = {}
+
+
+def _client_key(ledger: LedgerContext) -> tuple:
+    """Everything about a ledger that decides which client may serve it."""
+    return (ledger.tenant_id, ledger.agent_id, ledger.job_id, ledger.recorder)
+
+
+def judge_client(ledger: LedgerContext):
+    """The one factory client this ledger's verdicts go out on.
+
+    Args:
+        ledger: the ids the verdicts are billed to and where their rows go.
+
+    Returns:
+        An OpenAI client with the ledger hook on its httpx client, built on the
+        first verdict of a run and handed to every verdict after it.
+    """
+    key = _client_key(ledger)
+    if key not in _CLIENTS:
+        _CLIENTS[key] = ledger.client(JUDGE_PURPOSE)
+    return _CLIENTS[key]
+
+
+def close_judge_clients() -> None:
+    """Release every pool the judge opened. `main()` calls this when a run ends.
+
+    A cache nothing empties is the leak of F10 moved one directory out, so the
+    close is the other half of the fix rather than tidying after it. A double in
+    a unit test carries no `close`, which is why this asks before calling.
+    """
+    while _CLIENTS:
+        _key, client = _CLIENTS.popitem()
+        close = getattr(client, "close", None)
+        if close is not None:
+            close()
+
+
 def judge_identity():
     """Which Judge `judge()` is, built from what it actually sends. None today.
 
@@ -304,7 +353,7 @@ def request_verdict(
         ValueError:              the model answered without calling the tool. A
                                  PROMPT failure, and a different remedy.
     """
-    response = ledger.client(JUDGE_PURPOSE).chat.completions.create(  # type: ignore[call-overload]  # a dict tool schema, not the SDK's TypedDict
+    response = judge_client(ledger).chat.completions.create(  # type: ignore[call-overload]  # a dict tool schema, not the SDK's TypedDict
         # BACKLOG 8.2a. This is the judge the whole calibration harness
         # correlates against a human. Sampling it at the provider default
         # meant the number rho measured moved between runs for reasons that

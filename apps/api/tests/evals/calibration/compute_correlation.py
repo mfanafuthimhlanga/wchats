@@ -1730,13 +1730,17 @@ def main(argv: list[str] | None = None) -> int:
     if "--check" in args or not report["ready_to_calibrate"]:
         return readiness_code
 
-    from tests.evals.judge import judge  # noqa: PLC0415
+    from tests.evals.judge import close_judge_clients, judge  # noqa: PLC0415
 
     try:
         result = compute_correlation(judge)
     except Exception as exc:
         write_harness_raised(CALIBRATION_ARTIFACT_JSON, exc)
         raise
+    finally:
+        # F10. The run's verdicts share one HTTP client, and a run that
+        # raised is the case where nothing else would ever close its pool.
+        close_judge_clients()
 
     # Before the report, so a run that dies formatting its own output still
     # leaves the record. An OSError here is a disk problem rather than a judge
