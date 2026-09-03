@@ -1,25 +1,29 @@
 """The client every direct-API site builds, where it is routed, and the row it leaves.
 
 WHY THE HOOK IS ON THE HTTP LAYER
-    Ten call sites in `apps/api/app` build a client and read the text back.
-    `make_instructor_client` wraps one in `instructor.from_openai(...)`, and Ragas
-    wraps that again, so a recorder attached to a wrapper method stops firing the
-    moment someone adds another wrapper. `usage` and `model` arrive as bytes on
-    the wire, and the httpx response hook is the one place every wrapper still
-    passes through. `attach_ledger_hook` therefore takes an httpx client it did
-    not construct, which is what keeps the seam intact under instructor.
+    Every direct-API site in `apps/api/app` builds its client here and reads the
+    text back. `make_instructor_client` wraps one in `instructor.from_openai(...)`,
+    and Ragas wraps that again, so a recorder attached to a wrapper method stops
+    firing the moment someone adds another wrapper. `usage` and `model` arrive as
+    bytes on the wire, and the httpx response hook is the one place every wrapper
+    still passes through. `attach_ledger_hook` therefore takes an httpx client it
+    did not construct, which is what keeps the seam intact under instructor.
 
-TWO PROVIDERS, TWO USAGE SHAPES, ONE ROW
+ONE WIRE, TWO USAGE SHAPES, ONE ROW
     Decision #34 routes every purpose to OpenAI `gpt-5.6-luna`, the Agent turn
-    included since #48 replaced the SDK harness with an owned loop. The hook
-    still reads both shapes and writes one `ModelCall` either way, because the
-    nine `messages` call sites below stay on DeepSeek's Anthropic-format
-    endpoint until #76 rewrites them. Anthropic reports fresh input, output
-    and the two cache counts separately. OpenAI reports `prompt_tokens` with the cached ones
-    INCLUDED, so fresh input is the difference and cache creation is zero. A body
-    whose `usage` matches neither shape records nothing and logs
-    `model_ledger.shape_skipped`, the same treatment a stream gets, because spend
-    nobody can read is a hole and not a zero.
+    included since #48 replaced the SDK harness with an owned loop. Since #76
+    rewrote the direct-API sites onto `chat.completions`, every call this platform
+    makes speaks the OpenAI wire, and `make_client`'s `provider` argument is the
+    seam a test drives another one through.
+
+    The hook reads both usage shapes anyway and writes one `ModelCall` either way,
+    because that seam is real: a body arriving through it must land a row rather
+    than a gap. Anthropic reports fresh input, output and the two cache counts
+    separately. OpenAI reports `prompt_tokens` with the cached ones INCLUDED, so
+    fresh input is the difference and cache creation is zero. A body whose `usage`
+    matches neither shape records nothing and logs `model_ledger.shape_skipped`,
+    the same treatment a stream gets, because spend nobody can read is a hole and
+    not a zero.
 
 WHERE A PURPOSE GOES
     `PURPOSE_ROUTES` is the whole routing decision as data, one row per purpose,
@@ -28,14 +32,13 @@ WHERE A PURPOSE GOES
     #48, and the owned loop builds its client through this factory like every
     other purpose, so each loop iteration leaves a `model_calls` row.
 
-    THE ROUTE DECIDES WHICH CLIENT GETS BUILT, on both seams. `make_client` used
-    to derive the provider from the credentials' base url, and an absent
-    `OPENAI_BASE_URL` derived `anthropic`, so the twelve purposes this table
-    routes to `openai / gpt-5.6-luna` built an `anthropic.Anthropic` (issue #88).
-    The provider now comes off the route, and the credentials are resolved for
-    that provider rather than before it is known. The `provider` argument
-    survives as the seam a test drives another provider through; nothing under
-    `app/` passes it.
+    THE ROUTE DECIDES WHICH CLIENT GETS BUILT, on both seams. `make_client`
+    derived the provider from the credentials' base url until issue #88, and an
+    absent `OPENAI_BASE_URL` derived `anthropic`, so every purpose this table
+    routes to `openai / gpt-5.6-luna` built an `anthropic.Anthropic`. The provider
+    comes off the route now, and the credentials are resolved for that provider
+    rather than before it is known. The `provider` argument survives as the seam a
+    test drives another provider through; nothing under `app/` passes it.
 
     `make_instructor_client` applies the route's model and reasoning effort as
     instructor defaults, which a call site can still override per call. In the
@@ -92,8 +95,9 @@ A STREAM LEAVES A GAP, AND THE GAP SAYS SO
     A streamed body belongs to the caller, so this hook never reads one and never
     records the tokens it spent. `model_ledger.stream_skipped` names the purpose
     and the requested model at every skip, which turns a silent hole in a tenant's
-    day into a line somebody can count. Parsing the stream belongs to the
-    owned-loop ticket. Until it lands, this event is what makes the hole countable.
+    day into a line somebody can count. No call site under `app/` asks for a
+    stream, so the event guards against one arriving rather than explaining a gap
+    in today's rows.
 
 Rung: `app.core` imports the standard library, third-party packages and
 `app.domain`. It imports no sibling of its own rung.

@@ -46,10 +46,9 @@ from app.services.tool_loop import run_tool_loop
 from app.services.transactional.enforcement import _parse_rate_limit
 
 #: The routing-table key every model call this orchestrator makes bills under,
-#: and the row a rollup groups its spend by. The model comes from that row, not
-#: from this module: `SONNET_MODEL = "claude-sonnet-4-6"` lived here until #49,
-#: and the Anthropic credential it needed was revoked on 2026-08-26, so nothing
-#: has served that alias since. ADR 0008 routes this purpose to OpenAI.
+#: and the row a rollup groups its spend by. The model comes from that row rather
+#: than from a literal here, so the wire and a spend report cannot name two
+#: different models. ADR 0008 routes this purpose to OpenAI.
 ORCHESTRATOR_PURPOSE = "deployment_orchestrator"
 
 log = structlog.get_logger(__name__)

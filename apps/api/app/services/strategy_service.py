@@ -221,7 +221,7 @@ def run_strategist(
             job_id=job.job_id,
             recorder=ledger_recorder(tenant_dsn),
         )
-        response = ledger.client("retrieval_strategist").chat.completions.create(  # type: ignore[call-overload]  # a dict tool schema, not the SDK's TypedDict
+        response = ledger.client("retrieval_strategist").chat.completions.create(
             # BACKLOG 8.2a. Judgement is the one task that wants no creativity, and
             # every judge in this system sampled at the provider default until now.
             # Some verdict variance survives temperature 0 anyway, from batching and

@@ -215,7 +215,6 @@ Agents:      app/services/tool_loop.py  the owned bounded loop. No agent framewo
              openai SDK direct         judges, the Actor gate, Ragas' LLM, scenario generation
 Models:      gpt-5.6-luna              every row in PURPOSE_ROUTES. One provider, one price book.
                                        A call site never names a model; app/core/model_client routes it.
-                                       Twelve raw purposes still BUILD an Anthropic client: issue #88.
 Ingestion:   Docling (layout-aware), Chonkie ≥1.6.5 (structure-aware)
 Embeddings:  voyageai (embed + rerank), bedrock (default provider), cohere fallback
 Evals:       ragas 0.4.x + custom harness

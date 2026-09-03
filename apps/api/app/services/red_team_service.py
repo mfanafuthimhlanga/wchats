@@ -61,11 +61,8 @@ if TYPE_CHECKING:
 SEVERITY_PURPOSE = "red_team_severity"
 
 #: The routing-table key the Attacker's own turn bills under. `route_for` reads
-#: the model and the reasoning effort off that row, so this module names neither.
-#: `SONNET_MODEL = "claude-sonnet-4-6"` stood here until #49 and every attacker
-#: loop asked for it by name. The Anthropic credential was revoked on 2026-08-26,
-#: so that model cannot serve a call at all; ADR 0008 routes the turn to OpenAI
-#: `gpt-5.6-luna` through PURPOSE_ROUTES.
+#: the model and the reasoning effort off that row, so this module names neither
+#: and ADR 0008 routes the turn to OpenAI `gpt-5.6-luna` through PURPOSE_ROUTES.
 ATTACKER_PURPOSE = "red_team_prompt"
 
 log = structlog.get_logger(__name__)
