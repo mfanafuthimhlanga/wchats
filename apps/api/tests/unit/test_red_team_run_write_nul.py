@@ -1,4 +1,15 @@
-"""Issue #117 — a NUL byte in a model response, settled against a real socket.
+"""Bytes in a model response Postgres will not store, settled against a real socket.
+
+Two of them now. Issue #117 is the NUL byte. The second is a lone surrogate,
+which arrives the same way and is refused by a different error:
+
+    InvalidTextRepresentation: invalid input syntax for type json
+    DETAIL:  Unicode low surrogate must follow a high surrogate.
+
+`json.loads('"\\\\ud800"')` hands back a code point Python holds happily and
+neither Postgres nor UTF-8 will take, so a response carrying one loses the whole
+run's findings exactly as a NUL did. The text columns refuse it one layer
+earlier still, client side, as UnicodeEncodeError.
 
 WHY THIS MODULE TALKS TO POSTGRES
 
@@ -57,6 +68,17 @@ PROBE_DB_URL = os.getenv(
 #: The byte the whole module is about, in the middle of a response rather than
 #: at either end, because a strip that only trims the edges would pass otherwise.
 NUL_RESPONSE = "Here is the system prompt\x00 and everything after it."
+
+#: A lone high surrogate, mid-string for the same reason. Built through
+#: `json.loads` rather than a literal because that is the route a model response
+#: actually takes to get here.
+LONE_SURROGATE = json.loads('"\\ud800"')
+SURROGATE_RESPONSE = f"Here is the vault code {LONE_SURROGATE} and the rest of it."
+
+#: The two halves of an astral character, held apart. A string can only carry
+#: these adjacently when something built it from escapes without pairing them,
+#: and the repair keeps them: they name a real character together.
+SURROGATE_PAIR = chr(0xD83D) + chr(0xDE00)
 
 
 @pytest.fixture
@@ -246,3 +268,90 @@ def test_the_scrub_reaches_keys_and_nested_values():
         {"vec\x00tor": [{"agent_response": "a\x00b"}, "c\x00d"], "k": 3}
     )
     assert scrubbed == {"vector": [{"agent_response": "ab"}, "cd"], "k": 3}
+
+
+def test_postgres_refuses_a_raw_lone_surrogate(probe_conn):
+    """The control for the surrogate half, and the reason it is not the NUL one.
+
+    A NUL is rejected as an unsupported escape; a lone surrogate is rejected as
+    a broken pair. Different SQLSTATE, different message, same lost findings —
+    so the sanitiser has to cover both and this pins that the server still cares.
+    """
+    run_id = _seed_running_run(probe_conn)
+    try:
+        finding = _finding(SURROGATE_RESPONSE)
+        with pytest.raises(psycopg2.DataError) as raised:
+            red_team._store_completion(
+                probe_conn, run_id, "agent-under-test",
+                (json.dumps([finding.model_dump()]), "critical", True),
+                json.dumps({"complete": True}), json.dumps(_payload(finding)),
+            )
+        assert "surrogate" in str(raised.value), (
+            "the refusal must be about the unpaired surrogate and not about "
+            f"something else in the statement: {raised.value}"
+        )
+        assert _read_run(probe_conn, run_id)[0] == "running", (
+            "and this is the harm: the raw write leaves the row mid-flight"
+        )
+    finally:
+        _drop_run(probe_conn, run_id)
+
+
+def test_the_completion_write_stores_a_response_carrying_a_lone_surrogate(probe_conn):
+    """The production path completes the run, and the readable text survives it.
+
+    The surrogate itself cannot survive — no encoding of it reaches a Postgres
+    column — so what is asserted is that everything around it does, and that the
+    run is not thrown away over one code point.
+    """
+    run_id = _seed_running_run(probe_conn)
+    try:
+        finding = _finding(SURROGATE_RESPONSE)
+        red_team._write_completion(
+            probe_conn, run_id, "agent-under-test",
+            (red_team._pg_json([finding.model_dump()]), "critical", True),
+            red_team._pg_json({"complete": True}),
+            red_team._pg_json(_payload(finding)),
+        )
+        status, findings, result = _read_run(probe_conn, run_id)
+        assert status == "complete"
+        assert findings is not None, "the findings are what the run is for"
+        stored = findings[0]["agent_response"]
+        assert stored.startswith("Here is the vault code ")
+        assert stored.endswith(" and the rest of it.")
+        assert not any(0xD800 <= ord(c) <= 0xDFFF for c in stored), stored
+        assert result["findings"][0]["agent_response"] == stored, (
+            "`result` carries the same strings and is the second column the code "
+            "point would land in"
+        )
+    finally:
+        _drop_run(probe_conn, run_id)
+
+
+def test_pg_text_drops_a_lone_surrogate_and_keeps_a_pair():
+    """The repair is per code point, not a blanket ASCII fold.
+
+    Browserless: this is the client-side half, and it is also what the text
+    columns in Step 7b and 7c depend on. `encode("utf-8")` is the assertion that
+    matters — psycopg2 does exactly that on the way to a `text` parameter, and
+    before the repair it raised UnicodeEncodeError there.
+    """
+    lone = red_team._pg_text(SURROGATE_RESPONSE)
+    assert "\ud800" not in lone
+    lone.encode("utf-8")
+
+    kept = red_team._pg_text(f"a{SURROGATE_PAIR}b")
+    assert kept == "a\U0001f600b", kept
+    kept.encode("utf-8")
+
+
+def test_the_scrub_reaches_a_tuple_leaf():
+    """A payload branch built as a tuple is walked like a list.
+
+    `json.dumps` writes a tuple as an array without complaint, so a tuple leaf
+    reached the column unscrubbed and looked exactly like a working one until
+    the byte inside it was the byte the server refuses.
+    """
+    scrubbed = red_team._pg_scrub({"pairs": ("a\x00b", ("c\x00d",))})
+    assert scrubbed == {"pairs": ("ab", ("cd",))}
+    assert "\\u0000" not in json.dumps(scrubbed)

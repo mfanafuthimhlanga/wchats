@@ -352,21 +352,42 @@ _TRUNCATION_MARKER = " [truncated]"
 def _pg_text(value: str) -> str:
     """One model-produced string, made safe for a text or jsonb column.
 
-    Postgres stores no NUL byte in either type. json.dumps escapes it to
-    \\u0000, and the server rejects the escape when it parses the JSON, so the
-    json.dumps round trip #116 relied on proves nothing about the write.
-    Observed 2026-09-03 against the local `wchats_tenant_probe` cluster, on the
-    real `_store_completion` statement:
+    Two code points get repaired here, and the owner keeps the rest of the
+    sentence around each of them.
+
+    A NUL is stored by neither type. json.dumps escapes it to \\u0000, and the
+    server rejects the escape when it parses the JSON, so the json.dumps round
+    trip #116 relied on proves nothing about the write. Observed 2026-09-03
+    against the local `wchats_tenant_probe` cluster, on the real
+    `_store_completion` statement:
 
         UntranslatableCharacter: unsupported Unicode escape sequence
         DETAIL:  \\u0000 cannot be converted to text.
         RUN ROW STATUS: 'running'
 
-    Stripping is the right repair rather than escaping. A NUL carries no meaning
-    a reader of a red-team finding can use, and the alternative encodings all
-    change the text the owner is told the agent produced.
+    An unpaired surrogate is refused twice over. `json.loads('"\\\\ud800"')`
+    hands back a code point Python holds and UTF-8 cannot encode, so a `text`
+    parameter raises UnicodeEncodeError client side before a socket is touched,
+    and the jsonb escape reaches the server only to be refused there:
+
+        InvalidTextRepresentation: invalid input syntax for type json
+        DETAIL:  Unicode low surrogate must follow a high surrogate.
+
+    The UTF-16 round trip repairs exactly those. It re-reads the string as the
+    code units it is made of, so a high surrogate followed by a low one becomes
+    the one astral character the two of them name, and anything left unpaired
+    becomes U+FFFD. Encoding straight to UTF-8 with "replace" would lose the
+    paired case, which is a real character the agent typed.
+
+    Stripping and replacing beat escaping for both. Neither code point carries
+    meaning a reader of a red-team finding can use, and every alternative
+    encoding changes more of the text the owner is told the agent produced.
     """
-    cleaned = value.replace("\x00", "")
+    cleaned = (
+        value.replace("\x00", "")
+        .encode("utf-16-le", "surrogatepass")
+        .decode("utf-16-le", "replace")
+    )
     if len(cleaned) <= RED_TEAM_FIELD_CHAR_CAP:
         return cleaned
     return cleaned[:RED_TEAM_FIELD_CHAR_CAP - len(_TRUNCATION_MARKER)] + _TRUNCATION_MARKER
@@ -377,6 +398,10 @@ def _pg_scrub(value: object) -> object:
 
     A key carries a NUL as readily as a value: `attack_vector` is free text the
     attacker model chose, and `RedTeamResult.payload` groups by it.
+
+    Tuples are walked because json.dumps writes one as an array without
+    complaint. A tuple branch of a payload therefore reached the column looking
+    exactly like a working list, right up to the code point the server refuses.
     """
     if isinstance(value, str):
         return _pg_text(value)
@@ -384,6 +409,8 @@ def _pg_scrub(value: object) -> object:
         return {_pg_scrub(k): _pg_scrub(v) for k, v in value.items()}
     if isinstance(value, list):
         return [_pg_scrub(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_pg_scrub(item) for item in value)
     return value
 
 
