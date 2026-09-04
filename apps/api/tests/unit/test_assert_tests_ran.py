@@ -9,6 +9,7 @@ The reports below are the shapes CI actually produced. The one that matters is
 """
 
 import importlib.util
+import os
 import pathlib
 
 import pytest
@@ -126,6 +127,68 @@ def test_an_unreadable_report_says_what_was_there(tmp_path, capsys, label: str, 
     first = next((line.strip() for line in text.splitlines() if line.strip()), "")
     if first:
         assert first[:40] in err, f"{label} does not quote what was there instead"
+
+
+# ---------------------------------------------------------------------------
+# Everything else `report.exists()` is true for
+# ---------------------------------------------------------------------------
+
+#: A report whose counts are not whole numbers. `int("2.0")` raises ValueError,
+#: which used to escape `counts` as a traceback under the same docstring
+#: promising the script names what it saw.
+FLOAT_COUNTS = """<?xml version="1.0" encoding="utf-8"?>
+<testsuites><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="2.0" time="0.44"/>
+</testsuites>
+"""
+
+
+def test_a_directory_path_fails_closed(tmp_path, capsys) -> None:
+    """`report.exists()` is true for a directory, and the parse then raises.
+
+    A wrong `--junitxml` argument or a shell glob that expanded to a folder gets
+    here. Opening it raises IsADirectoryError on Linux and PermissionError on
+    Windows, both OSError, and neither is a reason to let the step report a pass.
+    """
+    directory = tmp_path / "eval-full.xml"
+    directory.mkdir()
+
+    assert assert_tests_ran.main(["assert_tests_ran.py", str(directory)]) == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "could not be opened to read" in err, err
+    assert str(directory) in err
+
+
+@pytest.mark.skipif(os.name == "nt", reason="chmod cannot remove read access on Windows")
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads a mode-000 file anyway"
+)
+def test_a_report_that_cannot_be_read_fails_closed(tmp_path, capsys) -> None:
+    """A real file the step has no permission to open. Unknown, never a pass."""
+    report = tmp_path / "junit.xml"
+    report.write_text(ONE_PASSED, encoding="utf-8")
+    report.chmod(0o000)
+    try:
+        assert assert_tests_ran.main(["assert_tests_ran.py", str(report)]) == 1
+        err = capsys.readouterr().err
+        assert "Traceback" not in err
+        assert "could not be opened to read" in err, err
+    finally:
+        report.chmod(0o600)
+
+
+def test_a_count_that_is_not_a_whole_number_fails_closed(tmp_path, capsys) -> None:
+    """`tests="2.0"` is well-formed XML and `int()` still refuses it.
+
+    The parse succeeds, so the ParseError branch never sees this one; the
+    ValueError came out of `counts` as a traceback instead, which tells a reader
+    the script broke rather than the report.
+    """
+    assert assert_tests_ran.main(["assert_tests_ran.py", write(tmp_path, FLOAT_COUNTS)]) == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "ValueError" not in err
+    assert "not a whole number" in err, err
 
 
 # ---------------------------------------------------------------------------

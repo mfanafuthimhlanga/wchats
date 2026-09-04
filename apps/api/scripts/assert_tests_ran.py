@@ -29,12 +29,20 @@ WHAT IT READS
     run green, which nobody looks at again. The count is floored at zero so the
     message says "0 passed" rather than a negative number nobody can act on.
 
-    A REPORT IT CANNOT PARSE IS ALSO A FAILURE. An empty file, a truncated one,
+    A REPORT IT CANNOT READ IS ALSO A FAILURE. An empty file, a truncated one,
     or a pytest error message where the XML should be all mean the step wrote
     nothing readable, which is unknown and never a pass. Each one exits 1 naming
     the file's size and its first line, rather than raising the parser's
     traceback at a reader who then cannot tell a broken report from a broken
     script.
+
+    `report.exists()` IS TRUE FOR MORE THAN A READABLE FILE, so three more shapes
+    reach the parse and each used to raise its own traceback. A directory path
+    raises `IsADirectoryError` on Linux and `PermissionError` on Windows; a file
+    whose permissions deny a read raises `PermissionError`; and a report whose
+    counts are not whole numbers, `tests="2.0"`, raises `ValueError` out of
+    `int()`. All three are the same finding as an unparseable file, so all three
+    are caught and named, and every one of them still exits 1.
 
 USAGE
     python -m pytest ... --junitxml=out.xml
@@ -82,11 +90,33 @@ def head(report: Path, limit: int = 200) -> str:
     return line[:limit] + ("..." if len(line) > limit else "")
 
 
-def unreadable(report: Path, exc: ET.ParseError) -> int:
-    """Say what the file holds instead of XML, then fail closed."""
+def size(report: Path) -> str:
+    """How much is at `report`, or a phrase saying that could not be established.
+
+    `stat` can fail for the same reasons the read did, and a traceback raised
+    from inside the handler that exists to prevent tracebacks is the worst of
+    both.
+    """
+    try:
+        return f"{report.stat().st_size} bytes"
+    except OSError as exc:
+        return f"an unmeasurable size ({exc})"
+
+
+def what_went_wrong(exc: Exception) -> str:
+    """Name the shape of the failure, so the message is about the report."""
+    if isinstance(exc, ET.ParseError):
+        return f"is not parseable XML ({exc})"
+    if isinstance(exc, OSError):
+        return f"could not be opened to read ({exc})"
+    return f"records a count that is not a whole number ({exc})"
+
+
+def unreadable(report: Path, exc: Exception) -> int:
+    """Say what was found instead of a readable report, then fail closed."""
     print(
-        f"{report} is not parseable XML ({exc}). It holds {report.stat().st_size} "
-        f"bytes and begins {head(report)!r}. A step whose report cannot be read "
+        f"{report} {what_went_wrong(exc)}. It holds {size(report)} "
+        f"and begins {head(report)!r}. A step whose report cannot be read "
         f"asserted nothing that can be read, which is unknown, never a pass (#102). "
         f"An empty file usually means pytest died before it wrote the report, so "
         f"read the step's own output above.",
@@ -111,7 +141,11 @@ def main(argv: list[str]) -> int:
 
     try:
         tests, failures, errors, skipped = counts(report)
-    except ET.ParseError as exc:
+    except (ET.ParseError, OSError, ValueError) as exc:
+        # OSError covers what `report.exists()` says nothing about: a directory
+        # path, which raises IsADirectoryError on Linux and PermissionError on
+        # Windows, and a file the step cannot read. ValueError covers a count
+        # that is not a whole number, `tests="2.0"`, out of `int()`.
         return unreadable(report, exc)
 
     passed = passed_count(tests, failures, errors, skipped)
