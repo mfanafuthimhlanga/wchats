@@ -754,15 +754,18 @@ def test_migration_tenant_0016_db_roundtrip():
 # The probe cluster: what 0016 did, read off a database that has it
 # ---------------------------------------------------------------------------
 #
-# `wchats_tenant_probe` on localhost carries the tenant tree at 0024, so 0016 is
-# applied there and its effects are readable. These three tests read them, and
+# `wchats_tenant_probe` on localhost carries the tenant tree, so 0016 is applied
+# there and its effects are readable. These three tests read them, and
 # they are NOT behind INTEGRATION_TESTS_ENABLED: they create no database, spend
 # nothing, and every write below happens inside a transaction that is rolled back
 # whatever the outcome. A cluster that is not there skips with its reason, which
 # `-rs` prints.
 
+#: The same env-var name every tests/integration harness and #157's probe class
+#: already read, so a machine with non-default local credentials is configured
+#: from one place instead of two.
 PROBE_DSN = os.environ.get(
-    "TENANT_PROBE_DB_URL",
+    "TEST_TENANT_PROBE_URL",
     "postgresql://wchats:wchats@localhost:5432/wchats_tenant_probe",
 )
 
