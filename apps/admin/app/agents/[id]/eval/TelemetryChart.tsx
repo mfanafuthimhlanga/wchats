@@ -128,6 +128,9 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
     function layout() {
       if (narrow.matches || stacked) {
         while (leaders!.firstChild) leaders!.removeChild(leaders!.firstChild)
+        // The gutter's min-height goes with the gutter. Left behind, it holds a
+        // legend grid open to the height of a stack that is no longer drawn.
+        wrap!.style.minHeight = ''
         pinRefs.current.forEach((p) => {
           if (p) p.style.top = ''
         })
@@ -165,30 +168,42 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
         }
       }
 
-      // The push above only ever moves a pin down, so three channels within a
-      // pixel of each other near the floor walk the last pin out of the chart
-      // and onto the judge underneath. tests/overflow.spec.ts watches the
-      // horizontal axis only, and its narrowest project is 900px, exactly where
-      // leaders switch off, so this band has no gate: the clamp lives here.
-      // Shift the whole stack up by the overflow, as far as the headroom above
-      // the first pin allows and no further.
-      const pinHalf = (pinRefs.current.find(Boolean)?.offsetHeight ?? pinGap) / 2
-      const lowest = wrap!.clientHeight - pinHalf
-      if (led.length > 0) {
-        const overflow = led[led.length - 1].slotY - lowest
-        if (overflow > 0) {
-          const headroom = Math.max(0, led[0].slotY - pinHalf)
-          const shift = Math.min(overflow, headroom)
-          for (const r of led) r.slotY -= shift
-        }
-      }
-
+      // The unled pins are placed here, above the clamp, because they are the
+      // bottom of the same column and the clamp has to move all of it. Clamped
+      // apart, the led stack was pulled back inside the chart and these were
+      // then laid out from where it used to end, so a run that measured one of
+      // four series put three pins through the floor and onto the judge.
       const unledTop =
         (led.length > 0 ? led[led.length - 1].slotY : CHART_Y_TOP * scale + top) + pinGap
       const unled = series
         .map((s, i) => ({ index: i, latest: s.latest }))
         .filter((r) => r.latest === null)
         .map((r, k) => ({ index: r.index, slotY: unledTop + k * pinGap }))
+
+      const column = [...led, ...unled]
+      if (column.length > 0) {
+        const pinHalf = (pinRefs.current.find(Boolean)?.offsetHeight ?? pinGap) / 2
+        // The gutter is as tall as the column it holds, because a column taller
+        // than the chart cannot be clamped into it: shifting it up by the whole
+        // headroom still leaves the last pin outside, and every pixel of that
+        // shift is taken off the top instead. Four three-line pins want 233px
+        // of column and the drawing is 221px tall at 910px, the narrow end of
+        // the band where a gutter exists at all.
+        wrap!.style.minHeight = `${Math.ceil((column.length - 1) * pinGap + pinHalf * 2)}px`
+        // The push above only ever moves a pin down, so three channels within a
+        // pixel of each other near the floor walk the last pin out of the chart
+        // and onto the judge underneath. tests/overflow.spec.ts watches the
+        // horizontal axis only, and its narrowest project is 900px, exactly where
+        // leaders switch off, so this band had no gate at all; the clamp lives
+        // here. Shift the whole column up by the overflow, as far as the
+        // headroom above the first pin allows and no further.
+        const overflow = column[column.length - 1].slotY - (wrap!.clientHeight - pinHalf)
+        if (overflow > 0) {
+          const headroom = Math.max(0, column[0].slotY - pinHalf)
+          const shift = Math.min(overflow, headroom)
+          for (const r of column) r.slotY -= shift
+        }
+      }
 
       const gutterX = wrap!.clientWidth - PIN_GUTTER
       while (leaders!.firstChild) leaders!.removeChild(leaders!.firstChild)
