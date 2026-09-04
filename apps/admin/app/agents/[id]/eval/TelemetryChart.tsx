@@ -210,8 +210,9 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
         // pixel of each other near the floor walk the last pin out of the chart
         // and onto the judge underneath. tests/overflow.spec.ts watches the
         // horizontal axis only, and its narrowest project is 900px, exactly where
-        // leaders switch off, so this band had no gate at all; the clamp lives
-        // here. Shift the whole column up by the overflow, as far as the
+        // leaders switch off, so this band had no gate at all until
+        // scripts/check-chart-render.mjs, which measures every pin against this
+        // wrap. Shift the whole column up by the overflow, as far as the
         // headroom above the first pin allows and no further.
         const overflow = column[column.length - 1].slotY - (wrap!.clientHeight - pinHalf)
         if (overflow > 0) {

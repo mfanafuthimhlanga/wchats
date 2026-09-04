@@ -10,7 +10,8 @@
     "test:e2e": "playwright test",
     "test:unit": "playwright test -c playwright.unit.config.ts",
     "check:no-dusk-tokens": "node scripts/check-no-dusk-tokens.mjs",
-    "check:ops-room-wiring": "node scripts/check-ops-room-wiring.mjs"
+    "check:ops-room-wiring": "node scripts/check-ops-room-wiring.mjs",
+    "check:chart-render": "node scripts/check-chart-render.mjs"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.3.5",
