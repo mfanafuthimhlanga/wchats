@@ -125,22 +125,22 @@ def test_0025_is_the_sole_child_of_0024_and_the_tree_is_unforked():
     )
 
 
-def test_0025_is_the_tenant_head():
-    """Head IDENTITY, moved here from test_migration_tenant_0024.py.
+def test_0025_is_no_longer_the_tenant_head_and_0026_took_the_assertion():
+    """The head assertion left this file for test_migration_tenant_0026.py.
 
-    That file carried this assertion with a docstring saying 0025 would move this
-    line and only this line, and it caught 0025 landing. Moving it is the
-    instruction the test itself gives, and it is not the same as deleting it.
-
-    0026 moves this line and only this line.
+    It said "0026 moves this line and only this line", 0026 landed, and it moved.
+    What stays here is the half that is still about 0025: this revision is no
+    longer the end of the tree, and the assertion naming the new end lives with
+    the revision that took it.
     """
     revisions = _all_tenant_revisions()
     parents = {down for down in revisions.values() if down is not None}
     heads = set(revisions) - parents
-    assert heads == {"0025"}, (
-        f"the tenant head is {sorted(heads)}, not 0025. If a later revision "
-        "landed, move this assertion to its test file rather than deleting it"
+    assert heads != {"0025"}, (
+        "0025 is the head again. Either 0026 was removed, in which case this "
+        "assertion comes back here, or the tree forked"
     )
+    assert "0025" in parents, "0025 lost its child; 0026 must descend from it"
 
 
 # ---------------------------------------------------------------------------
