@@ -211,4 +211,10 @@ jobs:
 
       - name: Run deterministic evals (D3, D5, D6, D7, G-06)
         working-directory: apps/api
-        run: python -m pytest tests/evals/run_evals.py -k deterministic -v --tb=short
+        # -rs so a skip states its reason, and the junit assertion so a run that
+        # asserted nothing cannot report a pass. Run 33150722736 reported success
+        # over "1 skipped, 1 deselected in 0.08s" under a job name claiming five
+        # checks (#102). A gate over zero observations is unknown, never pass.
+        run: |
+          python -m pytest tests/evals/run_evals.py -k deterministic -v -rs --tb=short --junitxml=eval-deterministic.xml
+          python scripts/assert_tests_ran.py eval-deterministic.xml

@@ -27,6 +27,7 @@ from app.core.config import Settings
 #: `apps/api/tests/unit/` sits four levels below the repo root.
 REPO_ROOT = Path(__file__).resolve().parents[4]
 NIGHTLY = REPO_ROOT / ".github" / "workflows" / "nightly.yml"
+CI = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 
 GITHUB_ENV_WRITE = re.compile(r'echo "([A-Z][A-Z0-9_]*)=')
 
@@ -35,8 +36,14 @@ def required_settings() -> set[str]:
     return {name for name, field in Settings.model_fields.items() if field.is_required()}
 
 
-def workflow() -> dict:
-    return yaml.safe_load(NIGHTLY.read_text(encoding="utf-8"))
+def workflow(path: Path = NIGHTLY) -> dict:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def step(path: Path, job_id: str, name: str) -> dict:
+    steps = [s for s in workflow(path)["jobs"][job_id]["steps"] if s.get("name") == name]
+    assert len(steps) == 1, f"{path.name} job {job_id!r} has {len(steps)} steps named {name!r}"
+    return steps[0]
 
 
 def names_supplied(job: dict) -> set[str]:
@@ -162,4 +169,35 @@ def test_the_eval_job_drives_staging_and_skips_when_staging_is_unset() -> None:
     assert not [s for s in steps if "uvicorn" in str(s.get("run", ""))], (
         "the eval job starts an API of its own again; it drives staging, and a "
         "local server here only hides which target the capture actually reached"
+    )
+
+
+#: Every step in either workflow that runs the eval harness. Both are named
+#: after checks they claim to perform, which is what makes an empty run there a
+#: false reading rather than a quiet one.
+EVAL_STEPS = [
+    (CI, "eval-deterministic", "Run deterministic evals (D3, D5, D6, D7, G-06)"),
+    (NIGHTLY, "eval-full", "Run full eval suite (LLM-judged D1/D2/D3/D4/D8 + deterministic)"),
+]
+
+
+@pytest.mark.parametrize("path, job_id, name", EVAL_STEPS, ids=lambda v: getattr(v, "name", v))
+def test_an_eval_step_that_asserted_nothing_cannot_report_a_pass(
+    path: Path, job_id: str, name: str
+) -> None:
+    """A gate over zero observations is unknown, never pass (#102).
+
+    Run 33150722736 reported a green check over "1 skipped, 1 deselected in
+    0.08s". `run_evals.py` is right to skip an unmeasured dimension; the workflow
+    then turned that skip back into a pass one layer up. Two flags and one
+    assertion close it: `-rs` so the log states which guard fired, and
+    `scripts/assert_tests_ran.py` over the JUnit report so a run with nothing
+    passed exits 1.
+    """
+    run = step(path, job_id, name)["run"]
+    assert " -rs" in run, "a skip whose reason never prints leaves the next question unanswerable"
+    assert "--junitxml=" in run, "nothing writes the report the assertion reads"
+    assert "scripts/assert_tests_ran.py" in run, (
+        "the step reports pytest's exit code alone, and pytest exits 0 on a run "
+        "where every test skipped"
     )

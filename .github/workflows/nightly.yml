@@ -269,4 +269,10 @@ jobs:
       - name: Run full eval suite (LLM-judged D1/D2/D3/D4/D8 + deterministic)
         if: steps.target.outputs.ready == '1'
         working-directory: apps/api
-        run: pytest tests/evals/run_evals.py -v --tb=short
+        # -rs so a skip states its reason, and the junit assertion so a run that
+        # asserted nothing cannot report a pass. Run 33150722736 reported success
+        # over "1 skipped, 1 deselected in 0.08s" under a job name claiming five
+        # checks (#102). A gate over zero observations is unknown, never pass.
+        run: |
+          python -m pytest tests/evals/run_evals.py -v -rs --tb=short --junitxml=eval-full.xml
+          python scripts/assert_tests_ran.py eval-full.xml
