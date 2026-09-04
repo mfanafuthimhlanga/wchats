@@ -28,6 +28,7 @@ Three things this pins:
 
 from __future__ import annotations
 
+import contextlib
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -39,18 +40,28 @@ from app.domain import docling_service
 from app.worker import celery_app as celery_module
 
 
+@contextlib.contextmanager
 def _sender(*queues: str):
-    """A stand-in for the Consumer the worker_ready signal sends.
+    """The sender `worker_ready` carries, built on the real `celery_app`.
 
-    Celery narrows `app.amqp.queues` to the `-Q` selection before the worker is
-    ready, so that attribute is what this worker actually consumes.
+    `-Q runtime` reaches Celery as `Queues.select(["runtime"])`, which records
+    the selection in `consume_from` and leaves `app.amqp.queues` holding both
+    declared queues (celery/app/amqp.py, `select` and the `consume_from`
+    property). The earlier double here modelled the narrowing as a dict of the
+    selected queues only, so it could not tell the two attributes apart, and a
+    guard reading the wrong one passed every test while the runtime worker
+    tried to load docling on every boot. Building the sender on the shipped app
+    is what makes that difference visible.
+
+    The selection is process-wide, so it is restored on the way out.
     """
-    return SimpleNamespace(
-        hostname="worker@host",
-        app=SimpleNamespace(
-            amqp=SimpleNamespace(queues={name: object() for name in queues})
-        ),
-    )
+    registry = celery_module.celery_app.amqp.queues
+    previous = registry._consume_from  # noqa: SLF001 - the only handle on the selection
+    registry.select(list(queues))
+    try:
+        yield SimpleNamespace(hostname="worker@host", app=celery_module.celery_app)
+    finally:
+        registry._consume_from = previous  # noqa: SLF001
 
 
 @pytest.fixture
@@ -70,7 +81,8 @@ def test_the_handler_is_connected_to_worker_ready():
 
 def test_the_pipeline_worker_warms_up_once(warm_up_spy):
     with patch.multiple(celery_module.settings, DOCLING_WARMUP_ON_BOOT=True):
-        celery_module.on_worker_ready(sender=_sender("pipeline"))
+        with _sender("pipeline") as sender:
+            celery_module.on_worker_ready(sender=sender)
     assert warm_up_spy.call_count == 1
 
 
@@ -79,7 +91,8 @@ def test_the_duration_is_logged(warm_up_spy):
     'is the worker hung?' into a lookup."""
     with patch.multiple(celery_module.settings, DOCLING_WARMUP_ON_BOOT=True):
         with structlog.testing.capture_logs() as logs:
-            celery_module.on_worker_ready(sender=_sender("pipeline"))
+            with _sender("pipeline") as sender:
+                celery_module.on_worker_ready(sender=sender)
 
     done = [line for line in logs if line["event"] == "worker.docling_warmup_complete"]
     assert len(done) == 1, f"expected one completion line, got {logs!r}"
@@ -88,15 +101,41 @@ def test_the_duration_is_logged(warm_up_spy):
 
 def test_the_setting_off_means_no_warm_up(warm_up_spy):
     with patch.multiple(celery_module.settings, DOCLING_WARMUP_ON_BOOT=False):
-        celery_module.on_worker_ready(sender=_sender("pipeline"))
+        with _sender("pipeline") as sender:
+            celery_module.on_worker_ready(sender=sender)
     assert warm_up_spy.call_count == 0
 
 
 def test_a_worker_without_the_pipeline_queue_never_warms_up(warm_up_spy):
-    """The runtime image has no docling to load."""
+    """The runtime image has no docling to load.
+
+    This is the whole point of the guard, and `-Q runtime` is exactly how
+    `railway.worker-runtime.toml` starts that process.
+    """
     with patch.multiple(celery_module.settings, DOCLING_WARMUP_ON_BOOT=True):
-        celery_module.on_worker_ready(sender=_sender("runtime"))
+        with _sender("runtime") as sender:
+            celery_module.on_worker_ready(sender=sender)
     assert warm_up_spy.call_count == 0
+
+
+def test_a_worker_consuming_both_queues_warms_up(warm_up_spy):
+    """`-Q pipeline,runtime` serves ingestion, so it needs the models loaded."""
+    with patch.multiple(celery_module.settings, DOCLING_WARMUP_ON_BOOT=True):
+        with _sender("pipeline", "runtime") as sender:
+            celery_module.on_worker_ready(sender=sender)
+    assert warm_up_spy.call_count == 1
+
+
+def test_a_worker_started_without_dash_q_warms_up(warm_up_spy):
+    """No selection means consume everything, and everything includes pipeline.
+
+    Celery returns the whole queue registry from `consume_from` when nothing was
+    selected, so the guard has to read that shape too.
+    """
+    with patch.multiple(celery_module.settings, DOCLING_WARMUP_ON_BOOT=True):
+        with _sender() as sender:
+            celery_module.on_worker_ready(sender=sender)
+    assert warm_up_spy.call_count == 1
 
 
 def test_a_warm_up_failure_logs_and_the_worker_still_starts():
@@ -108,7 +147,8 @@ def test_a_warm_up_failure_logs_and_the_worker_still_starts():
     ):
         with patch.multiple(celery_module.settings, DOCLING_WARMUP_ON_BOOT=True):
             with structlog.testing.capture_logs() as logs:
-                celery_module.on_worker_ready(sender=_sender("pipeline"))
+                with _sender("pipeline") as sender:
+                    celery_module.on_worker_ready(sender=sender)
 
     failed = [line for line in logs if line["event"] == "worker.docling_warmup_failed"]
     assert len(failed) == 1, f"expected one failure line, got {logs!r}"

@@ -273,15 +273,22 @@ celery_app.conf.update(
 def _consumes_pipeline_queue(sender) -> bool:
     """Does the worker that just became ready serve the `pipeline` queue?
 
-    Celery narrows `app.amqp.queues` to the `-Q` selection while the worker
-    starts, so by `worker_ready` that attribute names exactly what this process
-    consumes. A sender shaped differently (an older Celery, a test double, an
-    embedded worker) is read as "not the pipeline worker": skipping an
-    optimisation costs one slow parse, and guessing wrong costs the runtime
-    service two gigabytes of model weights it has no docling to load them with.
+    `app.amqp.queues` holds every queue `task_queues` DECLARED, on every worker,
+    so reading it answers "does this deployment have a pipeline queue?" and not
+    the question asked. `-Q runtime` reaches Celery as
+    `Queues.select(["runtime"])`, which records the selection in `consume_from`
+    and leaves the registry untouched (celery/app/amqp.py, `select` and the
+    `consume_from` property). `consume_from` is therefore the attribute that
+    names what this process consumes; with no `-Q` at all it returns the whole
+    registry, which is the right answer for a worker that consumes everything.
+
+    A sender shaped differently (an older Celery, an embedded worker) is read as
+    "not the pipeline worker": skipping an optimisation costs one slow parse,
+    and guessing wrong costs the runtime service two gigabytes of model weights
+    it has no docling to load them with.
     """
     try:
-        return "pipeline" in set(sender.app.amqp.queues)
+        return "pipeline" in set(sender.app.amqp.queues.consume_from)
     except AttributeError:
         return False
 
