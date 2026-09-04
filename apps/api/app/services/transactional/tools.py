@@ -98,7 +98,11 @@ from app.domain.transactional_schemas import (
 )
 from app.models.pending_confirmation import PendingConfirmation
 from app.services.actor_seam import call_actor_gate
-from app.services.transactional.audit import write_audit_row
+from app.services.transactional.audit import (
+    ADAPTER_ERROR_PREFIX,
+    PROVIDER_NOT_CONFIGURED_PREFIX,
+    write_audit_row,
+)
 from app.services.transactional.credential_service import (
     CredentialDecryptionError,
     ProviderNotConfiguredError,
@@ -414,7 +418,7 @@ async def _execute_adapter_and_audit(
             actor_rationale=rationale,
             capability_snapshot=snapshot,
             latency_ms=None,
-            error=f"provider.not_configured:{exc}",
+            error=f"{PROVIDER_NOT_CONFIGURED_PREFIX}{exc}",
         )
         return ToolResult(skill=skill, outcome=Outcome.error, text=str(exc))
     start_ms = int(time.time() * 1000)
@@ -450,13 +454,7 @@ async def _execute_adapter_and_audit(
             actor_rationale=rationale,
             capability_snapshot=snapshot,
             latency_ms=latency_ms,
-            # The prefix names the layer, the way `capability.denial:` and
-            # `provider.not_configured:` already do. A reader of this column has
-            # nothing else to go on: a gate's refusal and a provider's outage
-            # both arrive as a non-NULL error, and the owner's queue reports
-            # them with different words (#73). Without it the queue told an
-            # owner whose Stripe was down that the platform had refused them.
-            error=f"adapter.error:{error_str}",
+            error=f"{ADAPTER_ERROR_PREFIX}{error_str}",
         )
         return ToolResult(
             skill=skill,

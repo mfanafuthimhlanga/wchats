@@ -74,7 +74,7 @@ from app.schemas.pending_confirmation import (
     PendingConfirmationResolve,
     PendingConfirmationResponse,
 )
-from app.services.transactional.audit import write_audit_row
+from app.services.transactional.audit import ADAPTER_FAULT_PREFIXES, write_audit_row
 
 router = APIRouter(tags=["pending-confirmations"])
 log = structlog.get_logger(__name__)
@@ -128,12 +128,15 @@ def _is_confirm_action_shaped(arguments: dict | None) -> bool:
 # ---------------------------------------------------------------------------
 
 
-#: tool_calls_audit.error prefixes the adapter step writes, as against the ones
-#: a gate writes. Both of these name a fault: the provider raised, or there was
-#: no usable credential to call it with. Every other error a resolver writes is
-#: a refusal (`confirmation.*`, `capability.denial:`, `idempotency.*`), and the
-#: owner acts on those by changing a decision rather than by fixing something.
-_ADAPTER_FAULT_PREFIXES = ("adapter.error:", "provider.not_configured:")
+# THE THIRD EXECUTION OUTCOME (issue #73), read off the audit row's error text.
+#
+# The resolver has told a gate refusal from a provider outage since #73 and
+# returns "failed" for the second, and that word travelled no further than a
+# Celery return dict nobody reads. The owner's queue read this column, saw one
+# non-NULL error, and called both "Not executed", telling an owner whose
+# provider was down that the platform had decided against them. The adapter
+# step's own errors carry ADAPTER_FAULT_PREFIXES; everything else a resolver
+# writes is a refusal the owner can act on by changing a decision.
 
 
 async def _execution_outcome_for(
@@ -163,17 +166,9 @@ async def _execution_outcome_for(
         matching audit row exists yet (the honest "awaiting execution" state:
         the task has not run, or the dispatch itself failed, T-22-ACT-09).
         ("executed", None, created_at) when the matched row's error is NULL.
-        ("failed", raw_error_string, created_at) when that error came from the
-        adapter step: the provider raised, or no credential would decrypt.
-        ("not_executed", raw_error_string, created_at) otherwise, meaning a
-        gate refused, and that is a decision the owner can change.
-
-    The third state is #73's distinction, carried to the read side. The
-    resolver already tells a refusal from an outage and returns "failed" for
-    the second, and that word travelled no further than a Celery return dict.
-    The owner's queue read this column, saw one non-NULL error, and called both
-    "Not executed", telling an owner whose provider was down that the platform
-    had decided against them.
+        ("failed", raw_error_string, created_at) when the adapter step wrote
+        that error. See the comment above this function.
+        ("not_executed", raw_error_string, created_at) otherwise.
     """
     if not isinstance(arguments, dict):
         return None, None, None
@@ -198,7 +193,7 @@ async def _execution_outcome_for(
         return None, None, None
     if row["error"] is None:
         return "executed", None, row["created_at"]
-    if str(row["error"]).startswith(_ADAPTER_FAULT_PREFIXES):
+    if str(row["error"]).startswith(ADAPTER_FAULT_PREFIXES):
         return "failed", row["error"], row["created_at"]
     return "not_executed", row["error"], row["created_at"]
 

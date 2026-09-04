@@ -135,13 +135,10 @@ async def get_agent_retrieval_health(
         string "not tracked yet" when zero underlying rows exist in the
         window, or the metric has no non-NULL values yet (honest-empty-state
         discipline — never a fabricated number, DOMAIN-NOTES §6).
-        avg_faithfulness covers ONE instrument (issue #120). A row scored
-        against a different context shape is left out, whether it carries an
-        earlier version stamp or none at all, and the two faithfulness_* counts
-        say how many the average covered and how many it left out. A window can
-        have a sample count of 0 and an other-instrument count above it, which
-        is a window whose queries were all scored under an earlier instrument
-        and NOT a window with no queries in it.
+        avg_faithfulness covers ONE instrument (issue #120) and the two
+        faithfulness_* counts say how many rows it covered and how many it left
+        out. A sample count of 0 beside a non-zero other-instrument count is a
+        window scored under an earlier instrument, NOT an empty window.
         index_staleness signals independently degrade to "not_tracked" only
         on an actual scan failure — a genuinely empty/healthy corpus reports
         real zero/false values, not a sentinel (same discipline

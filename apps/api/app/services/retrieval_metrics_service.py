@@ -151,6 +151,22 @@ _HEALTH_AVG_KEYS = (
 
 _NOT_TRACKED = "not tracked yet"
 
+# WHY THE FAITHFULNESS AVERAGE IS FILTERED, AND WHY IT IS COUNTED TWICE (#120)
+#
+# The column holds scores from more than one instrument. Averaging a score taken
+# against a pre-280ff05 context proxy with one taken against the retrieved
+# chunks reports an instrument change as a quality change, which is the sentence
+# #84 exists to prevent. So the average covers rows whose context_source names
+# the CURRENT shape, and the two counts say what it covered and what it left
+# out, because a filtered average that does not name what it dropped is a
+# smaller lie than an unfiltered one and is still one.
+#
+# The second count is named for what it counts. `IS DISTINCT FROM` matches a
+# NULL context_source AND a context_source naming a different version, so
+# "unstamped" described one of its two members. A window whose rows were all
+# scored under the previous STAMPED instrument counts every one of them here,
+# and a reader who trusted the old name would have read that as zero.
+
 
 def read_retrieval_health(conn_str: str, window_days: int = 7) -> dict:
     """Aggregate retrieval_metrics over the trailing `window_days` (21-04 read endpoint).
@@ -169,22 +185,9 @@ def read_retrieval_health(conn_str: str, window_days: int = 7) -> dict:
         one non-NULL value (they are only populated by the sampled 21-04
         faithfulness task, not by this write path).
 
-        THE FAITHFULNESS AVERAGE COVERS ONE INSTRUMENT (issue #120). It is taken
-        over rows whose `context_source` names the current context shape, so a
-        row scored against one of the two pre-280ff05 proxies is left out rather
-        than averaged in with rows scored against the retrieved chunks. Mixing
-        them reports an instrument change as a quality change, which is the
-        sentence #84 exists to prevent. The two counts say what the average
-        covered and what it left out, because a filtered average that does not
-        name what it dropped is a smaller lie than an unfiltered one and is
-        still one.
-
-        The second count is named for what it counts. `IS DISTINCT FROM` matches
-        a NULL context_source and a context_source naming a DIFFERENT version,
-        so "unstamped" described one of its two members. A window whose rows
-        were all scored under the previous stamped instrument counts every one
-        of them here, and a reader who trusted the old name would have read that
-        as zero.
+        The faithfulness average covers ONE instrument (issue #120) and the two
+        counts say what it covered and what it left out. See the comment above
+        _NOT_TRACKED for why.
     """
     conn = psycopg2.connect(conn_str, connect_timeout=5)
     try:

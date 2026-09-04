@@ -35,6 +35,16 @@ from app.models.tool_calls_audit import ToolCallsAudit
 
 log = structlog.get_logger(__name__)
 
+#: tool_calls_audit.error prefixes written by the adapter step, as against the
+#: ones a gate writes (`capability.denial:`, `confirmation.*`, `idempotency.*`).
+#: Both of these name a FAULT: the provider raised, or there was no usable
+#: credential to call it with. A gate refusal is a decision the owner can
+#: change, so the two reach the owner's queue as different words (issue #73),
+#: and this column's text is all a reader has to tell them apart.
+ADAPTER_ERROR_PREFIX = "adapter.error:"
+PROVIDER_NOT_CONFIGURED_PREFIX = "provider.not_configured:"
+ADAPTER_FAULT_PREFIXES = (ADAPTER_ERROR_PREFIX, PROVIDER_NOT_CONFIGURED_PREFIX)
+
 
 async def write_audit_row(
     *,
