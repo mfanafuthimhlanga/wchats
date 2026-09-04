@@ -529,13 +529,20 @@ def _still_beating(run: ChecklistRun, now: datetime) -> bool:
     return (now - last_beat).total_seconds() < _stale_after_s()
 
 
-def _reap(db, agent_id: str, run: ChecklistRun) -> None:
+def _reap(db, agent_id: str, run: ChecklistRun) -> bool:
     """Close out a 'running' row no continuation is coming back to.
 
     The guard is the only thing that ever looks at an abandoned row, so it is the
     only place that can end one. Left alone it would block this agent's checklist
     for as long as the row existed, which is the cost of a guard that no longer
     forgets a run after an hour.
+
+    FENCED, BECAUSE TWO TRIGGERS READ THE SAME STALE ROW. The read, the decision
+    and the write were three steps, so both triggers found the row 'running',
+    both reaped it and both went on to insert. Returning False here says the row
+    was already closed by the trigger that got there first, whose own fresh run
+    holds the partial unique index by now: the caller treats this agent as
+    already having a live checklist rather than starting a second one.
     """
     log.warning(
         "run_deployment_checklist.abandoned_run_reaped",
@@ -545,8 +552,7 @@ def _reap(db, agent_id: str, run: ChecklistRun) -> None:
         last_beat=run.heartbeat_at.isoformat() if run.heartbeat_at else None,
         stale_after_s=_stale_after_s(),
     )
-    run.status = "failed"
-    db.commit()
+    return _claimed(db, str(run.id), status="failed")
 
 
 def _a_run_is_already_live(agent_id: str) -> bool:
@@ -575,8 +581,7 @@ def _a_run_is_already_live(agent_id: str) -> bool:
             return False
         if _still_beating(existing, datetime.now(timezone.utc)):
             return True
-        _reap(db, agent_id, existing)
-        return False
+        return not _reap(db, agent_id, existing)
 
 
 def _claimed(db, run_id: str, **values) -> bool:
@@ -647,16 +652,59 @@ def _beat(agent_id: str, run_id: str) -> bool:
     return still_ours
 
 
-def _insert_run(agent_id: str) -> str:
-    """Step 3. This run's own row, in the CONTROL DB only (T-08-03-04)."""
-    with get_sync_db() as db:
-        run = ChecklistRun(agent_id=agent_id, status="running")
-        db.add(run)
-        db.commit()
-        db.refresh(run)
-        run_id = str(run.id)
+#: What the first pass hands back when this agent already has a live checklist.
+#: Identity is what the task tests, so `_opened_or_skipped` returns this object
+#: itself and the task returns a copy of it: the result reaches Celery's backend,
+#: and a sentinel a caller can mutate is one that stops being a sentinel.
+ALREADY_RUNNING: dict = {"status": "already_running"}
+
+
+def _insert_run(agent_id: str) -> str | None:
+    """Step 3. This run's own row, in the CONTROL DB only (T-08-03-04).
+
+    None means another trigger's row got there first. The guard and this insert
+    are two transactions, and between them is the window two triggers reading one
+    stale row used to both come through. 0021's partial unique index on
+    (agent_id) WHERE status = 'running' closes it, and the loser reads the
+    refusal as what it is: this agent already has a live checklist, which is the
+    answer the guard would have given a moment later.
+    """
+    from sqlalchemy.exc import IntegrityError  # noqa: PLC0415
+
+    try:
+        with get_sync_db() as db:
+            run = ChecklistRun(agent_id=agent_id, status="running")
+            db.add(run)
+            db.commit()
+            db.refresh(run)
+            run_id = str(run.id)
+    except IntegrityError:
+        log.info(
+            "run_deployment_checklist.insert_lost_the_race",
+            agent_id=agent_id,
+            detail=(
+                "another trigger inserted this agent's live row between the "
+                "guard and this insert; the index refused the second"
+            ),
+        )
+        return None
     log.info("run_deployment_checklist.started", agent_id=agent_id, run_id=run_id)
     return run_id
+
+
+def _opened_or_skipped(agent_id: str, conn_str: str) -> dict | None:
+    """Steps 2, 3 and 3b of a first pass, or the skip the guard decided.
+
+    Hands back the opened wait, ALREADY_RUNNING when this agent holds a live
+    checklist, or None when the open fell over having already marked its own row.
+    """
+    if _a_run_is_already_live(agent_id):
+        log.info("run_deployment_checklist.idempotency_skip", agent_id=agent_id)
+        return ALREADY_RUNNING
+    run_id = _insert_run(agent_id)
+    if run_id is None:
+        return ALREADY_RUNNING
+    return _open_first_wait(agent_id, run_id, conn_str)
 
 
 def _open_first_wait(agent_id: str, run_id: str, conn_str: str) -> dict | None:
@@ -1250,10 +1298,9 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
     # instead, and either path can hand back None having already marked its own
     # row failed (#125).
     if wait_state is None:
-        if _a_run_is_already_live(agent_id):
-            log.info("run_deployment_checklist.idempotency_skip", agent_id=agent_id)
-            return {"status": "already_running"}
-        state = _open_first_wait(agent_id, _insert_run(agent_id), conn_str)
+        state = _opened_or_skipped(agent_id, conn_str)
+        if state is ALREADY_RUNNING:
+            return dict(ALREADY_RUNNING)
     else:
         state = _continue_wait(agent_id, wait_state)
 

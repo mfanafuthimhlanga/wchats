@@ -3176,6 +3176,61 @@ class TestTheIdempotencyGuardKeysOnTheRunNotTheClock:
     def test_an_agent_with_no_row_at_all_is_let_through(self, session):
         assert self._guard(session, uuid.uuid4()) is False
 
+    def test_two_triggers_cannot_both_hold_a_live_run_for_one_agent(self, session):
+        """0021's partial unique index: the guard's rule, said as data.
+
+        The guard reads the row, decides, then inserts, and those are three
+        steps. Two triggers reading the same stale row both decided it was
+        abandoned, both reaped it and both inserted, because nothing refused the
+        second. The window between the read and the insert belongs to no
+        transaction either trigger could hold, so the database has to be the one
+        that refuses.
+        """
+        from sqlalchemy.exc import IntegrityError
+
+        from app.models.checklist_run import ChecklistRun
+
+        agent_id = uuid.uuid4()
+        self._row(session, agent_id, age_s=5, beat_age_s=1)
+
+        session.add(ChecklistRun(agent_id=agent_id, status="running"))
+        with pytest.raises(IntegrityError):
+            session.commit()
+        session.rollback()
+
+    def test_a_finished_run_never_blocks_the_next_one(self, session):
+        """PARTIAL, on the live predicate. This table keeps every run it made."""
+        agent_id = uuid.uuid4()
+        self._row(session, agent_id, age_s=600, beat_age_s=600, status="complete")
+        self._row(session, agent_id, age_s=300, beat_age_s=300, status="failed")
+
+        self._row(session, agent_id, age_s=5, beat_age_s=1)
+
+    def test_a_reap_the_first_trigger_already_made_reads_as_a_live_run(self, session):
+        """The loser of the race must not go on to insert beside the winner."""
+        from sqlalchemy import update as sa_update
+
+        from app.models.checklist_run import ChecklistRun
+        from app.worker.tasks.runtime import deployment as deployment_task
+
+        agent_id = uuid.uuid4()
+        run = self._row(session, agent_id, age_s=5 * 3600, beat_age_s=5 * 3600)
+        # The trigger that got here first reaped this row and inserted its own,
+        # which holds the index now. This trigger is still carrying the row it
+        # read before any of that happened.
+        session.execute(
+            sa_update(ChecklistRun)
+            .where(ChecklistRun.id == run.id)
+            .values(status="failed")
+        )
+        session.commit()
+
+        assert deployment_task._reap(session, str(agent_id), run) is False, (
+            "this row was closed out by the trigger that got here first, and a "
+            "reap reporting success sends this one on to insert a second live "
+            "checklist for the agent"
+        )
+
 
 class TestTheStaleThresholdOutlastsTheJobsTheChainWaitsBehind:
     """What the guard calls abandoned has to be longer than the queue wait.

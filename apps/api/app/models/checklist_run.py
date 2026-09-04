@@ -69,4 +69,16 @@ class ChecklistRun(Base):
 
     __table_args__ = (
         Index("checklist_runs_agent_id_idx", "agent_id"),
+        # Migration 0021 (#129): one live checklist per agent, said in the schema
+        # rather than only in the task's guard. Two triggers reading the same
+        # stale row both decided it was abandoned, both reaped it and both
+        # inserted, because nothing refused the second insert. PARTIAL: this
+        # table keeps every run it ever made, and a finished one must not block
+        # the next.
+        Index(
+            "checklist_runs_one_live_run_per_agent_idx",
+            "agent_id",
+            unique=True,
+            postgresql_where=text("status = 'running'"),
+        ),
     )

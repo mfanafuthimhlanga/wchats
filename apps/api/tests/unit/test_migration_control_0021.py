@@ -13,7 +13,15 @@ WHAT THE COLUMN IS FOR
     separate a chain that is still going from one nothing will ever finish; a beat
     stamped by each pass can, and this column holds it.
 
-WHY IT IS NULLABLE WITH NO DEFAULT AND NO BACKFILL
+WHY THE PARTIAL UNIQUE INDEX IS HERE TOO
+    A beat tells a live chain from an abandoned one, and it still lets two
+    triggers through: they read the same stale row, both decide it is abandoned,
+    both reap it and both insert, because nothing refused the second. UNIQUE
+    (agent_id) WHERE status = 'running' refuses it. The upgrade closes every live
+    row but the newest per agent first, because CREATE UNIQUE INDEX aborts on
+    data that already breaks it and a pair of live rows is what #129 produced.
+
+WHY THE BEAT IS NULLABLE WITH NO DEFAULT AND NO BACKFILL
     Every row written before this migration has no beat, and so does a row
     inserted seconds ago whose first pass has not polled yet. The guard reads
     COALESCE(heartbeat_at, created_at) precisely so a NULL costs nothing, and a
@@ -173,22 +181,85 @@ def test_upgrade_touches_checklist_runs_and_nothing_else():
     sql = _executed("upgrade")
     named = set(re.findall(r"ALTER TABLE\s+(\w+)", sql))
     named |= set(re.findall(r"CREATE TABLE(?: IF NOT EXISTS)?\s+(\w+)", sql))
+    named |= set(re.findall(r"CREATE UNIQUE INDEX[^;]*?\sON\s+(\w+)", sql))
+    named |= set(re.findall(r"UPDATE\s+(\w+)\s+SET", sql))
     assert named == {"CHECKLIST_RUNS"}, (
         f"0021 must touch checklist_runs alone, found {sorted(named)}"
     )
 
 
 # ---------------------------------------------------------------------------
-# Additive only
+# One live checklist per agent
 # ---------------------------------------------------------------------------
 
 
-def test_upgrade_is_strictly_additive():
+def test_upgrade_creates_the_unique_index_on_the_live_predicate():
+    """The guard's rule, said in the schema (#129).
+
+    Two triggers reading one stale row both reaped it and both inserted, because
+    nothing refused the second insert.
+    """
+    sql = _executed("upgrade")
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS" in sql, (
+        f"the index must be unique and guarded, issued: {sql}"
+    )
+    assert "ON CHECKLIST_RUNS (AGENT_ID) WHERE STATUS = 'RUNNING'" in sql, (
+        "the index must be keyed on agent_id and PARTIAL on the live predicate, "
+        f"or a finished run blocks the next checklist forever: {sql}"
+    )
+
+
+def test_the_backfill_closes_every_live_row_but_the_newest_per_agent():
+    """CREATE UNIQUE INDEX aborts on data that already breaks it.
+
+    A pair of live rows for one agent is exactly what #129 produced, so the
+    upgrade cannot assume there are none.
+    """
+    sql = _executed("upgrade")
+    assert "UPDATE CHECKLIST_RUNS SET STATUS = 'FAILED'" in sql, (
+        f"the upgrade must close out the duplicate live rows first: {sql}"
+    )
+    assert "DISTINCT ON (AGENT_ID) ID" in sql, (
+        f"one survivor per agent, chosen rather than left to the planner: {sql}"
+    )
+    assert "ORDER BY AGENT_ID, CREATED_AT DESC, ID DESC" in sql, (
+        "the NEWEST row survives because it is the one a chain may still be "
+        f"beating, and the id breaks a tie so the choice is deterministic: {sql}"
+    )
+
+
+def test_the_backfill_runs_before_the_index_is_created():
+    """The other order builds the index over the rows that break it."""
+    sql = _executed("upgrade")
+    assert sql.index("UPDATE CHECKLIST_RUNS") < sql.index("CREATE UNIQUE INDEX"), (
+        f"the backfill has to come first: {sql}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Additive, plus the one write that makes the index buildable
+# ---------------------------------------------------------------------------
+
+
+def test_upgrade_changes_no_schema_it_did_not_add():
+    """The backfill writes rows. Nothing here rewrites a column or a table."""
     sql = _executed("upgrade")
     for forbidden in ("DROP COLUMN", "DROP TABLE", "RENAME", "ALTER COLUMN"):
         assert forbidden not in sql, (
             f"0021's upgrade must add and nothing else, found {forbidden}: {sql}"
         )
+
+
+def test_the_only_rows_the_backfill_touches_are_the_live_duplicates():
+    """A backfill that reached a finished run would rewrite settled history."""
+    sql = _executed("upgrade")
+    update = [s for s in sql.split(";") if "UPDATE CHECKLIST_RUNS" in s][0]
+    assert "WHERE STATUS = 'RUNNING'" in update, (
+        f"the backfill must be scoped to live rows: {update.strip()!r}"
+    )
+    assert "ID NOT IN" in update, (
+        f"and it must spare one row per agent: {update.strip()!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +272,17 @@ def test_downgrade_drops_only_what_upgrade_added():
     dropped = set(re.findall(r"DROP COLUMN IF EXISTS\s+(\w+)", sql))
     assert dropped == {"HEARTBEAT_AT"}, (
         f"downgrade must drop exactly the column upgrade added, found {sorted(dropped)}"
+    )
+    assert "DROP INDEX IF EXISTS CHECKLIST_RUNS_ONE_LIVE_RUN_PER_AGENT_IDX" in sql, (
+        f"downgrade must drop the index upgrade created, issued: {sql}"
+    )
+
+
+def test_downgrade_never_reopens_a_row_the_backfill_closed():
+    """Reopening one puts a second live checklist back on an agent that has one."""
+    sql = _executed("downgrade")
+    assert "UPDATE" not in sql, (
+        f"downgrade must not rewrite any checklist_runs row: {sql}"
     )
 
 
