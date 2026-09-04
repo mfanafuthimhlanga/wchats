@@ -186,6 +186,48 @@ const VIEWPORTS = [
   { width: 860, height: 900, about: 'below the 900px breakpoint, where the pins are a grid' },
 ]
 
+// ── the floor ──────────────────────────────────────────────────────────────
+// The PASS line at the bottom names four assertions, and each one needs a
+// subject the run supplied. Nothing here supplied one. `FIXTURES = []` and
+// `VIEWPORTS = []` each ran the measuring loop zero times and printed that
+// sentence over nothing, exit 0. A gate over zero observations is unknown,
+// never pass.
+//
+// A fixture's shape is checked before the browser starts, because a fixture is
+// the subject. `pins` is a number this file writes down rather than anything
+// the chart reports, so `pins: 0` holds nothing to anything: the pin-count
+// comparison passes 0 against 0, and every per-pin assertion under it walks an
+// empty list while the line above still prints. The one zero-pin shape this
+// gate can assert against is the empty state, which has a sentence to
+// announce, so a fixture with no pins has to be that one.
+
+const shapeErrors = []
+if (FIXTURES.length === 0) shapeErrors.push('FIXTURES is empty, so no chart renders and nothing is measured')
+if (VIEWPORTS.length === 0) shapeErrors.push('VIEWPORTS is empty, so no page opens and nothing is measured')
+
+for (const [i, fixture] of FIXTURES.entries()) {
+  const where = `FIXTURES[${i}] (${fixture.id ?? 'unnamed'})`
+  if (typeof fixture.id !== 'string' || fixture.id === '') shapeErrors.push(`${where} carries no id`)
+  if (!Array.isArray(fixture.runs) || fixture.runs.length === 0) {
+    shapeErrors.push(`${where} carries no runs, so the chart is handed nothing to draw`)
+  }
+  if (!Number.isInteger(fixture.pins) || fixture.pins < 0) {
+    shapeErrors.push(`${where} declares pins ${JSON.stringify(fixture.pins)}, which counts nothing`)
+  } else if (fixture.pins === 0 && fixture.announces !== true) {
+    shapeErrors.push(
+      `${where} declares no pins and does not announce, so every assertion it reaches has an empty ` +
+        'subject while its measured line still prints. A fixture with no pins is the empty state, ' +
+        'and the empty state announces: give it `announces: true`, or give it pins',
+    )
+  }
+}
+
+if (shapeErrors.length > 0) {
+  console.error(`check:chart-render: FAIL -- ${shapeErrors.length} fixture problem(s), so the run would assert nothing:`)
+  for (const e of shapeErrors) console.error(`  ${e}`)
+  process.exit(1)
+}
+
 // ── build the page ─────────────────────────────────────────────────────────
 // The component under test is compiled, never re-implemented. tsc turns the two
 // real source files into CommonJS, a five-line module registry stands in for a
@@ -457,6 +499,34 @@ for (const { fixture, viewport, seen, errors } of results) {
   }
 }
 
+// What the run measured, counted rather than assumed. Each count is the
+// subject of one clause in the PASS line, and the line prints it beside the
+// claim, so a reader can see the assertion had something to bite on.
+const renders = results.length
+const expectedRenders = FIXTURES.length * VIEWPORTS.length
+const pinsMeasured = results.reduce((t, r) => t + (r.seen?.pins.length ?? 0), 0)
+const pairsMeasured = results.reduce((t, r) => {
+  const k = r.seen?.pins.length ?? 0
+  return t + (k * (k - 1)) / 2
+}, 0)
+const announced = results.filter((r) => r.fixture.announces && r.seen?.notice).length
+
+if (renders !== expectedRenders) {
+  findings.push(
+    `${renders} render(s) finished where ${FIXTURES.length} fixtures across ${VIEWPORTS.length} ` +
+      `viewports are ${expectedRenders}, so a fixture never reached the page`,
+  )
+}
+if (pinsMeasured === 0) {
+  findings.push('not one pin was measured in the whole run, so no pin was held to the chart wrap')
+}
+if (pairsMeasured === 0) {
+  findings.push('no render put two pins on the page at once, so no pair of pins was held apart')
+}
+if (announced === 0) {
+  findings.push('no fixture reached the empty state, so nothing was held to announcing it')
+}
+
 if (findings.length > 0) {
   console.error(`\ncheck:chart-render: FAIL -- ${findings.length} finding(s):`)
   for (const finding of findings) console.error(`  ${finding}`)
@@ -464,7 +534,8 @@ if (findings.length > 0) {
 }
 
 console.log(
-  `\ncheck:chart-render: PASS -- across ${FIXTURES.length} fixtures at ` +
-    `${VIEWPORTS.map((v) => `${v.width}px`).join(', ')}, every pin sits inside the chart wrap, ` +
-    'no two pins overlap, and the empty state announces itself.',
+  `\ncheck:chart-render: PASS -- ${renders} render(s), ${FIXTURES.length} fixtures at ` +
+    `${VIEWPORTS.map((v) => `${v.width}px`).join(', ')}: ${pinsMeasured} pin(s) measured and every one ` +
+    `inside the chart wrap, ${pairsMeasured} pin pair(s) measured and none overlapping, and the empty ` +
+    `state announced itself in ${announced} of them.`,
 )

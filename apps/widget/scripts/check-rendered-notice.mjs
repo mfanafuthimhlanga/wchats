@@ -93,6 +93,21 @@ if (missing.length > 0) {
   process.exit(1)
 }
 
+// ── the floor ──────────────────────────────────────────────────────────────
+// The PASS line at the bottom names four assertions, and each one needs a
+// frame to have a subject. Nothing here supplied one: `VIEWPORTS = []` ran
+// the measuring loop zero times and printed that sentence over nothing, exit
+// 0. A gate over zero observations is unknown, never pass. The counts under
+// the loop below finish the job, and the PASS line prints them beside the
+// claims they belong to.
+if (VIEWPORTS.length === 0) {
+  console.error(
+    'check:rendered-notice: FAIL -- VIEWPORTS is empty, so no frame is opened and nothing is ' +
+    'measured. Every assertion below it would pass by having no subject.'
+  )
+  process.exit(1)
+}
+
 async function measure(browser, viewport) {
   const page = await browser.newPage({
     viewport: { width: viewport.width, height: viewport.height },
@@ -298,6 +313,27 @@ console.log(
 )
 }
 
+// What the run measured, counted rather than assumed. `framesMeasured`
+// against VIEWPORTS catches a frame that never produced a measurement, and
+// `childrenMeasured` is the subject of the three per-child assertions: a bar
+// that rendered with no children clears all of them by having nothing in it.
+const framesMeasured = measurements.length
+const childrenMeasured = measurements.reduce((t, [, m]) => t + m.children.length, 0)
+
+if (framesMeasured !== VIEWPORTS.length) {
+  findings.push(
+    `${framesMeasured} frame(s) were measured where VIEWPORTS names ${VIEWPORTS.length}, ` +
+    'so a frame never reached the page'
+  )
+}
+
+if (childrenMeasured === 0) {
+  findings.push(
+    'no child of the bar was measured in any frame, so nothing was held to a single row, ' +
+    'to not being clipped, or to the frame edge'
+  )
+}
+
 if (findings.length > 0) {
   console.error(`\ncheck:rendered-notice: FAIL -- ${findings.length} finding(s):`)
   for (const f of findings) console.error(`  ${f}`)
@@ -305,7 +341,8 @@ if (findings.length > 0) {
 }
 
 console.log(
-  `check:rendered-notice: PASS -- in both the ${VIEWPORTS.map((v) => `${v.width}px`).join(' and ')} ` +
-  `frames, all ${measurements[0][1].children.length} children of the bar render on one row, ` +
-  'none is clipped, the bar overflows in neither axis, and nothing reaches past the frame edge.'
+  `check:rendered-notice: PASS -- across ${framesMeasured} frame(s) at ` +
+  `${VIEWPORTS.map((v) => `${v.width}px`).join(', ')}, ${childrenMeasured} measured child(ren) of the bar ` +
+  'render on one row, none is clipped, the bar overflows in neither axis, and nothing reaches ' +
+  'past the frame edge.'
 )
