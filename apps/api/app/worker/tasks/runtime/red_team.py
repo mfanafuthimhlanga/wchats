@@ -175,7 +175,7 @@ def _build_probe_fn(agent: "Agent", conn_str: str, ledger: LedgerContext):
             choice = first_choice(completion)
             return "" if choice is None else (choice.message.content or "")
         except Exception as exc:
-            log.warning("probe_fn.failed", error_type=type(exc).__name__, error=_log_error_detail(exc))
+            _log_failure("probe_fn.failed", exc)
             return ""
 
     def probe_fn(message: str) -> str:
@@ -187,7 +187,7 @@ def _build_probe_fn(agent: "Agent", conn_str: str, ledger: LedgerContext):
         try:
             return asyncio.run(asyncio.wait_for(_async_probe(message), timeout=60.0))
         except Exception as exc:
-            log.warning("probe_fn.timeout_or_error", error_type=type(exc).__name__, error=_log_error_detail(exc))
+            _log_failure("probe_fn.timeout_or_error", exc)
             return ""
 
     return probe_fn
@@ -447,6 +447,35 @@ def _log_error_detail(exc: BaseException) -> str:
     return _pg_text(str(exc).strip().partition("\n")[0])[:_LOG_ERROR_CHAR_CAP]
 
 
+def _log_failure(
+    event: str,
+    exc: BaseException,
+    *,
+    level: str = "warning",
+    **fields: object,
+) -> None:
+    """Log one failure with its exception bounded, at every handler in this module.
+
+    Nine handlers here log an exception, and each one used to spell out both
+    `error_type=type(exc).__name__` and `error=_log_error_detail(exc)` for
+    itself. Two kwargs repeated nine times are two kwargs a tenth handler can
+    forget, and that pair is the whole of what keeps the attacker's own text off
+    the line. The exception arrives whole now and this function derives both, so
+    a handler passes only what it alone knows: the event, the exception, and its
+    ids.
+
+    `fields` renders first, which keeps each line in the order it already had,
+    ids before the failure. `level` names the structlog method. The two handlers
+    that end a run pass "error"; the seven best-effort ones take the default.
+    """
+    getattr(log, level)(
+        event,
+        **fields,
+        error_type=type(exc).__name__,
+        error=_log_error_detail(exc),
+    )
+
+
 def _pg_json(payload: object) -> str:
     """The jsonb literal for a payload every string of which is storable.
 
@@ -588,12 +617,11 @@ def _write_completion(conn, run_id: str, agent_id: str, base_params: tuple,
         )
     except Exception as update_exc:
         error_type = type(update_exc).__name__
-        log.warning(
+        _log_failure(
             "run_red_team.update_complete_failed",
+            update_exc,
             agent_id=agent_id,
             run_id=run_id,
-            error_type=error_type,
-            error=_log_error_detail(update_exc),
         )
     _fail_run(conn, run_id, agent_id, error_type)
 
@@ -703,11 +731,7 @@ def run_red_team(self, agent_id: str) -> dict:
             return {"status": "already_running"}
     except Exception as exc:
         # Idempotency guard is best-effort — proceed on any check failure
-        log.warning(
-            "run_red_team.idempotency_check_failed",
-            agent_id=agent_id, error_type=type(exc).__name__,
-            error=_log_error_detail(exc),
-        )
+        _log_failure("run_red_team.idempotency_check_failed", exc, agent_id=agent_id)
 
     # ------------------------------------------------------------------
     # Step 3 — Insert red_team_run row (status='running')
@@ -727,10 +751,11 @@ def run_red_team(self, agent_id: str) -> dict:
                 )
             _run_conn.commit()
         except Exception as exc:
-            log.error(
+            _log_failure(
                 "run_red_team.insert_run_failed",
-                agent_id=agent_id, error_type=type(exc).__name__,
-                error=_log_error_detail(exc),
+                exc,
+                level="error",
+                agent_id=agent_id,
             )
             if self.request.retries < self.max_retries:
                 raise self.retry(exc=exc, countdown=2 ** self.request.retries)
@@ -935,11 +960,11 @@ def run_red_team(self, agent_id: str) -> dict:
                     finding_probe_ids.append(_probe_row[0] if _probe_row else None)
             _agents_conn.commit()
         except Exception as programme_exc:
-            log.warning(
+            _log_failure(
                 "run_red_team.programme_write_failed",
-                agent_id=agent_id, run_id=run_id,
-                error_type=type(programme_exc).__name__,
-                error=_log_error_detail(programme_exc),
+                programme_exc,
+                agent_id=agent_id,
+                run_id=run_id,
             )
 
         # ------------------------------------------------------------------
@@ -978,11 +1003,11 @@ def run_red_team(self, agent_id: str) -> dict:
                     )
             _agents_conn.commit()
         except Exception as findings_exc:
-            log.warning(
+            _log_failure(
                 "run_red_team.findings_write_failed",
-                agent_id=agent_id, run_id=run_id,
-                error_type=type(findings_exc).__name__,
-                error=_log_error_detail(findings_exc),
+                findings_exc,
+                agent_id=agent_id,
+                run_id=run_id,
             )
 
         # ------------------------------------------------------------------
@@ -1026,11 +1051,12 @@ def run_red_team(self, agent_id: str) -> dict:
         }
 
     except Exception as exc:
-        log.error(
+        _log_failure(
             "run_red_team.agents_failed",
-            agent_id=agent_id, run_id=run_id,
-            error_type=type(exc).__name__,
-            error=_log_error_detail(exc),
+            exc,
+            level="error",
+            agent_id=agent_id,
+            run_id=run_id,
         )
         # Mark run as failed before retry
         try:
@@ -1046,11 +1072,11 @@ def run_red_team(self, agent_id: str) -> dict:
                 )
             _agents_conn.commit()
         except Exception as fail_upd_exc:
-            log.warning(
+            _log_failure(
                 "run_red_team.update_failed_status_error",
-                agent_id=agent_id, run_id=run_id,
-                error_type=type(fail_upd_exc).__name__,
-                error=_log_error_detail(fail_upd_exc),
+                fail_upd_exc,
+                agent_id=agent_id,
+                run_id=run_id,
             )
 
         if self.request.retries < self.max_retries:
