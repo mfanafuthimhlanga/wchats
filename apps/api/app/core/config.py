@@ -408,11 +408,32 @@ class Settings(BaseSettings):
     # versioned book and stops the turn once the total reaches this number, so
     # what it guards is a runaway turn (T-04-03-06) and not a monthly bill.
     #
-    # 0.50 was derived for a Haiku extended-thinking turn under ClaudeAgentOptions
-    # and NOBODY HAS RE-DERIVED IT for gpt-5.6-luna at reasoning effort none.
-    # Issue #82 carries that decision. The value stands until #82 lands.
+    # 0.0038 is five times the $0.00076 a gpt-5.6-luna agent turn costs (ADR 0008),
+    # which is the measurement #82 asked this number to be set against. The 0.50 it
+    # replaces was derived for a Haiku extended-thinking turn under
+    # ClaudeAgentOptions, and both premises died with #48: at roughly 650 times a
+    # turn the guard could not fire for anything the loop can produce, so the only
+    # live bound on a runaway turn was MAX_MODEL_CALLS_PER_TURN = 6.
+    #
+    # Measured live against gpt-5.6-luna on 2026-08-27 with the owner's key (#82):
+    # a two-call grounded turn with retrieval ran $0.000114 to $0.000227, and a
+    # turn held to $0.00002 stopped after one call with
+    # stop_reason='budget_exceeded', priced from real ModelCall rows through the
+    # real book. So the mechanism works and the constant was the whole problem.
+    #
+    # Five times, not two, because the check runs at the top of a call against
+    # spend recorded through the PREVIOUS one. The effective ceiling is this
+    # number plus one full call, and a ceiling near one turn's cost would stop
+    # turns that were never runaway.
+    #
+    # The same measurement closed this field's other half. The response reports
+    # `gpt-5.6-luna`, the alias, not a dated snapshot, so cost_usd raises no
+    # UnknownPrice and the guard does not silently degrade to off. app.domain.pricing
+    # matches served_model exactly, so a dated id would unprice every call; that
+    # stays a note rather than a prefix match until a provider reports one.
+    #
     # Set AGENT_MAX_BUDGET_USD in .env to override, tighter in production.
-    AGENT_MAX_BUDGET_USD: float = 0.50
+    AGENT_MAX_BUDGET_USD: float = 0.0038
 
     # Phase 21 (OPS-07): sampled Ragas 0.4.x faithfulness + citation-coverage rate.
     # Online-scoring norm is 1-10% of live traffic (DOMAIN-NOTES §2) + 100% of

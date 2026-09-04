@@ -1337,6 +1337,50 @@ class TestTheCeilings:
         assert out["stop_reason"] == "max_model_calls"
         assert out["num_turns"] == 2
 
+    async def test_the_shipped_ceiling_stops_a_turn_costing_six_times_a_measured_one(self):
+        """3800 Luna output tokens is $0.00456, six times the $0.00076 a turn costs.
+
+        The ceiling here is the SHIPPED default rather than a number this test
+        chose, which is the whole point. At 0.50 it was roughly 650 times a turn
+        and could not fire for any turn the loop can produce, so the only live
+        bound on a runaway was MAX_MODEL_CALLS_PER_TURN (#82).
+        """
+        client = self._always_calls_a_tool()
+        calls = [_luna_call(0, 3_800)]
+        turn = _turn(
+            client,
+            tools=[_tool("retrieve", _echo_handler)],
+            max_budget_usd=settings.AGENT_MAX_BUDGET_USD,
+            calls=calls,
+        )
+
+        out, _ = await _drive(turn)
+
+        assert out["stop_reason"] == "budget_exceeded"
+        assert out["num_turns"] == 1
+
+    async def test_a_measured_turn_runs_out_under_the_shipped_ceiling(self):
+        """2000 in and 300 out is $0.00076, the turn cost ADR 0008 priced.
+
+        The other half of the number. A ceiling set close to one turn's cost
+        stops turns that were never runaway, and the guard reads spend recorded
+        through the PREVIOUS call, so a turn is never stopped before its second.
+        """
+        client = self._always_calls_a_tool()
+        calls = [_luna_call(2_000, 300)]
+        turn = _turn(
+            client,
+            tools=[_tool("retrieve", _echo_handler)],
+            max_model_calls=2,
+            max_budget_usd=settings.AGENT_MAX_BUDGET_USD,
+            calls=calls,
+        )
+
+        out, _ = await _drive(turn)
+
+        assert out["stop_reason"] == "max_model_calls"
+        assert out["num_turns"] == 2
+
     async def test_the_first_call_is_never_blocked_by_the_guard(self):
         """A turn that has spent nothing yet cannot be over its own ceiling."""
         client = _Client(_completion(content="ok"))
