@@ -408,64 +408,11 @@ class Settings(BaseSettings):
     # versioned book and stops the turn once the total reaches this number, so
     # what it guards is a runaway turn (T-04-03-06) and not a monthly bill.
     #
-    # ADR 0008's $0.00076 IS NOT A TURN. It prices one model CALL at 2000 tokens
-    # in and 300 out. A turn is up to MAX_MODEL_CALLS_PER_TURN = 6 calls, every
-    # one of them re-sending the whole message list plus about 2,340 tokens of
-    # the eleven tool schemas, so a turn's input cost grows quadratically in the
-    # call count. 0.0038, set as five times that call, cut ordinary turns:
-    # driven for real against agent_loop.run_agent_loop, one grounded retrieval
-    # at the configured maximum stopped after THREE calls of six with
-    # stop_reason='budget_exceeded' and an empty answer, which is the empty
-    # assistant row _read_turn_history already has to filter out of the next
-    # turn's context.
-    #
-    # WHAT 0.04 IS. The measurement, taken 2026-09-04 by driving the real loop
-    # with a per-call recorder and pricing every ModelCall row through
-    # app.domain.pricing, exactly as _over_budget does. The most expensive turn
-    # the CONFIGURED limits can produce is six calls, each round carrying
-    # agent_tools.MAX_CHUNKS = 5 chunks of CHUNK_CONTENT_CHAR_LIMIT = 2000
-    # characters, on top of the 40-message history cap
-    # (agent.TURN_HISTORY_MAX_MESSAGES) that rides on every call:
-    #
-    #     input tokens per call   8,178 / 10,856 / 13,533 / 16,210 / 18,887 / 21,565
-    #     cost of the whole turn  $0.020006
-    #     spend through call 5    $0.015333   <- what the guard compares against
-    #     the same turn, fresh conversation, no history:  $0.013580
-    #
-    # 0.04 is 2.0 times that $0.020006 turn and 2.6 times the $0.015333 the guard
-    # reads. Averaged over six calls it fires at roughly 33,000 input tokens per
-    # call, about 1.5 times the 21,565 the configured limits peak at, so what
-    # trips it is a context larger than any configured limit can build. That is
-    # the runaway T-04-03-06 names. tests/unit/test_agent_loop.py's
-    # TestTheCeilingAgainstAGrowingTurn drives both sides against this constant.
-    #
-    # THE TWO BOUNDS MAY NOT CONTRADICT. MAX_MODEL_CALLS_PER_TURN = 6 declares
-    # six calls servable, so this number has to leave room for six. Raise that
-    # constant, widen MAX_CHUNKS or CHUNK_CONTENT_CHAR_LIMIT, or raise
-    # TURN_HISTORY_MAX_MESSAGES, and this number is stale until it is measured
-    # again. The check also runs at the TOP of a call against spend recorded
-    # through the previous one, so the effective ceiling is this number plus one
-    # full call.
-    #
-    # The 0.50 this replaced was derived for a Haiku extended-thinking turn under
-    # ClaudeAgentOptions, and both premises died with #48. At roughly 25 times the
-    # worst turn the loop can produce it could not fire, so the only live bound
-    # was MAX_MODEL_CALLS_PER_TURN.
-    #
-    # Measured live against gpt-5.6-luna on 2026-08-27 with the owner's key (#82):
-    # a two-call grounded turn with retrieval ran $0.000114 to $0.000227, and a
-    # turn held to $0.00002 stopped after one call with
-    # stop_reason='budget_exceeded', priced from real ModelCall rows through the
-    # real book. So the mechanism works and the constant was the whole problem.
-    #
-    # The same measurement closed this field's other half. The response reports
-    # `gpt-5.6-luna`, the alias, not a dated snapshot, so cost_usd raises no
-    # UnknownPrice and the guard does not silently degrade to off. app.domain.pricing
-    # matches served_model exactly, so a dated id would unprice every call; that
-    # stays a note rather than a prefix match until a provider reports one.
-    #
+    # 0.50 was derived for a Haiku extended-thinking turn under ClaudeAgentOptions
+    # and NOBODY HAS RE-DERIVED IT for gpt-5.6-luna at reasoning effort none.
+    # Issue #82 carries that decision. The value stands until #82 lands.
     # Set AGENT_MAX_BUDGET_USD in .env to override, tighter in production.
-    AGENT_MAX_BUDGET_USD: float = 0.04
+    AGENT_MAX_BUDGET_USD: float = 0.50
 
     # Phase 21 (OPS-07): sampled Ragas 0.4.x faithfulness + citation-coverage rate.
     # Online-scoring norm is 1-10% of live traffic (DOMAIN-NOTES §2) + 100% of

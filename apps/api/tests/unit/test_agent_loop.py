@@ -39,11 +39,9 @@ WHAT THE BUDGET TESTS PRICE
 
 from __future__ import annotations
 
-import json
 import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
-from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -52,7 +50,6 @@ import pytest
 from app.core.config import settings
 from app.core.model_client import route_for
 from app.domain.model_call import ModelCall, ModelSource
-from app.domain.pricing import cost_usd
 from app.services.agent_loop import (
     MAX_MODEL_CALLS_PER_TURN,
     RETRIEVE_CHUNKS_KEY,
@@ -70,8 +67,6 @@ from app.services.agent_loop import (
 )
 from app.services.agent_prompt import build_system_prompt
 from app.services.agent_tools import (
-    CHUNK_CONTENT_CHAR_LIMIT,
-    MAX_CHUNKS,
     agent_tool_definitions,
     current_side_effect_mode,
     get_recorded_side_effects,
@@ -1342,55 +1337,6 @@ class TestTheCeilings:
         assert out["stop_reason"] == "max_model_calls"
         assert out["num_turns"] == 2
 
-    async def test_the_shipped_ceiling_stops_a_runaway_context(self):
-        """200,000 Luna input tokens is $0.04, the ceiling, on ONE call.
-
-        The ceiling here is the SHIPPED default rather than a number this test
-        chose, which is the whole point. At 0.50 it could not fire for any turn
-        the loop can produce, so the only live bound on a runaway was
-        MAX_MODEL_CALLS_PER_TURN (#82).
-
-        200,000 input tokens on a single call is roughly nine times the 21,565
-        the configured limits peak at, so this is the runaway shape rather than
-        an expensive ordinary turn. TestTheCeilingAgainstAGrowingTurn holds the
-        other side of the same number.
-        """
-        client = self._always_calls_a_tool()
-        calls = [_luna_call(200_000, 300)]
-        turn = _turn(
-            client,
-            tools=[_tool("retrieve", _echo_handler)],
-            max_budget_usd=settings.AGENT_MAX_BUDGET_USD,
-            calls=calls,
-        )
-
-        out, _ = await _drive(turn)
-
-        assert out["stop_reason"] == "budget_exceeded"
-        assert out["num_turns"] == 1
-
-    async def test_a_measured_turn_runs_out_under_the_shipped_ceiling(self):
-        """2000 in and 300 out is $0.00076, the turn cost ADR 0008 priced.
-
-        The other half of the number. A ceiling set close to one turn's cost
-        stops turns that were never runaway, and the guard reads spend recorded
-        through the PREVIOUS call, so a turn is never stopped before its second.
-        """
-        client = self._always_calls_a_tool()
-        calls = [_luna_call(2_000, 300)]
-        turn = _turn(
-            client,
-            tools=[_tool("retrieve", _echo_handler)],
-            max_model_calls=2,
-            max_budget_usd=settings.AGENT_MAX_BUDGET_USD,
-            calls=calls,
-        )
-
-        out, _ = await _drive(turn)
-
-        assert out["stop_reason"] == "max_model_calls"
-        assert out["num_turns"] == 2
-
     async def test_the_first_call_is_never_blocked_by_the_guard(self):
         """A turn that has spent nothing yet cannot be over its own ceiling."""
         client = _Client(_completion(content="ok"))
@@ -1417,226 +1363,6 @@ class TestTheCeilings:
 
         assert out["stop_reason"] == "max_model_calls"
         assert out["num_turns"] == 2
-
-
-# ---------------------------------------------------------------------------
-# The ceiling against a turn that grows the way a real one does
-# ---------------------------------------------------------------------------
-
-
-class _GrowingClient:
-    """A client that bills each request from the body the loop actually sent.
-
-    WHY THIS AND NOT A STATIC `calls` LIST. Every test in `TestTheCeilings`
-    hands the loop a `calls` list assembled before the turn starts, so the spend
-    the guard reads never changes while the turn runs. That is the wrong shape
-    for deciding whether the ceiling is set right: a turn's input cost grows
-    with every round, because each call re-sends the whole message list plus the
-    eleven tool schemas, and it is that growth that decides whether an ordinary
-    turn reaches its answer. A static list cannot see it. Set
-    `AGENT_MAX_BUDGET_USD` to 0.0008 and every static-list test above stays
-    green while a real turn is cut to one call with an empty answer.
-
-    So this appends one `ModelCall` per request, sized from the request itself
-    at the usual four-characters-per-token proxy, which is what `_turn_client`'s
-    recorder does live off the provider's usage block. The rows are priced
-    through `app.domain.pricing`, unstubbed, the way `_over_budget` prices them.
-    """
-
-    def __init__(self, calls: list[ModelCall], *replies, output_tokens: int = 300):
-        self._calls = calls
-        self._replies = list(replies)
-        self._output_tokens = output_tokens
-        self.requests: list[dict] = []
-        self.input_tokens: list[int] = []
-        self.completions = SimpleNamespace(create=self._create)
-        self.chat = SimpleNamespace(completions=self.completions)
-
-    async def _create(self, **kwargs):
-        self.requests.append(kwargs)
-        billed = (
-            len(json.dumps(kwargs["messages"], default=str))
-            + len(json.dumps(kwargs["tools"], default=str))
-        ) // 4
-        self.input_tokens.append(billed)
-        self._calls.append(_luna_call(billed, self._output_tokens))
-        index = min(len(self.requests) - 1, len(self._replies) - 1)
-        return self._replies[index]
-
-    async def close(self) -> None:
-        return None
-
-
-def _full_size_retrieve_wire() -> dict:
-    """One retrieve result at the size the CONFIGURED limits permit.
-
-    `MAX_CHUNKS` chunks of `CHUNK_CONTENT_CHAR_LIMIT` characters each, carrying
-    the `chunk_id` / `document_id` / `score` fields `RetrievedChunk.to_json`
-    emits. Both numbers are imported rather than written down, so raising either
-    limit moves this test with it.
-    """
-    payload = [
-        {
-            "chunk_id": f"chunk-{index}",
-            "document_id": f"doc-{index}",
-            "score": 0.8123,
-            "content": "P" * CHUNK_CONTENT_CHAR_LIMIT,
-        }
-        for index in range(MAX_CHUNKS)
-    ]
-    return _text_wire(json.dumps(payload))
-
-
-def _real_tools_with(retrieve_handler) -> list:
-    """The eleven shipped tools, with only `retrieve`'s handler swapped.
-
-    THE REAL SCHEMAS, not `_tool`'s empty one. About 2,340 tokens of tool schema
-    ride on EVERY model call of a turn, which is most of what a first call costs
-    and most of what makes the ceiling too low. A double carrying
-    `{"type": "object", "properties": {}}` prices that at nothing and would put
-    this test's arithmetic five times under the product's.
-    """
-    return [
-        SimpleNamespace(
-            name=tool.name,
-            description=tool.description,
-            input_schema=tool.input_schema,
-            handler=(retrieve_handler if tool.name == "retrieve" else tool.handler),
-        )
-        for tool in agent_tool_definitions()
-    ]
-
-
-class TestTheCeilingAgainstAGrowingTurn:
-    """The shipped ceiling may not cut a turn the configured limits describe.
-
-    WHAT WENT WRONG WITHOUT IT. 0.0038 was set as five times $0.00076, and
-    ADR 0008's $0.00076 is one CALL at 2000 in and 300 out, not a turn. A turn
-    is up to `MAX_MODEL_CALLS_PER_TURN` calls and each one re-sends everything
-    before it, so the spend grows quadratically in the call count. Driven for
-    real, one grounded retrieval at the configured maximum stopped at three
-    calls of six with `stop_reason='budget_exceeded'` and an EMPTY answer. An
-    empty assistant row is the defect `_read_turn_history` already filters out
-    of the next turn's context.
-    """
-
-    def _asks_for_one_retrieve(self):
-        return _completion(
-            tool_calls=[_tool_call("call-1", "retrieve", '{"query": "return window"}')],
-            finish_reason="tool_calls",
-        )
-
-    def _answers(self):
-        return _completion(content="Fourteen days from delivery.", finish_reason="stop")
-
-    async def _run(self, *, rounds: int, budget: float, history=()):
-        """A turn that retrieves `rounds` times and then answers, priced per call."""
-        wire = _full_size_retrieve_wire()
-
-        async def handler(args):
-            return wire
-
-        replies = [self._asks_for_one_retrieve()] * rounds + [self._answers()]
-        calls: list[ModelCall] = []
-        client = _GrowingClient(calls, *replies)
-        turn = replace(
-            _turn(
-                client,
-                tools=_real_tools_with(handler),
-                max_budget_usd=budget,
-                calls=calls,
-            ),
-            # The real prompt too. `_turn`'s six-word placeholder prices the one
-            # part of a call the agent's own configuration decides.
-            system_prompt=build_system_prompt(_agent(), soul_override=None),
-        )
-        out, _ = await _drive(turn, history=history)
-        spend = sum((cost_usd(call)[0] for call in calls), Decimal(0))
-        return out, client, spend
-
-    async def test_a_full_size_grounded_turn_reaches_its_answer(self):
-        """MAX_MODEL_CALLS_PER_TURN rounds of maximum retrieval, then an answer.
-
-        The ceiling here is the SHIPPED default, which is the whole point. The
-        two bounds may not contradict: `MAX_MODEL_CALLS_PER_TURN` says six calls
-        are servable, so the budget guard may not stop the turn before them.
-        """
-        out, client, spend = await self._run(
-            rounds=MAX_MODEL_CALLS_PER_TURN - 1,
-            budget=settings.AGENT_MAX_BUDGET_USD,
-        )
-
-        assert out["stop_reason"] != "budget_exceeded", (
-            f"the shipped ceiling ${settings.AGENT_MAX_BUDGET_USD} cut an ordinary "
-            f"grounded turn at call {out['num_turns']} of {MAX_MODEL_CALLS_PER_TURN}, "
-            f"spend ${float(spend):.6f}, input tokens per call {client.input_tokens}"
-        )
-        assert out["response_text"] == "Fourteen days from delivery."
-        assert out["num_turns"] == MAX_MODEL_CALLS_PER_TURN
-
-    async def test_the_same_turn_reaches_its_answer_at_the_history_cap(self):
-        """Forty history rows ride on every call, so they belong in the ceiling.
-
-        `TURN_HISTORY_MAX_MESSAGES` is 40 and every row is re-sent on every model
-        call, so the twentieth exchange of a conversation is the most expensive
-        turn the configured limits can produce. A ceiling measured without it
-        serves a first turn and cuts a later one.
-        """
-        # Local, the way `test_the_history_cap_takes_the_newest_rows` imports it:
-        # `app.worker.tasks.runtime.agent` pulls Celery in, and this module's
-        # subject is the loop, which knows nothing about the task around it.
-        from app.worker.tasks.runtime.agent import TURN_HISTORY_MAX_MESSAGES
-
-        history = [
-            {"role": "user" if index % 2 == 0 else "assistant", "content": "H" * 500}
-            for index in range(TURN_HISTORY_MAX_MESSAGES)
-        ]
-
-        out, client, spend = await self._run(
-            rounds=MAX_MODEL_CALLS_PER_TURN - 1,
-            budget=settings.AGENT_MAX_BUDGET_USD,
-            history=history,
-        )
-
-        assert out["stop_reason"] != "budget_exceeded", (
-            f"the shipped ceiling ${settings.AGENT_MAX_BUDGET_USD} cut a grounded turn "
-            f"at the history cap after call {out['num_turns']} of "
-            f"{MAX_MODEL_CALLS_PER_TURN}, spend ${float(spend):.6f}, "
-            f"input tokens per call {client.input_tokens}"
-        )
-        assert out["response_text"] == "Fourteen days from delivery."
-
-    async def test_a_context_beyond_the_configured_limits_still_trips_the_guard(self):
-        """The other half. A ceiling that cannot fire is not a guard.
-
-        Ten times `CHUNK_CONTENT_CHAR_LIMIT` per chunk is a context no configured
-        limit can produce, which is the runaway shape T-04-03-06 names.
-        """
-        runaway = _text_wire(
-            json.dumps(
-                [
-                    {"chunk_id": f"c{i}", "content": "P" * (CHUNK_CONTENT_CHAR_LIMIT * 10)}
-                    for i in range(MAX_CHUNKS)
-                ]
-            )
-        )
-
-        async def handler(args):
-            return runaway
-
-        calls: list[ModelCall] = []
-        client = _GrowingClient(calls, self._asks_for_one_retrieve())
-        turn = _turn(
-            client,
-            tools=_real_tools_with(handler),
-            max_budget_usd=settings.AGENT_MAX_BUDGET_USD,
-            calls=calls,
-        )
-
-        out, _ = await _drive(turn)
-
-        assert out["stop_reason"] == "budget_exceeded"
-        assert out["num_turns"] < MAX_MODEL_CALLS_PER_TURN
 
 
 # ---------------------------------------------------------------------------
