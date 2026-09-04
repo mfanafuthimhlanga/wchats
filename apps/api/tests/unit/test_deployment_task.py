@@ -53,7 +53,7 @@ os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_secret")
 import json
 import uuid
 from contextlib import ExitStack, contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -2844,6 +2844,138 @@ class TestTheRunStatusReaders:
             )
 
         assert status is None
+
+
+class TestAReplacementAdoptsTheRunTheReapedChainLeftBehind:
+    """The reaped chain's jobs outlive it, and the replacement cannot see them.
+
+    A chain reaped while its dispatched eval job was still queued leaves that job
+    to start afterwards. Its `eval_runs` row lands BEFORE the replacement
+    checklist's own dispatch moment, so the replacement's since-readers never see
+    it, while `run_eval_suite`'s idempotency guard answers `already_running` and
+    refuses to start the run the replacement needs. The replacement waits out the
+    whole ceiling and reports did_not_finish about a run that was going to
+    finish, on an agent that has already been graded once for nothing.
+
+    So the replacement adopts it: the boundary moves back to that run's own
+    started_at, which is the only value that admits the orphan and no terminal
+    row older than it.
+    """
+
+    #: The replacement's own dispatch moment, read off the tenant clock.
+    SINCE = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+
+    def _reader(self, started_at, status):
+        """`latest_eval_run_status_since` as the SQL behaves: the boundary decides.
+
+        A double that ignored `since` would answer for any boundary and the
+        adoption could not be observed at all.
+        """
+
+        def _read(_agent_id, _conn_str, since):
+            return status if started_at >= since else None
+
+        return _read
+
+    def _open(self, running_runs, *, mock_log=None):
+        with ExitStack() as stack:
+            for one in [
+                _deployment_patch("_dispatch_moment", return_value=self.SINCE),
+                _deployment_patch("_dispatch_eval_run", return_value=True),
+                _deployment_patch("_dispatch_red_team_run", return_value=True),
+                _deployment_patch("running_runs_since", return_value=running_runs),
+            ]:
+                stack.enter_context(one)
+            if mock_log is not None:
+                stack.enter_context(
+                    patch(
+                        "app.worker.tasks.runtime.deployment.log", mock_log
+                    )
+                )
+            from app.worker.tasks.runtime.deployment import _open_first_wait
+
+            return _open_first_wait("agent-1", "run-2", "postgresql://test/tenant")
+
+    def _polled(self, state, reader):
+        from app.worker.tasks.runtime.deployment import _poll_wait
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                _deployment_patch("latest_eval_run_status_since", new=reader)
+            )
+            stack.enter_context(
+                _deployment_patch(
+                    "latest_red_team_run_status_since", return_value=None
+                )
+            )
+            return _poll_wait("agent-1", "postgresql://test/tenant", state)
+
+    def test_the_wait_sees_the_orphaned_run_finish_instead_of_timing_out(self):
+        """The whole defect, end to end over one open and one poll."""
+        orphan_started = self.SINCE - timedelta(minutes=10)
+
+        state = self._open({"eval": ("eval-orphan", orphan_started)})
+        polled = self._polled(state, self._reader(orphan_started, "complete"))
+
+        assert polled["statuses"]["eval"] == "complete", (
+            "the run the reaped chain left in flight is the only eval run this "
+            "agent will get, because run_eval_suite's guard refuses a second "
+            "one while it is going; a boundary that excludes it burns the whole "
+            "ceiling and reports did_not_finish about a run that finished"
+        )
+
+    def test_without_an_orphan_the_boundary_is_this_checklists_own_dispatch(self):
+        """The control. Last night's terminal run stays out (#128)."""
+        state = self._open(_NO_RUNS)
+
+        assert state["since"] == self.SINCE.isoformat(), (
+            f"nothing was adopted, so nothing moves: {state['since']}"
+        )
+        polled = self._polled(
+            state, self._reader(self.SINCE - timedelta(hours=12), "complete")
+        )
+        assert polled["statuses"]["eval"] is None, (
+            "a run that finished last night is not this checklist's evidence"
+        )
+
+    def test_this_wait_does_not_adopt_the_run_its_own_dispatch_started(self):
+        """A run at or after the dispatch moment is already inside the boundary.
+
+        Moving the boundary onto it would be a widening with no cause, and on a
+        fast worker it would be the common case rather than the rare one.
+        """
+        ours = self.SINCE + timedelta(seconds=5)
+
+        state = self._open({"eval": ("eval-ours", ours)})
+
+        assert state["since"] == self.SINCE.isoformat(), (
+            f"this run started inside the wait's own boundary: {state['since']}"
+        )
+
+    def test_an_unreadable_tenant_db_leaves_the_boundary_where_it_was(self):
+        """`running_runs_since` answers None, and an open must not fail on it."""
+        state = self._open(None)
+
+        assert state["since"] == self.SINCE.isoformat()
+
+    def test_the_adoption_names_the_run_it_adopted_in_the_log(self):
+        """The wait now grades a run this checklist did not dispatch, and the
+        only place that is visible is here."""
+        mock_log = MagicMock()
+        orphan_started = self.SINCE - timedelta(minutes=10)
+
+        self._open({"eval": ("eval-orphan", orphan_started)}, mock_log=mock_log)
+
+        adopted = [
+            call
+            for call in mock_log.info.call_args_list
+            if call.args
+            and call.args[0] == "run_deployment_checklist.adopted_orphaned_run"
+        ]
+        assert len(adopted) == 1, (
+            f"expected one adopted_orphaned_run entry: {mock_log.info.call_args_list}"
+        )
+        assert adopted[0].kwargs["adopted"] == {"eval": "eval-orphan"}
 
 
 class TestTheRunsStillRunningReader:

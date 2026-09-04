@@ -788,6 +788,87 @@ def _opened_or_skipped(agent_id: str, conn_str: str) -> dict | None:
     return _open_first_wait(agent_id, run_id, conn_str)
 
 
+def _orphaned_runs(
+    agent_id: str, conn_str: str, since: datetime
+) -> dict[str, tuple[str, datetime]]:
+    """This agent's runs still going that started BEFORE this wait's boundary.
+
+    A CHAIN THE GUARD REAPED LEAVES ITS JOBS BEHIND. Reaped while its dispatched
+    eval job was still sitting in the `runtime` queue, it leaves that job to
+    start afterwards, so the row lands before the replacement checklist's own
+    dispatch moment and no since-reader of this wait's will ever see it.
+
+    STILL GOING, AND STARTED BEFORE `since`. Still going is what keeps last
+    night's terminal run out (#128), which is the whole reason a boundary exists;
+    started before `since` is what tells an orphan from the runs this wait's own
+    dispatch has just caused.
+
+    THE WINDOW IS `_stale_after_s` AND THAT IS NOT AN ARBITRARY NUMBER. A run
+    going for longer than the guard's whole threshold has outlived both job
+    bounds and will not reach terminal inside this wait's ceiling either, so
+    adopting it would buy the same did_not_finish more slowly.
+    """
+    running = running_runs_since(
+        agent_id, conn_str, since - timedelta(seconds=_stale_after_s())
+    )
+    return {
+        name: (job_id, started_at)
+        for name, (job_id, started_at) in (running or {}).items()
+        if started_at < since
+    }
+
+
+def _adopted_since(agent_id: str, conn_str: str, state: dict) -> dict:
+    """This wait's state, with its boundary moved back over any orphan found.
+
+    WITHOUT THIS THE REPLACEMENT GRADES NOTHING. `run_eval_suite`'s idempotency
+    guard answers `already_running` while the orphan runs, so the run this
+    checklist asked for never starts, and the boundary drawn after the orphan
+    admits neither. The replacement burns the whole ceiling and reports
+    did_not_finish about a run that was going to finish, on an agent already
+    graded once for nothing. The orphan's own `started_at` is the earliest
+    boundary that admits it and admits no row older than it.
+
+    ONE BOUNDARY SERVES BOTH HALVES, so adopting an eval orphan also widens the
+    red-team half by the orphan's age. `_pending` already records the trade that
+    makes that acceptable: the beat starts runs this checklist did not, and a
+    terminal row at or after `since` is this checklist's evidence whichever
+    dispatched it.
+
+    Best-effort. A failure costs the adoption and nothing else: the wait keeps
+    the dispatch moment it opened on, which is where it was before.
+    """
+    try:
+        since = datetime.fromisoformat(state["since"])
+        orphans = _orphaned_runs(agent_id, conn_str, since)
+    except Exception as exc:
+        log.warning(
+            "run_deployment_checklist.adoption_unread",
+            agent_id=agent_id,
+            run_id=state["run_id"],
+            error_type=type(exc).__name__,
+            error=str(exc) or repr(exc),
+        )
+        return state
+    if not orphans:
+        return state
+    adopted = min(started_at for _, started_at in orphans.values())
+    log.info(
+        "run_deployment_checklist.adopted_orphaned_run",
+        agent_id=agent_id,
+        run_id=state["run_id"],
+        adopted={name: job_id for name, (job_id, _) in orphans.items()},
+        since=state["since"],
+        adopted_since=adopted.isoformat(),
+        detail=(
+            "a chain the guard reaped left this run in flight; its own guard "
+            "refuses this checklist a second one, so this wait grades that run "
+            "rather than expiring on a boundary drawn after it"
+        ),
+    )
+    return {**state, "since": adopted.isoformat()}
+
+
 def _open_first_wait(agent_id: str, run_id: str, conn_str: str) -> dict | None:
     """Step 3b's opened wait, or None with the run marked failed.
 
@@ -801,9 +882,14 @@ def _open_first_wait(agent_id: str, run_id: str, conn_str: str) -> dict | None:
     'running' with no terminal update, and the step-2 guard then refused every
     re-run behind it for the rest of the window. The fence is `_continue_wait`'s:
     the run is marked failed and the error type reaches the log.
+
+    The adoption runs AFTER the dispatch and outside that fence. After, because
+    a run started before this wait's own dispatch moment is the only thing it
+    adopts; outside, because failing to widen a boundary is not a reason to fail
+    a checklist that would otherwise report.
     """
     try:
-        return _open_wait(run_id, agent_id, conn_str)
+        state = _open_wait(run_id, agent_id, conn_str)
     except Exception as exc:
         log.error(
             "run_deployment_checklist.wait_unopened",
@@ -814,6 +900,7 @@ def _open_first_wait(agent_id: str, run_id: str, conn_str: str) -> dict | None:
         )
         _persist_failed(agent_id, run_id, exc)
         return None
+    return _adopted_since(agent_id, conn_str, state)
 
 
 def _polled(agent_id: str, conn_str: str, state: dict | None) -> dict | None:
