@@ -970,7 +970,30 @@ def _claimed_turn(db, job_id: str) -> tuple:
     return claim, None
 
 
-def _release_turn(turn, tenant_conn, claim) -> None:
+def _released(what: str, job_id: str, release) -> None:
+    """One debt, discharged without ever becoming the turn's own failure.
+
+    This runs from a `finally`, and an exception raised in a `finally` REPLACES
+    whatever was already in flight. The exception in flight is the turn's
+    `Retry`, so a close that raises here is a retry Celery is never asked for and
+    a widget waiting on a job that will never complete. The log line is the whole
+    record of a failed close: the exception's type and its first line, because a
+    dropped-connection message from psycopg2 runs to several lines of advice
+    about the server.
+    """
+    try:
+        release()
+    except Exception as exc:
+        log.warning(
+            "run_agent_turn.release_failed",
+            job_id=job_id,
+            resource=what,
+            error_type=type(exc).__name__,
+            error=(str(exc) or repr(exc)).splitlines()[0],
+        )
+
+
+def _release_turn(turn, tenant_conn, claim, job_id: str) -> None:
     """Every debt one attempt owes, on the served path, the timeout path and the
     retry path alike.
 
@@ -981,12 +1004,19 @@ def _release_turn(turn, tenant_conn, claim) -> None:
     PROD-05's connection, None only if the connect failed. The claim goes LAST,
     after the response row is committed, so the next delivery's READ guard finds
     the answer rather than an open turn.
+
+    THE THREE ARE INDEPENDENT DEBTS, not a sequence. Each closes under its own
+    guard, so the one that fails costs only itself: the claim is the resource
+    with the longest reach, it is last, and a turn that would not close used to
+    strand it until the pool noticed. The claim is also the one most likely to
+    fail — it sits idle in transaction for the turn's whole life, which is what a
+    server-side idle timeout kills.
     """
     if turn is not None:
-        close_turn(turn)
+        _released("turn", job_id, lambda: close_turn(turn))
     if tenant_conn is not None:
-        tenant_conn.close()
-    claim.close()
+        _released("tenant_conn", job_id, tenant_conn.close)
+    _released("claim", job_id, claim.close)
 
 
 @celery_app.task(
@@ -1472,6 +1502,6 @@ def run_agent_turn(
                     exc=exc, countdown=_retry_countdown(exc, self.request.retries)
                 )
         finally:
-            _release_turn(turn, tenant_conn, claim)
+            _release_turn(turn, tenant_conn, claim, job_id)
 
     return {}

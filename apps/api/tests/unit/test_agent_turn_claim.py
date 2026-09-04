@@ -225,3 +225,77 @@ def test_a_redelivered_turn_whose_claim_is_held_calls_no_model_at_all():
     assert result == {"status": "already_running", "job_id": job_id}, (
         f"the refused delivery must say what it did: {result!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The release
+# ---------------------------------------------------------------------------
+
+
+def _terminate(connection) -> None:
+    """Drop this connection's server backend from a second session.
+
+    What Neon's `idle_in_transaction_session_timeout` does to the claim while a
+    turn is running, and what a `pg_terminate_backend` from an operator does,
+    reproduced with the second of those because the first takes five minutes.
+    """
+    pid = connection.execute(text("SELECT pg_backend_pid()")).scalar()
+    with _ENGINE.connect() as killer:
+        killer.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": pid})
+        killer.commit()
+
+
+def test_a_release_over_a_dead_claim_lets_the_retry_it_was_given_escape():
+    """The turn's own `Retry` has to survive the release that runs beneath it.
+
+    `_release_turn` runs from the task's `finally`, so an exception raised THERE
+    replaces whatever the task was raising. The claim is a connection held idle
+    in transaction for the whole turn, which is exactly what a server kills:
+    Neon's `idle_in_transaction_session_timeout` defaults to five minutes and a
+    slow turn outlives it. `close()` on a connection whose backend is gone raises
+    `OperationalError` out of the `finally`, the `Retry` never reaches Celery, no
+    attempt is ever scheduled, and the customer's widget waits on a job that will
+    never complete.
+    """
+    from celery.exceptions import Retry
+
+    from app.worker.tasks.runtime.agent import _claimed_turn, _release_turn
+
+    job_id = str(uuid.uuid4())
+    claim, _ = _claimed_turn(_db_on(_ENGINE), job_id)
+    _terminate(claim)
+
+    with pytest.raises(Retry):
+        try:
+            raise Retry("the turn asked for another attempt")
+        finally:
+            _release_turn(None, None, claim, job_id)
+
+
+def test_one_resource_that_will_not_close_never_strands_the_other_two():
+    """The claim is released even when the turn ahead of it fails to close.
+
+    The three closes are a ledger of debts, not a sequence: the ContextVars go
+    back, PROD-05's tenant connection goes back to the pool, and the claim frees
+    the turn for its own retry. One raising used to skip the two behind it, and
+    the claim is last, so the resource with the longest reach was the one most
+    easily stranded.
+    """
+    from app.worker.tasks.runtime.agent import _release_turn
+
+    tenant_conn, claim = MagicMock(), MagicMock()
+    turn = MagicMock()
+
+    with patch(
+        "app.worker.tasks.runtime.agent.close_turn",
+        side_effect=RuntimeError("the tool ContextVars would not reset"),
+    ):
+        _release_turn(turn, tenant_conn, claim, str(uuid.uuid4()))
+
+    assert tenant_conn.close.call_count == 1, (
+        "a turn that would not close leaked PROD-05's tenant connection"
+    )
+    assert claim.close.call_count == 1, (
+        "a turn that would not close stranded the claim, so every redelivery of "
+        "this turn is refused until the pool drops the connection"
+    )
