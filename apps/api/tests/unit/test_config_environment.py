@@ -13,7 +13,6 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 
-
 #: Every setting a known word makes mandatory, so this file keeps asserting the
 #: ENVIRONMENT validator rather than the newest production-only requirement.
 #: S3_EXPECTED_ENDPOINT_HOST (#133) refuses an empty value under production;
