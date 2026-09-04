@@ -171,8 +171,7 @@ def upgrade() -> None:
     # carried eval_scenarios in more than one schema, the name would be
     # discovered from one table and the DROP applied to whichever the
     # search_path resolves — dropping a constraint governing a different
-    # table's column. The gap was closed here before this revision went
-    # anywhere; 0011's copy is deployed and is a separate decision.
+    # table's column. 0011's copy is deployed and is a separate decision.
     # ------------------------------------------------------------------
     op.execute(f"""
         DO $$

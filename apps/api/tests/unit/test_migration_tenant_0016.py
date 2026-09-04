@@ -15,11 +15,12 @@ tier, so a mined production failure the owner then answers by hand can be
 `customer_negative` in origin and `human_authored` in label at the same time
 without either statement being overwritten by the other.
 
-0016 IS APPLIED on the local `wchats_tenant_probe` cluster, whose
-`alembic_version` reads 0024. "The probe cluster" at the end of this file reads
-the three columns, their nullability and their absent defaults, and the named
-CHECK's two refusals, off that database. What the migration DID is observed
-there.
+0016 IS APPLIED on the local `wchats_tenant_probe` cluster. "The probe cluster"
+at the end of this file reads the applied revision's ancestry through the tenant
+graph and refuses to go on unless it reaches 0016, then reads the three columns,
+their nullability and their absent defaults, and the named CHECK's two refusals,
+off that database. What the migration leaves behind is observed there; that
+0016's own SQL produced it is the roundtrip test under INTEGRATION_TESTS_ENABLED.
 
 The source-level assertions in between hold the migration to what it is ALLOWED
 to CONTAIN, which an apply does not: a migration can apply cleanly and still
