@@ -785,11 +785,20 @@ def _probe_connection():
 
 
 def test_0016_is_applied_on_the_probe_cluster():
-    """The probe cluster's revision descends from 0016, so its schema carries it.
+    """The probe cluster's revision descends from 0016, where this tree can tell.
 
     Read rather than asserted: the two tests below say what the columns and the
     CHECK look like, and they mean nothing if the database they read never
     received this migration.
+
+    The probe cluster is shared and every branch migrates it, so its revision
+    runs ahead of whatever alembic_tenant/versions this working tree holds. A
+    revision this tree has never seen has no parent here, so the walk starts at a
+    node with no edges and reaches nothing. That is a fact about the checkout
+    rather than about the database, and it skips with the revision named, which
+    `-rs` prints. Two things still fail rather than skip: a revision this tree
+    DOES know that does not descend from 0016, and a database with no
+    eval_scenarios table.
     """
     conn = _probe_connection()
     try:
@@ -810,6 +819,16 @@ def test_0016_is_applied_on_the_probe_cluster():
     )
 
     revisions = _all_tenant_revisions()
+    if applied not in revisions:
+        pytest.skip(
+            f"the probe cluster is at {applied!r}, which alembic_tenant/versions "
+            "in this working tree does not contain. Another branch migrated the "
+            "shared cluster past this checkout, so that revision has no parent "
+            "here and its ancestry cannot be walked from it. The two tests below "
+            "still read 0016's columns and both arms of its CHECK off that "
+            "database, so the evidence they carry is unaffected."
+        )
+
     ancestry = []
     node = applied
     while node is not None and node not in ancestry:
