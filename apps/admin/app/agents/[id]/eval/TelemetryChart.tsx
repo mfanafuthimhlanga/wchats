@@ -346,8 +346,8 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
         {/* The gate, the line the suite has to clear. Neutral, because a
             threshold is not an accent and not one of the four channels. Its
             colours were a literal #74837F, a green-cast hex belonging to no
-            token, close enough to --ch-4 to be read as a fifth channel; they
-            are --hairline-strong and --ink-3 now, applied through .gate and
+            token, close enough to --ch-4 to be read as a fifth channel; the
+            line and the label are both --ink-3 now, applied through .gate and
             .gate-label because a CSS variable does not resolve inside an SVG
             presentation attribute. The label carries a --bg halo, since eight
             traces cross where it sits. */}
@@ -458,7 +458,14 @@ export const TELEMETRY_CSS = `
   .trace .axis  { stroke: var(--hairline); stroke-width: 1; }
   .trace .tickt { font-family: var(--mono); font-size: 8px; fill: var(--ink-3); }
 
-  .trace .gate { stroke: var(--hairline-strong); stroke-width: 1; stroke-dasharray: 10 6; }
+  /* --ink-3, the token the label beside it already carries, and not
+     --hairline-strong. A hairline is 30% bone over --bg, which composites to
+     rgb(79,80,80) and measures 2.36:1 there. This line is the threshold every
+     series is read against, so it is a graphical object under WCAG 1.4.11 and
+     owes 3:1; --ink-3 is #7E8588 and measures 5.08:1. The literal it replaced
+     measured 4.81:1, so moving to a token halved the contrast of the one mark
+     on the chart that carries a verdict. */
+  .trace .gate { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 10 6; }
   .trace .gate-label {
     font-family: var(--mono); font-size: 8.5px; letter-spacing: 1.6px;
     fill: var(--ink-3);
