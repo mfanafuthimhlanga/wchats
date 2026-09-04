@@ -36,6 +36,41 @@ def test_lizard_flags_pin_the_standard():
     assert gates.LIZARD_FLAGS == ["-C", "15", "-L", "60", "-a", "11", "--warnings_only"]
 
 
+def test_the_unit_suite_runs_with_rs(monkeypatch):
+    """`steps("full")`'s unit-tests step passes -rs, so every skip prints its reason.
+
+    Under -q alone a test that stopped running is one more dot, and a skip read as
+    a pass is how a gate goes quiet without going red.
+
+    The argv is recorded off a stubbed `run` rather than read from
+    UNIT_PYTEST_ARGS, because the step is a lambda: one that stopped reading the
+    constant and spelled its own command would still satisfy an assertion on the
+    constant alone.
+    """
+    recorded = []
+    monkeypatch.setattr(gates, "run", lambda command: recorded.append(command) or 0)
+
+    unit = [step for label, step in gates.steps("full") if label == "unit tests"]
+    assert len(unit) == 1, (
+        'steps("full") no longer has exactly one step labelled "unit tests". '
+        "re-point this test at whatever runs the unit suite now"
+    )
+    assert unit[0]() == 0
+    assert len(recorded) == 1, "the unit-tests step ran %d commands" % len(recorded)
+
+    argv = recorded[0]
+    assert argv[0] == gates.PYTHON
+    assert "tests/unit" in argv, (
+        "the unit-tests step no longer names tests/unit, so this test is pinning "
+        "the flags of some other command: %r" % (argv,)
+    )
+    assert "-rs" in argv, (
+        "the unit suite runs without -rs: %r. A test that skips because its "
+        "database or its marker went missing then reports as one more `s` with no "
+        "reason anywhere in the log." % (argv,)
+    )
+
+
 # The four snapshots below mirror the baselines in scripts/gates.py exactly. The
 # assertions that read them reject every difference in either direction: a new key, a
 # dropped key, a larger value and a smaller one. Moving a pin therefore edits this file

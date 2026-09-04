@@ -944,6 +944,14 @@ def run_source_assertions():
     return 0
 
 
+#: The unit suite's argv, named so a test can read what `steps("full")` runs.
+#: `-rs` prints every skip with its reason. Under `-q` alone a test that stopped
+#: running because its database or its marker went missing is one more dot, and a
+#: skip is unobserved rather than passing. The lambda in `steps` builds its command
+#: from this list, so dropping a flag here is a change a test can see.
+UNIT_PYTEST_ARGS = ["-m", "pytest", "tests/unit", "-q", "-rs"]
+
+
 def steps(mode):
     """Ordered (label, callable) pairs for the requested mode.
 
@@ -975,11 +983,8 @@ def steps(mode):
     ]
     if mode == "fast":
         return fast
-    # -rs prints every skip with its reason. Under -q alone a test that stopped
-    # running because its database or its marker went missing is one more dot,
-    # and a skip is unobserved rather than passing.
     return fast + [
-        ("unit tests", lambda: run([PYTHON, "-m", "pytest", "tests/unit", "-q", "-rs"])),
+        ("unit tests", lambda: run([PYTHON] + UNIT_PYTEST_ARGS)),
     ]
 
 
