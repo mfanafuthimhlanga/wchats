@@ -54,6 +54,8 @@ from kombu import Exchange, Queue
 
 from app.core.config import settings
 
+log = structlog.get_logger(__name__)
+
 # ---------------------------------------------------------------------------
 # How long the broker waits before deciding a delivered message was lost
 # ---------------------------------------------------------------------------
@@ -266,6 +268,55 @@ celery_app.conf.update(
 # ---------------------------------------------------------------------------
 # structlog context isolation between tasks (RESEARCH.md Pitfall 6)
 # ---------------------------------------------------------------------------
+
+
+def _consumes_pipeline_queue(sender) -> bool:
+    """Does the worker that just became ready serve the `pipeline` queue?
+
+    Celery narrows `app.amqp.queues` to the `-Q` selection while the worker
+    starts, so by `worker_ready` that attribute names exactly what this process
+    consumes. A sender shaped differently (an older Celery, a test double, an
+    embedded worker) is read as "not the pipeline worker": skipping an
+    optimisation costs one slow parse, and guessing wrong costs the runtime
+    service two gigabytes of model weights it has no docling to load them with.
+    """
+    try:
+        return "pipeline" in set(sender.app.amqp.queues)
+    except AttributeError:
+        return False
+
+
+@signals.worker_ready.connect
+def on_worker_ready(sender=None, **_):
+    """Pay docling's model load at boot, on the pipeline worker only (#24).
+
+    `worker_ready` fires once, in the worker process, after the consumer is up.
+    That is what makes this safe to put in a module the API process and every
+    task module import: the handler is registered at import and runs only in a
+    worker.
+
+    Nothing here raises. The warm-up is a performance measure, and a worker that
+    could not preload the models still parses documents at the old speed. A
+    raise would turn a slow first upload into a crash-looping service.
+    """
+    if not settings.DOCLING_WARMUP_ON_BOOT:
+        return
+    if not _consumes_pipeline_queue(sender):
+        return
+
+    from app.domain import docling_service  # noqa: PLC0415
+
+    log.info("worker.docling_warmup_starting")
+    try:
+        duration = docling_service.warm_up()
+    except Exception as exc:
+        log.warning(
+            "worker.docling_warmup_failed",
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return
+    log.info("worker.docling_warmup_complete", duration_s=duration)
 
 
 @signals.task_prerun.connect

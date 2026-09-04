@@ -81,6 +81,13 @@ os.environ.setdefault("CLERK_JWKS_URL", "https://test.clerk.accounts.dev/.well-k
 # no running worker required (unit tests only; integration tests override this).
 os.environ.setdefault("CELERY_TASK_ALWAYS_EAGER", "True")
 
+# #24: the pipeline worker parses a bundled PDF at boot so docling's 3m43s model
+# load lands where nobody is waiting. False here, because a test process that
+# reached that path would load two gigabytes of model weights to assert on a log
+# line. tests/unit/test_docling_warmup.py patches the setting on and the warm-up
+# out, which is what lets it assert the boot path without ever running it.
+os.environ.setdefault("DOCLING_WARMUP_ON_BOOT", "false")
+
 
 # ---------------------------------------------------------------------------
 # Async backend declaration

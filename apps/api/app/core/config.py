@@ -363,6 +363,20 @@ class Settings(BaseSettings):
 
     MAX_UPLOAD_SIZE_MB: int = 50
 
+    # Parse a bundled one-page PDF once, when the pipeline worker reports ready
+    # (#24). Docling's DocLayNet and TableFormer models load on the FIRST
+    # conversion, not when the converter is built, and that load was measured at
+    # 3m43s before a 500-byte file produced its first detection. Somebody pays
+    # it either way; the choice is the worker at boot, where nobody is waiting
+    # and the deploy log records the number, or whichever upload happens to
+    # arrive first after a deploy, where the owner watches `parsing.started`
+    # with no way to tell a model load from a hung worker.
+    #
+    # True everywhere a pipeline worker runs for real. tests/conftest.py sets it
+    # false, because a test process that touched this would load two gigabytes
+    # of model weights to assert on a log line.
+    DOCLING_WARMUP_ON_BOOT: bool = True
+
     # P13-02: Bedrock embedding provider seam (D-14 env-selectable; "bedrock" | "voyage")
     # EMBEDDING_PROVIDER selects the embedding backend at startup:
     #   "bedrock" → Amazon Bedrock Titan Text Embeddings v2 (IAM-authed, no RPM cap)

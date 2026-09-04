@@ -23,6 +23,7 @@ Threat context (T-02-02-02):
   does not invalidate the extracted content.
 """
 
+import time
 from io import BytesIO
 from pathlib import Path
 
@@ -34,6 +35,12 @@ log = structlog.get_logger(__name__)
 # _get_converter() initialises DocumentConverter once per process on first call.
 _converter = None
 
+#: A one-paragraph, one-page PDF that exists to be parsed once at worker boot
+#: (#24). It is a PDF and not Markdown on purpose: docling routes text formats
+#: through simple backends that never touch DocLayNet or TableFormer, so warming
+#: with one would leave the entire cold start for the first real upload.
+WARMUP_DOCUMENT: Path = Path(__file__).parent / "assets" / "docling_warmup.pdf"
+
 
 def _get_converter():
     global _converter
@@ -41,6 +48,25 @@ def _get_converter():
         from docling.document_converter import DocumentConverter  # noqa: PLC0415
         _converter = DocumentConverter()
     return _converter
+
+
+def warm_up() -> float:
+    """Build the converter and parse WARMUP_DOCUMENT, returning seconds taken.
+
+    Building `DocumentConverter` is cheap; the layout and table models load on
+    the first CONVERSION. So a warm-up that only constructs the converter warms
+    nothing, and this parses a real page.
+
+    Raises whatever docling raises, including the ImportError from a process
+    without docling installed. The caller decides what a failure means, and for
+    the worker signal handler it means a slow first parse rather than a dead
+    service.
+    """
+    started = time.perf_counter()
+    parse_document(WARMUP_DOCUMENT)
+    duration = time.perf_counter() - started
+    log.info("docling.warmup_parsed", duration_s=round(duration, 1))
+    return duration
 
 
 def parse_document(file_path: Path) -> object:
