@@ -31,8 +31,14 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
+/* The widget is as wide as its frame, up to 380px. embed/widget.js sizes the
+   iframe at 380px on a desktop and at 100vw below a 480px screen, so a fixed
+   380px root put the right 20px of every row outside a 360px phone's frame,
+   the disclosure bar's version tag with it (#114). Nothing inside the page
+   could see that; check-rendered-notice.mjs now opens the 360px frame and
+   measures the bar against its edge. */
 body, #root {
-  width: 380px;
+  width: min(380px, 100vw);
   height: 600px;
   margin: 0;
   padding: 0;
@@ -47,7 +53,8 @@ body, #root {
 .widget-root {
   display: flex;
   flex-direction: column;
-  width: 380px;
+  width: 100%;
+  max-width: 380px;
   height: 600px;
   background: var(--bg);
   overflow: hidden;
