@@ -192,7 +192,7 @@ def _fetch_last_user_message(conn_str: str, conversation_id: str) -> str | None:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT content FROM messages WHERE conversation_id = %s"
-                    " AND role = 'user' ORDER BY created_at DESC LIMIT 1",
+                    " AND role = 'user' ORDER BY seq DESC LIMIT 1",
                     (conversation_id,),
                 )
                 row = cur.fetchone()

@@ -396,7 +396,7 @@ def _fetch_messages_for_conversation(
                 """
                 SELECT role, content FROM messages
                 WHERE conversation_id = %(conv_id)s::uuid
-                ORDER BY created_at ASC
+                ORDER BY seq ASC
                 """,
                 {"conv_id": conversation_id},
             )
