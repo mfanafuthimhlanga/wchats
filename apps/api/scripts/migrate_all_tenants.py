@@ -42,6 +42,7 @@ from __future__ import annotations
 import pathlib
 import sys
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 import structlog
 
@@ -49,6 +50,49 @@ API_DIR = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(API_DIR))
 
 log = structlog.get_logger(__name__)
+
+#: How much of an exception message reaches the release log. Long enough for
+#: psycopg2's first sentence, which is the diagnosis, and short enough that a
+#: driver dumping a query or a certificate chain cannot fill the log.
+ERROR_MESSAGE_MAX_CHARS = 200
+
+#: The ceiling Railway puts on a service's optional pre-deploy timeout, in
+#: seconds. Unset means no timeout at all; set, it cannot exceed this.
+RAILWAY_PRE_DEPLOY_TIMEOUT_MAX_S = 3600
+
+#: Values shorter than this are left alone when redacting. A one-character role
+#: name replaced everywhere would destroy the message it was meant to keep
+#: readable, and nothing that short identifies a tenant anyway.
+_MIN_REDACTABLE_CHARS = 4
+
+
+def _redact(message: str, dsn: str) -> str:
+    """The first line of *message*, with everything *dsn* identifies removed.
+
+    psycopg2's OperationalError for a suspended or unreachable Neon compute
+    reads:
+
+        connection to server at "ep-...-.aws.neon.tech" (52.0.0.1), port 5432
+        failed: FATAL:  password authentication failed for user "neondb_owner"
+
+    which names one customer's database and the role that opens it, on a
+    release log that outlives the deployment (T-03-02). The host, user and
+    password are all parsed out of the DSN this walk already holds, so removing
+    them needs no pattern matching against what a driver happens to print.
+
+    What survives is the class of failure and what the server said about it,
+    which is the part an operator acts on.
+    """
+    parsed = urlsplit(dsn)
+    for value, placeholder in (
+        (parsed.hostname, "<host>"),
+        (parsed.username, "<user>"),
+        (parsed.password, "<password>"),
+    ):
+        if value and len(value) >= _MIN_REDACTABLE_CHARS:
+            message = message.replace(value, placeholder)
+    first_line = message.strip().splitlines()[0] if message.strip() else ""
+    return first_line[:ERROR_MESSAGE_MAX_CHARS]
 
 #: (agent_id, tenant_id, encrypted direct DSN). The third element is what the
 #: control DB stores, never the plaintext.
@@ -120,6 +164,10 @@ def migrate_fleet(rows: list[TenantRow], *, apply: bool = True) -> FleetReport:
     """
     report = FleetReport()
     for agent_id, tenant_id, encrypted in rows:
+        # Bound before the try: the failure handler reads both, and a tenant
+        # whose ciphertext is missing fails before either is assigned.
+        dsn = ""
+        before: str | None = None
         try:
             if not encrypted:
                 raise MissingTenantDsn(
@@ -148,12 +196,24 @@ def migrate_fleet(rows: list[TenantRow], *, apply: bool = True) -> FleetReport:
             )
             report.migrated += 1
         except Exception as exc:
+            # `run_tenant_migrations` runs the whole `upgrade head` inside one
+            # `engine.begin()`, and PostgreSQL DDL is transactional, so a tenant
+            # that failed is back at `revision_before` rather than stopped
+            # part-way through. The line says so, because the next question
+            # after a failed release is what schema the tenant is on, and the
+            # only other way to answer it is another connection to the database
+            # that just refused one.
             log.error(
                 "migrate_all.tenant_failed",
                 agent_id=agent_id,
                 tenant_id=tenant_id,
                 error_type=type(exc).__name__,
-                error=str(exc),
+                error=_redact(str(exc), dsn),
+                revision_before=before,
+                rollback=(
+                    "the upgrade ran in one transaction, so this tenant rolled "
+                    "back to revision_before and is unchanged"
+                ),
             )
             report.failed += 1
             report.failures.append((agent_id, tenant_id, type(exc).__name__))
@@ -186,8 +246,44 @@ def fleet_rows() -> list[TenantRow]:
 
 def main(argv: list[str]) -> int:
     apply = "--list" not in argv
-    rows = fleet_rows()
+
+    try:
+        rows = fleet_rows()
+    except Exception as exc:
+        # The control DB is one connection, made before any tenant is known, and
+        # Neon suspends that compute like every other. A traceback out of a
+        # preDeployCommand tells the operator the release failed somewhere
+        # inside psycopg2; this says the fleet was never read, which also says
+        # no tenant was touched and nothing needs undoing.
+        log.error(
+            "migrate_all.control_db_unreachable",
+            error_type=type(exc).__name__,
+        )
+        print(
+            "The control database could not be read, so the fleet is unknown "
+            "and no tenant was migrated. The deployment is refused and the old "
+            f"code keeps serving. Failure class: {type(exc).__name__}. Check "
+            "CONTROL_DB_SYNC_URL and whether that Neon compute is awake."
+        )
+        return 1
+
     log.info("migrate_all.starting", tenants=len(rows), apply=apply)
+    # The operator sets Railway's pre-deploy timeout by hand, and the number
+    # that decides it is the fleet size: every tenant is one connection, and a
+    # suspended Neon compute answers the first one only after it wakes.
+    log.info(
+        "migrate_all.timeout_hint",
+        tenants=len(rows),
+        railway_pre_deploy_timeout_max_s=RAILWAY_PRE_DEPLOY_TIMEOUT_MAX_S,
+        hint=(
+            f"this walk opens {len(rows)} tenant connection(s) in series, each "
+            "of which may wait on a suspended Neon compute waking. Railway's "
+            "pre-deploy timeout is optional and, when set, must be between 1 "
+            f"and {RAILWAY_PRE_DEPLOY_TIMEOUT_MAX_S} seconds; set it above "
+            f"{len(rows)} wakes plus the migrations themselves, or leave it "
+            "unset so the walk is never cut in half"
+        ),
+    )
 
     report = migrate_fleet(rows, apply=apply)
 

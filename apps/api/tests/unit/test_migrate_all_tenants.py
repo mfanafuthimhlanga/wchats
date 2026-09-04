@@ -216,3 +216,160 @@ def test_an_empty_fleet_is_a_clean_release(seams):
     assert report.migrated == 0
     assert report.failed == 0
     assert report.exit_code() == 0
+
+
+# --------------------------------------------------------------------------
+# What the failure line may and may not carry
+# --------------------------------------------------------------------------
+
+#: A Neon endpoint host, shaped the way Neon prints them. Not a real project.
+_NEON_HOST = "ep-cool-block-a1b2c3d4.us-east-2.aws.neon.tech"
+
+#: The exact text psycopg2 2.9.12 puts in an OperationalError when a suspended
+#: compute refuses the connection: the endpoint host, the address behind it, and
+#: the role. Reproduced from a probe, not paraphrased.
+_CONNECTION_FAILURE = (
+    f'connection to server at "{_NEON_HOST}" (52.0.0.1), port 5432 failed: '
+    'FATAL:  password authentication failed for user "neondb_owner"\n'
+    "connection to server failed\n"
+)
+
+
+@pytest.fixture
+def neon_seams(monkeypatch):
+    """Seams whose tenant DSN carries a Neon host, and whose migration raises
+    the real psycopg2 exception that host came out of."""
+    import psycopg2
+
+    def _decrypt(ciphertext: bytes) -> str:
+        return (
+            "postgresql://" + _PLACEHOLDER_CREDENTIAL + "@"
+            + _NEON_HOST + "/neondb?sslmode=require"
+        )
+
+    def _revision(dsn: str) -> str:
+        return "0017"
+
+    def _migrate(dsn: str) -> None:
+        raise psycopg2.OperationalError(_CONNECTION_FAILURE)
+
+    monkeypatch.setattr(migrate_all, "_decrypt", _decrypt)
+    monkeypatch.setattr(migrate_all, "_current_revision", _revision)
+    monkeypatch.setattr(migrate_all, "_run_migrations", _migrate)
+
+
+def test_a_connection_failure_never_logs_the_neon_endpoint_host(neon_seams):
+    """T-03-02, and the reason `error=str(exc)` had to go.
+
+    A suspended Neon compute is the ordinary failure this walk was built to
+    survive, and psycopg2's message for it names the tenant's endpoint host and
+    the role. Both went straight onto the release log, where they sit for the
+    life of the deployment and identify one customer's database by name.
+    """
+    with structlog.testing.capture_logs() as logs:
+        report = migrate_all.migrate_fleet([("agent-aaa", "tenant-aaa", b"cipher")])
+
+    assert report.failed == 1
+    rendered = repr(logs)
+    assert _NEON_HOST not in rendered, (
+        f"the release log named a tenant's Neon endpoint: {rendered!r}"
+    )
+    assert _PLACEHOLDER_CREDENTIAL not in rendered
+
+
+def test_the_failure_line_still_carries_enough_to_act_on(neon_seams):
+    """Redaction that leaves nothing to read is a silenced log line.
+
+    The diagnosis an operator needs is the exception class and what it said,
+    with the tenant's identifiers beside it; the host is the only part that has
+    to go, and `<host>` in its place says a host was there.
+    """
+    with structlog.testing.capture_logs() as logs:
+        migrate_all.migrate_fleet([("agent-aaa", "tenant-aaa", b"cipher")])
+
+    line = next(x for x in logs if x["event"] == "migrate_all.tenant_failed")
+    assert line["error_type"] == "OperationalError"
+    assert "<host>" in line["error"]
+    assert "password authentication failed" in line["error"]
+    assert "\n" not in line["error"], "the first line only, so one failure is one line"
+    assert len(line["error"]) <= 200
+
+
+def test_the_failure_line_names_the_revision_the_tenant_rolled_back_to(neon_seams):
+    """`run_tenant_migrations` upgrades inside one transaction, so a tenant that
+    failed is at the revision it started at, not somewhere in between. Without
+    that number on the line, the next question after a failed release is
+    'what schema is this tenant actually on?' and the answer is another
+    connection to the database that just refused one."""
+    with structlog.testing.capture_logs() as logs:
+        migrate_all.migrate_fleet([("agent-aaa", "tenant-aaa", b"cipher")])
+
+    line = next(x for x in logs if x["event"] == "migrate_all.tenant_failed")
+    assert line["revision_before"] == "0017"
+    assert "rolled back" in line["rollback"], (
+        "the line has to SAY the tenant is still at revision_before; a bare "
+        f"number reads as 'where it got stuck'. got {line!r}"
+    )
+
+
+def test_a_tenant_that_failed_before_the_decrypt_still_logs_a_failure(seams):
+    """`revision_before` and the DSN are both unbound when the ciphertext is
+    missing, and reading either would turn a named failure into a NameError
+    inside the handler for a named failure."""
+    seams()
+    with structlog.testing.capture_logs() as logs:
+        report = migrate_all.migrate_fleet([("agent-zzz", "tenant-zzz", None)])
+
+    assert report.failed == 1
+    line = next(x for x in logs if x["event"] == "migrate_all.tenant_failed")
+    assert line["error_type"] == "MissingTenantDsn"
+    assert line["revision_before"] is None
+
+
+# --------------------------------------------------------------------------
+# main(): the release step's own two failure modes
+# --------------------------------------------------------------------------
+
+
+def test_an_unreachable_control_db_exits_one_with_a_named_message(monkeypatch, capsys):
+    """The control DB is one connection, made before the fleet is known, and
+    Neon suspends that compute too. A traceback out of a preDeployCommand tells
+    the operator the release failed somewhere in psycopg2; a named line tells
+    them the fleet was never read, so no tenant was touched and nothing needs
+    undoing."""
+
+    def _unreachable():
+        import psycopg2
+
+        raise psycopg2.OperationalError(_CONNECTION_FAILURE)
+
+    monkeypatch.setattr(migrate_all, "fleet_rows", _unreachable)
+    with structlog.testing.capture_logs() as logs:
+        code = migrate_all.main([])
+
+    assert code == 1
+    events = [line["event"] for line in logs]
+    assert "migrate_all.control_db_unreachable" in events, (
+        f"the control DB failure must be a named line, not a traceback. {events!r}"
+    )
+    line = next(x for x in logs if x["event"] == "migrate_all.control_db_unreachable")
+    assert line["error_type"] == "OperationalError"
+    assert _NEON_HOST not in repr(logs)
+    assert "no tenant was migrated" in capsys.readouterr().out
+
+
+def test_the_start_line_carries_the_fleet_size_and_the_timeout_hint(monkeypatch, seams):
+    """Railway's pre-deploy timeout is optional and, when set, bounded at
+    3600 s. It has to cover one wake of a suspended Neon compute per tenant
+    before any migration runs, and the fleet size is the multiplier. The number
+    is on the release log because the operator setting the timeout is reading
+    that log."""
+    seams()
+    monkeypatch.setattr(migrate_all, "fleet_rows", lambda: _FLEET)
+    with structlog.testing.capture_logs() as logs:
+        migrate_all.main([])
+
+    hint = next(x for x in logs if x["event"] == "migrate_all.timeout_hint")
+    assert hint["tenants"] == 3
+    assert hint["railway_pre_deploy_timeout_max_s"] == 3600
+    assert "suspended" in hint["hint"]
