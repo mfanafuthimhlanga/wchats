@@ -40,6 +40,9 @@ import uuid
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
+import psycopg2
+import pytest
+
 # ---------------------------------------------------------------------------
 # Helper: build a mock get_sync_db context manager
 # ---------------------------------------------------------------------------
@@ -341,12 +344,18 @@ class TestRunRedTeamReportsValidity:
         silent_vectors=None,
         truncated_vectors=None,
         runner_for=None,
+        connect_side_effects=None,
     ):
         """Drive one whole run with the seven runners patched.
 
         `runner_for(vector, findings)` overrides how each stand-in runner is
         built, which is how the k tests below watch the calls without a second
         copy of this fixture.
+
+        `connect_side_effects` replaces all three connections. Step 2's guard
+        connection and Step 3's insert connection are built inside the task and
+        are reachable no other way, so a test that needs one of them to fail
+        passes the whole list.
         """
         from app.worker.tasks.runtime.red_team import run_red_team
 
@@ -370,7 +379,7 @@ class TestRunRedTeamReportsValidity:
 
         # The third connection is `_agents_conn`, the one Step 7's completion
         # UPDATE runs on. Tests that assert what was persisted pass their own.
-        connect_side_effects = [
+        connect_side_effects = connect_side_effects or [
             _make_psycopg2_conn(fetchone_value=None),
             _make_psycopg2_conn(fetchone_value=None),
             agents_conn if agents_conn is not None else _make_psycopg2_conn(
@@ -1204,4 +1213,213 @@ def test_a_failed_run_keeps_the_response_off_the_agents_failed_log(monkeypatch):
     assert any(e.get("error_type") == "ValidationError" for e in logs), (
         f"and it must still say what raised, not go silent: {logs}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Every handler in the module that logs an exception, one named case each
+# ---------------------------------------------------------------------------
+
+#: The first line of every exception below, and the only part of one a log line
+#: is allowed to carry. Asserting it survived is what stops these cases passing
+#: against a bound that dropped `error` altogether or wrote an empty string.
+LOG_KEPT_FIRST_LINE = "the server refused the statement"
+
+
+def _two_line_exc(exc_type=None):
+    """An exception shaped like the ones these handlers actually catch.
+
+    psycopg2 renders a server error as the primary message, then `LINE n:` with
+    a fragment of the statement, then DETAIL. pydantic heads a ValidationError
+    with the model name, then one block per field carrying `input_value=`. Both
+    put the description on line one and the data underneath it, so that is the
+    shape used here: the marker never appears before the first newline, and a
+    handler that keeps only the first line cannot republish it.
+    """
+    if exc_type is None:
+        exc_type = psycopg2.DataError
+    return exc_type(
+        LOG_KEPT_FIRST_LINE
+        + '\nLINE 1: ...SET findings = \'[{"agent_response": "'
+        + LOG_LEAK_MARKER
+        + "\"}]'\nDETAIL:  the vault code is "
+        + LOG_LEAK_MARKER
+    )
+
+
+def _probe_agent():
+    """The soul fields `_build_probe_fn` reads, every one of them empty."""
+    agent = MagicMock()
+    agent.name = "Probe Agent"
+    agent.soul_voice = None
+    agent.soul_role = None
+    agent.soul_do_list = None
+    agent.soul_donot_list = None
+    return agent
+
+
+def _raising_runner_for(exc):
+    """A `runner_for` whose stand-in runners raise instead of observing."""
+    def _runner_for(vector, findings):
+        def _runner(*args, **kwargs):
+            raise exc
+
+        return _runner
+
+    return _runner_for
+
+
+def _drive_probe_fn_failed(monkeypatch):
+    """The API call inside the probe raises. That is the whole of this site."""
+    from app.worker.tasks.runtime import red_team
+
+    ledger = MagicMock()
+    ledger.client.return_value.chat.completions.create.side_effect = _two_line_exc(
+        RuntimeError
+    )
+    probe = red_team._build_probe_fn(_probe_agent(), "postgresql://never-logged", ledger)
+    assert probe("what is the vault code") == ""
+
+
+def _drive_probe_fn_timeout_or_error(monkeypatch):
+    """`asyncio.wait_for` raises TimeoutError, which is what this handler is named for.
+
+    `_async_probe` catches every Exception itself, so the outer handler only
+    ever sees a failure of the bridge around it. Sitting out the real sixty
+    second budget is not a unit test, so `wait_for` raises the timeout straight
+    away instead. It closes the coroutine it was handed first, because a
+    coroutine that is never awaited warns in whichever test runs next.
+    """
+    from app.worker.tasks.runtime import red_team
+
+    def _times_out(coro, timeout=None):
+        coro.close()
+        raise _two_line_exc(TimeoutError)
+
+    monkeypatch.setattr(red_team.asyncio, "wait_for", _times_out)
+    probe = red_team._build_probe_fn(
+        _probe_agent(), "postgresql://never-logged", MagicMock()
+    )
+    assert probe("what is the vault code") == ""
+
+
+def _drive_update_complete_failed(monkeypatch):
+    """The completion UPDATE raises something the column ladder does not catch."""
+    from app.worker.tasks.runtime import red_team
+
+    conn = _make_psycopg2_conn()
+    conn.cursor.side_effect = _two_line_exc()
+    red_team._write_completion(
+        conn, str(uuid.uuid4()), "agent-under-test", ("[]", "none", False), "{}", "{}"
+    )
+
+
+def _drive_idempotency_check_failed(monkeypatch):
+    """Step 2's connection never opens. The guard is best effort, so the run goes on."""
+    TestRunRedTeamReportsValidity()._drive(
+        connect_side_effects=[
+            _two_line_exc(psycopg2.OperationalError),
+            _make_psycopg2_conn(fetchone_value=None),
+            _make_psycopg2_conn(fetchone_value=None),
+        ]
+    )
+
+
+def _drive_insert_run_failed(monkeypatch):
+    """Step 3's INSERT raises. max_retries is 0 so the handler reaches its return."""
+    from app.worker.tasks.runtime.red_team import run_red_team
+
+    monkeypatch.setattr(run_red_team, "max_retries", 0, raising=False)
+    run_conn = _make_psycopg2_conn(fetchone_value=None)
+    run_conn.cursor.side_effect = _two_line_exc()
+    TestRunRedTeamReportsValidity()._drive(
+        connect_side_effects=[
+            _make_psycopg2_conn(fetchone_value=None),
+            run_conn,
+            _make_psycopg2_conn(fetchone_value=None),
+        ]
+    )
+
+
+def _drive_programme_write_failed(monkeypatch):
+    """Step 7b's cursor raises, with Step 7's completion write already committed."""
+    agents_conn = _make_psycopg2_conn(fetchone_value=None)
+    ok = agents_conn.cursor.return_value
+    agents_conn.cursor.side_effect = [ok, _two_line_exc(), ok]
+    TestRunRedTeamReportsValidity()._drive(agents_conn=agents_conn)
+
+
+def _drive_findings_write_failed(monkeypatch):
+    """Step 7c's cursor raises, with Step 7 and Step 7b already committed."""
+    agents_conn = _make_psycopg2_conn(fetchone_value=None)
+    ok = agents_conn.cursor.return_value
+    agents_conn.cursor.side_effect = [ok, ok, _two_line_exc()]
+    TestRunRedTeamReportsValidity()._drive(agents_conn=agents_conn)
+
+
+def _drive_agents_failed(monkeypatch):
+    """A runner raises, which is what the widest handler in the task exists for."""
+    from app.worker.tasks.runtime.red_team import run_red_team
+
+    monkeypatch.setattr(run_red_team, "max_retries", 0, raising=False)
+    TestRunRedTeamReportsValidity()._drive(
+        runner_for=_raising_runner_for(_two_line_exc())
+    )
+
+
+def _drive_update_failed_status_error(monkeypatch):
+    """A runner raises, and the UPDATE to 'failed' underneath it raises too."""
+    from app.worker.tasks.runtime.red_team import run_red_team
+
+    monkeypatch.setattr(run_red_team, "max_retries", 0, raising=False)
+    agents_conn = _make_psycopg2_conn(fetchone_value=None)
+    agents_conn.cursor.side_effect = _two_line_exc()
+    TestRunRedTeamReportsValidity()._drive(
+        agents_conn=agents_conn,
+        runner_for=_raising_runner_for(_two_line_exc(RuntimeError)),
+    )
+
+
+#: Every event in the module that logs an exception, paired with the failure
+#: that reaches it. Nine of them, and the count is the point. The bound went in
+#: three handlers at a time, and a handler with no case here is one nobody
+#: notices going back to `str(exc)`.
+BOUNDED_LOG_SITES = [
+    ("probe_fn.failed", _drive_probe_fn_failed),
+    ("probe_fn.timeout_or_error", _drive_probe_fn_timeout_or_error),
+    ("run_red_team.update_complete_failed", _drive_update_complete_failed),
+    ("run_red_team.idempotency_check_failed", _drive_idempotency_check_failed),
+    ("run_red_team.insert_run_failed", _drive_insert_run_failed),
+    ("run_red_team.programme_write_failed", _drive_programme_write_failed),
+    ("run_red_team.findings_write_failed", _drive_findings_write_failed),
+    ("run_red_team.agents_failed", _drive_agents_failed),
+    ("run_red_team.update_failed_status_error", _drive_update_failed_status_error),
+]
+
+
+@pytest.mark.parametrize(
+    "event, drive", BOUNDED_LOG_SITES, ids=[name for name, _ in BOUNDED_LOG_SITES]
+)
+def test_every_handler_that_logs_an_exception_bounds_it(event, drive, monkeypatch):
+    """One case per handler: the description reaches the log, the response does not.
+
+    Each driver causes the real failure at its own site rather than calling the
+    log helper, so a site that stops going through the helper fails here. The
+    three assertions are three separate claims: the handler fired at all, it
+    still says what raised and what broke, and nothing it wrote carries the text
+    the run went looking for.
+    """
+    from structlog.testing import capture_logs
+
+    with capture_logs() as logs:
+        drive(monkeypatch)
+
+    lines = [entry for entry in logs if entry["event"] == event]
+    assert lines, f"{event} never fired, so nothing here is being tested: {logs}"
+    for line in lines:
+        assert line.get("error_type"), f"the line went silent about what raised: {line}"
+        assert LOG_KEPT_FIRST_LINE in line.get("error", ""), (
+            f"the bound dropped the description along with the data: {line}"
+        )
+    for entry in logs:
+        assert LOG_LEAK_MARKER not in json.dumps(entry, default=str), entry
 
