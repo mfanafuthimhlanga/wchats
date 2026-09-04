@@ -60,8 +60,10 @@ const dashFor = (series: EvalSeries) =>
   series.dataset === 'golden' ? GOLDEN_DASH : undefined
 const widthFor = (series: EvalSeries) =>
   series.dataset === 'golden' ? GOLDEN_WIDTH : TRACE_WIDTH
-// Half the width of the stroke that stands in for a lone measured run.
-const POINT_HALF_WIDTH = 5
+// The mark that stands in for a lone measured run. It replaced a 10-unit
+// stroke, which carried the golden series' "1 4" dash across ten units and so
+// rendered as two loose pixels.
+const POINT_RADIUS = 2.6
 
 export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: string[] }) {
   const wrapRef = useRef<HTMLDivElement | null>(null)
@@ -96,10 +98,11 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
     n <= 1 ? (CHART_X0 + CHART_X1) / 2 : CHART_X0 + (i / (n - 1)) * (CHART_X1 - CHART_X0)
 
   // Segments, never one polyline per series: a run that measured nothing breaks
-  // the line instead of being drawn through. A one-point segment becomes a short
-  // stroke rather than a dot, so it keeps the dash and the weight its series is
-  // drawn with; a filled dot would have painted a golden point in exploratory's
-  // encoding. A single run renders the same way.
+  // the line instead of being drawn through. A one-point segment becomes a mark
+  // rather than a line, because a dash pattern needs a length to be read along
+  // and ten units is not one. The dataset stays encoded: exploratory is filled
+  // and golden is an open ring, which is the same solid-against-interrupted
+  // reading its dash carries. A single run renders the same way.
   const segmentsFor = series.map((s) =>
     seriesSegments(s.values).map((segment) =>
       segment.map((point) => ({
@@ -230,17 +233,21 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
         const pinEl = pinRefs.current[r.index]
         if (pinEl) pinEl.style.top = `${r.slotY}px`
 
-        // The head of the trace, drawn the way the trace is drawn. A filled dot
-        // would put a golden series' head in exploratory's solid encoding.
-        const head = document.createElementNS(NS, 'line')
-        head.setAttribute('x1', (r.lineX - POINT_HALF_WIDTH).toFixed(1))
-        head.setAttribute('x2', (r.lineX + POINT_HALF_WIDTH).toFixed(1))
-        head.setAttribute('y1', r.lineY.toFixed(1))
-        head.setAttribute('y2', r.lineY.toFixed(1))
-        head.setAttribute('stroke', r.colour)
-        head.setAttribute('stroke-width', r.dash ? String(GOLDEN_WIDTH) : String(TRACE_WIDTH))
-        head.setAttribute('stroke-linecap', 'round')
-        if (r.dash) head.setAttribute('stroke-dasharray', r.dash)
+        // The head of the trace, in the same mark a lone reading takes: filled
+        // for exploratory, an open ring for golden, so a golden head is not
+        // painted in exploratory's solid encoding. It was a 10px stroke wearing
+        // the series' dash, which for golden is two loose pixels.
+        const head = document.createElementNS(NS, 'circle')
+        head.setAttribute('cx', r.lineX.toFixed(1))
+        head.setAttribute('cy', r.lineY.toFixed(1))
+        head.setAttribute('r', String(POINT_RADIUS))
+        if (r.dash) {
+          head.setAttribute('fill', 'none')
+          head.setAttribute('stroke', r.colour)
+          head.setAttribute('stroke-width', String(GOLDEN_WIDTH))
+        } else {
+          head.setAttribute('fill', r.colour)
+        }
         leaders!.appendChild(head)
 
         const pl = document.createElementNS(NS, 'polyline')
@@ -383,9 +390,9 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
             prototype's retired gold/blue/green/purple brand hues. One mark per
             measured stretch, so an unmeasured run leaves a gap in the line
             rather than a point on the floor. A stretch of one point, and a
-            single run, draw as a short stroke that keeps the series' own dash
-            and weight. The key is the stretch's first run index, not its
-            ordinal, so a gap closing later does not shuffle the keys. */}
+            single run, draw as a circle instead: filled for exploratory, an
+            open ring for golden. The key is the stretch's first run index, not
+            its ordinal, so a gap closing later does not shuffle the keys. */}
         {series.map((s, i) =>
           segmentsFor[i].map((segment) =>
             segment.length > 1 ? (
@@ -400,16 +407,14 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
                 points={segment.map((p) => `${p.x},${p.y}`).join(' ')}
               />
             ) : (
-              <line
+              <circle
                 key={`${s.key}-${segment[0].index}`}
-                x1={segment[0].x - POINT_HALF_WIDTH}
-                x2={segment[0].x + POINT_HALF_WIDTH}
-                y1={segment[0].y}
-                y2={segment[0].y}
-                stroke={colors[s.colorIndex]}
-                strokeWidth={widthFor(s)}
-                strokeLinecap="round"
-                strokeDasharray={dashFor(s)}
+                cx={segment[0].x}
+                cy={segment[0].y}
+                r={POINT_RADIUS}
+                fill={s.dataset === 'golden' ? 'none' : colors[s.colorIndex]}
+                stroke={s.dataset === 'golden' ? colors[s.colorIndex] : undefined}
+                strokeWidth={s.dataset === 'golden' ? GOLDEN_WIDTH : undefined}
               />
             ),
           ),
