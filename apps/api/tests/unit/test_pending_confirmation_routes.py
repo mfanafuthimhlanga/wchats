@@ -597,6 +597,56 @@ class TestExecutionOutcome:
         assert error == "capability.denial:max_amount_cents"
         assert executed_at == row["created_at"]
 
+    async def test_a_provider_fault_is_failed_not_a_refusal(self):
+        """#73's distinction, at the read side.
+
+        `not_executed` is what the queue says when a gate refused the call, and
+        the owner can change that decision. An adapter that raised is a fault
+        someone has to fix, and it reached the owner wearing the refusal's word.
+        The audit row names the layer that broke, so the read derives the third
+        state rather than guessing.
+        """
+        agent_id = uuid4()
+        row = {
+            "error": "adapter.error:stripe: 503 service unavailable",
+            "created_at": datetime(2026, 7, 28, tzinfo=timezone.utc),
+        }
+        mock_db = self._db_returning(row)
+
+        outcome, error, executed_at = await pc._execution_outcome_for(
+            mock_db, agent_id, MUTATING_SKILL, {"idempotency_key": "k"}
+        )
+
+        assert outcome == "failed", (
+            "an adapter fault reported %r, the word the queue uses for a call a "
+            "gate refused" % outcome
+        )
+        assert error == "adapter.error:stripe: 503 service unavailable"
+        assert executed_at == row["created_at"]
+
+    async def test_an_unconfigured_provider_is_also_failed(self):
+        """The adapter step's other fault: no credential to call with.
+
+        Nothing was refused. The owner connected no provider, or the stored
+        credential will not decrypt, and both need a fix rather than a changed
+        decision.
+        """
+        agent_id = uuid4()
+        row = {
+            "error": "provider.not_configured:no provider configured for issue_refund",
+            "created_at": datetime(2026, 7, 28, tzinfo=timezone.utc),
+        }
+        mock_db = self._db_returning(row)
+
+        outcome, error, executed_at = await pc._execution_outcome_for(
+            mock_db, agent_id, MUTATING_SKILL, {"idempotency_key": "k"}
+        )
+
+        assert outcome == "failed", (
+            "an unconfigured provider reported %r" % outcome
+        )
+        assert error == row["error"]
+
     async def test_no_audit_row_yields_awaiting_execution(self):
         agent_id = uuid4()
         mock_db = self._db_returning(None)

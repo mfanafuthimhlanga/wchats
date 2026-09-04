@@ -128,12 +128,20 @@ def _is_confirm_action_shaped(arguments: dict | None) -> bool:
 # ---------------------------------------------------------------------------
 
 
+#: tool_calls_audit.error prefixes the adapter step writes, as against the ones
+#: a gate writes. Both of these name a fault: the provider raised, or there was
+#: no usable credential to call it with. Every other error a resolver writes is
+#: a refusal (`confirmation.*`, `capability.denial:`, `idempotency.*`), and the
+#: owner acts on those by changing a decision rather than by fixing something.
+_ADAPTER_FAULT_PREFIXES = ("adapter.error:", "provider.not_configured:")
+
+
 async def _execution_outcome_for(
     db: AsyncSession,
     agent_id: UUID,
     skill: str,
     arguments: dict | None,
-) -> tuple[Literal["executed", "not_executed"] | None, str | None, datetime | None]:
+) -> tuple[Literal["executed", "not_executed", "failed"] | None, str | None, datetime | None]:
     """Read-time execution-outcome lookup against tool_calls_audit (OD-3).
 
     No new column, no 0020 migration — the resolver already writes exactly
@@ -155,7 +163,17 @@ async def _execution_outcome_for(
         matching audit row exists yet (the honest "awaiting execution" state:
         the task has not run, or the dispatch itself failed, T-22-ACT-09).
         ("executed", None, created_at) when the matched row's error is NULL.
-        ("not_executed", raw_error_string, created_at) otherwise.
+        ("failed", raw_error_string, created_at) when that error came from the
+        adapter step: the provider raised, or no credential would decrypt.
+        ("not_executed", raw_error_string, created_at) otherwise, meaning a
+        gate refused, and that is a decision the owner can change.
+
+    The third state is #73's distinction, carried to the read side. The
+    resolver already tells a refusal from an outage and returns "failed" for
+    the second, and that word travelled no further than a Celery return dict.
+    The owner's queue read this column, saw one non-NULL error, and called both
+    "Not executed", telling an owner whose provider was down that the platform
+    had decided against them.
     """
     if not isinstance(arguments, dict):
         return None, None, None
@@ -180,12 +198,14 @@ async def _execution_outcome_for(
         return None, None, None
     if row["error"] is None:
         return "executed", None, row["created_at"]
+    if str(row["error"]).startswith(_ADAPTER_FAULT_PREFIXES):
+        return "failed", row["error"], row["created_at"]
     return "not_executed", row["error"], row["created_at"]
 
 
 def _row_to_response(
     row: dict,
-    execution_outcome: Literal["executed", "not_executed"] | None,
+    execution_outcome: Literal["executed", "not_executed", "failed"] | None,
     execution_error: str | None,
     executed_at: datetime | None,
 ) -> PendingConfirmationResponse:

@@ -555,6 +555,38 @@ class TestAdapterFault:
         )
         assert mocks["adapter"].issue_refund.await_count == 0
 
+    async def test_a_widened_helper_verdict_lands_on_failed(self):
+        """The check is `is not Outcome.ok`, and this is what that buys.
+
+        `_execute_adapter_and_audit` returns only `ok` and `error` today, so
+        `requires_human` is a verdict the Outcome enum can carry and this helper
+        does not yet produce. An equality check against `Outcome.error` would
+        fall through to the executed branch the day it does, and report an
+        execution that never happened. Driven by returning the widened verdict
+        from the helper directly, because no boundary in the resolver can
+        produce it.
+        """
+        from app.domain.tool_result import Outcome, ToolResult
+
+        widened = ToolResult(
+            skill="issue_refund",
+            outcome=Outcome.requires_human,
+            text="a second approver is required",
+        )
+        with _patch_resolver_boundary():
+            with patch.object(
+                cr, "_execute_adapter_and_audit", AsyncMock(return_value=widened)
+            ):
+                outcome = await _resolve()
+
+        assert outcome.outcome == "failed", (
+            "a verdict that is not Outcome.ok reported %r, so a call that did "
+            "not execute is on the owner's queue as one that did" % outcome.outcome
+        )
+        assert "a second approver is required" in (outcome.reason or ""), (
+            "the reason drops what the helper said: %r" % outcome.reason
+        )
+
     async def test_a_gate_refusal_is_still_denied(self):
         """The contrast, in one place. Widening the fault case must not widen
         this one: the capability envelope refusing a call is a decision, and

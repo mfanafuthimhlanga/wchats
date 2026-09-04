@@ -450,7 +450,13 @@ async def _execute_adapter_and_audit(
             actor_rationale=rationale,
             capability_snapshot=snapshot,
             latency_ms=latency_ms,
-            error=error_str,
+            # The prefix names the layer, the way `capability.denial:` and
+            # `provider.not_configured:` already do. A reader of this column has
+            # nothing else to go on: a gate's refusal and a provider's outage
+            # both arrive as a non-NULL error, and the owner's queue reports
+            # them with different words (#73). Without it the queue told an
+            # owner whose Stripe was down that the platform had refused them.
+            error=f"adapter.error:{error_str}",
         )
         return ToolResult(
             skill=skill,
