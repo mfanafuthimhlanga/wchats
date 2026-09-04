@@ -179,7 +179,13 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
         }))
         .filter((r): r is typeof r & { y: number } => r.y !== null)
         .sort((a, b) => a.y - b.y)
-        .map((r) => ({ ...r, lineY: r.y, slotY: r.y, lineX: CHART_X1 * scale + left }))
+        // The head goes on the latest run's point, which is CHART_X1 as soon as
+        // there are two runs to spread across the axis and the middle of it when
+        // there is one. Written as CHART_X1 outright, a single-run chart drew
+        // every point at the centre and every head against the right edge, 427px
+        // away at 1280px: a mark on empty ground with a leader line running off
+        // it to the pin.
+        .map((r) => ({ ...r, lineY: r.y, slotY: r.y, lineX: xFor(n - 1) * scale + left }))
 
       // What keeps two pins apart is the height of a pin, so the gap is
       // measured and the constant is only its floor. PIN_GAP_THREE_LINE is 58

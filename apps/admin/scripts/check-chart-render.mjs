@@ -453,6 +453,29 @@ async function measure(page, fixture, errors) {
       }
     })
 
+    // Where the trace really puts points: every vertex of every polyline and
+    // the centre of every mark, mapped out of viewBox units through the
+    // trace's own transform. A leader head claims a point on the trace, and
+    // this is the list of points there are.
+    const traceSvg = wrap.querySelector('svg.trace')
+    const ctm = traceSvg ? traceSvg.getScreenCTM() : null
+    const traceVertices = []
+    if (ctm) {
+      const at = (x, y) => {
+        const point = new DOMPoint(x, y).matrixTransform(ctm)
+        return { x: point.x, y: point.y }
+      }
+      for (const line of traceSvg.querySelectorAll('polyline')) {
+        for (const pair of (line.getAttribute('points') || '').trim().split(/\s+/)) {
+          const [x, y] = pair.split(',').map(Number)
+          traceVertices.push(at(x, y))
+        }
+      }
+      for (const mark of traceSvg.querySelectorAll('circle')) {
+        traceVertices.push(at(Number(mark.getAttribute('cx')), Number(mark.getAttribute('cy'))))
+      }
+    }
+
     const notice = wrap.querySelector('.no-readings')
     const noticeBox = notice ? notice.getBoundingClientRect() : null
     const wrapStyle = getComputedStyle(wrap)
@@ -460,6 +483,7 @@ async function measure(page, fixture, errors) {
       pins,
       collisions,
       circles,
+      traceVertices,
       // What the wrap is padded by, read rather than copied out of
       // TELEMETRY_CSS, so the sentence-fits-its-box sum below stays true when
       // the padding changes.
@@ -509,6 +533,7 @@ try {
 
 const findings = []
 let marksMeasured = 0
+let headsMeasured = 0
 let coincidentMarks = 0
 
 for (const { fixture, viewport, seen, errors } of results) {
@@ -578,6 +603,25 @@ for (const { fixture, viewport, seen, errors } of results) {
       }
     }
   }
+  // A leader head marks a point on the trace, and its line leads from there to
+  // the pin. Nothing tied the two together: the head's x was CHART_X1 whatever
+  // the data did, so a chart with a single run put every point in the middle of
+  // the axis and every head against the right edge, 427px away at 1280px, each
+  // one a mark on empty ground with a leader running off it.
+  const heads = seen.circles.filter((c) => c.where === '.leaders')
+  for (const head of heads) {
+    let nearest = Infinity
+    for (const v of seen.traceVertices) {
+      nearest = Math.min(nearest, Math.hypot(v.x - head.cx, v.y - head.cy))
+    }
+    if (nearest > 1) {
+      note(
+        `a leader head at (${round(head.cx)}, ${round(head.cy)}) sits on no point the trace ` +
+          `draws, the nearest one being ${round(nearest)}px away, so the head marks empty ground`,
+      )
+    }
+  }
+  headsMeasured += heads.length
   marksMeasured += seen.circles.length
   coincidentMarks += coincident.length
   console.log(
@@ -666,6 +710,9 @@ if (announced === 0) {
 if (marksMeasured === 0) {
   findings.push('the chart drew no marks anywhere in the run, so no mark was measured at all')
 }
+if (headsMeasured === 0) {
+  findings.push('no leader head was drawn in the run, so none was held to a point on the trace')
+}
 if (coincidentMarks === 0) {
   findings.push(
     'no render put two marks on the same point, so nothing was held to a head and a lone ' +
@@ -690,7 +737,7 @@ console.log(
     `${VIEWPORTS.map((v) => `${v.width}px`).join(', ')}: ${pinsMeasured} pin(s) measured and every one ` +
     `inside the chart wrap, ${pairsMeasured} pin pair(s) measured and none overlapping, ` +
     `${marksMeasured} mark(s) drawn with ${coincidentMarks} pair(s) on the same point and each pair ` +
-    `one size, and the empty ` +
+    `one size, ${headsMeasured} leader head(s) each on a point the trace draws, and the empty ` +
     `state announced itself in ${announced} render(s), ${announcedAfterPins} of them over a chart ` +
     `that had pins, each as tall as the sentence in it.`,
 )
