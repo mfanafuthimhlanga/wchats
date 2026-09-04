@@ -50,6 +50,8 @@ from unittest.mock import MagicMock
 
 import psycopg2
 import pytest
+from redis.exceptions import ConnectionError as RedisUnreachable
+from sqlalchemy.exc import PendingRollbackError
 
 from app.models.job import Job
 
@@ -65,6 +67,14 @@ class TenantDatabaseGone(RuntimeError):
 
 class PoolerUnreachable(psycopg2.OperationalError):
     """Stands in for the Neon pooler DNS failure parse_documents retries on."""
+
+
+class DocumentBytesUnavailable(OSError):
+    """Stands in for an S3 read that fails inside chunk_documents' per-document try.
+
+    Not a RuntimeError, so it reaches the per-document ``except Exception``
+    rather than the ``except RuntimeError`` skip-this-document branch above it.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +234,52 @@ def test_chunk_documents_retry_exhaustion_fails_the_job(monkeypatch):
         module.chunk_documents.pop_request()
 
     _assert_job_failed(captured, job_row, "TenantDatabaseGone")
+
+
+def test_chunk_documents_inner_failure_emits_one_job_failed(monkeypatch):
+    """The per-document handler and the outer handler must not both end the job.
+
+    chunk_documents nests two ``except Exception`` blocks: the per-document one
+    (the Docling re-parse) calls ``retry_or_fail_the_job`` and re-raises, and the
+    outer one catches that same exception and calls it again. On the last attempt
+    both reached ``fail_the_job``, so the event stream carried
+    ``['chunking.started', 'job.failed', 'job.failed']`` and the control session
+    committed the terminal write twice. A client reading the SSE stream sees the
+    job end twice, and the second write re-stamps ``finished_at``.
+    """
+    from app.worker.tasks.pipeline import chunk as module
+
+    agent, job_row = _fake_agent(), _fake_job_row()
+    db = _fake_db(agent, job_row)
+    cursor = MagicMock()
+    cursor.fetchone.return_value = ("s3://bucket/doc.pdf", "pdf", "parsed", 0)
+    tenant_conn = MagicMock()
+    tenant_conn.cursor.return_value.__enter__.return_value = cursor
+
+    monkeypatch.setattr(module, "get_sync_db", _sync_db_context(db))
+    monkeypatch.setattr(module, "fernet_decrypt", lambda _: "postgresql://tenant")
+    monkeypatch.setattr(module.psycopg2, "connect", lambda _: tenant_conn)
+    monkeypatch.setattr(
+        module.storage_service,
+        "get_bytes",
+        MagicMock(side_effect=DocumentBytesUnavailable("s3 read failed")),
+    )
+    captured = _capture_events(monkeypatch, "app.worker.tasks.pipeline.chunk")
+
+    _at_last_attempt(module.chunk_documents)
+    try:
+        with pytest.raises(DocumentBytesUnavailable):
+            module.chunk_documents.run(
+                {"tenant_id": "t", "agent_id": "a", "job_id": "j", "document_ids": ["d1"]}
+            )
+    finally:
+        module.chunk_documents.pop_request()
+
+    assert len(_failed_payloads(captured)) == 1, (
+        "the per-document handler and the outer handler both failed the job, so "
+        f"the stream ends twice. Events seen: {[e for e, _ in captured]}"
+    )
+    _assert_job_failed(captured, job_row, "DocumentBytesUnavailable")
 
 
 # ---------------------------------------------------------------------------
@@ -444,4 +500,94 @@ def test_an_attempt_with_retries_left_does_not_fail_the_job(monkeypatch):
     )
     assert job_row.status == "running", (
         f"the jobs row was written to {job_row.status!r} on a retryable attempt"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The failure path is a record, not a verdict: writing it cannot become the
+# error the worker reports.
+# ---------------------------------------------------------------------------
+
+
+def test_a_poisoned_control_session_does_not_replace_the_original_error(monkeypatch):
+    """A caller whose handler owns no rollback still ends with its own exception.
+
+    parse_documents' psycopg2.OperationalError handler is that caller: it holds
+    a control session whose last statement raised, so SQLAlchemy answers the
+    terminal commit with PendingRollbackError. Unguarded, that bookkeeping error
+    left the task in place of the pooler failure, and the worker recorded a run
+    that died of the wrong thing.
+    """
+    from app.worker.tasks.pipeline import parse as module
+
+    agent, job_row = _fake_agent(), _fake_job_row()
+    db = _fake_db(agent, job_row)
+    db.commit.side_effect = PendingRollbackError(
+        "Can't reconnect until invalid transaction is rolled back"
+    )
+
+    monkeypatch.setattr(module, "get_sync_db", _sync_db_context(db))
+    monkeypatch.setattr(module, "fernet_decrypt", lambda _: "postgresql://tenant")
+    monkeypatch.setattr(
+        module.psycopg2, "connect", MagicMock(side_effect=PoolerUnreachable())
+    )
+    captured = _capture_events(monkeypatch, "app.worker.tasks.pipeline.parse")
+
+    _at_last_attempt(module.parse_documents)
+    try:
+        with pytest.raises(PoolerUnreachable):
+            module.parse_documents.run(
+                tenant_id="t", agent_id="a", job_id="j", document_ids=["d1"]
+            )
+    finally:
+        module.parse_documents.pop_request()
+
+    assert db.rollback.called, (
+        "the terminal write never rolled the control session back, so every "
+        "caller that has no rollback of its own commits into a dead transaction"
+    )
+    assert len(_failed_payloads(captured)) == 1, (
+        "the job.failed was lost with the row write. The row and the event are "
+        f"written independently. Events seen: {[e for e, _ in captured]}"
+    )
+
+
+def test_an_unreachable_redis_does_not_replace_the_original_error(monkeypatch):
+    """events.emit publishes to Redis first, so a dead broker raises inside it.
+
+    Unguarded that ConnectionError travelled out of fail_the_job and became what
+    the worker recorded, hiding the Neon failure that actually stopped the run.
+    """
+    from app.worker.tasks.pipeline import parse as module
+
+    agent, job_row = _fake_agent(), _fake_job_row()
+    db = _fake_db(agent, job_row)
+
+    monkeypatch.setattr(module, "get_sync_db", _sync_db_context(db))
+    monkeypatch.setattr(module, "fernet_decrypt", lambda _: "postgresql://tenant")
+    monkeypatch.setattr(
+        module.psycopg2, "connect", MagicMock(side_effect=PoolerUnreachable())
+    )
+
+    import app.services.events as events_module
+
+    monkeypatch.setattr(
+        events_module,
+        "emit",
+        MagicMock(side_effect=RedisUnreachable("Error 111 connecting to redis")),
+    )
+    monkeypatch.setattr(module, "emit", MagicMock())
+
+    _at_last_attempt(module.parse_documents)
+    try:
+        with pytest.raises(PoolerUnreachable):
+            module.parse_documents.run(
+                tenant_id="t", agent_id="a", job_id="j", document_ids=["d1"]
+            )
+    finally:
+        module.parse_documents.pop_request()
+
+    assert job_row.status == "failed", (
+        "the lost publish took the row write with it; the durable record is "
+        f"the half that survives a dead broker, and it reads {job_row.status!r}"
     )

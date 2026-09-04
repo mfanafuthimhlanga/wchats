@@ -33,11 +33,14 @@ from datetime import datetime, timezone
 from typing import NoReturn
 from uuid import UUID
 
+import structlog
 from redis import Redis as SyncRedis
 from sqlalchemy.orm import Session
 
 from app.models.job import Job
 from app.services import events
+
+log = structlog.get_logger(__name__)
 
 
 def failure_reason(exc: BaseException) -> str:
@@ -68,7 +71,14 @@ def fail_the_job(
     redis: SyncRedis,
     agent=None,
 ) -> None:
-    """Mark the job row failed and emit the terminal job.failed event.
+    """Mark the job row failed and emit the terminal job.failed event, once.
+
+    Every caller reaches here while an exception is already travelling:
+    retry_or_fail_the_job re-raises the original once this returns, and
+    _refuse_a_run_that_enriched_nothing raises MetadataEnrichmentFailed. So the
+    row and the event are the record of why the run died, never the verdict on
+    it. Both halves are guarded, both log the error type they lost, and the
+    original exception is what leaves the task.
 
     Args:
         job_id: the control-DB jobs row this task is running for.
@@ -79,15 +89,83 @@ def fail_the_job(
                 provision_neon and apply_migrations pass one; the four ingestion
                 hops do not, because a failed ingest leaves a ready agent ready.
     """
-    job_row = db.get(Job, job_id)
-    if job_row is not None:
-        job_row.status = "failed"
-        job_row.error = reason
-        job_row.finished_at = datetime.now(timezone.utc)
-    if agent is not None:
-        agent.status = "failed"
-    db.commit()
-    events.emit(job_id, "job.failed", {"error": reason}, db, redis)
+    if _mark_the_row_failed(job_id, reason, db, agent):
+        _publish_the_terminal_event(job_id, reason, db, redis)
+
+
+def _mark_the_row_failed(
+    job_id: UUID | str,
+    reason: str,
+    db: Session,
+    agent,
+) -> bool:
+    """Write the terminal row state. False when another handler already wrote it.
+
+    The rollback comes first because a caller arrives here holding a session
+    whose last statement raised, and SQLAlchemy answers everything after that
+    with PendingRollbackError. parse_documents is the plain case: its
+    psycopg2.OperationalError handler owns no rollback, so the commit below
+    raised the bookkeeping error and the pooler failure never left the task.
+    A rollback on a clean session costs nothing, so this covers every caller
+    rather than seven call sites remembering.
+
+    A row already reading ``failed`` means a nested handler ended the job on its
+    way out (chunk_documents runs a per-document ``except`` inside an outer one,
+    and both call retry_or_fail_the_job with the same exception). Skipping the
+    write keeps finished_at at the moment the job actually died, and tells
+    fail_the_job not to put a second terminal event on a stream a client has
+    already seen end.
+    """
+    try:
+        db.rollback()
+        job_row = db.get(Job, job_id)
+        if job_row is not None and job_row.status == "failed":
+            return False
+        if job_row is not None:
+            job_row.status = "failed"
+            job_row.error = reason
+            job_row.finished_at = datetime.now(timezone.utc)
+        if agent is not None:
+            agent.status = "failed"
+        db.commit()
+    except Exception as exc:
+        _terminal_write_failed("job_row", exc, job_id)
+    return True
+
+
+def _publish_the_terminal_event(
+    job_id: UUID | str,
+    reason: str,
+    db: Session,
+    redis: SyncRedis,
+) -> None:
+    """Emit job.failed, and never let the emit become the failure that escapes.
+
+    events.emit publishes to Redis before it writes the row, so an unreachable
+    Redis raises here. Unguarded that error travelled out of fail_the_job in
+    place of the exception that stopped the task, and the worker recorded a
+    ConnectionError for a run that died of a Neon timeout.
+    """
+    try:
+        events.emit(job_id, "job.failed", {"error": reason}, db, redis)
+    except Exception as exc:
+        _terminal_write_failed("job_failed_event", exc, job_id)
+
+
+def _terminal_write_failed(half: str, exc: Exception, job_id: UUID | str) -> None:
+    """Log which half of the record was lost, and its error type.
+
+    The type is what a reader needs: PendingRollbackError names a poisoned
+    control session, redis.ConnectionError names an unreachable broker, and the
+    two ask for different fixes.
+    """
+    log.error(
+        "fail_the_job.terminal_write_failed",
+        half=half,
+        job_id=str(job_id),
+        error_type=type(exc).__name__,
+        error=str(exc),
+    )
 
 
 def retry_or_fail_the_job(
