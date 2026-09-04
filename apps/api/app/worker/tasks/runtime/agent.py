@@ -950,11 +950,26 @@ def _claimed_turn(db, job_id: str) -> tuple:
     all. Once after, because the first attempt can finish and release between
     this attempt's read and its claim, and running the turn again is what the
     whole guard exists to stop.
+
+    THE SERVER'S IDLE CLOCK IS TURNED OFF FOR THIS TRANSACTION. Between the lock
+    and the release, this connection is idle in transaction for the turn's whole
+    life, which is the state `idle_in_transaction_session_timeout` exists to
+    kill. Neon ships that parameter at five minutes. A turn slower than the
+    server's limit has its claim connection terminated, the transaction rolls
+    back, the advisory lock goes with it, and a redelivery claims a turn that is
+    still running — silently, because nothing touches the connection again until
+    release. `SET LOCAL` is a per-transaction override of a plain Postgres
+    parameter, so it survives a pooler in SESSION mode and ends with the
+    transaction, which is why release resets nothing. Under a pooler in
+    TRANSACTION mode the whole claim is one transaction on one pinned server
+    connection anyway, so the override covers exactly the transaction it needs
+    to and is discarded with it.
     """
     if _answered_already(db, job_id):
         log.info("run_agent_turn.idempotent_skip", job_id=job_id)
         return None, {"status": "already_complete", "job_id": job_id}
     claim = db.get_bind().connect()
+    claim.execute(sa_text("SET LOCAL idle_in_transaction_session_timeout = 0"))
     held = claim.execute(
         sa_text("SELECT pg_try_advisory_xact_lock(:key)"),
         {"key": _turn_lock_key(job_id)},

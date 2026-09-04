@@ -299,3 +299,54 @@ def test_one_resource_that_will_not_close_never_strands_the_other_two():
         "a turn that would not close stranded the claim, so every redelivery of "
         "this turn is refused until the pool drops the connection"
     )
+
+
+# ---------------------------------------------------------------------------
+# The server-side clock the claim has to outlive
+# ---------------------------------------------------------------------------
+
+
+def test_the_claim_overrides_a_server_side_idle_in_transaction_timeout():
+    """A turn longer than the server's idle limit still holds its lock.
+
+    The claim opens a transaction, takes the lock and then does NOTHING on that
+    connection until the turn ends, so for the turn's whole life it is idle in
+    transaction. Neon ships `idle_in_transaction_session_timeout` at five
+    minutes, and a turn that runs longer has its claim connection killed by the
+    server: the transaction rolls back, the advisory lock goes with it, and a
+    redelivery claims a turn that is still running. Nothing raises where anyone
+    would see it, because the connection is not touched again until release.
+
+    The local cluster runs the parameter at 0, which cannot show the override, so
+    the session default is set to a minute FIRST and on the very connection the
+    claim will get: one pooled slot, no overflow, so `connect()` hands back the
+    same backend. What the claim reads inside its own transaction is the
+    `SET LOCAL`, not the session default it was handed.
+    """
+    from sqlalchemy.pool import QueuePool
+
+    from app.worker.tasks.runtime.agent import _claimed_turn
+
+    engine = create_engine(
+        LOCAL_CONTROL_DSN, poolclass=QueuePool, pool_size=1, max_overflow=0
+    )
+    claim = None
+    try:
+        with engine.connect() as seeded:
+            seeded.execute(text("SET idle_in_transaction_session_timeout = '1min'"))
+            seeded.commit()
+
+        claim, _ = _claimed_turn(_db_on(engine), str(uuid.uuid4()))
+        in_force = claim.execute(
+            text("SHOW idle_in_transaction_session_timeout")
+        ).scalar()
+    finally:
+        if claim is not None:
+            claim.close()
+        engine.dispose()
+
+    assert in_force == "0", (
+        "the claim runs under a server-side idle limit of "
+        f"{in_force!r}; a turn slower than that loses its advisory lock mid-turn "
+        "and a redelivery runs the same turn again"
+    )
