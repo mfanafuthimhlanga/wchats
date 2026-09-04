@@ -188,12 +188,17 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
         .map((r) => ({ ...r, lineY: r.y, slotY: r.y, lineX: xFor(n - 1) * scale + left }))
 
       // What keeps two pins apart is the height of a pin, so the gap is
-      // measured and the constant is only its floor. PIN_GAP_THREE_LINE is 58
-      // against a three-line pin that renders 58.7px tall, which overlapped
-      // every adjacent pair in a three-line stack by 0.7px. offsetHeight is
-      // read here anyway, for the half-height the clamp needs below. A two-line
-      // pin measures 43.5px, under PIN_GAP_TWO_LINE, so a tenant with no golden
-      // set keeps the 44px spacing the chart shipped with.
+      // measured and the constant is only its floor. offsetHeight rounds to a
+      // whole pixel rather than reporting the box: a three-line pin renders
+      // 58.70px and reports 59, a two-line pin renders 43.53px and reports 44.
+      // So a three-line stack spaces at 59 against a PIN_GAP_THREE_LINE of 58,
+      // which is the pixel every adjacent pair used to overlap by, and a
+      // two-line stack spaces at max(44, 44): a tenant with no golden set keeps
+      // the 44px the chart shipped with because the two numbers are equal, not
+      // because the constant is the larger. Half a pixel of type change moves
+      // that, in either direction, and what decides is the measurement.
+      // offsetHeight is read here anyway, for the half-height the clamp needs
+      // below.
       const pinHeight = pinRefs.current.find(Boolean)?.offsetHeight ?? pinGap
       const gap = Math.max(pinGap, pinHeight)
       const pinHalf = pinHeight / 2
