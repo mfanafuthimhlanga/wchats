@@ -33,7 +33,10 @@ const GATE_VALUE = 0.9
 // A pin is two lines when one dataset covers the whole suite and three when the
 // dataset has to be named, so the gap that keeps two pins apart follows it. 44
 // is the value the chart shipped with, and every tenant who has not curated a
-// golden set still gets exactly that layout.
+// golden set still gets exactly that layout. Both are floors: the layout effect
+// measures the pin it is spacing and takes whichever is larger, because a
+// constant guessed at the height of rendered text is a constant that will one
+// day be wrong. 58 already was.
 const PIN_GAP_TWO_LINE = 44
 const PIN_GAP_THREE_LINE = 58
 const PIN_GUTTER = 148
@@ -162,9 +165,20 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
         .sort((a, b) => a.y - b.y)
         .map((r) => ({ ...r, lineY: r.y, slotY: r.y, lineX: CHART_X1 * scale + left }))
 
+      // What keeps two pins apart is the height of a pin, so the gap is
+      // measured and the constant is only its floor. PIN_GAP_THREE_LINE is 58
+      // against a three-line pin that renders 58.7px tall, which overlapped
+      // every adjacent pair in a three-line stack by 0.7px. offsetHeight is
+      // read here anyway, for the half-height the clamp needs below. A two-line
+      // pin measures 43.5px, under PIN_GAP_TWO_LINE, so a tenant with no golden
+      // set keeps the 44px spacing the chart shipped with.
+      const pinHeight = pinRefs.current.find(Boolean)?.offsetHeight ?? pinGap
+      const gap = Math.max(pinGap, pinHeight)
+      const pinHalf = pinHeight / 2
+
       for (let i = 1; i < led.length; i++) {
-        if (led[i].slotY - led[i - 1].slotY < pinGap) {
-          led[i].slotY = led[i - 1].slotY + pinGap
+        if (led[i].slotY - led[i - 1].slotY < gap) {
+          led[i].slotY = led[i - 1].slotY + gap
         }
       }
 
@@ -174,22 +188,21 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
       // then laid out from where it used to end, so a run that measured one of
       // four series put three pins through the floor and onto the judge.
       const unledTop =
-        (led.length > 0 ? led[led.length - 1].slotY : CHART_Y_TOP * scale + top) + pinGap
+        (led.length > 0 ? led[led.length - 1].slotY : CHART_Y_TOP * scale + top) + gap
       const unled = series
         .map((s, i) => ({ index: i, latest: s.latest }))
         .filter((r) => r.latest === null)
-        .map((r, k) => ({ index: r.index, slotY: unledTop + k * pinGap }))
+        .map((r, k) => ({ index: r.index, slotY: unledTop + k * gap }))
 
       const column = [...led, ...unled]
       if (column.length > 0) {
-        const pinHalf = (pinRefs.current.find(Boolean)?.offsetHeight ?? pinGap) / 2
         // The gutter is as tall as the column it holds, because a column taller
         // than the chart cannot be clamped into it: shifting it up by the whole
         // headroom still leaves the last pin outside, and every pixel of that
-        // shift is taken off the top instead. Four three-line pins want 233px
+        // shift is taken off the top instead. Four three-line pins want 236px
         // of column and the drawing is 221px tall at 910px, the narrow end of
         // the band where a gutter exists at all.
-        wrap!.style.minHeight = `${Math.ceil((column.length - 1) * pinGap + pinHalf * 2)}px`
+        wrap!.style.minHeight = `${Math.ceil((column.length - 1) * gap + pinHeight)}px`
         // The push above only ever moves a pin down, so three channels within a
         // pixel of each other near the floor walk the last pin out of the chart
         // and onto the judge underneath. tests/overflow.spec.ts watches the
