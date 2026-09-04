@@ -173,7 +173,7 @@ def test_the_read_says_how_many_rows_the_average_covers(monkeypatch):
     health = service.read_retrieval_health("postgresql://tenant", window_days=7)
 
     assert health["faithfulness_sample_count"] == 2
-    assert health["faithfulness_unstamped_count"] == 2
+    assert health["faithfulness_other_instrument_count"] == 2
 
 
 def test_an_all_unstamped_window_reports_unknown_not_a_number(monkeypatch):
@@ -191,7 +191,7 @@ def test_an_all_unstamped_window_reports_unknown_not_a_number(monkeypatch):
         "figure" % health["avg_faithfulness"]
     )
     assert health["faithfulness_sample_count"] == 0
-    assert health["faithfulness_unstamped_count"] == 2
+    assert health["faithfulness_other_instrument_count"] == 2
     assert health["sample_count"] == 2, (
         "the row count for every other metric must be unaffected"
     )

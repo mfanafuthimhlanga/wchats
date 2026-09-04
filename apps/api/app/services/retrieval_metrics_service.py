@@ -126,7 +126,7 @@ _HEALTH_SQL = """
         AVG(citation_coverage) AS avg_citation_coverage,
         AVG(faithfulness) FILTER (WHERE context_source = %(context_source)s) AS avg_faithfulness,
         COUNT(faithfulness) FILTER (WHERE context_source = %(context_source)s) AS faithfulness_sample_count,
-        COUNT(faithfulness) FILTER (WHERE context_source IS DISTINCT FROM %(context_source)s) AS faithfulness_unstamped_count
+        COUNT(faithfulness) FILTER (WHERE context_source IS DISTINCT FROM %(context_source)s) AS faithfulness_other_instrument_count
     FROM retrieval_metrics
     WHERE created_at >= NOW() - (%(window_days)s || ' days')::interval
 """
@@ -162,7 +162,7 @@ def read_retrieval_health(conn_str: str, window_days: int = 7) -> dict:
     Returns:
         Dict with "sample_count" plus one "avg_*" key per retrieval_metrics
         numeric column, plus "faithfulness_sample_count" and
-        "faithfulness_unstamped_count". When sample_count is 0, every "avg_*"
+        "faithfulness_other_instrument_count". When sample_count is 0, every "avg_*"
         value is the string "not tracked yet" rather than a fabricated number.
         Even with sample_count > 0, "avg_citation_coverage"/"avg_faithfulness"
         are independently reported as "not tracked yet" until they hold at least
@@ -178,6 +178,13 @@ def read_retrieval_health(conn_str: str, window_days: int = 7) -> dict:
         covered and what it left out, because a filtered average that does not
         name what it dropped is a smaller lie than an unfiltered one and is
         still one.
+
+        The second count is named for what it counts. `IS DISTINCT FROM` matches
+        a NULL context_source and a context_source naming a DIFFERENT version,
+        so "unstamped" described one of its two members. A window whose rows
+        were all scored under the previous stamped instrument counts every one
+        of them here, and a reader who trusted the old name would have read that
+        as zero.
     """
     conn = psycopg2.connect(conn_str, connect_timeout=5)
     try:
@@ -196,7 +203,7 @@ def read_retrieval_health(conn_str: str, window_days: int = 7) -> dict:
 
     result: dict = {"sample_count": sample_count}
     result["faithfulness_sample_count"] = faithfulness_counts[0] or 0
-    result["faithfulness_unstamped_count"] = faithfulness_counts[1] or 0
+    result["faithfulness_other_instrument_count"] = faithfulness_counts[1] or 0
     if sample_count == 0:
         for key in _HEALTH_AVG_KEYS:
             result[key] = _NOT_TRACKED

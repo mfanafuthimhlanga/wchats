@@ -12,6 +12,8 @@ import {
   isRetrievalSentinel,
   formatPercent,
   formatInteger,
+  renderFaithfulnessCell,
+  renderFaithfulnessCoverage,
   renderRetrievalAverageCell,
   renderStalenessField,
 } from './opsFormat'
@@ -57,6 +59,14 @@ interface RetrievalHealthResponse {
   avg_compaction_ratio: number | typeof RETRIEVAL_SENTINEL
   avg_citation_coverage: number | typeof RETRIEVAL_SENTINEL
   avg_faithfulness: number | typeof RETRIEVAL_SENTINEL
+  // The faithfulness average covers a SUBSET of the window (issue #120): only
+  // rows whose context_source names the current context shape. These two say
+  // how many it covered and how many it left out, and the endpoint has
+  // returned them since 5661e2f. Untyped here, the panel printed "No queries
+  // in this window yet." over a window whose queries were all scored under the
+  // previous instrument.
+  faithfulness_sample_count: number
+  faithfulness_other_instrument_count: number
   index_staleness: IndexStaleness
 }
 
@@ -128,6 +138,10 @@ export default function RetrievalHealthPanel({
   // one scan-unavailable sentence rather than mixing a real number with a
   // truthy-but-sentinel string coerced into a false "drift" chip.
   const stalenessScanFailed = isMetricsSentinel(staleCount) || isMetricsSentinel(driftDetected)
+  const faithfulnessCoverage = renderFaithfulnessCoverage(
+    data.faithfulness_sample_count,
+    data.faithfulness_other_instrument_count,
+  )
 
   return (
     <>
@@ -246,8 +260,15 @@ export default function RetrievalHealthPanel({
               <LedgerCell numeric className="mono">{renderRetrievalAverageCell(data.avg_citation_coverage)}</LedgerCell>
             </tr>
             <tr>
-              <LedgerRowHead>Faithfulness</LedgerRowHead>
-              <LedgerCell numeric className="mono">{renderRetrievalAverageCell(data.avg_faithfulness)}</LedgerCell>
+              <LedgerRowHead>
+                Faithfulness
+                {faithfulnessCoverage && (
+                  <span className="help" style={{ display: 'block' }}>{faithfulnessCoverage}</span>
+                )}
+              </LedgerRowHead>
+              <LedgerCell numeric className="mono">
+                {renderFaithfulnessCell(data.avg_faithfulness, data.faithfulness_other_instrument_count)}
+              </LedgerCell>
             </tr>
           </tbody>
         </Ledger>

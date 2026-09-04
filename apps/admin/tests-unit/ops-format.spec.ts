@@ -12,6 +12,8 @@ import {
   formatRetrievalScore,
   renderLiveMetricCell,
   renderRetrievalAverageCell,
+  renderFaithfulnessCell,
+  renderFaithfulnessCoverage,
   renderStalenessField,
   computeSeverityCounts,
   isGateBlocked,
@@ -387,5 +389,41 @@ test.describe('renderCanaryPercent', () => {
   test('a real percentage renders as-is', () => {
     expect(renderCanaryPercent(25)).toBe('25%')
     expect(renderCanaryPercent(100)).toBe('100%')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Faithfulness — the one reading whose average covers a subset of the window
+// ---------------------------------------------------------------------------
+
+test.describe('renderFaithfulnessCell and renderFaithfulnessCoverage (issue #120)', () => {
+  test('a window scored entirely under an earlier instrument is not an empty window', () => {
+    // The defect: the shared sentinel sentence is a claim about the window, and
+    // this window has twelve queries in it.
+    expect(renderFaithfulnessCell(RETRIEVAL_SENTINEL, 12)).not.toContain('No queries')
+    expect(renderFaithfulnessCoverage(0, 12)).toContain('instrument changed')
+    expect(renderFaithfulnessCoverage(0, 12)).toContain('12')
+  })
+
+  test('a genuinely empty window still says so, and says nothing beside the row', () => {
+    expect(renderFaithfulnessCell(RETRIEVAL_SENTINEL, 0)).toBe('No queries in this window yet.')
+    expect(renderFaithfulnessCoverage(0, 0)).toBe(null)
+  })
+
+  test('a mixed window names both counts', () => {
+    const sentence = renderFaithfulnessCoverage(8, 3)
+    expect(sentence).toContain('8 scored under the current instrument')
+    expect(sentence).toContain('3 under an earlier one')
+  })
+
+  test('a window scored entirely under the current instrument names no earlier one', () => {
+    const sentence = renderFaithfulnessCoverage(8, 0)
+    expect(sentence).toBe('8 scored under the current instrument.')
+    expect(sentence).not.toContain('earlier')
+  })
+
+  test('a real average renders as the number, whatever the other count says', () => {
+    expect(renderFaithfulnessCell(0.87, 12)).toBe(formatRetrievalScore(0.87))
+    expect(renderFaithfulnessCell(0.87, 0)).toBe(formatRetrievalScore(0.87))
   })
 })
