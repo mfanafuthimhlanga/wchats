@@ -303,7 +303,13 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
   if (series.length === 0) {
     return (
       <div className="telemetry empty" id="telemetry" ref={wrapRef}>
-        <p className="no-readings">{describeChart(series, n)}</p>
+        {/* The sentence replaces a loading state, so it announces itself. A
+            listener who was told the chart was loading is otherwise never told
+            it stopped, and this is the branch that arrives while the first run
+            is still going. The judge's verdict below it does the same. */}
+        <p className="no-readings" role="status" aria-live="polite">
+          {describeChart(series, n)}
+        </p>
       </div>
     )
   }
