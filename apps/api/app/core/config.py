@@ -434,6 +434,11 @@ class Settings(BaseSettings):
     # MinIO and no owner account exists. In production empty refuses to boot,
     # because a process that was never told which account is ours must not
     # reach the point where it can write a document to one.
+    #
+    # Under ENVIRONMENT=staging no host check applies at all, in this validator
+    # or in storage_service, and railway_staging_wizard.sh sets `production` on
+    # Railway's staging environment for exactly that reason: the staging deploy
+    # is where these guards are meant to be armed and observed.
     S3_EXPECTED_ENDPOINT_HOST: str = ""
 
     @field_validator("S3_EXPECTED_ENDPOINT_HOST")
@@ -448,6 +453,12 @@ class Settings(BaseSettings):
         by name. A URL would never equal a parsed hostname, and the resulting
         failure would name S3_ENDPOINT_URL on every upload while the fault sat
         in this field.
+
+        A port and an embedded space are that same failure in shapes the scheme
+        and path checks let through: `_require_production_endpoint` compares
+        against `urlsplit(...).hostname`, which carries neither, so
+        `<id>.r2.cloudflarestorage.com:443` booted green and then refused every
+        upload. Boot is where the operator is still reading the deploy log.
         """
         host = value.strip().lower()
         if "://" in host or "/" in host or "@" in host:
@@ -456,6 +467,19 @@ class Settings(BaseSettings):
                 "the host on its own, as in "
                 "'8f2c1d.r2.cloudflarestorage.com', with no scheme, no path "
                 "and no credentials."
+            )
+        if ":" in host:
+            raise ValueError(
+                "S3_EXPECTED_ENDPOINT_HOST carries a port. The endpoint check "
+                "compares it against the parsed hostname, which never has one, "
+                "so this value would refuse every upload. Give the host alone, "
+                "as in '8f2c1d.r2.cloudflarestorage.com'."
+            )
+        if any(character.isspace() for character in host):
+            raise ValueError(
+                "S3_EXPECTED_ENDPOINT_HOST contains whitespace inside the host. "
+                "A hostname has none, so this value would refuse every upload. "
+                "Give the host alone, as in '8f2c1d.r2.cloudflarestorage.com'."
             )
         if not host and info.data.get("ENVIRONMENT") == "production":
             raise ValueError(

@@ -505,6 +505,14 @@ def test_development_boot_without_the_expected_host_is_unaffected(monkeypatch):
         "https://ourownaccountid.r2.cloudflarestorage.com",
         "ourownaccountid.r2.cloudflarestorage.com/wchats-uploads",
         "user:secret@ourownaccountid.r2.cloudflarestorage.com",
+        # A port. `urlsplit(...).hostname` strips it, so this value can never
+        # equal a parsed hostname and every upload is refused after boot.
+        "ourownaccountid.r2.cloudflarestorage.com:443",
+        ":443",
+        # A space inside the host. Railway's variable editor keeps it, and the
+        # strip() only reaches the ends.
+        "ourownaccountid.r2 .cloudflarestorage.com",
+        "ourownaccountid\t.r2.cloudflarestorage.com",
     ],
 )
 def test_the_expected_host_is_a_bare_host_not_a_url(monkeypatch, pasted):
@@ -512,10 +520,37 @@ def test_the_expected_host_is_a_bare_host_not_a_url(monkeypatch, pasted):
     for it two lines earlier. A pasted URL would never equal a parsed hostname,
     so the guard would refuse every upload with a message about the endpoint
     while the real fault is in the other variable.
+
+    The port and the embedded space are the same defect wearing a shape the
+    first three characters missed: both boot cleanly and then refuse every
+    upload, naming this setting from inside a message about S3_ENDPOINT_URL.
+    Boot is where an operator is still reading the deploy log.
     """
     monkeypatch.delenv("S3_EXPECTED_ENDPOINT_HOST", raising=False)
     with pytest.raises(ValidationError) as exc_info:
         _production_settings(S3_EXPECTED_ENDPOINT_HOST=pasted)
+    assert "S3_EXPECTED_ENDPOINT_HOST" in str(exc_info.value)
+
+
+def test_a_host_with_a_port_never_reaches_the_upload_path(monkeypatch):
+    """The specific value the Cloudflare console hands you when you copy the
+    endpoint out of an SDK snippet rather than the header.
+
+    `_require_production_endpoint` compares against `urlsplit(...).hostname`,
+    which has no port in it, so `host:443` is unequal to every endpoint on
+    earth including its own. Before boot refused it, the deployment came up
+    green and the first upload failed.
+    """
+    from urllib.parse import urlsplit
+
+    monkeypatch.delenv("S3_EXPECTED_ENDPOINT_HOST", raising=False)
+    with_port = f"{_OUR_HOST}:443"
+    assert urlsplit(f"https://{with_port}").hostname == _OUR_HOST, (
+        "if this ever stops stripping the port, the boot refusal below is the "
+        "wrong fix and the comparison is the right one"
+    )
+    with pytest.raises(ValidationError) as exc_info:
+        _production_settings(S3_EXPECTED_ENDPOINT_HOST=with_port)
     assert "S3_EXPECTED_ENDPOINT_HOST" in str(exc_info.value)
 
 
