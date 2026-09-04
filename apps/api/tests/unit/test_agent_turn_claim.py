@@ -37,6 +37,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from sqlalchemy import create_engine, text
 
+from tests.agent_loop_doubles import canned_turn_result
+
 LOCAL_CONTROL_DSN = os.environ.get(
     "LOCAL_CONTROL_DSN", "postgresql://wchats:wchats@localhost:5432/wchats_control"
 )
@@ -163,6 +165,18 @@ def _agent():
     agent.retrieval_strategy = {}
     agent.neon_connection_string = b"encrypted-bytes"
     return agent
+
+
+def _seam(**kwargs):
+    """Stand-in for `build_agent_turn`, in the shape `_release_turn` reads.
+
+    `calls` is the loop's ledger rows and `bound` the tool ContextVars
+    `close_turn` hands back; a double without either fails in the release for a
+    reason about the double.
+    """
+    return SimpleNamespace(
+        calls=[], ledger=kwargs.get("ledger", lambda call: None), bound=()
+    )
 
 
 def _db_ctx(db):
@@ -349,4 +363,137 @@ def test_the_claim_overrides_a_server_side_idle_in_transaction_timeout():
         "the claim runs under a server-side idle limit of "
         f"{in_force!r}; a turn slower than that loses its advisory lock mid-turn "
         "and a redelivery runs the same turn again"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Every exit from the claimed stretch
+# ---------------------------------------------------------------------------
+
+
+def _claim_is_free(job_id: str) -> bool:
+    """Whether a fresh attempt at this turn would be granted the lock right now."""
+    from app.worker.tasks.runtime.agent import _claimed_turn
+
+    claim, _ = _claimed_turn(_db_on(_ENGINE), job_id)
+    if claim is None:
+        return False
+    claim.close()
+    return True
+
+
+def test_a_decrypt_that_raises_hands_the_claim_back_before_it_leaves():
+    """The stretch between the claim and the `try` had two ways out and no release.
+
+    `db.get(Job, ...)` and the Fernet decrypt both sit after the turn is claimed,
+    and both can raise. The claim was a live connection holding an advisory lock
+    in an open transaction, left for the garbage collector: until the pool
+    noticed, every redelivery of this turn was refused with `already_running` for
+    a turn no worker was running. The traceback holds the frame, so on the path
+    that matters the collector does not come.
+    """
+    from app.worker.tasks.runtime.agent import run_agent_turn
+
+    job_id = str(uuid.uuid4())
+    agent = _agent()
+    db = _db_on(_ENGINE)
+    db.get.side_effect = [agent, SimpleNamespace(id=job_id, status="running")]
+
+    with pytest.raises(Exception):
+        with (
+            patch(
+                "app.worker.tasks.runtime.agent.get_sync_db",
+                return_value=_db_ctx(db),
+            ),
+            patch(
+                "app.worker.tasks.runtime.agent.fernet_decrypt",
+                side_effect=RuntimeError("the ciphertext will not decrypt"),
+            ),
+            patch("app.worker.tasks.runtime.agent.emit"),
+        ):
+            run_agent_turn.run(
+                job_id=job_id,
+                agent_id=str(agent.id),
+                message="hello",
+                conversation_id=None,
+            )
+
+    assert _claim_is_free(job_id), (
+        "the turn failed before its `try` and kept the claim, so every "
+        "redelivery of it is refused for a turn nothing is running"
+    )
+
+
+def test_a_turn_answered_between_the_read_and_the_lock_runs_no_model():
+    """The second READ guard is what closes the finish-and-release race.
+
+    The first attempt can write its `agent.response` row and release the claim in
+    the gap between this attempt's first read and its lock. The lock is then
+    granted — correctly, nothing holds it — and without the read AFTER it this
+    attempt runs a full second turn on a question already answered: a duplicate
+    model call billed to the tenant, a duplicate pair of `messages` rows the next
+    turn replays, and a second answer on a widget that already has one.
+
+    The window is inside one function call, so the two reads are driven directly:
+    not answered when the guard looks, answered by the time the lock is held.
+    """
+    from app.worker.tasks.runtime.agent import run_agent_turn
+
+    job_id = str(uuid.uuid4())
+    agent = _agent()
+    db = _db_on(_ENGINE)
+    db.get.side_effect = [agent, SimpleNamespace(id=job_id, status="running")]
+    # The claim needs a REAL connection out of the pool, and the patch below
+    # replaces the driver's `connect` that the pool itself would call to make a
+    # new one. One checkout first leaves a live connection in the pool to hand
+    # back.
+    with _ENGINE.connect() as warmed:
+        warmed.execute(text("SELECT 1"))
+
+    with (
+        patch(
+            "app.worker.tasks.runtime.agent.get_sync_db", return_value=_db_ctx(db)
+        ),
+        patch(
+            "app.worker.tasks.runtime.agent._answered_already",
+            side_effect=[False, True],
+        ),
+        patch(
+            "app.worker.tasks.runtime.agent.fernet_decrypt",
+            return_value="postgresql://tenant",
+        ),
+        patch("app.worker.tasks.runtime.agent.psycopg2.connect") as tenant_connect,
+        patch(
+            "app.worker.tasks.runtime.agent._create_conversation_row",
+            return_value="00000000-0000-0000-0000-0000000000ab",
+        ),
+        patch("app.worker.tasks.runtime.agent._persist_messages", return_value="m1"),
+        patch(
+            "app.worker.tasks.runtime.agent.build_agent_turn", side_effect=_seam
+        ) as seam,
+        patch(
+            "app.worker.tasks.runtime.agent.asyncio.run",
+            return_value=canned_turn_result("Answered twice, which is the defect."),
+        ) as bridge,
+        patch("app.worker.tasks.runtime.agent.emit") as emitted,
+    ):
+        result = run_agent_turn.run(
+            job_id=job_id,
+            agent_id=str(agent.id),
+            message="hello",
+            conversation_id=None,
+        )
+
+    assert tenant_connect.call_count == 0, (
+        "the turn was answered while this attempt waited for the lock and it "
+        "opened a tenant connection anyway"
+    )
+    assert bridge.call_count == 0, "a second model call was made on an answered turn"
+    assert seam.call_count == 0, "a second turn was built on an answered turn"
+    assert emitted.call_count == 0, "a second turn's events reached the widget"
+    assert result == {"status": "already_complete", "job_id": job_id}, (
+        f"the attempt must say the turn was already answered: {result!r}"
+    )
+    assert _claim_is_free(job_id), (
+        "the attempt stopped on the second read guard and kept the claim"
     )

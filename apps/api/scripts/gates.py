@@ -282,7 +282,7 @@ LIZARD_BASELINE = {
     ("app/worker/tasks/runtime/agent.py", "_persist_messages"): (2, 73),
     ("app/worker/tasks/runtime/agent.py", "_resolve_turn_prompt_version"): (5, 70),
     ("app/worker/tasks/runtime/agent.py", "_write_turn_metrics"): (1, 65),
-    ("app/worker/tasks/runtime/agent.py", "run_agent_turn"): (20, 478),
+    ("app/worker/tasks/runtime/agent.py", "run_agent_turn"): (20, 474),
     ("app/worker/tasks/runtime/bench.py", "promote_trace_to_scenario"): (12, 164),
     ("app/worker/tasks/runtime/confirmations.py", "resolve_approved_confirmation"): (5, 111),
     ("app/worker/tasks/runtime/deployment.py", "_dispatch_eval_run"): (2, 62),

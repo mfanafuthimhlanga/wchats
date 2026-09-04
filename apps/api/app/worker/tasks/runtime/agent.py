@@ -1091,51 +1091,47 @@ def run_agent_turn(
         if answered is not None:
             return answered
 
-        # ------------------------------------------------------------------
-        # Fetch agent from control DB — required for soul fields, retrieval
-        # strategy, and the encrypted neon_connection_string.
-        # ------------------------------------------------------------------
-        agent = db.get(Agent, agent_id)
-        if agent is None:
-            claim.close()
-            log.error(
-                "run_agent_turn.agent_not_found",
-                job_id=job_id,
-                agent_id=agent_id,
-            )
-            return {}
-
-        # ------------------------------------------------------------------
-        # Fetch job from control DB — required to update status on completion.
-        # ------------------------------------------------------------------
-        job = db.get(Job, job_id)
-        if job is None:
-            claim.close()
-            log.error("run_agent_turn.job_not_found", job_id=job_id)
-            return {}
-
-        # ------------------------------------------------------------------
-        # Decrypt connection string at runtime — NEVER in task args (CTL-08).
-        # conn_str is intentionally not logged.
-        # ------------------------------------------------------------------
-        conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
-
-        # PROD-05: open ONE pooled tenant-DB connection for all per-turn read and
-        # write helpers (_create_conversation_row, _validate_conversation_owner,
-        # _read_turn_history, _persist_messages).  Reduces connection churn
-        # from 4 opens/closes per turn to 1.  Uses the pooled endpoint
-        # (agent.neon_connection_string) — PgBouncer transaction-mode
-        # compatible: no named prepared statements, no SET session vars.
-        #
-        # The connect is INSIDE the try. It used to sit outside it, and a
-        # suspended endpoint is the NORMAL state of a tenant DB idle for ~5
-        # minutes — so the first message of every conversation landed on a
-        # psycopg2.OperationalError that escaped this task's own except entirely:
-        # no retry, no agent.failed, zero job_events, and a widget waiting on a
-        # job that had already died. Observed on three live jobs, 2026-08-16.
-        # Both are read in the `finally`, which runs even when the connect failed.
+        # Every exit from here on releases the claim, and every failure reaches
+        # the customer, because the `try` starts here rather than three
+        # statements down. See `_release_turn` for what that stretch used to
+        # leak.
         tenant_conn, turn = None, None
         try:
+            # --------------------------------------------------------------
+            # Fetch agent from control DB — required for soul fields, retrieval
+            # strategy, and the encrypted neon_connection_string.
+            # --------------------------------------------------------------
+            agent = db.get(Agent, agent_id)
+            if agent is None:
+                log.error(
+                    "run_agent_turn.agent_not_found",
+                    job_id=job_id,
+                    agent_id=agent_id,
+                )
+                return {}
+
+            # --------------------------------------------------------------
+            # Fetch job from control DB — required to update status on completion.
+            # --------------------------------------------------------------
+            job = db.get(Job, job_id)
+            if job is None:
+                log.error("run_agent_turn.job_not_found", job_id=job_id)
+                return {}
+
+            # --------------------------------------------------------------
+            # Decrypt connection string at runtime — NEVER in task args (CTL-08).
+            # conn_str is intentionally not logged.
+            # --------------------------------------------------------------
+            conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
+
+            # PROD-05: ONE pooled tenant-DB connection for every per-turn read
+            # and write helper, down from four opens and closes. PgBouncer
+            # transaction-mode compatible: no named prepared statements, no SET
+            # session vars. A suspended endpoint is the NORMAL state of a tenant
+            # DB idle for ~5 minutes, so the first message of every conversation
+            # landed here on a psycopg2.OperationalError; it is inside the try
+            # because outside it that escaped the task's own except entirely and
+            # a widget waited on a job that had died. Three live jobs, 2026-08-16.
             tenant_conn = psycopg2.connect(
                 conn_str, connect_timeout=settings.TENANT_DB_CONNECT_TIMEOUT_S
             )
