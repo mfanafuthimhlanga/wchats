@@ -3094,6 +3094,30 @@ CONTROL_PROBE_URL = os.getenv(
     + "/wchats_tenant_probe",
 )
 
+class _StaleRead:
+    """The session of a trigger still carrying a row another trigger has reaped.
+
+    The guard reads, decides and writes in three steps, and the race lives in the
+    gap: two triggers SELECT the same stale row, then serialise on the UPDATE.
+    Only the SELECT is answered from the past here; every write goes to the real
+    session, so the loser's reap meets the row in the state the winner left it.
+    """
+
+    def __init__(self, db, row):
+        self._db = db
+        self._row = row
+
+    def execute(self, statement, *args, **kwargs):
+        if statement.is_select:
+            result = MagicMock()
+            result.scalar_one_or_none.return_value = self._row
+            return result
+        return self._db.execute(statement, *args, **kwargs)
+
+    def commit(self):
+        self._db.commit()
+
+
 #: What `running_runs_since` answers for a tenant DB that was read and holds
 #: nothing of this agent's still going. Named so the guard's default case is
 #: legible beside the two that are not: `None` for a tenant DB that could not be
@@ -3427,6 +3451,34 @@ class TestTheIdempotencyGuardKeysOnTheRunNotTheClock:
             "this row was closed out by the trigger that got here first, and a "
             "reap reporting success sends this one on to insert a second live "
             "checklist for the agent"
+        )
+
+    def test_the_guard_reads_a_reap_that_wrote_nothing_as_a_live_run(self, session):
+        """`_reap`'s answer has to REACH the caller, not just be correct.
+
+        The test above proves the fenced UPDATE returns False to the loser of the
+        race. This proves the guard acts on it. A guard that called `_reap` and
+        then decided on its own would let the loser through to insert a second
+        live checklist, and every assertion about the fence would still pass.
+        """
+        agent_id = uuid.uuid4()
+        stale = self._stale_s()
+        run = self._row(session, agent_id, age_s=stale + 60, beat_age_s=stale)
+
+        # Trigger A reads the row, finds it silent with neither job running, and
+        # reaps it. It goes on to insert its own, which holds 0021's index now.
+        assert self._guard(session, agent_id) is False, (
+            "the first trigger through finds an abandoned row and closes it"
+        )
+
+        # Trigger B SELECTed the same row before any of that happened. Its reap
+        # meets a row that no longer says 'running' and writes nothing, and that
+        # zero-row answer is the only thing telling it the agent is taken.
+        assert self._guard(_StaleRead(session, run), agent_id) is True, (
+            "this trigger's reap wrote nothing because another trigger had "
+            "already closed the row and its own fresh run holds the agent; "
+            "reading that as an abandoned row sends this one on to insert a "
+            "second live checklist"
         )
 
 

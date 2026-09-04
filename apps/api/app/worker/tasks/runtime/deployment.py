@@ -1284,8 +1284,10 @@ def _failed_and_handed_back(task, agent_id: str, run_id: str, exc: Exception) ->
     """Close the run out and hand the message back to the broker if it can be.
 
     The two places the task's own failures land say exactly this, so they say it
-    once. `task.retry()` returns the exception to raise rather than raising it,
-    and raising it from here propagates out of the task body unchanged.
+    once. `Task.retry` RAISES `celery.exceptions.Retry` itself, so the `raise` in
+    front of it never runs; it is written that way because `retry(throw=False)`
+    would return the exception instead, and because a reader has to see at the
+    call site that this branch does not come back.
     """
     _persist_failed(agent_id, run_id, exc)
     if task.request.retries < task.max_retries:
