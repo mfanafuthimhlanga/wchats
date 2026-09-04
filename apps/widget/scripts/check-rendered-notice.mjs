@@ -34,11 +34,13 @@
 // finding and exit 1. When the bar never appears it says so, names the file to
 // check, and exits 1.
 //
-// It opens two viewports, because the frame is not one size. embed/widget.js:72
-// makes the frame 100vw below a 480px screen, so on a 360px phone the frame is
-// 360px wide and anything the widget draws past that is outside it, where no
-// measurement taken at 380 can see it (#114). The 360px run is the one that
-// catches a root pinned to a width the frame does not have.
+// It opens five viewports, because the frame is not one size. embed/widget.js:72
+// makes the frame 100vw below a 480px screen, so the frame is as wide as the
+// phone: 360, 390, 412, 430, up to 480. Anything the widget draws past that
+// edge is outside the frame, where no measurement taken at 380 can see it
+// (#114), and anything it stops short of leaves the iframe's own white ground
+// showing beside it. Both are measured here, on the horizontal axis, against
+// the frame edge.
 
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, join, relative } from 'node:path'
@@ -51,14 +53,21 @@ const REPO_ROOT = join(WIDGET_ROOT, '..', '..')
 const DIST = join(WIDGET_ROOT, 'dist')
 const EMBED_PAGE = join(WIDGET_ROOT, 'embed', 'index.html')
 
-// Both frames embed/widget.js can build. 380x600 is the desktop iframe it sizes
-// at :67, and 360x640 is a common phone below the 480px breakpoint at :72,
-// where the frame becomes 100vw and the widget has to come with it. The printed
-// numbers are therefore the ones a Customer's frame really produces, at both
-// sizes a Customer really gets.
+// The frames embed/widget.js can build. 380x600 is the desktop iframe it sizes
+// at :67, and everything under it is a phone below the 480px breakpoint at :72,
+// where the frame becomes 100vw and the widget has to come with it, up as well
+// as down. 360 and 480 are the ends of that band and 390 and 412 are an iPhone
+// 14 and a Pixel 7, which is where `min(380px, 100vw)` left a 32px strip of the
+// iframe's own white beside the widget: at 380 and at 360 the old rule and the
+// new one compute the same number, so neither run could see it. The printed
+// numbers are the ones a Customer's frame really produces, at sizes a Customer
+// really gets.
 const VIEWPORTS = [
   { width: 380, height: 600, label: 'the 380px desktop frame' },
   { width: 360, height: 640, label: 'a 360px phone frame' },
+  { width: 390, height: 844, label: 'a 390px iPhone 14 frame' },
+  { width: 412, height: 800, label: 'a 412px Pixel 7 frame' },
+  { width: 480, height: 800, label: 'a 480px frame, the widest the loader makes 100vw' },
 ]
 
 // Port 9 is discard. Nothing listens, and page.route aborts the request before
@@ -154,6 +163,15 @@ async function measure(browser, viewport) {
 
     const barBox = bar.getBoundingClientRect()
 
+    // The two boxes that carry the widget's width. The bar is a row inside
+    // them, so a root narrower than the frame moves the bar's right edge in
+    // with it and every bar assertion still passes.
+    const boxOf = (el) => {
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return { left: r.left, right: r.right, width: r.width }
+    }
+
     return {
       children: Array.from(bar.children, readChild),
       barHeight: barBox.height,
@@ -172,6 +190,8 @@ async function measure(browser, viewport) {
       // one, and this number says so in one place.
       docScrollWidth: document.documentElement.scrollWidth,
       viewportWidth: window.innerWidth,
+      root: boxOf(document.getElementById('root')),
+      widgetRoot: boxOf(document.querySelector('.widget-root')),
     }
   })
 }
@@ -277,6 +297,47 @@ if (m.barLeft < -0.5) {
   )
 }
 
+// The frame is the width, and the widget fills it. #114 fixed the narrow half
+// of this and left the wide one: `min(380px, 100vw)` followed the frame down
+// and not up, so a 412px Pixel got a 380px widget and a 32px strip of the
+// iframe's own white down the full height, since embed/index.html paints a
+// transparent body over `background:#fff`. Nothing already measured here could
+// see it. Everything the widget drew fitted, the document did not scroll, and
+// the bar's right edge moved in with the root it sits in. The frame edge is the
+// reference, in both directions.
+for (const [name, box] of [['#root', m.root], ['.widget-root', m.widgetRoot]]) {
+  if (box === null) {
+    note(
+      `${name} never rendered, so the frame's width was measured against nothing. ` +
+      'Check that the bundle mounts and that src/widget.css still names it'
+    )
+    continue
+  }
+
+  if (box.right < m.viewportWidth - 0.5) {
+    note(
+      `${name} stops ${round(m.viewportWidth - box.right)}px short of the frame's right ` +
+      `edge, right ${round(box.right)}px in a ${m.viewportWidth}px frame, so that strip is ` +
+      'the iframe\'s own white ground beside the widget, down its full height'
+    )
+  }
+
+  if (box.right > m.viewportWidth + 0.5) {
+    note(
+      `${name} reaches ${round(box.right - m.viewportWidth)}px past the frame's right edge, ` +
+      `right ${round(box.right)}px in a ${m.viewportWidth}px frame, so that much of every row ` +
+      'is clipped'
+    )
+  }
+
+  if (Math.abs(box.left) > 0.5) {
+    note(
+      `${name} starts at ${round(box.left)}px rather than the frame's left edge, so the ` +
+      'widget is offset inside its own frame'
+    )
+  }
+}
+
 if (m.docScrollWidth > m.viewportWidth) {
   note(
     `the widget is wider than its frame, document scrollWidth ` +
@@ -296,6 +357,11 @@ console.log(
   `${gutter}left ${round(m.barLeft)}px and right ${round(m.barRight)}px within a ` +
   `${m.viewportWidth}px frame, document scrollWidth ${m.docScrollWidth}px`
 )
+for (const [name, box] of [['#root', m.root], ['.widget-root', m.widgetRoot]]) {
+  const edges =
+    box === null ? 'never rendered' : `left ${round(box.left)}px and right ${round(box.right)}px`
+  console.log(`  ${name.padEnd(14)}  ${edges} within a ${m.viewportWidth}px frame`)
+}
 for (const child of m.children) {
   console.log(`  ${child.name.padEnd(14)}  "${child.text}"`)
   console.log(
