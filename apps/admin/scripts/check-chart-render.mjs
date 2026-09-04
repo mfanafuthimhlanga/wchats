@@ -279,6 +279,13 @@ const src = join(work, 'src')
 const out = join(work, 'out')
 mkdirSync(src)
 
+// Every way out of this file from here down goes through clean(). A red
+// compile used to exit inside its own catch, above the try/finally that
+// removes this directory, so a TelemetryChart.tsx that did not build left a
+// wchats-chart-render-* folder in the OS temp holding a copy of the two
+// sources, one per run.
+const clean = () => rmSync(work, { recursive: true, force: true })
+
 for (const file of ['evalSeries.ts', 'TelemetryChart.tsx']) copyFileSync(join(EVAL_DIR, file), join(src, file))
 
 writeFileSync(
@@ -309,6 +316,7 @@ try {
       'so nothing was rendered:\n' +
       String(error.stdout || error.message),
   )
+  clean()
   process.exit(1)
 }
 
@@ -528,7 +536,7 @@ try {
   }
 } finally {
   await browser.close()
-  rmSync(work, { recursive: true, force: true })
+  clean()
 }
 
 const findings = []
