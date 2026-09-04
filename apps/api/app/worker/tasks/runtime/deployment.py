@@ -1446,18 +1446,57 @@ def _persist_complete(
         )
 
 
-def _failed_and_handed_back(task, agent_id: str, run_id: str, exc: Exception) -> dict:
-    """Close the run out and hand the message back to the broker if it can be.
+def _failed_and_handed_back(task, agent_id: str, state: dict, exc: Exception) -> dict:
+    """Hand this pass back on the number the row now holds, or close the run out.
 
     The two places the task's own failures land say exactly this, so they say it
     once. `Task.retry` RAISES `celery.exceptions.Retry` itself, so the `raise` in
     front of it never runs; it is written that way because `retry(throw=False)`
     would return the exception instead, and because a reader has to see at the
     call site that this branch does not come back.
+
+    THE RETRY CARRIES THE STATE THIS PASS ENDED ON, NOT THE ONE IT ARRIVED WITH
+    (#124). `Task.retry` re-sends the message's own kwargs by default, and the
+    message carries the pass number the row held BEFORE this pass beat on it. The
+    beat IS the claim: it advances the counter every continuation is fenced on,
+    so by the time a pass fails the number in its message is one behind the row,
+    and a retry sent on it is refused by the very fence that stops a redelivered
+    twin. The chain's own retry looked exactly like a fork of itself. `state`
+    holds the number the beat took, so the retry claims cleanly, and `args=[]`
+    goes with it because a kwargs-only retry otherwise keeps the original
+    message's positional agent_id and passes it twice.
+
+    THE ROW STAYS 'running' WHILE AN ATTEMPT IS STILL TO COME. Closing the run
+    out as 'failed' and then asking for a retry says two things that cannot both
+    be true, and the fence is on the status as well, so the retry could not have
+    claimed the row even carrying the right number. A run with an attempt left is
+    running; it lands 'failed' when the attempts are spent. If the retry never
+    arrives, the beat this pass already wrote is what the staleness guard reads,
+    and the guard reaps it — which is what the guard is for.
+
+    A FIRST PASS IS HANDED BACK AS A CONTINUATION for the same reason. Its run
+    row exists and both jobs are already dispatched, so resuming that run is the
+    honest retry; starting over would insert a second row and dispatch a second
+    eval and a second red-team run for one checklist.
     """
-    _persist_failed(agent_id, run_id, exc)
+    run_id = state["run_id"]
     if task.request.retries < task.max_retries:
-        raise task.retry(exc=exc, countdown=2 ** task.request.retries)
+        log.warning(
+            "run_deployment_checklist.pass_handed_back",
+            agent_id=agent_id,
+            run_id=run_id,
+            pass_no=state["pass_no"],
+            attempts_spent=task.request.retries + 1,
+            error_type=type(exc).__name__,
+            error=str(exc) or repr(exc),
+        )
+        raise task.retry(
+            exc=exc,
+            countdown=2 ** task.request.retries,
+            args=[],
+            kwargs={"agent_id": agent_id, "wait_state": state},
+        )
+    _persist_failed(agent_id, run_id, exc)
     return {}
 
 
@@ -1588,7 +1627,7 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
     try:
         verdict = _compute_verdict(agent_id, conn_str, state)
     except Exception as exc:
-        return _failed_and_handed_back(self, agent_id, run_id, exc)
+        return _failed_and_handed_back(self, agent_id, state, exc)
 
     # ------------------------------------------------------------------
     # Step 5 - the narration turn, under ORCHESTRATOR_TIMEOUT_S. The shim awaits
@@ -1691,7 +1730,7 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
         # read. What reaches this block is a record read that raised, a decide()
         # refusal, or a control-DB write that failed, and none reached a decision.
         # ------------------------------------------------------------------
-        return _failed_and_handed_back(self, agent_id, run_id, exc)
+        return _failed_and_handed_back(self, agent_id, state, exc)
 
 
 def _orchestrator_ledger(

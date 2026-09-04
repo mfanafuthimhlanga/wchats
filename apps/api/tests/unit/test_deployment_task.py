@@ -2683,7 +2683,13 @@ class TestTheVerdictIsComputedFromTheRecords:
 
 
 class TestATaskFailureBeforeTheVerdictStillFails:
-    """status='failed' is reserved for this, and only this (#54 criterion 5)."""
+    """status='failed' is reserved for this, and only this (#54 criterion 5).
+
+    The row is closed out on the LAST attempt, not the first. A pass with an
+    attempt still to come stays 'running' so its own retry can claim the row it
+    is retrying, which is why this drives the task with its retries already
+    spent (#124).
+    """
 
     def test_a_record_read_that_raises_marks_the_run_failed(self):
         from celery.exceptions import Retry
@@ -2741,10 +2747,15 @@ class TestATaskFailureBeforeTheVerdictStillFails:
                     "_compute_verdict", side_effect=RuntimeError("tenant DB unreachable")
                 )
             )
+            run_deployment_checklist.push_request(
+                retries=run_deployment_checklist.max_retries
+            )
             try:
                 run_deployment_checklist.run(agent_id=agent_id)
             except (Retry, RuntimeError):
                 pass
+            finally:
+                run_deployment_checklist.pop_request()
 
         assert mock_run.status == "failed", (
             "the decision was never reached, so there is nothing to complete on"
@@ -4377,3 +4388,139 @@ class TestTheKnowledgeCollectorsRefuseLikeTheGatedTwo:
 
         assert told["verified_qa_stats"]["row_count"] is None
         assert told["corpus_stats"]["document_count"] is None
+
+
+class TestAFailedPassIsHandedBackOnANumberTheRowWillMatch:
+    """A retried pass has to be able to claim the row it is retrying (#124).
+
+    `Task.retry` re-sends the message's OWN kwargs, and the message carries the
+    pass number the row held BEFORE this pass beat on it. The beat is the claim:
+    it advances the counter every continuation is fenced on, so by the time the
+    pass fails the number in the message is one behind the row and the retry is
+    refused by the very fence that stops a redelivered twin. The chain's own
+    retry looked exactly like a fork of it, stopped, and the run was left for the
+    staleness reap.
+
+    The row's status is the other half. Closing the run out as 'failed' and then
+    asking for a retry says two things that cannot both be true, and the fence is
+    on the status as well, so the retry could not have claimed even carrying the
+    right number. A run with an attempt still to come is running; it lands
+    'failed' when the attempts are spent.
+    """
+
+    def setup_method(self):
+        self.db, self.run = _build_full_happy_path_mock_db("run-1")
+        self.run.heartbeat_at = None
+        self.run.pass_no = 0
+        self.agent_id = str(uuid.uuid4())
+
+    def _drive(self, wait_state, handed_back):
+        """One post-wait pass whose decision raises, with its retry captured."""
+        from celery.exceptions import Retry
+
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        def _retry(*_args, **kwargs):
+            handed_back.append(kwargs)
+            raise Retry("handed back to the broker")
+
+        with ExitStack() as stack:
+            for one in [
+                _deployment_patch("get_sync_db", new=_make_sync_db_ctx(self.db)),
+                _deployment_patch(
+                    "fernet_decrypt", return_value="postgresql://test/tenant"
+                ),
+                _deployment_patch(
+                    "latest_eval_run_status_since", return_value="complete"
+                ),
+                _deployment_patch(
+                    "latest_red_team_run_status_since", return_value="complete"
+                ),
+                _deployment_patch("_requeue_wait", return_value=True),
+                _deployment_patch(
+                    "_collect_signals",
+                    return_value={
+                        "eval_summary": {},
+                        "red_team_summary": {},
+                        "verified_qa_stats": {},
+                        "corpus_stats": {},
+                        "blast_radius": {},
+                    },
+                ),
+                _deployment_patch("_envelope_hash", return_value="hash"),
+                _deployment_patch(
+                    "_compute_verdict",
+                    side_effect=RuntimeError("the record read fell over"),
+                ),
+                patch.object(run_deployment_checklist, "retry", side_effect=_retry),
+            ]:
+                stack.enter_context(one)
+            with pytest.raises(Retry):
+                run_deployment_checklist.run(
+                    agent_id=self.agent_id, wait_state=wait_state
+                )
+
+    def test_the_retry_carries_the_pass_number_the_beat_advanced_to(self):
+        """What goes back to the broker names the number the row now holds."""
+        handed_back: list = []
+
+        self._drive(_continuation_state("run-1", pass_no=0), handed_back)
+
+        assert self.run.pass_no == 1, (
+            f"the pass never beat on the row, so this test proves nothing: "
+            f"{self.run.pass_no}"
+        )
+        resent = handed_back[0].get("kwargs")
+        assert resent is not None, (
+            "the retry re-sent the message's own kwargs, which carry the pass "
+            "number this pass already spent"
+        )
+        assert resent["wait_state"]["pass_no"] == 1, (
+            "the retry carries pass "
+            f"{resent['wait_state']['pass_no']} while the row holds "
+            f"{self.run.pass_no}; the fence that stops a redelivered fork stops "
+            "the chain's own retry too"
+        )
+        assert resent["agent_id"] == self.agent_id
+
+    def test_the_row_stays_claimable_while_an_attempt_is_still_to_come(self):
+        """The retry beats on the row and takes the next pass, like any continuation."""
+        handed_back: list = []
+
+        self._drive(_continuation_state("run-1", pass_no=0), handed_back)
+        assert self.run.status == "running", (
+            f"the run was closed out as {self.run.status!r} and then retried; "
+            "the fence is on the status too, so the retry can never claim it"
+        )
+
+        self._drive(handed_back[0]["kwargs"]["wait_state"], handed_back)
+
+        assert self.run.pass_no == 2, (
+            "the retried pass was refused the row and stopped, so this checklist "
+            f"never retried at all: pass_no={self.run.pass_no}"
+        )
+
+    def test_the_run_is_closed_out_once_the_attempts_are_spent(self):
+        """The last attempt is where 'failed' belongs, and it still lands there."""
+        from app.worker.tasks.runtime.deployment import (
+            _failed_and_handed_back,
+            run_deployment_checklist,
+        )
+
+        spent = MagicMock()
+        spent.request.retries = run_deployment_checklist.max_retries
+        spent.max_retries = run_deployment_checklist.max_retries
+
+        with _deployment_patch("get_sync_db", new=_make_sync_db_ctx(self.db)):
+            result = _failed_and_handed_back(
+                spent,
+                self.agent_id,
+                _continuation_state("run-1", pass_no=1),
+                RuntimeError("the last attempt fell over too"),
+            )
+
+        assert result == {}
+        assert self.run.status == "failed", (
+            "a checklist with no attempts left has to close its own row, or the "
+            f"guard is the only thing that will: {self.run.status!r}"
+        )
