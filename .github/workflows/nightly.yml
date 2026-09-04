@@ -168,6 +168,44 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # FIRST, ahead of every toolchain. This step used to sit twelfth of sixteen,
+      # after Python, pnpm, Node 22, a Chromium headless shell, two `pnpm install`
+      # runs, a widget build and a control-DB migration had all run, and only then
+      # did the job discover it had nothing to drive.
+      - name: Resolve the eval target
+        # The three names this job needs to drive an agent. This job's own Postgres
+        # is migrated at job start and holds no tenant and no agent, so there is no
+        # local fallback: absent any of the three the run measures nothing (#147).
+        #
+        # IT FAILS. It used to publish `ready=0`, exit 0 and let every downstream
+        # step skip, which made the job conclusion `success` over zero evals. That
+        # is the false reading `scripts/assert_tests_ran.py` forbids one step down,
+        # and it is no better one job up: a gate over zero observations is unknown,
+        # never pass. A red scheduled nightly is the honest state until
+        # STAGING_AGENT_BASE_URL, EVAL_DEMO_AGENT_ID and EVAL_DEMO_API_KEY exist on
+        # the `wchats / staging` environment.
+        #
+        # BLANK COUNTS AS MISSING. `[ -z "$VAR" ]` is false for "   ", so a variable
+        # holding spaces published a target, and the wait step then curled
+        # "   /health" and died sixty seconds later on the symptom this step exists
+        # to name.
+        run: |
+          missing=""
+          require() {
+            if [ -z "$(printf '%s' "$2" | tr -d '[:space:]')" ]; then
+              missing="$missing $1"
+            fi
+          }
+          require "STAGING_AGENT_BASE_URL(variable)" "$AGENT_BASE_URL"
+          require "EVAL_DEMO_AGENT_ID(secret)" "$AGENT_ID"
+          require "EVAL_DEMO_API_KEY(secret)" "$API_KEY"
+          if [ -n "$missing" ]; then
+            echo "The 'wchats / staging' environment is missing:$missing"
+            echo "This job drives a provisioned, ingested agent on staging (#147). It has no agent of its own to fall back to, so it fails here rather than reporting a green check over zero evals."
+            exit 1
+          fi
+          echo "Driving $AGENT_BASE_URL"
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
@@ -217,34 +255,10 @@ jobs:
         working-directory: apps/api
         run: alembic -c alembic.ini upgrade head
 
-      - name: Resolve the eval target
-        # The three names this job needs to drive an agent. Absent any of them
-        # there is nothing to capture against, and a job that says which name is
-        # missing beats one that fails two steps later inside capture_responses.py.
-        #
-        # This job starts no API of its own any more. It used to run uvicorn and a
-        # worker against its own fresh Postgres, and then hand capture_responses.py
-        # an agent id from a secret that no row in that database could match (#147).
-        id: target
-        run: |
-          missing=""
-          [ -z "$AGENT_BASE_URL" ] && missing="$missing STAGING_AGENT_BASE_URL(variable)"
-          [ -z "$AGENT_ID" ] && missing="$missing EVAL_DEMO_AGENT_ID(secret)"
-          [ -z "$API_KEY" ] && missing="$missing EVAL_DEMO_API_KEY(secret)"
-          if [ -n "$missing" ]; then
-            echo "ready=0" >> $GITHUB_OUTPUT
-            echo "SKIPPING the capture and the eval suite. The 'wchats / staging' environment is missing:$missing"
-            echo "This job drives a provisioned, ingested agent on staging (#147). It has no agent of its own to fall back to, so it reports nothing rather than reporting a pass over nothing."
-          else
-            echo "ready=1" >> $GITHUB_OUTPUT
-            echo "Driving $AGENT_BASE_URL"
-          fi
-
       - name: Wait for the eval target to be ready
         # A loop that runs out and moves on lets the next step fail on a symptom
         # ("Capture eval responses" against nothing) while the cause, an
         # unreachable target, scrolled past. The step that can name the cause fails.
-        if: steps.target.outputs.ready == '1'
         run: |
           ready=0
           for i in $(seq 1 20); do
@@ -262,12 +276,10 @@ jobs:
           fi
 
       - name: Capture eval responses
-        if: steps.target.outputs.ready == '1'
         working-directory: apps/api
         run: python tests/evals/capture_responses.py --overwrite
 
       - name: Run full eval suite (LLM-judged D1/D2/D3/D4/D8 + deterministic)
-        if: steps.target.outputs.ready == '1'
         working-directory: apps/api
         # -rs so a skip states its reason, and the junit assertion so a run that
         # asserted nothing cannot report a pass. Run 33150722736 reported success

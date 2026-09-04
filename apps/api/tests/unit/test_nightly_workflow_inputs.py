@@ -16,7 +16,10 @@ it to `$GITHUB_ENV` with `echo "NAME=..."`.
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -128,47 +131,148 @@ def test_each_job_declares_the_environment_that_holds_its_secrets(job_id: str) -
     )
 
 
-TARGET_GATE = "steps.target.outputs.ready == '1'"
+#: The step that decides whether this job has anything to drive.
+RESOLVE_STEP = "Resolve the eval target"
+
+#: The three names, and the environment variable each one arrives as.
+TARGET_NAMES = [
+    ("AGENT_BASE_URL", "STAGING_AGENT_BASE_URL"),
+    ("AGENT_ID", "EVAL_DEMO_AGENT_ID"),
+    ("API_KEY", "EVAL_DEMO_API_KEY"),
+]
+
+PRESENT = {
+    "AGENT_BASE_URL": "https://staging.example.test",
+    "AGENT_ID": "agent-0000",
+    "API_KEY": "vrd_key_0000",
+}
 
 
-def test_the_eval_job_drives_staging_and_skips_when_staging_is_unset() -> None:
+def run_resolve(**overrides: str) -> subprocess.CompletedProcess:
+    """Execute the resolve step's OWN script, under the shell GitHub gives it.
+
+    Reading the YAML for a substring says the file mentions `exit 1`. Running the
+    script says what it does with a value, which is what both defects here were
+    about: an empty variable that exits 0, and a whitespace variable that reads as
+    present. ubuntu-latest runs a `run:` block as
+    `bash --noprofile --norc -eo pipefail`, so that is the shell used here.
+    """
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("no bash on PATH, so the step's own script cannot be executed here")
+    env = {**os.environ, **PRESENT, **overrides}
+    return subprocess.run(
+        [bash, "--noprofile", "--norc", "-eo", "pipefail", "-c",
+         step(NIGHTLY, "eval-full", RESOLVE_STEP)["run"]],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_the_eval_job_drives_staging() -> None:
     """The eval job's own database can never hold the agent its secret names (#147).
 
     `capture_responses.py` needs a provisioned, ingested agent. The Postgres
     service beside this job is migrated at job start and holds no tenant and no
     agent, so `EVAL_DEMO_AGENT_ID` names nothing there whatever the secret holds.
-    The target is staging, and absent the staging variable the job says so and
-    reports nothing rather than failing inside the capture script.
     """
     job = workflow()["jobs"]["eval-full"]
     assert job["env"]["AGENT_BASE_URL"] == "${{ vars.STAGING_AGENT_BASE_URL }}", (
         "the eval job points AGENT_BASE_URL back at its own container, which holds "
         "no provisioned agent"
     )
-
-    steps = job["steps"]
-    resolve = [s for s in steps if s.get("id") == "target"]
-    assert len(resolve) == 1, "the eval-full job has exactly one target-resolution step"
-    run = resolve[0]["run"]
-    assert "ready=0" in run and "ready=1" in run, (
-        "the resolution step publishes no ready output, so nothing downstream can skip"
-    )
-    assert "SKIPPING" in run, "a skip that prints no reason is indistinguishable from a pass"
-
-    gated = {str(s.get("name")) for s in steps if s.get("if") == TARGET_GATE}
-    needs_an_agent = {
-        "Capture eval responses",
-        "Run full eval suite (LLM-judged D1/D2/D3/D4/D8 + deterministic)",
-        "Wait for the eval target to be ready",
-    }
-    assert needs_an_agent <= gated, (
-        f"these steps drive an agent that may not exist and are not gated on "
-        f"{TARGET_GATE}: {sorted(needs_an_agent - gated)}"
-    )
-
-    assert not [s for s in steps if "uvicorn" in str(s.get("run", ""))], (
+    assert not [s for s in job["steps"] if "uvicorn" in str(s.get("run", ""))], (
         "the eval job starts an API of its own again; it drives staging, and a "
         "local server here only hides which target the capture actually reached"
+    )
+
+
+def test_a_resolvable_target_lets_the_job_run() -> None:
+    """All three present is the only case that continues."""
+    result = run_resolve()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert PRESENT["AGENT_BASE_URL"] in result.stdout
+
+
+@pytest.mark.parametrize("variable, published_name", TARGET_NAMES)
+def test_a_missing_name_fails_the_job_and_says_which(variable: str, published_name: str) -> None:
+    """A job that cannot drive anything reports red, never a green check.
+
+    WHAT WENT WRONG WITHOUT IT. The step published `ready=0`, exited 0, and every
+    downstream step skipped, so the job conclusion was `success` over zero evals.
+    None of `STAGING_AGENT_BASE_URL`, `EVAL_DEMO_AGENT_ID` or `EVAL_DEMO_API_KEY`
+    exists on this repository or on the `wchats / staging` environment, so that
+    was every scheduled run. It is the same false reading
+    `scripts/assert_tests_ran.py` forbids one step down: a gate over zero
+    observations is unknown, never pass.
+    """
+    result = run_resolve(**{variable: ""})
+
+    assert result.returncode == 1, (
+        f"{variable} is unset and the step exited {result.returncode}. Every "
+        f"downstream step then skips and the job reports success over zero evals."
+        f"\n{result.stdout}{result.stderr}"
+    )
+    assert published_name in result.stdout, (
+        f"the step failed without naming {published_name}, so the log does not say "
+        f"which of the three to go and set:\n{result.stdout}"
+    )
+    for _, other in TARGET_NAMES:
+        if other != published_name:
+            assert other not in result.stdout, (
+                f"the step names {other} as missing when only {published_name} is"
+            )
+
+
+@pytest.mark.parametrize("variable, published_name", TARGET_NAMES)
+def test_a_blank_name_counts_as_missing(variable: str, published_name: str) -> None:
+    """`[ -z "$VAR" ]` is false for "   ", and blank is not a target.
+
+    A whitespace-only variable used to publish `ready=1` and print `Driving    `.
+    The wait step then curled `   /health` for sixty seconds and failed on the
+    symptom, which is the failure shape this step exists to prevent.
+    """
+    result = run_resolve(**{variable: "   "})
+
+    assert result.returncode == 1, (
+        f"{variable} holds whitespace and the step accepted it as a target:"
+        f"\n{result.stdout}{result.stderr}"
+    )
+    assert published_name in result.stdout
+
+
+def test_the_resolve_step_runs_before_the_toolchains() -> None:
+    """Nothing is installed before the job knows it has something to drive.
+
+    This step used to sit twelfth of sixteen. Python, pnpm, Node 22, a Chromium
+    headless shell, two `pnpm install` runs, a widget build and a control-DB
+    migration all ran first, and then the job discovered there was no target.
+    """
+    names = [str(s.get("name")) for s in workflow()["jobs"]["eval-full"]["steps"]]
+    assert names[0] == "Checkout"
+    assert names[1] == RESOLVE_STEP, (
+        f"the eval job does {names[1:names.index(RESOLVE_STEP)]} before it checks "
+        f"whether it has a target at all"
+    )
+
+
+def test_no_step_skips_itself_on_a_readiness_flag() -> None:
+    """The skip mechanism is gone, not disabled. A future edit may not restore it.
+
+    An `if:` gate on a resolve-step output is how the green-over-nothing run was
+    built: the step exits 0, the gates evaluate false, and GitHub reports every
+    skipped step as a success.
+    """
+    job = workflow()["jobs"]["eval-full"]
+    gated = {str(s.get("name")): s["if"] for s in job["steps"] if s.get("if")}
+    assert not gated, (
+        f"these eval steps skip themselves instead of the job failing: {gated}"
+    )
+    resolve = step(NIGHTLY, "eval-full", RESOLVE_STEP)
+    assert "$GITHUB_OUTPUT" not in resolve["run"], (
+        "the resolve step publishes an output again, and the only thing an output "
+        "here has ever been used for is skipping the steps that do the work"
     )
 
 
