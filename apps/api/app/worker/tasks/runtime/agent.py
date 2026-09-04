@@ -13,10 +13,15 @@ the loop resumes from, the persisted messages, the telemetry and the validation
 chain. The PII firewall was on that list until #50 moved it into the seam, where
 the eval path cannot skip it; what is left here is the two log lines it writes.
 
-Idempotency mechanism:
+Idempotency mechanism (two guards, and they answer different questions):
     READ guard on job_events: if an "agent.response" row already exists for this
     job_id, the task returns immediately, so a retry costs no duplicate model
-    calls and no duplicate SSE events.
+    calls and no duplicate SSE events. It is SEQUENTIAL-ONLY, which is #85: a
+    redelivery that arrives while the first attempt is still running reads no
+    response row, because the first attempt has not written one yet.
+    CLAIM on a control-DB advisory lock keyed on the job id, held for the whole
+    turn: a second attempt is refused the key and returns without calling a
+    model. `_claimed_turn` takes both, in that order.
 
 Security constraints (CLAUDE.md non-negotiable rules):
     - Task args: (job_id, agent_id, message, conversation_id) ONLY.
@@ -44,6 +49,7 @@ Queue: runtime (CLAUDE.md non-negotiable: both Celery queues always present)
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -889,6 +895,100 @@ def _retry_countdown(exc: Exception, retries: int) -> int:
     return 2 ** retries
 
 
+def _turn_lock_key(job_id: str) -> int:
+    """The one 64-bit number every delivery of this turn asks Postgres for.
+
+    Derived from the job id rather than drawn from a sequence, so two deliveries
+    of one message compute the same key without sharing any state. Sixty-four
+    bits over a namespaced digest keeps two unrelated turns off one key at any
+    volume this platform will see; the two-int form of the same call halves that
+    and would refuse a turn nothing is running.
+    """
+    digest = hashlib.blake2b(
+        f"run_agent_turn:{job_id}".encode(), digest_size=8
+    ).digest()
+    return int.from_bytes(digest, "big", signed=True)
+
+
+def _answered_already(db, job_id: str) -> bool:
+    """Whether this turn has already written the terminal event a customer saw."""
+    return (
+        db.execute(
+            sa_text(
+                "SELECT 1 FROM job_events"
+                " WHERE job_id = :jid AND event_type = 'agent.response' LIMIT 1"
+            ),
+            {"jid": job_id},
+        ).fetchone()
+        is not None
+    )
+
+
+def _claimed_turn(db, job_id: str) -> tuple:
+    """This attempt's exclusive hold on the turn, or the answer that replaces it.
+
+    Hands back `(connection, None)` when this attempt owns the turn, and
+    `(None, answer)` when it does not. The caller returns the answer.
+
+    WHY A LOCK AND NOT A COLUMN (#85). `acks_late=True` hands a dying worker's
+    message back, so the redelivery has to be able to claim a turn whose holder
+    is gone. Postgres releases an advisory lock when the holding connection
+    drops, which is exactly that; a `status` column would keep saying 'running'
+    until something beat on it, and a turn is one long await with nothing to beat
+    from.
+
+    WHY THE TRANSACTION-SCOPED CALL AND NOT THE SESSION-SCOPED ONE. A session
+    lock taken through a PgBouncer pooler in transaction mode is left on whatever
+    server connection served the statement, where the next client inherits it. An
+    open transaction pins that server connection for as long as it is open, so
+    the lock is this attempt's alone whether the control DSN is pooled or direct.
+    The connection is its own, never the task's session: `db` commits several
+    times during a turn and each commit would drop the lock.
+
+    THE READ GUARD IS ASKED TWICE, EITHER SIDE OF THE LOCK. Once before, so a
+    redelivery arriving after the turn finished answers without taking a lock at
+    all. Once after, because the first attempt can finish and release between
+    this attempt's read and its claim, and running the turn again is what the
+    whole guard exists to stop.
+    """
+    if _answered_already(db, job_id):
+        log.info("run_agent_turn.idempotent_skip", job_id=job_id)
+        return None, {"status": "already_complete", "job_id": job_id}
+    claim = db.get_bind().connect()
+    held = claim.execute(
+        sa_text("SELECT pg_try_advisory_xact_lock(:key)"),
+        {"key": _turn_lock_key(job_id)},
+    ).scalar()
+    if not held:
+        claim.close()
+        log.info("run_agent_turn.claim_held", job_id=job_id)
+        return None, {"status": "already_running", "job_id": job_id}
+    if _answered_already(db, job_id):
+        claim.close()
+        log.info("run_agent_turn.idempotent_skip", job_id=job_id)
+        return None, {"status": "already_complete", "job_id": job_id}
+    return claim, None
+
+
+def _release_turn(turn, tenant_conn, claim) -> None:
+    """Every debt one attempt owes, on the served path, the timeout path and the
+    retry path alike.
+
+    THE LEDGER ROWS GO FIRST: writing one opens, commits and closes a tenant
+    connection, which is why the loop only appended them and why they are not
+    written on the event loop a customer waits on. Then the tool ContextVars go
+    back, so an eval's "recorded" cannot reach the next customer (#98). Then
+    PROD-05's connection, None only if the connect failed. The claim goes LAST,
+    after the response row is committed, so the next delivery's READ guard finds
+    the answer rather than an open turn.
+    """
+    if turn is not None:
+        close_turn(turn)
+    if tenant_conn is not None:
+        tenant_conn.close()
+    claim.close()
+
+
 @celery_app.task(
     bind=True,
     acks_late=True,
@@ -907,9 +1007,11 @@ def run_agent_turn(
 ) -> dict:
     """Orchestrate one agent conversational turn with full SSE event emission.
 
-    Idempotent: returns {"status": "already_complete", "job_id": job_id}
-    immediately if an "agent.response" event row already exists for this
-    job_id (duplicate delivery / retry safety).
+    Idempotent twice over. Returns {"status": "already_complete", "job_id": job_id}
+    immediately if an "agent.response" event row already exists for this job_id,
+    and {"status": "already_running", "job_id": job_id} if another worker holds
+    this turn's claim, which is the redelivery the response row cannot yet
+    answer (#85).
 
     Args:
         job_id:                  UUID string of the runtime chat job.
@@ -924,7 +1026,8 @@ def run_agent_turn(
                                  dispatches remain valid via the empty default.
 
     Returns:
-        {"status": "already_complete", "job_id": job_id}  — idempotent path
+        {"status": "already_complete", "job_id": job_id}  this turn already answered
+        {"status": "already_running", "job_id": job_id}   another worker holds it
         {}                                                  — all other paths
 
     Security:
@@ -933,20 +1036,15 @@ def run_agent_turn(
     """
     with get_sync_db() as db:
         # ------------------------------------------------------------------
-        # Idempotency guard — exit immediately if agent.response already exists
-        # for this job_id. Prevents duplicate model calls and duplicate events
-        # on Celery retry or at-least-once redelivery from Redis.
+        # Both idempotency guards, before anything is read or spent: the READ on
+        # job_events for a turn that already answered, and the advisory-lock
+        # claim for one that is answering right now on another worker (#85).
+        # `answered` is what to hand back instead of running; the claim is held
+        # until `_release_turn`.
         # ------------------------------------------------------------------
-        existing = db.execute(
-            sa_text(
-                "SELECT 1 FROM job_events"
-                " WHERE job_id = :jid AND event_type = 'agent.response' LIMIT 1"
-            ),
-            {"jid": job_id},
-        ).fetchone()
-        if existing:
-            log.info("run_agent_turn.idempotent_skip", job_id=job_id)
-            return {"status": "already_complete", "job_id": job_id}
+        claim, answered = _claimed_turn(db, job_id)
+        if answered is not None:
+            return answered
 
         # ------------------------------------------------------------------
         # Fetch agent from control DB — required for soul fields, retrieval
@@ -954,6 +1052,7 @@ def run_agent_turn(
         # ------------------------------------------------------------------
         agent = db.get(Agent, agent_id)
         if agent is None:
+            claim.close()
             log.error(
                 "run_agent_turn.agent_not_found",
                 job_id=job_id,
@@ -966,6 +1065,7 @@ def run_agent_turn(
         # ------------------------------------------------------------------
         job = db.get(Job, job_id)
         if job is None:
+            claim.close()
             log.error("run_agent_turn.job_not_found", job_id=job_id)
             return {}
 
@@ -1372,15 +1472,6 @@ def run_agent_turn(
                     exc=exc, countdown=_retry_countdown(exc, self.request.retries)
                 )
         finally:
-            # Three debts this attempt owes, on the served path, the timeout path and
-            # the retry path alike. THE LEDGER ROWS GO FIRST: writing one opens, commits
-            # and closes a tenant connection, which is why the loop only appended them
-            # and why they are not written on the event loop a customer waits on. Then
-            # the tool ContextVars go back, so an eval's "recorded" cannot reach the next
-            # customer (#98). Then PROD-05's connection, None only if connect failed.
-            if turn is not None:
-                close_turn(turn)
-            if tenant_conn is not None:
-                tenant_conn.close()
+            _release_turn(turn, tenant_conn, claim)
 
     return {}
