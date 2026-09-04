@@ -297,10 +297,37 @@ def _consumes_pipeline_queue(sender) -> bool:
 def on_worker_ready(sender=None, **_):
     """Pay docling's model load at boot, on the pipeline worker only (#24).
 
-    `worker_ready` fires once, in the worker process, after the consumer is up.
-    That is what makes this safe to put in a module the API process and every
-    task module import: the handler is registered at import and runs only in a
-    worker.
+    WHERE THIS RUNS IN THE BOOT, EXACTLY
+        `worker_ready` fires from `Consumer.on_ready()`, which both loops call
+        immediately AFTER `consumer.consume()` and BEFORE the event loop starts
+        (celery/worker/loops.py, `asynloop` and `synloop`). `consume()` may have
+        already prefetched messages by then, so a task that arrived during the
+        boot sits in the worker's buffer for the whole warm-up and is only
+        handled once this handler returns. The first upload after a deploy can
+        therefore still wait on the model load, once, if it beat the boot; every
+        upload after that does not. That is the trade #24 asked for, and it is
+        the reason nothing here does more work than the one parse.
+
+    WHY NOT `worker_init`
+        `worker_init` fires in `WorkController.setup_instance`
+        (celery/worker/worker.py:127), after `setup_queues` at line 105, so the
+        `-Q` selection this handler's guard reads is already recorded there. It
+        also fires before the bootstep blueprint is built, and therefore before
+        the Pool step forks anything. Under prefork, which is the production
+        default and what `railway.worker-pipeline.toml` gets by passing
+        `--concurrency=1` and no `--pool`, that difference decides which process
+        ends up warm: the pool forks its children before the Consumer step runs,
+        so a warm-up at `worker_ready` loads the models into the parent, which
+        never executes a task, while a warm-up at `worker_init` would load them
+        before the fork and every child would inherit them copy-on-write.
+
+        The hook is NOT moved here, and this is a reasoned position rather than
+        a measured one. Nothing on this branch has run docling on Linux under
+        prefork; whether torch state survives a fork intact is the kind of claim
+        that needs a measurement, and swapping the process the 2 GB load happens
+        in is a larger change than the queue guard this branch came to fix.
+        What is measurable and unmeasured is #172, which names the one
+        observation on Railway staging that settles it.
 
     Nothing here raises. The warm-up is a performance measure, and a worker that
     could not preload the models still parses documents at the old speed. A

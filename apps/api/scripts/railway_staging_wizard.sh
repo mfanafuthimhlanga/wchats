@@ -287,17 +287,39 @@ step "  permission 'Object Read & Write', scoped to that bucket"
 step "Copy three things: Access Key ID, Secret Access Key, and the S3 endpoint"
 note "  (https://<account-id>.r2.cloudflarestorage.com)"
 until confirm "Bucket and token created, three values copied somewhere safe?"; do say "Finish the step above, then answer y."; done
-ask R2_ENDPOINT_HOST "Paste the endpoint's HOST only, no https:// and no path:"
-R2_ENDPOINT_HOST="$(printf '%s' "$R2_ENDPOINT_HOST" | tr 'A-Z' 'a-z')"
-case "$R2_ENDPOINT_HOST" in
-  *://*|*/*|*@*)
-    warn "That is a URL, not a host. S3_EXPECTED_ENDPOINT_HOST takes the host"
-    warn "on its own; the API refuses to boot on anything else. Re-run this"
-    warn "stage and paste only <account-id>.r2.cloudflarestorage.com."
-    SKIPPED+=("S3_EXPECTED_ENDPOINT_HOST: paste the bare host, not the URL")
-    ;;
-esac
-write_env R2_ENDPOINT_HOST "$R2_ENDPOINT_HOST"
+# The key written here is the Settings field name, not a wizard-local alias:
+# every later line reads this value back to build the variable the operator
+# pastes into Railway, and an alias makes the .env and the platform disagree
+# about which name carries the host.
+#
+# The refusal loops rather than warning and writing anyway. A rejected value
+# written to .env is offered back as the default on the next run, so the wizard
+# would keep handing the operator the paste the API refuses to boot on. The
+# accepted shapes are exactly the ones config.py accepts: no scheme, path or
+# credentials, no port, no whitespace inside.
+S3_EXPECTED_ENDPOINT_HOST=""
+while :; do
+  ask S3_EXPECTED_ENDPOINT_HOST \
+    "Paste the endpoint's HOST only, no https:// and no path (Enter alone skips):"
+  S3_EXPECTED_ENDPOINT_HOST="$(printf '%s' "$S3_EXPECTED_ENDPOINT_HOST" | tr 'A-Z' 'a-z')"
+  ENDPOINT_HOST_REASON=""
+  case "$S3_EXPECTED_ENDPOINT_HOST" in
+    "")            break ;;
+    *://*|*/*|*@*) ENDPOINT_HOST_REASON="That is a URL, not a host." ;;
+    *:*)           ENDPOINT_HOST_REASON="That carries a port. The API compares it against a parsed hostname, which never has one." ;;
+    *[[:space:]]*) ENDPOINT_HOST_REASON="That has whitespace inside the host." ;;
+  esac
+  if [[ -z "$ENDPOINT_HOST_REASON" ]]; then break; fi
+  warn "$ENDPOINT_HOST_REASON"
+  warn "S3_EXPECTED_ENDPOINT_HOST takes the host on its own and the API refuses"
+  warn "to boot on anything else. Paste only <account-id>.r2.cloudflarestorage.com,"
+  warn "or press Enter alone to skip this and set it by hand later."
+done
+if [[ -n "$S3_EXPECTED_ENDPOINT_HOST" ]]; then
+  write_env S3_EXPECTED_ENDPOINT_HOST "$S3_EXPECTED_ENDPOINT_HOST"
+else
+  SKIPPED+=("S3_EXPECTED_ENDPOINT_HOST: the bare host; production refuses to boot without it")
+fi
 
 # ──────────────────────────────────────────────────────────────────────────
 stage "Shared variables on Railway"
@@ -315,8 +337,8 @@ note "  ENVIRONMENT=production  (type EXACTLY that word: it arms the storage"
 note "                           allowlist, hides /docs, refuses loopback"
 note "                           snippets and redacts token errors; an unknown"
 note "                           word refuses to boot)"
-note "  S3_ENDPOINT_URL=https://${R2_ENDPOINT_HOST:-<account-id>.r2.cloudflarestorage.com}"
-note "  S3_EXPECTED_ENDPOINT_HOST=${R2_ENDPOINT_HOST:-<account-id>.r2.cloudflarestorage.com}"
+note "  S3_ENDPOINT_URL=https://${S3_EXPECTED_ENDPOINT_HOST:-<account-id>.r2.cloudflarestorage.com}"
+note "  S3_EXPECTED_ENDPOINT_HOST=${S3_EXPECTED_ENDPOINT_HOST:-<account-id>.r2.cloudflarestorage.com}"
 note "                          (the host on its own, no https:// and no path;"
 note "                           production refuses to boot without it, and"
 note "                           refuses any other host at upload time)"
