@@ -126,21 +126,9 @@ def test_0021_is_the_sole_child_of_0020_and_the_tree_is_unforked():
     )
 
 
-def test_0021_is_the_control_head():
-    """Head IDENTITY, which `len(heads) == 1` in the 0020 file does not pin.
-
-    Moved here from test_migration_control_0020.py when 0021 landed, on that
-    file's own instruction. 0022 moves this line and only this line, into its own
-    test file, rather than deleting it. An assertion getting weaker inside a test
-    that still passes is invisible.
-    """
-    revisions = _all_control_revisions()
-    parents = {down for down in revisions.values() if down is not None}
-    heads = set(revisions) - parents
-    assert heads == {"0021"}, (
-        f"the control head is {sorted(heads)}, not 0021. If a later revision "
-        "landed, move this assertion to its test file rather than deleting it"
-    )
+# Head IDENTITY moved to test_migration_control_0022.py when 0022 landed, on
+# this file's own instruction, rather than being deleted. It reads `heads ==
+# {"0022"}` there now.
 
 
 # ---------------------------------------------------------------------------
