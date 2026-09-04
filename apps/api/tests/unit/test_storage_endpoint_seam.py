@@ -30,6 +30,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 
 from app.services import storage_service
 from app.services.storage_service import StorageNotConfigured
@@ -37,6 +38,12 @@ from app.services.storage_service import StorageNotConfigured
 _ENDPOINT = "http://127.0.0.1:9000"
 _KEY_ID = "test-access-key-id"
 _SECRET = "test-secret-access-key"
+
+#: The owner's own R2 host, the value S3_EXPECTED_ENDPOINT_HOST carries in
+#: production (#133). Every production test names it explicitly, because the
+#: whole point of the setting is that the guard has an account to compare
+#: against rather than a provider to pattern-match.
+_OUR_HOST = "ourownaccountid.r2.cloudflarestorage.com"
 
 
 @pytest.fixture(autouse=True)
@@ -56,6 +63,7 @@ def _build_client(**setting_overrides):
         "ENVIRONMENT": "development",
         "S3_ACCESS_KEY_ID": _KEY_ID,
         "S3_SECRET_ACCESS_KEY": _SECRET,
+        "S3_EXPECTED_ENDPOINT_HOST": "",
     }
     defaults.update(setting_overrides)
     with patch.dict("sys.modules", {"boto3": fake_boto3}):
@@ -133,7 +141,7 @@ def test_production_without_the_override_is_unaffected():
     assert "endpoint_url" not in kwargs
 
 
-def _refused_in_production(endpoint: str) -> str:
+def _refused_in_production(endpoint: str, expected_host: str = _OUR_HOST) -> str:
     """Run _get_s3 in production with `endpoint` and return the refusal text."""
     fake_boto3 = MagicMock()
     with patch.dict("sys.modules", {"boto3": fake_boto3}):
@@ -142,6 +150,7 @@ def _refused_in_production(endpoint: str) -> str:
             AWS_REGION="us-east-1",
             S3_ENDPOINT_URL=endpoint,
             ENVIRONMENT="production",
+            S3_EXPECTED_ENDPOINT_HOST=expected_host,
         ):
             with pytest.raises(StorageNotConfigured) as exc_info:
                 storage_service._get_s3()
@@ -153,15 +162,25 @@ def _refused_in_production(endpoint: str) -> str:
 
 
 def test_r2_is_honoured_in_production():
-    """Decision #14.6: R2 is a destination production may write documents to."""
-    r2 = "https://accountid.r2.cloudflarestorage.com"
-    args, kwargs = _build_client(S3_ENDPOINT_URL=r2, ENVIRONMENT="production")
+    """Decision #14.6: R2 is a destination production may write documents to,
+    at the one account S3_EXPECTED_ENDPOINT_HOST names."""
+    r2 = f"https://{_OUR_HOST}"
+    args, kwargs = _build_client(
+        S3_ENDPOINT_URL=r2,
+        ENVIRONMENT="production",
+        S3_EXPECTED_ENDPOINT_HOST=_OUR_HOST,
+    )
     assert kwargs.get("endpoint_url") == r2
 
 
 def test_b2_is_honoured_in_production():
-    b2 = "https://s3.us-west-004.backblazeb2.com"
-    args, kwargs = _build_client(S3_ENDPOINT_URL=b2, ENVIRONMENT="production")
+    b2_host = "s3.us-west-004.backblazeb2.com"
+    b2 = f"https://{b2_host}"
+    args, kwargs = _build_client(
+        S3_ENDPOINT_URL=b2,
+        ENVIRONMENT="production",
+        S3_EXPECTED_ENDPOINT_HOST=b2_host,
+    )
     assert kwargs.get("endpoint_url") == b2
 
 
@@ -214,9 +233,73 @@ def test_credentials_embedded_in_the_endpoint_are_refused_in_production():
 
 
 def test_the_host_comparison_is_case_insensitive():
-    r2 = "https://Account.R2.CloudflareStorage.com"
-    args, kwargs = _build_client(S3_ENDPOINT_URL=r2, ENVIRONMENT="production")
+    r2 = "https://OurOwnAccountId.R2.CloudflareStorage.com"
+    args, kwargs = _build_client(
+        S3_ENDPOINT_URL=r2,
+        ENVIRONMENT="production",
+        S3_EXPECTED_ENDPOINT_HOST=_OUR_HOST,
+    )
     assert kwargs.get("endpoint_url") == r2
+
+
+# --------------------------------------------------------------------------
+# The account bound (#133)
+# --------------------------------------------------------------------------
+
+
+def test_another_accounts_r2_host_is_refused_in_production():
+    """The finding itself.
+
+    The suffix list bounds the PROVIDER. Every R2 tenant on earth carries
+    `.r2.cloudflarestorage.com`, so a mistyped or hostile S3_ENDPOINT_URL that
+    passes the suffix check still names somebody else's bucket, and every
+    customer document uploaded afterwards is written into it. The bound
+    decision #14.6 wanted is the owner's own account, which only an equality
+    check against a configured host can express.
+    """
+    message = _refused_in_production(
+        "https://attackeraccountid.r2.cloudflarestorage.com"
+    )
+    assert "attackeraccountid.r2.cloudflarestorage.com" in message, (
+        "the refusal must name the host the endpoint actually points at; "
+        f"got {message!r}"
+    )
+    assert "S3_EXPECTED_ENDPOINT_HOST" in message, (
+        "the refusal must name the setting that decides which account is ours; "
+        f"got {message!r}"
+    )
+
+
+def test_a_b2_host_is_refused_when_the_owners_account_is_on_r2():
+    """Both providers stay on the suffix list, so only equality separates them."""
+    message = _refused_in_production("https://s3.us-west-004.backblazeb2.com")
+    assert "s3.us-west-004.backblazeb2.com" in message
+
+
+def test_an_unset_expected_host_refuses_in_production():
+    """Fail closed, not open.
+
+    An empty S3_EXPECTED_ENDPOINT_HOST is not "no opinion, let the suffix list
+    decide". It is a production process that has never been told which account
+    is ours, and it must refuse the redirect rather than fall back to the
+    provider-wide check this issue exists to replace.
+    """
+    message = _refused_in_production(f"https://{_OUR_HOST}", expected_host="")
+    assert "S3_EXPECTED_ENDPOINT_HOST" in message
+
+
+def test_a_host_outside_both_providers_is_still_refused():
+    """The suffix list survives as a second gate.
+
+    An operator who sets S3_EXPECTED_ENDPOINT_HOST to their own MinIO box has
+    made the equality check agree with itself. Decision #14.6 names two object
+    stores, and that decision is still the one production runs under.
+    """
+    message = _refused_in_production(
+        "https://minio.internal.example", expected_host="minio.internal.example"
+    )
+    assert "minio.internal.example" in message
+    assert "R2" in message or "Backblaze" in message
 
 
 # --------------------------------------------------------------------------
@@ -354,8 +437,9 @@ def test_no_configuration_builds_a_client_without_both_credentials():
         {"S3_ENDPOINT_URL": _ENDPOINT},
         {"S3_ENDPOINT_URL": None, "ENVIRONMENT": "production"},
         {
-            "S3_ENDPOINT_URL": "https://accountid.r2.cloudflarestorage.com",
+            "S3_ENDPOINT_URL": f"https://{_OUR_HOST}",
             "ENVIRONMENT": "production",
+            "S3_EXPECTED_ENDPOINT_HOST": _OUR_HOST,
         },
     ]
     for overrides in combinations:
@@ -366,3 +450,80 @@ def test_no_configuration_builds_a_client_without_both_credentials():
             f"{overrides!r}, so its default credential chain is back. "
             f"kwargs={kwargs}"
         )
+# --------------------------------------------------------------------------
+# The setting is not optional in production (#133)
+# --------------------------------------------------------------------------
+
+
+def _production_settings(**overrides):
+    """Build the shipped Settings for production, reading no .env file.
+
+    `_env_file=None` detaches the developer's real `.env`, so what this asserts
+    is the validator rather than the machine. The ten fields with no default
+    come from the environment `tests/conftest.py` set at import time.
+    """
+    from app.core.config import Settings
+
+    return Settings(_env_file=None, ENVIRONMENT="production", **overrides)
+
+
+def test_production_boot_without_the_expected_host_refuses(monkeypatch):
+    """A production process that was never told which account is ours must not
+    reach the point where it can write a customer document.
+
+    Refusing here rather than at the first upload means the deploy fails, the
+    operator reads one message naming one variable, and nothing has been sent
+    anywhere in the meantime.
+    """
+    monkeypatch.delenv("S3_EXPECTED_ENDPOINT_HOST", raising=False)
+    with pytest.raises(ValidationError) as exc_info:
+        _production_settings()
+    message = str(exc_info.value)
+    assert "S3_EXPECTED_ENDPOINT_HOST" in message, (
+        f"the boot refusal must name the missing setting; got {message!r}"
+    )
+
+
+def test_a_configured_expected_host_boots_in_production(monkeypatch):
+    monkeypatch.delenv("S3_EXPECTED_ENDPOINT_HOST", raising=False)
+    built = _production_settings(S3_EXPECTED_ENDPOINT_HOST=_OUR_HOST)
+    assert built.S3_EXPECTED_ENDPOINT_HOST == _OUR_HOST
+
+
+def test_development_boot_without_the_expected_host_is_unaffected(monkeypatch):
+    """Local work has no owner account and needs none; the seam is MinIO there."""
+    from app.core.config import Settings
+
+    monkeypatch.delenv("S3_EXPECTED_ENDPOINT_HOST", raising=False)
+    built = Settings(_env_file=None, ENVIRONMENT="development")
+    assert built.S3_EXPECTED_ENDPOINT_HOST == ""
+
+
+@pytest.mark.parametrize(
+    "pasted",
+    [
+        "https://ourownaccountid.r2.cloudflarestorage.com",
+        "ourownaccountid.r2.cloudflarestorage.com/wchats-uploads",
+        "user:secret@ourownaccountid.r2.cloudflarestorage.com",
+    ],
+)
+def test_the_expected_host_is_a_bare_host_not_a_url(monkeypatch, pasted):
+    """The operator has the endpoint URL in the clipboard, and the wizard asks
+    for it two lines earlier. A pasted URL would never equal a parsed hostname,
+    so the guard would refuse every upload with a message about the endpoint
+    while the real fault is in the other variable.
+    """
+    monkeypatch.delenv("S3_EXPECTED_ENDPOINT_HOST", raising=False)
+    with pytest.raises(ValidationError) as exc_info:
+        _production_settings(S3_EXPECTED_ENDPOINT_HOST=pasted)
+    assert "S3_EXPECTED_ENDPOINT_HOST" in str(exc_info.value)
+
+
+def test_the_expected_host_is_normalised_to_lowercase(monkeypatch):
+    """R2 prints the account id in the console; an operator retyping it is one
+    shift key away from a value that never matches a parsed hostname."""
+    monkeypatch.delenv("S3_EXPECTED_ENDPOINT_HOST", raising=False)
+    built = _production_settings(
+        S3_EXPECTED_ENDPOINT_HOST="  OurOwnAccountId.R2.CloudflareStorage.com  "
+    )
+    assert built.S3_EXPECTED_ENDPOINT_HOST == _OUR_HOST

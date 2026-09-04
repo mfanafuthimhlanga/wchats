@@ -403,6 +403,56 @@ class Settings(BaseSettings):
     # (MinIO) it always was.
     S3_ENDPOINT_URL: str | None = None
 
+    # The ONE object-store host a production process may write customer
+    # documents to (#133), as a bare hostname:
+    #   S3_EXPECTED_ENDPOINT_HOST=8f2c1d....r2.cloudflarestorage.com
+    #
+    # S3_ENDPOINT_URL above bounds the PROVIDER. Every R2 tenant on earth
+    # carries `.r2.cloudflarestorage.com` and every B2 tenant carries
+    # `.backblazeb2.com`, so the suffix list admits any other customer's
+    # account as readily as ours: a mistyped or hostile endpoint sends every
+    # uploaded document into a bucket somebody else holds the keys to, with
+    # the guard's blessing. This field is the account bound, and
+    # storage_service._require_production_endpoint compares the parsed
+    # hostname against it for equality.
+    #
+    # Empty is the local-development value, where S3_ENDPOINT_URL points at
+    # MinIO and no owner account exists. In production empty refuses to boot,
+    # because a process that was never told which account is ours must not
+    # reach the point where it can write a document to one.
+    S3_EXPECTED_ENDPOINT_HOST: str = ""
+
+    @field_validator("S3_EXPECTED_ENDPOINT_HOST")
+    @classmethod
+    def _expected_endpoint_host_is_a_bare_host(
+        cls, value: str, info: ValidationInfo
+    ) -> str:
+        """Normalise the host, and require one in production.
+
+        The operator reaches this variable with the endpoint URL already in the
+        clipboard, so a pasted URL is the shape to expect and the one to refuse
+        by name. A URL would never equal a parsed hostname, and the resulting
+        failure would name S3_ENDPOINT_URL on every upload while the fault sat
+        in this field.
+        """
+        host = value.strip().lower()
+        if "://" in host or "/" in host or "@" in host:
+            raise ValueError(
+                "S3_EXPECTED_ENDPOINT_HOST is a bare hostname, not a URL. Give "
+                "the host on its own, as in "
+                "'8f2c1d.r2.cloudflarestorage.com', with no scheme, no path "
+                "and no credentials."
+            )
+        if not host and info.data.get("ENVIRONMENT") == "production":
+            raise ValueError(
+                "S3_EXPECTED_ENDPOINT_HOST is unset while ENVIRONMENT=production. "
+                "It names the one object-store host this deployment may write "
+                "customer documents to. Without it the endpoint check bounds the "
+                "provider and not the account, so any R2 or B2 bucket would pass. "
+                "Set it to the host inside S3_ENDPOINT_URL."
+            )
+        return host
+
     # The owned loop's per-turn USD ceiling (#48). Between model calls
     # `agent_loop._over_budget` prices this turn's `model_calls` rows against the
     # versioned book and stops the turn once the total reaches this number, so

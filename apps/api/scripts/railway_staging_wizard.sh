@@ -276,9 +276,10 @@ until confirm "Every service has the REDIS_URL reference?"; do say "Finish the s
 
 # ──────────────────────────────────────────────────────────────────────────
 stage "R2 bucket and S3 credentials"
-say "Object storage is R2 through the existing S3 seam; production accepts"
-say "exactly *.r2.cloudflarestorage.com and *.backblazeb2.com and refuses"
-say "every other endpoint."
+say "Object storage is R2 through the existing S3 seam. Production accepts one"
+say "host, the one you name below, and refuses every other endpoint. The"
+say "*.r2.cloudflarestorage.com suffix alone is not the bound: every R2 tenant"
+say "on earth carries it, so the host has to be yours by name (#133)."
 open_url "https://dash.cloudflare.com/?to=/:account/r2"
 step "R2 > Create bucket, name: wchats-uploads (any region)"
 step "R2 > Manage R2 API Tokens > Create API Token:"
@@ -286,6 +287,17 @@ step "  permission 'Object Read & Write', scoped to that bucket"
 step "Copy three things: Access Key ID, Secret Access Key, and the S3 endpoint"
 note "  (https://<account-id>.r2.cloudflarestorage.com)"
 until confirm "Bucket and token created, three values copied somewhere safe?"; do say "Finish the step above, then answer y."; done
+ask R2_ENDPOINT_HOST "Paste the endpoint's HOST only, no https:// and no path:"
+R2_ENDPOINT_HOST="$(printf '%s' "$R2_ENDPOINT_HOST" | tr 'A-Z' 'a-z')"
+case "$R2_ENDPOINT_HOST" in
+  *://*|*/*|*@*)
+    warn "That is a URL, not a host. S3_EXPECTED_ENDPOINT_HOST takes the host"
+    warn "on its own; the API refuses to boot on anything else. Re-run this"
+    warn "stage and paste only <account-id>.r2.cloudflarestorage.com."
+    SKIPPED+=("S3_EXPECTED_ENDPOINT_HOST: paste the bare host, not the URL")
+    ;;
+esac
+write_env R2_ENDPOINT_HOST "$R2_ENDPOINT_HOST"
 
 # ──────────────────────────────────────────────────────────────────────────
 stage "Shared variables on Railway"
@@ -303,7 +315,12 @@ note "  ENVIRONMENT=production  (type EXACTLY that word: it arms the storage"
 note "                           allowlist, hides /docs, refuses loopback"
 note "                           snippets and redacts token errors; an unknown"
 note "                           word refuses to boot)"
-note "  S3_ENDPOINT_URL=<the R2 endpoint>    S3_UPLOADS_BUCKET=wchats-uploads"
+note "  S3_ENDPOINT_URL=https://${R2_ENDPOINT_HOST:-<account-id>.r2.cloudflarestorage.com}"
+note "  S3_EXPECTED_ENDPOINT_HOST=${R2_ENDPOINT_HOST:-<account-id>.r2.cloudflarestorage.com}"
+note "                          (the host on its own, no https:// and no path;"
+note "                           production refuses to boot without it, and"
+note "                           refuses any other host at upload time)"
+note "  S3_UPLOADS_BUCKET=wchats-uploads"
 note "  AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY = the R2 token pair"
 warn "CONTROL_DB_URL / CONTROL_DB_SYNC_URL: create a SEPARATE Neon control"
 warn "project for staging. The repo .env's DSNs are LIVE PRODUCTION; pasted"
