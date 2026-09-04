@@ -2846,6 +2846,95 @@ class TestTheRunStatusReaders:
         assert status is None
 
 
+class TestTheRunsStillRunningReader:
+    """What the guard asks the tenant DB before it reaps a chain gone quiet.
+
+    The two since-readers above answer "has it FINISHED", so they exclude the
+    one status this one is entirely about. A silent chain with a job still
+    running is a chain still working, and only the tenant DB knows that.
+    """
+
+    def _read(self, rows, since):
+        from app.services.deployment_service import running_runs_since
+
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchone.side_effect = list(rows)
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect", return_value=mock_conn
+        ):
+            found = running_runs_since("agent-1", "postgresql://test/tenant", since)
+        return found, mock_cursor.execute.call_args_list
+
+    def test_it_names_both_kinds_and_asks_only_about_running_rows(self):
+        started = datetime(2026, 8, 30, 12, 5, tzinfo=timezone.utc)
+        since = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+
+        found, calls = self._read(
+            [("eval-run-1", started), ("red-run-9", started)], since
+        )
+
+        assert found == {
+            "eval": ("eval-run-1", started),
+            "red_team": ("red-run-9", started),
+        }
+        eval_sql, eval_params = calls[0].args
+        assert "FROM eval_runs" in eval_sql
+        assert "status = 'running'" in eval_sql, (
+            f"this reader is about the one status the others exclude: {eval_sql}"
+        )
+        assert "started_at >= %s" in eval_sql
+        assert eval_params == ("m6:agent-1", since)
+        red_sql, red_params = calls[1].args
+        assert "FROM red_team_runs" in red_sql
+        assert "status = 'running'" in red_sql
+        assert red_params == ("m7:agent-1", since)
+
+    def test_nothing_in_flight_reads_as_an_empty_answer_rather_than_no_answer(self):
+        found, _ = self._read(
+            [None, None], datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+        )
+
+        assert found == {}, (
+            "the tenant DB was read and holds nothing of this agent's, which is "
+            f"what lets the guard reap: {found}"
+        )
+
+    def test_one_half_still_going_is_reported_on_its_own(self):
+        started = datetime(2026, 8, 30, 12, 5, tzinfo=timezone.utc)
+
+        found, _ = self._read(
+            [None, ("red-run-9", started)],
+            datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
+        )
+
+        assert found == {"red_team": ("red-run-9", started)}
+
+    def test_an_unreachable_tenant_db_reads_as_none_rather_than_as_nothing(self):
+        """None and {} are the two answers the guard must never confuse.
+
+        {} lets it reap; None must not, or an outage that silences a chain also
+        supplies the evidence for throwing it away.
+        """
+        from app.services.deployment_service import running_runs_since
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            side_effect=RuntimeError("tenant DB unreachable"),
+        ):
+            found = running_runs_since(
+                "agent-1",
+                "postgresql://test/tenant",
+                datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
+            )
+
+        assert found is None
+
+
 class TestTheDispatchMoment:
     """The boundary comes from the tenant DB's clock, not the worker's."""
 
@@ -3005,6 +3094,12 @@ CONTROL_PROBE_URL = os.getenv(
     + "/wchats_tenant_probe",
 )
 
+#: What `running_runs_since` answers for a tenant DB that was read and holds
+#: nothing of this agent's still going. Named so the guard's default case is
+#: legible beside the two that are not: `None` for a tenant DB that could not be
+#: read at all, and a populated dict for a job still in flight.
+_NO_RUNS: dict = {}
+
 
 class TestTheIdempotencyGuardKeysOnTheRunNotTheClock:
     """#129: a congested chain outlived the guard's 60-minute created_at window.
@@ -3066,15 +3161,37 @@ class TestTheIdempotencyGuardKeysOnTheRunNotTheClock:
         db.refresh(run)
         return run
 
-    def _guard(self, db, agent_id):
+    def _guard(self, db, agent_id, *, running_runs=_NO_RUNS, mock_log=None):
+        """The guard, over this row and whatever the tenant DB says is in flight.
+
+        `running_runs` is `running_runs_since`'s answer: `_NO_RUNS` for a tenant
+        DB holding nothing of this agent's, a populated dict for a job still
+        going, and None for a tenant DB that could not be read.
+        """
         from app.worker.tasks.runtime import deployment as deployment_task
 
         @contextmanager
         def _lend():
             yield db
 
-        with patch.object(deployment_task, "get_sync_db", _lend):
-            return deployment_task._a_run_is_already_live(str(agent_id))
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(deployment_task, "get_sync_db", _lend))
+            stack.enter_context(
+                patch.object(
+                    deployment_task, "running_runs_since", return_value=running_runs
+                )
+            )
+            if mock_log is not None:
+                stack.enter_context(patch.object(deployment_task, "log", mock_log))
+            return deployment_task._a_run_is_already_live(
+                str(agent_id), "postgresql://test/tenant"
+            )
+
+    def _stale_s(self):
+        """Long enough silence that the clock alone reads this row as abandoned."""
+        from app.worker.tasks.runtime.deployment import _stale_after_s
+
+        return _stale_after_s() + 60
 
     def test_a_chain_still_beating_blocks_however_old_its_row_is(self, session):
         """The whole of #129. Three hours old, beating ten seconds ago, alive."""
@@ -3161,6 +3278,87 @@ class TestTheIdempotencyGuardKeysOnTheRunNotTheClock:
             f"a chain queued behind {gap - 1}s of jobs it started itself is "
             "working, and reaping it lets a second checklist run on this agent"
         )
+
+    def test_a_stale_row_whose_eval_run_is_still_running_is_not_reaped(self, session):
+        """The clock cannot see queue depth. The chain's own jobs can.
+
+        `_stale_after_s` sums ONE agent's bounds and the `runtime` queue is
+        shared, so two agents on the solo worker put more silence between two
+        beats than the threshold allows. The row is stale by the clock and the
+        chain is working: the eval run it dispatched is still going, and that
+        outranks the clock.
+        """
+        agent_id = uuid.uuid4()
+        stale = self._stale_s()
+        run = self._row(session, agent_id, age_s=stale + 60, beat_age_s=stale)
+
+        live = self._guard(
+            session,
+            agent_id,
+            running_runs={"eval": ("eval-run-1", datetime.now(timezone.utc))},
+        )
+
+        assert live is True, (
+            "the eval run this chain dispatched is still running, so the chain "
+            "is alive whatever its last beat says, and reaping it throws away a "
+            "checklist that was going to finish"
+        )
+        session.refresh(run)
+        assert run.status == "running", (
+            f"a chain with a job still in flight keeps its row: {run.status}"
+        )
+
+    def test_a_stale_row_whose_jobs_are_both_terminal_is_reaped(self, session):
+        """The other direction. Nothing is in flight and nothing is coming back."""
+        agent_id = uuid.uuid4()
+        stale = self._stale_s()
+        run = self._row(session, agent_id, age_s=stale + 60, beat_age_s=stale)
+
+        live = self._guard(session, agent_id, running_runs=_NO_RUNS)
+
+        assert live is False, (
+            "silent past the threshold with neither job running is an abandoned "
+            "row, and leaving it blocks this agent's next checklist forever"
+        )
+        session.refresh(run)
+        assert run.status == "failed", (
+            f"an abandoned row is closed out, not skipped over: {run.status}"
+        )
+
+    def test_a_stale_row_is_not_reaped_when_the_tenant_db_cannot_be_read(
+        self, session
+    ):
+        """Fail closed to live. An unread tenant DB is not evidence of anything.
+
+        Reading a failed connection as "neither job is running" would reap on
+        exactly the outage that makes a chain go quiet in the first place.
+        """
+        mock_log = MagicMock()
+        agent_id = uuid.uuid4()
+        stale = self._stale_s()
+        run = self._row(session, agent_id, age_s=stale + 60, beat_age_s=stale)
+
+        live = self._guard(session, agent_id, running_runs=None, mock_log=mock_log)
+
+        assert live is True, (
+            "the tenant DB could not say whether this chain's jobs are running, "
+            "and reaping on that is a live checklist thrown away on an outage"
+        )
+        session.refresh(run)
+        assert run.status == "running", (
+            f"nothing was proven about this chain, so nothing is closed: {run.status}"
+        )
+        withheld = [
+            call
+            for call in mock_log.warning.call_args_list
+            if call.args
+            and call.args[0] == "run_deployment_checklist.reap_withheld_jobs_unread"
+        ]
+        assert len(withheld) == 1, (
+            "a reap withheld on an unreadable tenant DB has to say so, or the "
+            f"agent looks blocked for no reason: {mock_log.warning.call_args_list}"
+        )
+        assert withheld[0].kwargs["run_id"] == str(run.id)
 
     def test_a_finished_row_is_not_a_live_run_whatever_its_beat_says(self, session):
         agent_id = uuid.uuid4()

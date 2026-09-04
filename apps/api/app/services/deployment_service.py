@@ -1084,6 +1084,74 @@ def latest_red_team_run_id_since(
     return None if row is None else row[0]
 
 
+#: The same two tables and the same boundary as the since-readers above, asking
+#: the one thing they exclude: whether a run is still going. The checklist's
+#: idempotency guard reads this before it reaps a chain that has gone quiet,
+#: because a clock alone cannot tell a dead chain from a queued one.
+#:
+#: `ORDER BY started_at ASC` rather than DESC, which is the other readers' order.
+#: They want the newest FINISHED run because that is the one this checklist
+#: caused; this wants the OLDEST still going, because that is the run a fresh
+#: dispatch is refused in favour of and therefore the one a replacement checklist
+#: has to wait on.
+_EVAL_RUN_RUNNING_SINCE_SQL = (
+    "SELECT id::text, started_at FROM eval_runs "
+    "WHERE kind = %s AND started_at >= %s AND status = 'running' "
+    "ORDER BY started_at ASC LIMIT 1"
+)
+
+_RED_TEAM_RUN_RUNNING_SINCE_SQL = (
+    "SELECT id::text, started_at FROM red_team_runs "
+    "WHERE kind = %s AND started_at >= %s AND status = 'running' "
+    "ORDER BY started_at ASC LIMIT 1"
+)
+
+
+def running_runs_since(
+    agent_id: str, conn_str: str, since: datetime
+) -> dict[str, tuple[str, datetime]] | None:
+    """This agent's jobs still running, of those started at or after `since`.
+
+    Keyed "eval" and "red_team", each carrying (run id, started_at). A kind with
+    nothing in flight is absent from the dict, so `{}` says the tenant DB was
+    read and holds nothing of this agent's still going.
+
+    NONE IS A DIFFERENT ANSWER FROM `{}`, AND A CALLER THAT MERGES THEM BREAKS
+    THE POINT. None means the tenant DB could not be read. An outage is exactly
+    what makes a chain go quiet, so reading an unread database as "nothing is
+    running" would supply the evidence for reaping a live chain out of the same
+    failure that silenced it.
+
+    Both statements go over ONE connection. Two would double the connect cost of
+    a read the guard takes on every first pass, and a tenant DB reachable for the
+    first query but not the second is a distinction with no consequence here:
+    either way the answer is None.
+    """
+    found: dict[str, tuple[str, datetime]] = {}
+    try:
+        conn = psycopg2.connect(conn_str, connect_timeout=10)
+        try:
+            with conn.cursor() as cur:
+                for name, sql, kind in (
+                    ("eval", _EVAL_RUN_RUNNING_SINCE_SQL, f"m6:{agent_id}"),
+                    ("red_team", _RED_TEAM_RUN_RUNNING_SINCE_SQL, f"m7:{agent_id}"),
+                ):
+                    cur.execute(sql, (kind, since))
+                    row = cur.fetchone()
+                    if row is not None:
+                        found[name] = (row[0], row[1])
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning(
+            "deployment_service.running_runs.unread",
+            agent_id=agent_id,
+            error=str(exc) or repr(exc),
+        )
+        return None
+    return found
+
+
 def poll_terminal_statuses(
     known: Mapping[str, str | None],
     fetchers: Mapping[str, Callable[[], str | None]],

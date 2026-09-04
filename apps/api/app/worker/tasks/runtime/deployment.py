@@ -58,7 +58,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import structlog
 from sqlalchemy import select, update
@@ -99,6 +99,7 @@ from app.services.deployment_service import (
     poll_terminal_statuses,
     red_team_summary_did_not_finish,
     render_verdict,
+    running_runs_since,
     verdict_warnings,
 )
 from app.services.eval_service import read_eval_result
@@ -481,27 +482,39 @@ def _red_team_run_bound_s() -> float:
 
 
 def _stale_after_s() -> float:
-    """How long a 'running' row may go quiet before it stops meaning a live chain.
+    """How long a 'running' row may go quiet before the clock stops vouching for it.
 
     ANCHORED ON THE LAST BEAT, NEVER ON created_at (#129). The guard used to read
     a row created more than sixty minutes ago as gone, and a congested chain
     outlives that. Past minute sixty a second trigger found no live row and
     started a second checklist for the same agent, and both persisted.
 
-    THE GAP BETWEEN TWO BEATS IS THE QUEUE WAIT, NOT THE CEILING, and sizing this
-    number on the ceiling is what the guard was still getting wrong. A pass beats
-    when it RUNS, and a continuation cannot run while the eval chain and the
-    red-team run it dispatched hold the `runtime` slots it shares with them: on
-    the documented solo worker that is both job bounds end to end, five times the
-    ceiling-plus-grace this used to return. The guard reaped a chain that was
-    still working, the chain's next write landed on the reaped row, and two
-    checklists ran on one agent again by a different route.
+    THE CEILING IS NOT A GAP BETWEEN BEATS, and sizing this number on it is what
+    the guard was still getting wrong. A pass beats when it RUNS, so the longest
+    silence a live chain can produce is the queue wait in front of its next
+    continuation plus the deciding pass's own CHECKLIST_DECIDE_GRACE_S. The
+    ceiling bounds the WAIT, which is a different quantity, and it was shorter:
+    the guard reaped a chain that was still working, the chain's next write
+    landed on the reaped row, and two checklists ran on one agent again by a
+    different route.
 
-    So the threshold is the sum of what a pass can be made to wait for: the eval
-    invocation bound, the red-team bound, the wait ceiling and the decide grace,
-    each read from the module that owns it. Derived rather than configured, for
-    the reason BACKLOG 1.33 records: a second number sized by hand beside the
-    first drifts away from it.
+    So the threshold sums what ONE AGENT'S OWN JOBS can make a pass wait for: the
+    eval invocation bound, the red-team bound, the wait ceiling and the decide
+    grace, each read from the module that owns it. Derived rather than
+    configured, for the reason BACKLOG 1.33 records: a second number sized by
+    hand beside the first drifts away from it.
+
+    THAT SUM IS NOT THE WHOLE QUEUE, AND NO CLOCK HERE COULD BE. `runtime` is
+    shared, so a second agent's jobs ahead of this chain's continuation add
+    silence this arithmetic never saw. `_chain_jobs_are_live` is what covers
+    that: past this threshold the guard stops trusting the clock and asks the
+    tenant DB whether either job this chain dispatched is still running.
+
+    THE COST A DEAD WORKER PAYS IS THIS NUMBER. A chain killed mid-flight holds
+    its agent's checklist from its last beat until the threshold expires, and
+    only then does the next trigger get through. Shortening it to shrink that
+    hold is what reaps live chains, so the hold is the price and the job check is
+    what keeps it from ever being paid by a chain still working.
     """
     return (
         _eval_run_bound_s()
@@ -555,14 +568,80 @@ def _reap(db, agent_id: str, run: ChecklistRun) -> bool:
     return _claimed(db, str(run.id), status="failed")
 
 
-def _a_run_is_already_live(agent_id: str) -> bool:
+#: How far before a checklist row's own created_at the guard looks for the jobs
+#: that row's chain dispatched. `created_at` carries the CONTROL database's clock
+#: and `eval_runs.started_at` the TENANT's, so the two sides of `started_at >=
+#: since` are read from different servers. A tenant clock a few seconds behind
+#: would put this chain's own eval run before its own boundary, the guard would
+#: see nothing running and reap a chain that is working, which is the failure the
+#: job check exists to remove. A minute of slack costs nothing in the other
+#: direction: the query only ever sees this agent's runs, and it is only ever
+#: asked about a row already stale by the clock.
+GUARD_CLOCK_SKEW_ALLOWANCE_S = 60
+
+
+def _chain_jobs_are_live(agent_id: str, conn_str: str, run: ChecklistRun) -> bool:
+    """Whether a job this row's chain dispatched is still running in the tenant DB.
+
+    THE CLOCK CANNOT SEE QUEUE DEPTH AND THE JOBS CAN. `_stale_after_s` sums one
+    agent's own bounds, but `runtime` is shared: two agents on the solo worker
+    put a second agent's jobs in front of this chain's continuation, and the
+    silence outlasts a threshold that never counted them. The fence and 0021's
+    index bound what that costs to repeated spend rather than two live
+    checklists, but a chain still working is still thrown away. Its own runs are
+    the evidence no clock can supply.
+
+    AN UNREADABLE TENANT DB READS AS LIVE. `running_runs_since` answers None for
+    a database it could not reach and `{}` for one holding nothing of this
+    agent's, and merging the two would reap on exactly the outage that silences a
+    chain in the first place. The withheld reap is logged, because an agent that
+    looks blocked for no reason is the other way this goes wrong.
+    """
+    since = run.created_at - timedelta(seconds=GUARD_CLOCK_SKEW_ALLOWANCE_S)
+    running = running_runs_since(agent_id, conn_str, since)
+    if running is None:
+        log.warning(
+            "run_deployment_checklist.reap_withheld_jobs_unread",
+            agent_id=agent_id,
+            run_id=str(run.id),
+            detail=(
+                "the tenant DB could not say whether this chain's eval or "
+                "red-team run is still going, so the row is left alone; an "
+                "outage is not evidence that a chain is dead"
+            ),
+        )
+        return True
+    if running:
+        log.info(
+            "run_deployment_checklist.reap_withheld_job_running",
+            agent_id=agent_id,
+            run_id=str(run.id),
+            still_running={name: run_id for name, (run_id, _) in running.items()},
+            detail="the chain is queued behind a job it dispatched, not abandoned",
+        )
+        return True
+    return False
+
+
+def _a_run_is_already_live(agent_id: str, conn_str: str) -> bool:
     """Step 2's idempotency guard, against the CONTROL DB through the ORM.
 
     KEYED ON THE ROW'S STATE, NOT ON ITS AGE (#129). A 'running' row is a running
     checklist however old it is, for as long as its chain keeps beating; a row
-    whose beat has gone quiet is abandoned and is closed out here so the next
-    trigger gets through. Widening the old created_at window instead would have
-    moved the same defect further out rather than removed it.
+    whose beat has gone quiet AND whose two jobs have both finished is abandoned
+    and is closed out here so the next trigger gets through. Widening the old
+    created_at window instead would have moved the same defect further out rather
+    than removed it.
+
+    TWO THINGS HAVE TO AGREE BEFORE ANYTHING IS REAPED. The clock says the chain
+    has been silent longer than its own jobs could explain; the tenant DB says
+    neither of those jobs is still running. The clock alone was wrong whenever
+    another agent's work sat in front of this chain on the shared `runtime`
+    queue, which is why it no longer decides on its own.
+
+    Takes `conn_str` because that second question is a tenant DB question. Step 1
+    has already decrypted it for this pass, so nothing extra is fetched or
+    decrypted here.
 
     FIRST PASS ONLY. A continuation would find the row this run inserted itself
     and skip, which would abandon its own wait.
@@ -580,6 +659,8 @@ def _a_run_is_already_live(agent_id: str) -> bool:
         if existing is None:
             return False
         if _still_beating(existing, datetime.now(timezone.utc)):
+            return True
+        if _chain_jobs_are_live(agent_id, conn_str, existing):
             return True
         return not _reap(db, agent_id, existing)
 
@@ -698,7 +779,7 @@ def _opened_or_skipped(agent_id: str, conn_str: str) -> dict | None:
     Hands back the opened wait, ALREADY_RUNNING when this agent holds a live
     checklist, or None when the open fell over having already marked its own row.
     """
-    if _a_run_is_already_live(agent_id):
+    if _a_run_is_already_live(agent_id, conn_str):
         log.info("run_deployment_checklist.idempotency_skip", agent_id=agent_id)
         return ALREADY_RUNNING
     run_id = _insert_run(agent_id)
