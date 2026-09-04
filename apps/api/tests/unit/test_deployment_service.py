@@ -1775,6 +1775,26 @@ class TestEvidenceGate:
         assert recommendation == "block"
         assert any(w.warning_id == "red_team_signal_unavailable" for w in warnings)
 
+    def test_a_summary_with_no_signal_at_all_reads_as_unreadable(self):
+        """The absent key, not the unavailable value.
+
+        `_red_team_evidence_warnings` reads the signal off the summary dict, so
+        a summary that carries no `signal` key hands the warning table None. It
+        must land on the unreadable warning and block, exactly as a signal the
+        table does not know does. Nothing pinned this branch, and it is the one
+        a type narrowing could quietly change.
+        """
+        summary = _measured_red_team()
+        del summary["signal"]
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", _measured_eval(), summary
+        )
+        assert recommendation == "block"
+        assert any(w.warning_id == "red_team_signal_unavailable" for w in warnings), (
+            f"a summary with no signal did not read as unreadable: "
+            f"{[w.warning_id for w in warnings]}"
+        )
+
     def test_a_run_that_recorded_incomplete_coverage_refuses_to_ship(self):
         """P4 review. This used to warn and ship, and the warning could not fire.
 

@@ -2531,10 +2531,19 @@ def _red_team_evidence_warnings(red_team_summary: dict) -> list[DeploymentWarnin
         return []
     if red_team_signal == RED_TEAM_SIGNAL_DID_NOT_FINISH:
         warning_id, message = _red_team_did_not_finish_warning(red_team_summary)
-    else:
+    elif isinstance(red_team_signal, str):
         warning_id, message = _RED_TEAM_ABSENCE_WARNINGS.get(
-            red_team_signal, _RED_TEAM_UNREADABLE_WARNING  # type: ignore[call-overload]  # a non-str signal is unhashable-safe here: every produced signal is a str or None
+            red_team_signal, _RED_TEAM_UNREADABLE_WARNING
         )
+    else:
+        # An absent or non-string signal is the unreadable case, which is where
+        # a table miss already landed it, so the narrowing decides nothing new.
+        # It replaces a `type: ignore[call-overload]` that stopped covering its
+        # own error the moment this function started reading the signal off the
+        # summary dict: `.get("signal")` is `Any | None` where the parameter had
+        # been bare `Any`, so mypy resolved an overload and reported `arg-type`
+        # instead. A narrower type is the honest fix; a wider ignore is not.
+        warning_id, message = _RED_TEAM_UNREADABLE_WARNING
     return [
         DeploymentWarning(
             warning_id=warning_id,
