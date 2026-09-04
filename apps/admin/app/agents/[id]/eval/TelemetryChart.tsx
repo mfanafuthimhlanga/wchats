@@ -126,7 +126,20 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
     const wrap = wrapRef.current
     const trace = traceRef.current
     const leaders = leadersRef.current
-    if (!wrap || !trace || !leaders || n === 0) return
+    if (!wrap) return
+    // React keeps this div across the two branches this component renders:
+    // `.telemetry` and `.telemetry.empty` are the same element in the same
+    // place, so the gutter's min-height, written onto it in pixels below,
+    // outlives the gutter unless something clears it. Moving between two
+    // agents' eval pages is a re-render rather than a fresh mount, and a chart
+    // with four three-line pins left the next agent's "nothing measured"
+    // sentence, 20px of it, inside a 236px box. Nothing else in here runs in
+    // that branch: the trace and the leaders are not rendered, so their refs
+    // are null and the layout below has nothing to lay out.
+    if (!trace || !leaders || n === 0) {
+      wrap.style.minHeight = ''
+      return
+    }
 
     const NS = 'http://www.w3.org/2000/svg'
     const narrow = window.matchMedia('(max-width: 900px)')

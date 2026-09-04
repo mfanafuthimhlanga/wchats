@@ -95,6 +95,24 @@ const bothSets = (i, golden, exploratory) => ({
   datasets: { available: true, golden: outcome(golden), exploratory: outcome(exploratory) },
 })
 
+// One run that measured nothing, which is what the chart's empty branch
+// renders. Two fixtures use it: one mounts it on its own, one arrives at it
+// from a chart that had pins.
+const nothingRun = {
+  ...oneSet(0, []),
+  metrics: metrics([]),
+  metrics_dataset: null,
+  datasets: { available: false },
+}
+
+// Four three-line pins clustered on the gate, the tallest column the gutter
+// ever holds and so the largest min-height the layout effect ever writes.
+const clusteredRuns = [
+  bothSets(0, [0.9, 0.899], [0.898, 0.897]),
+  bothSets(1, [0.901, 0.9], [0.899, 0.898]),
+  bothSets(2, [0.9005, 0.9004], [0.9003, 0.9002]),
+]
+
 const FIXTURES = [
   {
     id: 'four-measured',
@@ -137,11 +155,7 @@ const FIXTURES = [
     id: 'both-sets-clustered',
     about: 'two channels across both datasets, all four measured and clustered on the gate',
     pins: 4,
-    runs: [
-      bothSets(0, [0.9, 0.899], [0.898, 0.897]),
-      bothSets(1, [0.901, 0.9], [0.899, 0.898]),
-      bothSets(2, [0.9005, 0.9004], [0.9003, 0.9002]),
-    ],
+    runs: clusteredRuns,
   },
   {
     // Above four series the pins leave the gutter for the legend grid. The
@@ -168,14 +182,22 @@ const FIXTURES = [
     about: 'one run that recorded no measurement at all',
     pins: 0,
     announces: true,
-    runs: [
-      {
-        ...oneSet(0, []),
-        metrics: metrics([]),
-        metrics_dataset: null,
-        datasets: { available: false },
-      },
-    ],
+    runs: [nothingRun],
+  },
+  {
+    // The same empty state, reached the way a tenant reaches it. Moving
+    // between two agents' eval pages is a re-render, not a fresh mount:
+    // React keeps the wrap element across `.telemetry` and
+    // `.telemetry.empty`, so anything written on it in pixels by the chart
+    // that had pins is still there under the chart that has none. Mounting
+    // each fixture into a fresh root, which is what every fixture above
+    // does, is the one way to miss it.
+    id: 'nothing-measured-after-pins',
+    about: 'four three-line pins, then a run that recorded no measurement at all',
+    pins: 0,
+    announces: true,
+    before: clusteredRuns,
+    runs: [nothingRun],
   },
 ]
 
@@ -210,6 +232,9 @@ for (const [i, fixture] of FIXTURES.entries()) {
   if (typeof fixture.id !== 'string' || fixture.id === '') shapeErrors.push(`${where} carries no id`)
   if (!Array.isArray(fixture.runs) || fixture.runs.length === 0) {
     shapeErrors.push(`${where} carries no runs, so the chart is handed nothing to draw`)
+  }
+  if (fixture.before !== undefined && (!Array.isArray(fixture.before) || fixture.before.length === 0)) {
+    shapeErrors.push(`${where} declares a 'before' that is not a list of runs`)
   }
   if (!Number.isInteger(fixture.pins) || fixture.pins < 0) {
     shapeErrors.push(`${where} declares pins ${JSON.stringify(fixture.pins)}, which counts nothing`)
@@ -323,22 +348,30 @@ function require(n) {
 }</script>
 ${tags}
 <script>
-window.__mount = function (runs) {
+// __render draws into whatever root is already there, __mount makes a new
+// one first. The two are separate because a tenant moving between agents
+// gets the first and not the second, and the element the layout effect
+// writes pixels onto survives that.
+window.__render = function (runs) {
   var React = require('react')
-  var client = require('react-dom/client')
   var chart = require('./TelemetryChart')
-  document.getElementById('chart').textContent = chart.TELEMETRY_CSS +
-    '.judge { margin-top: 8px; padding-top: 22px; border-top: 1px solid var(--hairline-strong); }'
   var css = getComputedStyle(document.documentElement)
   var colors = ['--ch-1', '--ch-2', '--ch-3', '--ch-4'].map(function (v) { return css.getPropertyValue(v).trim() })
-  if (window.__root) window.__root.unmount()
-  window.__root = client.createRoot(document.getElementById('root'))
   window.__root.render(
     React.createElement(React.Fragment, null,
       React.createElement(chart.TelemetryChart, { runs: runs, colors: colors }),
       React.createElement('section', { className: 'judge' },
         React.createElement('p', { className: 'voice verdict' },
           'All 6 scenarios held on this run. The gate stays open.'))))
+}
+window.__mount = function (runs) {
+  var client = require('react-dom/client')
+  var chart = require('./TelemetryChart')
+  document.getElementById('chart').textContent = chart.TELEMETRY_CSS +
+    '.judge { margin-top: 8px; padding-top: 22px; border-top: 1px solid var(--hairline-strong); }'
+  if (window.__root) window.__root.unmount()
+  window.__root = client.createRoot(document.getElementById('root'))
+  window.__render(runs)
 }
 </script>
 </body></html>`,
@@ -351,11 +384,17 @@ window.__mount = function (runs) {
 // which is the same build every time.
 async function measure(page, fixture, errors) {
   errors.length = 0
-  await page.evaluate((runs) => window.__mount(runs), fixture.runs)
+  await page.evaluate((runs) => window.__mount(runs), fixture.before ?? fixture.runs)
   // The layout effect runs again when the webfont lands, and the pin's height
   // is a font measurement, so nothing is read before that second pass.
   await page.evaluate(() => document.fonts.ready)
   await page.waitForTimeout(300)
+  // A fixture with `before` is measured on its second chart, drawn into the
+  // root the first one is already in.
+  if (fixture.before) {
+    await page.evaluate((runs) => window.__render(runs), fixture.runs)
+    await page.waitForTimeout(200)
+  }
 
   const seen = await page.evaluate(() => {
     const wrap = document.querySelector('.telemetry')
@@ -385,16 +424,30 @@ async function measure(page, fixture, errors) {
       }
     }
     const notice = wrap.querySelector('.no-readings')
+    const noticeBox = notice ? notice.getBoundingClientRect() : null
+    const wrapStyle = getComputedStyle(wrap)
     return {
       pins,
       collisions,
+      // What the wrap is padded by, read rather than copied out of
+      // TELEMETRY_CSS, so the sentence-fits-its-box sum below stays true when
+      // the padding changes.
+      wrapPadding: parseFloat(wrapStyle.paddingTop) + parseFloat(wrapStyle.paddingBottom),
+      // The inline pixels the layout effect writes. Read so a box held open
+      // by them can say what is holding it.
+      minHeightStyle: wrap.style.minHeight,
       wrapTop: wrapBox.top,
       wrapBottom: wrapBox.bottom,
       wrapHeight: wrapBox.height,
       judgeTop: judgeBox.top,
       stacked: wrap.classList.contains('stacked'),
       notice: notice
-        ? { text: notice.textContent, role: notice.getAttribute('role'), live: notice.getAttribute('aria-live') }
+        ? {
+            text: notice.textContent,
+            role: notice.getAttribute('role'),
+            live: notice.getAttribute('aria-live'),
+            height: noticeBox.height,
+          }
         : null,
     }
   })
@@ -470,6 +523,25 @@ for (const { fixture, viewport, seen, errors } of results) {
     }
   }
 
+  // The empty branch draws a sentence, and the box around it belongs to the
+  // sentence. The gutter's min-height is written onto this same element in
+  // pixels, and React reuses the element between the two branches, so a
+  // column of pins from the chart before this one can still be holding the
+  // box open around 20px of text.
+  if (fixture.pins === 0 && seen.notice !== null) {
+    const fits = seen.notice.height + seen.wrapPadding
+    if (seen.wrapHeight > fits + 0.5) {
+      note(
+        `the empty chart's box is ${round(seen.wrapHeight)}px tall around a ` +
+          `${round(seen.notice.height)}px sentence and ${round(seen.wrapPadding)}px of padding, so ` +
+          `${round(seen.wrapHeight - fits)}px of it is empty ground` +
+          (seen.minHeightStyle
+            ? `, held open by an inline min-height of ${seen.minHeightStyle} the gutter left behind`
+            : ''),
+      )
+    }
+  }
+
   for (const hit of seen.collisions) {
     const a = seen.pins[hit.a]
     const b = seen.pins[hit.b]
@@ -510,6 +582,9 @@ const pairsMeasured = results.reduce((t, r) => {
   return t + (k * (k - 1)) / 2
 }, 0)
 const announced = results.filter((r) => r.fixture.announces && r.seen?.notice).length
+const announcedAfterPins = results.filter(
+  (r) => r.fixture.announces && r.fixture.before && r.seen?.notice,
+).length
 
 if (renders !== expectedRenders) {
   findings.push(
@@ -526,6 +601,12 @@ if (pairsMeasured === 0) {
 if (announced === 0) {
   findings.push('no fixture reached the empty state, so nothing was held to announcing it')
 }
+if (announcedAfterPins === 0) {
+  findings.push(
+    'no fixture reached the empty state by re-rendering over a chart with pins, so nothing was ' +
+      'held to letting go of the gutter it inherited',
+  )
+}
 
 if (findings.length > 0) {
   console.error(`\ncheck:chart-render: FAIL -- ${findings.length} finding(s):`)
@@ -537,5 +618,6 @@ console.log(
   `\ncheck:chart-render: PASS -- ${renders} render(s), ${FIXTURES.length} fixtures at ` +
     `${VIEWPORTS.map((v) => `${v.width}px`).join(', ')}: ${pinsMeasured} pin(s) measured and every one ` +
     `inside the chart wrap, ${pairsMeasured} pin pair(s) measured and none overlapping, and the empty ` +
-    `state announced itself in ${announced} of them.`,
+    `state announced itself in ${announced} render(s), ${announcedAfterPins} of them over a chart ` +
+    `that had pins, each as tall as the sentence in it.`,
 )
