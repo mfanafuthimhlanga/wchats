@@ -158,6 +158,22 @@ const FIXTURES = [
     runs: clusteredRuns,
   },
   {
+    // Every series measured on the latest run and on no earlier one, so each is
+    // a single point with no line to draw it into, sitting at the head of the
+    // chart. That point gets a mark from the trace and a head from the leader,
+    // both at x = CHART_X1, and this is the fixture that puts two marks on one
+    // point. Both datasets, so a golden open ring and an exploratory filled dot
+    // are each covered.
+    id: 'lone-latest-both-sets',
+    about: 'two channels across both datasets, measured on the latest run and on no other',
+    pins: 4,
+    runs: [
+      bothSets(0, [], []),
+      bothSets(1, [], []),
+      bothSets(2, [0.95, 0.91], [0.93, 0.89]),
+    ],
+  },
+  {
     // Above four series the pins leave the gutter for the legend grid. The
     // clamp does not run here, and this fixture is what says so.
     id: 'eight-series',
@@ -423,12 +439,27 @@ async function measure(page, fixture, errors) {
         if (acrossX > 0.5 && acrossY > 0.5) collisions.push({ a: i, b: j, overlap: acrossY })
       }
     }
+    // Every mark the chart draws, from both SVGs, in screen pixels. .trace
+    // carries a viewBox and .leaders does not, so a radius written once in
+    // the source arrives here at two sizes unless something reconciles them,
+    // and only the rendered box says which.
+    const circles = [...wrap.querySelectorAll('svg circle')].map((el) => {
+      const box = el.getBoundingClientRect()
+      return {
+        where: el.ownerSVGElement ? `.${el.ownerSVGElement.getAttribute('class')}` : '(detached)',
+        cx: (box.left + box.right) / 2,
+        cy: (box.top + box.bottom) / 2,
+        across: box.width,
+      }
+    })
+
     const notice = wrap.querySelector('.no-readings')
     const noticeBox = notice ? notice.getBoundingClientRect() : null
     const wrapStyle = getComputedStyle(wrap)
     return {
       pins,
       collisions,
+      circles,
       // What the wrap is padded by, read rather than copied out of
       // TELEMETRY_CSS, so the sentence-fits-its-box sum below stays true when
       // the padding changes.
@@ -477,6 +508,8 @@ try {
 }
 
 const findings = []
+let marksMeasured = 0
+let coincidentMarks = 0
 
 for (const { fixture, viewport, seen, errors } of results) {
   const where = `${fixture.id} at ${viewport.width}px`
@@ -522,6 +555,35 @@ for (const { fixture, viewport, seen, errors } of results) {
       )
     }
   }
+
+  // Two marks on the same point have to be one mark. The head of a trace is
+  // drawn in .leaders, which is CSS pixels, and a lone reading's mark is drawn
+  // in .trace, which the viewBox scales, so a single nominal radius rendered
+  // at two sizes and the smaller sat inside the larger. On a golden series
+  // that is an open ring with a mark in the middle of it, which reads as a
+  // filled dot and so as the exploratory encoding.
+  const coincident = []
+  for (let i = 0; i < seen.circles.length; i++) {
+    for (let j = i + 1; j < seen.circles.length; j++) {
+      const a = seen.circles[i]
+      const b = seen.circles[j]
+      if (Math.abs(a.cx - b.cx) > 1 || Math.abs(a.cy - b.cy) > 1) continue
+      coincident.push([a, b])
+      if (Math.abs(a.across - b.across) > 0.5) {
+        note(
+          `a mark in ${a.where} and a mark in ${b.where} sit on the same point ` +
+            `(${round(a.cx)}, ${round(a.cy)}) and render ${round(a.across)}px and ` +
+            `${round(b.across)}px across, so the smaller is drawn inside the larger`,
+        )
+      }
+    }
+  }
+  marksMeasured += seen.circles.length
+  coincidentMarks += coincident.length
+  console.log(
+    `    ${String(seen.circles.length).padStart(2)} mark(s) drawn, ${coincident.length} pair(s) of ` +
+      `them on the same point`,
+  )
 
   // The empty branch draws a sentence, and the box around it belongs to the
   // sentence. The gutter's min-height is written onto this same element in
@@ -601,6 +663,15 @@ if (pairsMeasured === 0) {
 if (announced === 0) {
   findings.push('no fixture reached the empty state, so nothing was held to announcing it')
 }
+if (marksMeasured === 0) {
+  findings.push('the chart drew no marks anywhere in the run, so no mark was measured at all')
+}
+if (coincidentMarks === 0) {
+  findings.push(
+    'no render put two marks on the same point, so nothing was held to a head and a lone ' +
+      'reading being one mark rather than two sizes',
+  )
+}
 if (announcedAfterPins === 0) {
   findings.push(
     'no fixture reached the empty state by re-rendering over a chart with pins, so nothing was ' +
@@ -617,7 +688,9 @@ if (findings.length > 0) {
 console.log(
   `\ncheck:chart-render: PASS -- ${renders} render(s), ${FIXTURES.length} fixtures at ` +
     `${VIEWPORTS.map((v) => `${v.width}px`).join(', ')}: ${pinsMeasured} pin(s) measured and every one ` +
-    `inside the chart wrap, ${pairsMeasured} pin pair(s) measured and none overlapping, and the empty ` +
+    `inside the chart wrap, ${pairsMeasured} pin pair(s) measured and none overlapping, ` +
+    `${marksMeasured} mark(s) drawn with ${coincidentMarks} pair(s) on the same point and each pair ` +
+    `one size, and the empty ` +
     `state announced itself in ${announced} render(s), ${announcedAfterPins} of them over a chart ` +
     `that had pins, each as tall as the sentence in it.`,
 )

@@ -251,14 +251,23 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
         // for exploratory, an open ring for golden, so a golden head is not
         // painted in exploratory's solid encoding. It was a 10px stroke wearing
         // the series' dash, which for golden is two loose pixels.
+        //
+        // Sized through the same scale, because this SVG has no viewBox and the
+        // trace's has one. POINT_RADIUS arrived here as 5.2px across and over
+        // there as 7.9px at 1280px, and where a series is measured on the latest
+        // run and on no earlier one those are the same point: the trace's mark
+        // and this head land on each other. The smaller drew inside the larger,
+        // and on a golden series that filled the open ring in and left the
+        // exploratory encoding on screen. One radius, one rendered size, so the
+        // two coincide exactly instead.
         const head = document.createElementNS(NS, 'circle')
         head.setAttribute('cx', r.lineX.toFixed(1))
         head.setAttribute('cy', r.lineY.toFixed(1))
-        head.setAttribute('r', String(POINT_RADIUS))
+        head.setAttribute('r', (POINT_RADIUS * scale).toFixed(2))
         if (r.dash) {
           head.setAttribute('fill', 'none')
           head.setAttribute('stroke', r.colour)
-          head.setAttribute('stroke-width', String(GOLDEN_WIDTH))
+          head.setAttribute('stroke-width', (GOLDEN_WIDTH * scale).toFixed(2))
         } else {
           head.setAttribute('fill', r.colour)
         }
