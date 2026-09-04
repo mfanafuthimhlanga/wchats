@@ -8,13 +8,19 @@ Context:
     and never altered. `_persist_messages` inserts a turn's user row and its
     assistant row in ONE transaction, and Postgres `now()` is
     `transaction_timestamp()`, so both rows carry byte-identical timestamps.
-    `id` is `gen_random_uuid()`, which sorts arbitrarily. Four readers ordered
-    by `created_at` alone and relied on user-before-assistant inside a turn:
+    `id` is `gen_random_uuid()`, which sorts arbitrarily. Five readers ordered
+    by `created_at` and relied on user-before-assistant inside a turn:
 
         actor_seam._fetch_history                     the Actor gate's transcript
         bench_service._fetch_customer_turn            the question a graded answer came from
         scenario_service._fetch_messages_for_conversation   the mined transcript
         retrieval_eval._fetch_last_user_message       the question Ragas scores against
+        agent._read_turn_history                      the history the next turn resumes from
+
+    The fifth had a `CASE role` tiebreak of its own, which put a turn's pair
+    right and left two rows of the SAME role at one timestamp ordered by
+    nothing. It reads `seq` now, which is what makes the column COMMENT below
+    true of every reader.
 
     A tie has no order, so each of those was reading whatever the plan produced.
     `seq` is the tiebreaker, and it is monotonic in INSERT order rather than in
@@ -26,13 +32,24 @@ WHY A SEQUENCE AND NOT `created_at, id`
     give a stable wrong answer instead of an unstable one, which is worse,
     because a stable wrong answer never looks like a bug.
 
-WHY THE BACKFILL ORDERS BY ROLE
-    Existing rows cannot be recovered exactly — the information the tie destroyed
+WHY THE BACKFILL ORDERS BY ROLE, AND WHAT THAT ORDER CANNOT DO
+    Existing rows cannot be recovered exactly. The information the tie destroyed
     is gone. Within one `created_at` the backfill puts the user row before the
     assistant row, which is the order `_persist_messages` writes and the order
     every reader assumed. It reconstructs the intended history rather than
     freezing a plan's arbitrary answer into a column that now looks
     authoritative. `id` is the last term so the backfill is repeatable.
+
+    The exact limit: the role rank sorts every user row of one `created_at`
+    ahead of every assistant row of that same `created_at`. Two turns sharing
+    one timestamp are therefore numbered U, U, A, A rather than U, A, U, A, and
+    the two turns interleave. That needs two transactions to commit inside one
+    `transaction_timestamp()`, because `_persist_messages` writes a turn's pair
+    in a transaction of its own, and no ordering over these columns can tell
+    those four rows apart anyway. The number of turns this migration can place
+    correctly is therefore "every turn whose timestamp it does not share with
+    another turn", and it is stated here rather than left for a reader to
+    derive from the SQL.
 
 WHY NOT NULL WITH A DEFAULT, unlike 0017's strictly-nullable column
     0017 kept NULL and `[]` apart because they were different OBSERVATIONS.

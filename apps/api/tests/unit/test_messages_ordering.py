@@ -1,10 +1,10 @@
 """
-Issue #79 — the four readers of `messages` get one turn's rows in insert order.
+Issue #79: the five readers of `messages` get one turn's rows in insert order.
 
 `_persist_messages` writes a turn's user row and its assistant row in ONE
 transaction, and Postgres `now()` is `transaction_timestamp()`, so both rows
 carry byte-identical `created_at`. `id` is `gen_random_uuid()`, which sorts
-arbitrarily. Four readers ordered by `created_at` alone and relied on
+arbitrarily. Five readers ordered by `created_at` and relied on
 user-before-assistant inside a turn, so the pair order was whatever the plan
 happened to produce.
 
@@ -19,9 +19,11 @@ correct by accident, and keeping insert order makes every reader look correct.
 
 `ORDER BY seq` leaves no ties at all, which is how the readers pass both runs.
 
-The fifth reader, `agent._read_turn_history`, is deliberately not here. It
-carries an explicit CASE tiebreak that already fixes the pair order locally, and
-tests/unit/test_agent_task.py pins it.
+`agent._read_turn_history` is the fifth, and it is here now. It carried a `CASE
+role` tiebreak that fixed a turn's pair locally and left two rows of the SAME
+role at one timestamp ordered by nothing, so the column COMMENT 0025 writes,
+"every reader of this table orders by seq", was not yet true. It is now.
+tests/unit/test_agent_task.py pins the rest of that helper.
 """
 
 from __future__ import annotations
@@ -229,3 +231,31 @@ def test_faithfulness_scores_the_latest_question(monkeypatch, tie_order):
         "under tie_order=%s the score would be computed against %r"
         % (tie_order, question)
     )
+
+
+# ---------------------------------------------------------------------------
+# agent._read_turn_history — the conversation the customer's next turn resumes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("tie_order", TIE_ORDERS)
+def test_the_turn_history_is_in_insert_order(tie_order):
+    """The fifth reader, and the one the customer feels.
+
+    This is the history every model call of a turn carries. A pair read inside
+    out shows the model its own answer above the question that produced it, and
+    the model reasons from a conversation that never happened.
+
+    It took the connection rather than opening one (PROD-05, one pooled
+    connection per turn), so this hands it the same scripted cursor the other
+    four get.
+    """
+    from app.worker.tasks.runtime import agent
+
+    history = agent._read_turn_history(_connect(TWO_TURNS, tie_order)(), "conv-1")
+
+    assert [row["role"] for row in history] == ["user", "assistant", "user", "assistant"], (
+        "the next turn read the conversation out of order under tie_order=%s: %r"
+        % (tie_order, [(row["role"], row["content"]) for row in history])
+    )
+    assert history[0]["content"] == "where is my order?"
