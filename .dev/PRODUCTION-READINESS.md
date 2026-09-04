@@ -97,8 +97,11 @@ not about missing features.
   volume justifies it.
 - `RECORD`: Railway's proxy idle timeout against SSE — the deleted ALB config held 4000s;
   the probe is `curl -N` surviving past 125s on a live SSE stream.
-- `RECORD`: migrations at deploy. No toml carries a preDeployCommand; control-DB alembic
-  and tenant migrations (#64) both run from nowhere on this stack.
+- `RECORD`: migrations at deploy. Tenant migrations now have a place: `railway.api.toml`
+  carries `preDeployCommand = "python scripts/migrate_all_tenants.py"`, which walks every
+  provisioned tenant, logs the revision each moved between, and exits nonzero if any tenant
+  did not reach head so Railway aborts the release (#64). Never yet observed against a real
+  Railway deploy. Control-DB alembic still runs from nowhere on this stack.
 
 ### 3.2 Configuration — the example env cannot boot the app
 
