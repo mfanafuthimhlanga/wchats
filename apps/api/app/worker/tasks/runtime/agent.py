@@ -957,8 +957,8 @@ def _claimed_turn(db, job_id: str) -> tuple:
     kill. Neon ships that parameter at five minutes. A turn slower than the
     server's limit has its claim connection terminated, the transaction rolls
     back, the advisory lock goes with it, and a redelivery claims a turn that is
-    still running — silently, because nothing touches the connection again until
-    release. `SET LOCAL` is a per-transaction override of a plain Postgres
+    still running, and it fails silently: nothing touches the connection again
+    until release. `SET LOCAL` is a per-transaction override of a plain Postgres
     parameter, so it survives a pooler in SESSION mode and ends with the
     transaction, which is why release resets nothing. Under a pooler in
     TRANSACTION mode the whole claim is one transaction on one pinned server
@@ -1024,8 +1024,8 @@ def _release_turn(turn, tenant_conn, claim, job_id: str) -> None:
     guard, so the one that fails costs only itself: the claim is the resource
     with the longest reach, it is last, and a turn that would not close used to
     strand it until the pool noticed. The claim is also the one most likely to
-    fail — it sits idle in transaction for the turn's whole life, which is what a
-    server-side idle timeout kills.
+    fail, because it sits idle in transaction for the turn's whole life, which
+    is what a server-side idle timeout kills.
     """
     if turn is not None:
         _released("turn", job_id, lambda: close_turn(turn))

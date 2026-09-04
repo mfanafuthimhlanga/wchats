@@ -429,10 +429,10 @@ def test_a_turn_answered_between_the_read_and_the_lock_runs_no_model():
 
     The first attempt can write its `agent.response` row and release the claim in
     the gap between this attempt's first read and its lock. The lock is then
-    granted — correctly, nothing holds it — and without the read AFTER it this
-    attempt runs a full second turn on a question already answered: a duplicate
-    model call billed to the tenant, a duplicate pair of `messages` rows the next
-    turn replays, and a second answer on a widget that already has one.
+    granted, correctly, because nothing holds it, and without the read AFTER it
+    this attempt runs a full second turn on a question already answered: a
+    duplicate model call billed to the tenant, a duplicate pair of `messages`
+    rows the next turn replays, and a second answer on a widget that has one.
 
     The window is inside one function call, so the two reads are driven directly:
     not answered when the guard looks, answered by the time the lock is held.

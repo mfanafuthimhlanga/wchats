@@ -1472,7 +1472,7 @@ def _failed_and_handed_back(task, agent_id: str, state: dict, exc: Exception) ->
     claimed the row even carrying the right number. A run with an attempt left is
     running; it lands 'failed' when the attempts are spent. If the retry never
     arrives, the beat this pass already wrote is what the staleness guard reads,
-    and the guard reaps it — which is what the guard is for.
+    and the guard reaps it, which is what the guard is for.
 
     A FIRST PASS IS HANDED BACK AS A CONTINUATION for the same reason. Its run
     row exists and both jobs are already dispatched, so resuming that run is the
