@@ -9,6 +9,11 @@ jobs:
   e2e-neon:
     name: E2E — real Neon provisioning
     runs-on: ubuntu-latest
+    # The three spend-bearing secrets live on the `wchats / staging` environment,
+    # never at repository level, and GitHub hands an environment's secrets only to
+    # a job that names it. Without this key both jobs read empty strings and the
+    # E2E run dies at Neon with "not authenticated" (#147).
+    environment: "wchats / staging"
     services:
       postgres:
         # pgvector's image, not plain postgres:17-alpine. The tenant migration
@@ -103,6 +108,11 @@ jobs:
   eval-full:
     name: Eval Full — LLM-judged D1/D2/D3/D4/D8
     runs-on: ubuntu-latest
+    # The three spend-bearing secrets live on the `wchats / staging` environment,
+    # never at repository level, and GitHub hands an environment's secrets only to
+    # a job that names it. Without this key both jobs read empty strings and the
+    # E2E run dies at Neon with "not authenticated" (#147).
+    environment: "wchats / staging"
     services:
       postgres:
         # pgvector's image, not plain postgres:17-alpine. The tenant migration
@@ -147,7 +157,13 @@ jobs:
       AGENT_E2E_ENABLED: "1"
       AGENT_ID: ${{ secrets.EVAL_DEMO_AGENT_ID }}
       API_KEY: ${{ secrets.EVAL_DEMO_API_KEY }}
-      AGENT_BASE_URL: http://localhost:8000
+      # Staging, not this job's own container. `capture_responses.py` drives a
+      # provisioned, ingested agent, and the Postgres beside this job was migrated
+      # one minute ago and holds no tenant and no agent, so EVAL_DEMO_AGENT_ID can
+      # never name a row in it. #147 recorded that gap and its comment chose
+      # staging over provisioning an agent inline. Set STAGING_AGENT_BASE_URL on
+      # the `wchats / staging` environment once #57 lands.
+      AGENT_BASE_URL: ${{ vars.STAGING_AGENT_BASE_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -201,38 +217,56 @@ jobs:
         working-directory: apps/api
         run: alembic -c alembic.ini upgrade head
 
-      - name: Start API server
-        working-directory: apps/api
-        run: uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+      - name: Resolve the eval target
+        # The three names this job needs to drive an agent. Absent any of them
+        # there is nothing to capture against, and a job that says which name is
+        # missing beats one that fails two steps later inside capture_responses.py.
+        #
+        # This job starts no API of its own any more. It used to run uvicorn and a
+        # worker against its own fresh Postgres, and then hand capture_responses.py
+        # an agent id from a secret that no row in that database could match (#147).
+        id: target
+        run: |
+          missing=""
+          [ -z "$AGENT_BASE_URL" ] && missing="$missing STAGING_AGENT_BASE_URL(variable)"
+          [ -z "$AGENT_ID" ] && missing="$missing EVAL_DEMO_AGENT_ID(secret)"
+          [ -z "$API_KEY" ] && missing="$missing EVAL_DEMO_API_KEY(secret)"
+          if [ -n "$missing" ]; then
+            echo "ready=0" >> $GITHUB_OUTPUT
+            echo "SKIPPING the capture and the eval suite. The 'wchats / staging' environment is missing:$missing"
+            echo "This job drives a provisioned, ingested agent on staging (#147). It has no agent of its own to fall back to, so it reports nothing rather than reporting a pass over nothing."
+          else
+            echo "ready=1" >> $GITHUB_OUTPUT
+            echo "Driving $AGENT_BASE_URL"
+          fi
 
-      - name: Start Celery worker
-        working-directory: apps/api
-        run: celery -A app.worker.celery_app worker -Q pipeline,runtime --pool=solo --loglevel=warning &
-
-      - name: Wait for API to be ready
+      - name: Wait for the eval target to be ready
         # A loop that runs out and moves on lets the next step fail on a symptom
-        # ("Capture eval responses" against nothing) while the cause, the API
-        # never booting, scrolled past. The step that can name the cause fails.
+        # ("Capture eval responses" against nothing) while the cause, an
+        # unreachable target, scrolled past. The step that can name the cause fails.
+        if: steps.target.outputs.ready == '1'
         run: |
           ready=0
           for i in $(seq 1 20); do
-            if curl -sf http://localhost:8000/health; then
-              echo "API ready after ${i} attempts"
+            if curl -sf "${AGENT_BASE_URL}/health"; then
+              echo "Target ready after ${i} attempts"
               ready=1
               break
             fi
-            echo "Waiting for API... ($i/20)"
+            echo "Waiting for the eval target... ($i/20)"
             sleep 3
           done
           if [ "$ready" != "1" ]; then
-            echo "The API never answered /health in 60s. Read the 'Start API server' step's output for the boot error."
+            echo "${AGENT_BASE_URL}/health did not answer in 60s, so there is no agent to capture against."
             exit 1
           fi
 
       - name: Capture eval responses
+        if: steps.target.outputs.ready == '1'
         working-directory: apps/api
         run: python tests/evals/capture_responses.py --overwrite
 
       - name: Run full eval suite (LLM-judged D1/D2/D3/D4/D8 + deterministic)
+        if: steps.target.outputs.ready == '1'
         working-directory: apps/api
         run: pytest tests/evals/run_evals.py -v --tb=short

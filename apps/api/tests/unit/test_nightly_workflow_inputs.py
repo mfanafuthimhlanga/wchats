@@ -92,9 +92,74 @@ def test_secrets_are_read_for_spend_and_nothing_else() -> None:
 def test_the_readiness_wait_fails_its_own_step() -> None:
     """A loop that runs out must fail where the cause is visible (FM-013)."""
     job = workflow()["jobs"]["eval-full"]
-    waits = [s for s in job["steps"] if str(s.get("name", "")).startswith("Wait for API")]
+    waits = [s for s in job["steps"] if str(s.get("name", "")).startswith("Wait for")]
     assert len(waits) == 1, "the eval-full job has exactly one readiness wait step"
     assert "exit 1" in waits[0]["run"], (
         "the readiness loop runs out without failing the step, so the next step "
         "fails on a symptom while the boot error scrolls past"
+    )
+
+
+#: The environment that holds NEON_API_KEY_TEST, OPENAI_API_KEY and VOYAGE_API_KEY.
+#: Spaces and a slash are part of the name.
+STAGING_ENVIRONMENT = "wchats / staging"
+
+
+@pytest.mark.parametrize("job_id", ["e2e-neon", "eval-full"])
+def test_each_job_declares_the_environment_that_holds_its_secrets(job_id: str) -> None:
+    """GitHub hands an environment's secrets only to a job that names it (#147).
+
+    Both jobs read three secrets that exist only on `wchats / staging`, and a job
+    without this key receives an empty string for each one. That is what the E2E
+    run reported as Neon "not authenticated" on every scheduled run from at least
+    2026-08-29 to 2026-09-02.
+    """
+    job = workflow()["jobs"][job_id]
+    assert job.get("environment") == STAGING_ENVIRONMENT, (
+        f"nightly.yml job {job_id!r} declares environment {job.get('environment')!r}, "
+        f"so the {sorted(SPEND_BEARING)} secrets arrive empty"
+    )
+
+
+TARGET_GATE = "steps.target.outputs.ready == '1'"
+
+
+def test_the_eval_job_drives_staging_and_skips_when_staging_is_unset() -> None:
+    """The eval job's own database can never hold the agent its secret names (#147).
+
+    `capture_responses.py` needs a provisioned, ingested agent. The Postgres
+    service beside this job is migrated at job start and holds no tenant and no
+    agent, so `EVAL_DEMO_AGENT_ID` names nothing there whatever the secret holds.
+    The target is staging, and absent the staging variable the job says so and
+    reports nothing rather than failing inside the capture script.
+    """
+    job = workflow()["jobs"]["eval-full"]
+    assert job["env"]["AGENT_BASE_URL"] == "${{ vars.STAGING_AGENT_BASE_URL }}", (
+        "the eval job points AGENT_BASE_URL back at its own container, which holds "
+        "no provisioned agent"
+    )
+
+    steps = job["steps"]
+    resolve = [s for s in steps if s.get("id") == "target"]
+    assert len(resolve) == 1, "the eval-full job has exactly one target-resolution step"
+    run = resolve[0]["run"]
+    assert "ready=0" in run and "ready=1" in run, (
+        "the resolution step publishes no ready output, so nothing downstream can skip"
+    )
+    assert "SKIPPING" in run, "a skip that prints no reason is indistinguishable from a pass"
+
+    gated = {str(s.get("name")) for s in steps if s.get("if") == TARGET_GATE}
+    needs_an_agent = {
+        "Capture eval responses",
+        "Run full eval suite (LLM-judged D1/D2/D3/D4/D8 + deterministic)",
+        "Wait for the eval target to be ready",
+    }
+    assert needs_an_agent <= gated, (
+        f"these steps drive an agent that may not exist and are not gated on "
+        f"{TARGET_GATE}: {sorted(needs_an_agent - gated)}"
+    )
+
+    assert not [s for s in steps if "uvicorn" in str(s.get("run", ""))], (
+        "the eval job starts an API of its own again; it drives staging, and a "
+        "local server here only hides which target the capture actually reached"
     )
