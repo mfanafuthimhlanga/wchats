@@ -37,6 +37,11 @@ Flow (run_deployment_checklist):
        re-queues itself with a countdown, because sleeping in the task body held
        the only `runtime` execution slot on the documented local topology and the
        two jobs it was waiting for could never start.
+       AND THE CHAIN IS A SINGLE FILE (#124). acks_late=True hands a lost
+       continuation back to the broker, so one wait can fork into two chains on
+       one run_id. Each pass claims its number off checklist_runs.pass_no in the
+       same fenced UPDATE that stamps its beat, so the fork that loses that race
+       stops before it polls, decides or persists.
     4. Collect all 5 signals plus the BLR-02 envelope hash synchronously (4
        signals via psycopg2 against the tenant DB, the 5th signal —
        blast_radius — and the envelope hash both via get_sync_db() against
@@ -350,6 +355,7 @@ _WAIT_STATE_KEYS: tuple[str, ...] = (
     "statuses",
     "eval_dispatched",
     "red_team_dispatched",
+    "pass_no",
 )
 
 
@@ -401,6 +407,17 @@ def _require_wait_state(wait_state: object) -> dict:
                 f"{wait_state[key]!r}, which is not a timestamp this build "
                 "wrote."
             ) from exc
+    pass_no = wait_state["pass_no"]
+    # The fence is a comparison against an INTEGER column (#124). A string, a
+    # float or a bool would compare false against every row and stop a chain that
+    # was never forked, so a value this build never wrote is refused here where
+    # the reason can be said, rather than silently in the WHERE clause.
+    if type(pass_no) is not int or pass_no < 0:
+        raise ValueError(
+            f"run_deployment_checklist was continued with pass_no={pass_no!r}, "
+            "and the fence that stops a forked chain compares it against a "
+            "non-negative integer column."
+        )
     return dict(wait_state)
 
 
@@ -411,11 +428,18 @@ def _open_wait(run_id: str, agent_id: str, conn_str: str) -> dict:
     flight for the whole wait rather than one after the other.
 
     NO SECOND IDEMPOTENCY GUARD LIVES HERE, and that is deliberate (#85 family).
-    What absorbs a broker redelivery is the beating-'running' checklist_runs
-    guard in step 2, which is still holding this run's own row for as long as the
-    wait lasts. A guard added here would be a second answer to a question step 2
-    has already answered, and the two would drift the way the timeout in BACKLOG
-    1.33 did.
+    What absorbs a redelivery of the FIRST message is the beating-'running'
+    checklist_runs guard in step 2, which is still holding this run's own row for
+    as long as the wait lasts. A guard added here would be a second answer to a
+    question step 2 has already answered, and the two would drift the way the
+    timeout in BACKLOG 1.33 did.
+
+    A REDELIVERED CONTINUATION IS A DIFFERENT QUESTION, and step 2 never sees it:
+    a continuation carries wait_state and skips steps 2 and 3 entirely, because
+    it would otherwise find the row it inserted itself and abandon its own wait.
+    The pass counter this state opens at zero is what answers that one (#124).
+    Every pass takes its number off the row before it re-queues, so a fork of one
+    message finds the number gone and stops.
 
     A JOB ALREADY IN FLIGHT AT DISPATCH TIME IS THE ONE RESIDUAL. Its guard
     absorbs the dispatch, so no row exists at or after `since`, the wait expires
@@ -435,6 +459,9 @@ def _open_wait(run_id: str, agent_id: str, conn_str: str) -> dict:
         "statuses": {"eval": None, "red_team": None},
         "eval_dispatched": _dispatch_eval_run(agent_id),
         "red_team_dispatched": _dispatch_red_team_run(agent_id),
+        # Zero passes taken, which is what the freshly inserted row's own column
+        # says too (#124). The first pass claims pass 0 and hands pass 1 on.
+        "pass_no": 0,
     }
 
 
@@ -665,8 +692,8 @@ def _a_run_is_already_live(agent_id: str, conn_str: str) -> bool:
         return not _reap(db, agent_id, existing)
 
 
-def _claimed(db, run_id: str, **values) -> bool:
-    """Write these columns onto this run, and only while the row says 'running'.
+def _claimed(db, run_id: str, *, expect_pass: int | None = None, **values) -> bool:
+    """Write these columns onto this run, and only while the row is still its own.
 
     THE CHAIN STOPS OWNING ITS ROW THE MOMENT THE GUARD REAPS IT. Every write the
     chain makes now reads the status it is writing over in the same statement, so
@@ -676,12 +703,21 @@ def _claimed(db, run_id: str, **values) -> bool:
     is the two-checklists-on-one-agent outcome the guard exists to prevent,
     reached from the other side.
 
-    The fence is the WHERE clause rather than a status read before the write,
-    because between that read and that write is exactly where the guard runs.
+    `expect_pass` adds the second half of that ownership (#124). Status alone
+    says the run is live; it cannot say WHICH continuation of the run this is,
+    and a redelivered message is a second continuation of a live run. A pass that
+    names the number it expects to find writes only if the row still holds it, so
+    exactly one of two forks advances the counter and the other stops.
+
+    The fence is the WHERE clause rather than a read before the write, because
+    between that read and that write is exactly where the other fork runs.
     """
+    fence = [ChecklistRun.id == run_id, ChecklistRun.status == "running"]
+    if expect_pass is not None:
+        fence.append(ChecklistRun.pass_no == expect_pass)
     claimed = db.execute(
         update(ChecklistRun)
-        .where(ChecklistRun.id == run_id, ChecklistRun.status == "running")
+        .where(*fence)
         .values(**values)
         .returning(ChecklistRun.id)
     ).first()
@@ -703,22 +739,58 @@ def _log_reaped(agent_id: str, run_id: str, write: str) -> None:
     )
 
 
-def _beat(agent_id: str, run_id: str) -> bool:
-    """Say on the row that this pass ran, so the guard can read the chain as live.
+def _log_superseded(agent_id: str, run_id: str, pass_no: int) -> None:
+    """Which of the two ways a pass can find the row no longer its to write.
 
-    Once per pass, from the worker clock the guard compares against. Returns
-    False only when the row is no longer this chain's to write.
+    The write is fenced on the status AND on the pass number, so zero rows back
+    has two causes and they are different incidents. A reaped row means the guard
+    read this chain as abandoned and something else is running for this agent. A
+    row that moved on means the broker handed this message to a second worker and
+    the other fork of it got there first, which is the incident that has no other
+    trace: nothing else in the system ever says a message was delivered twice.
+    """
+    with get_sync_db() as db:
+        run = db.get(ChecklistRun, run_id)
+    if run is None or run.status != "running":
+        _log_reaped(agent_id, run_id, "heartbeat")
+        return
+    log.warning(
+        "run_deployment_checklist.continuation_superseded",
+        agent_id=agent_id,
+        run_id=run_id,
+        carried_pass=pass_no,
+        row_pass=run.pass_no,
+        detail=(
+            "this continuation was redelivered and another fork of it already "
+            "took the pass; it stops here rather than polling, deciding and "
+            "persisting a second verdict for one run"
+        ),
+    )
 
-    A beat that FAILS is not that, and returns True. It costs freshness and
-    nothing else: the row keeps its previous beat and `_stale_after_s` absorbs a
-    lost pass, so a control DB blip never turns into a checklist reaped out from
-    under itself. A beat that reaches the row and finds it closed is the opposite
-    kind of news, and the chain ends on it.
+
+def _beat(agent_id: str, run_id: str, pass_no: int) -> int | None:
+    """Take this pass on the row, and hand back the number the next one expects.
+
+    Once per pass, stamping the worker clock the guard compares against and
+    advancing the counter the next continuation is fenced on. None means the row
+    is no longer this chain's to write, and the pass stops.
+
+    A beat that FAILS to reach the database is not that, and hands back the
+    number unchanged. It costs freshness and nothing else: the row keeps its
+    previous beat and its previous count, `_stale_after_s` absorbs a lost pass,
+    and the chain continues on the number the row still holds. So a control DB
+    blip never turns into a checklist reaped out from under itself, and it never
+    strands the chain on a number no row will ever match. A beat that REACHES the
+    row and takes nothing is the opposite kind of news, and the chain ends on it.
     """
     try:
         with get_sync_db() as db:
             still_ours = _claimed(
-                db, run_id, heartbeat_at=datetime.now(timezone.utc)
+                db,
+                run_id,
+                expect_pass=pass_no,
+                heartbeat_at=datetime.now(timezone.utc),
+                pass_no=pass_no + 1,
             )
     except Exception as exc:
         log.warning(
@@ -727,10 +799,11 @@ def _beat(agent_id: str, run_id: str) -> bool:
             run_id=run_id,
             error=str(exc) or repr(exc),
         )
-        return True
+        return pass_no
     if not still_ours:
-        _log_reaped(agent_id, run_id, "heartbeat")
-    return still_ours
+        _log_superseded(agent_id, run_id, pass_no)
+        return None
+    return pass_no + 1
 
 
 #: What the first pass hands back when this agent already has a live checklist.
@@ -904,7 +977,7 @@ def _open_first_wait(agent_id: str, run_id: str, conn_str: str) -> dict | None:
 
 
 def _polled(agent_id: str, conn_str: str, state: dict | None) -> dict | None:
-    """One fenced look at both runs, or None when this pass has no wait left.
+    """This pass claimed and one look at both runs, or None when it has no wait left.
 
     A None `state` comes from an open or a continuation that already fell over
     and already marked its row, so one place in the task stops a dead pass rather
@@ -914,19 +987,27 @@ def _polled(agent_id: str, conn_str: str, state: dict | None) -> dict | None:
     DB read sits inside `_latest_run_since`'s own except, but the fold around it
     does not, and an exception here used to leave the row 'running'.
 
-    A look that succeeded is also this pass's heartbeat (#129): the guard reads
-    that beat to tell a chain still working from one nothing will ever finish,
-    and reaching the tenant DB is the strongest thing a pass can say about
-    itself.
+    THE BEAT COMES FIRST, AND IT IS ALSO THE PASS THIS MESSAGE CLAIMS. One
+    write says both things (#129, #124): the row's beat moves, so the guard reads
+    the chain as live rather than abandoned, and the row's pass counter advances,
+    so the number this message carried is spent and a redelivered twin of it
+    cannot spend the same one. None means the row is no longer this chain's, and
+    the pass stops HERE, before the tenant DB is read at all: the fork that lost
+    the race polls nothing, collects nothing, re-queues nothing and persists
+    nothing.
 
-    AND THE BEAT IS WHERE THE CHAIN LEARNS IT WAS REAPED. The write is fenced on
-    the row still saying 'running', so a beat that lands nowhere means the guard
-    already closed this run out and something else is running for this agent.
-    None stops the pass there: nothing is re-queued, nothing is collected and
-    nothing is completed. The one look already taken is spent, which is a tenant
-    DB read rather than a wrong report.
+    IT USED TO COME AFTER THE POLL, on the reading that reaching the tenant DB is
+    the strongest thing a pass can say about itself. That ordering is what a
+    single-file chain cost: the losing fork spent a tenant read before being
+    stopped, and the claim has to be taken before any work whose duplicate is the
+    defect. A pass that beats and then fails to reach the tenant DB marks its own
+    run failed on the line below, so the row does not stay 'running' on the
+    strength of a beat that proved less than it used to.
     """
     if state is None:
+        return None
+    took = _beat(agent_id, state["run_id"], state["pass_no"])
+    if took is None:
         return None
     try:
         polled = _poll_wait(agent_id, conn_str, state)
@@ -940,9 +1021,7 @@ def _polled(agent_id: str, conn_str: str, state: dict | None) -> dict | None:
         )
         _persist_failed(agent_id, state["run_id"], exc)
         return None
-    if not _beat(agent_id, state["run_id"]):
-        return None
-    return polled
+    return {**polled, "pass_no": took}
 
 
 def _waited_s(state: dict) -> float:
@@ -1367,18 +1446,57 @@ def _persist_complete(
         )
 
 
-def _failed_and_handed_back(task, agent_id: str, run_id: str, exc: Exception) -> dict:
-    """Close the run out and hand the message back to the broker if it can be.
+def _failed_and_handed_back(task, agent_id: str, state: dict, exc: Exception) -> dict:
+    """Hand this pass back on the number the row now holds, or close the run out.
 
     The two places the task's own failures land say exactly this, so they say it
     once. `Task.retry` RAISES `celery.exceptions.Retry` itself, so the `raise` in
     front of it never runs; it is written that way because `retry(throw=False)`
     would return the exception instead, and because a reader has to see at the
     call site that this branch does not come back.
+
+    THE RETRY CARRIES THE STATE THIS PASS ENDED ON, NOT THE ONE IT ARRIVED WITH
+    (#124). `Task.retry` re-sends the message's own kwargs by default, and the
+    message carries the pass number the row held BEFORE this pass beat on it. The
+    beat IS the claim: it advances the counter every continuation is fenced on,
+    so by the time a pass fails the number in its message is one behind the row,
+    and a retry sent on it is refused by the very fence that stops a redelivered
+    twin. The chain's own retry looked exactly like a fork of itself. `state`
+    holds the number the beat took, so the retry claims cleanly, and `args=[]`
+    goes with it because a kwargs-only retry otherwise keeps the original
+    message's positional agent_id and passes it twice.
+
+    THE ROW STAYS 'running' WHILE AN ATTEMPT IS STILL TO COME. Closing the run
+    out as 'failed' and then asking for a retry says two things that cannot both
+    be true, and the fence is on the status as well, so the retry could not have
+    claimed the row even carrying the right number. A run with an attempt left is
+    running; it lands 'failed' when the attempts are spent. If the retry never
+    arrives, the beat this pass already wrote is what the staleness guard reads,
+    and the guard reaps it, which is what the guard is for.
+
+    A FIRST PASS IS HANDED BACK AS A CONTINUATION for the same reason. Its run
+    row exists and both jobs are already dispatched, so resuming that run is the
+    honest retry; starting over would insert a second row and dispatch a second
+    eval and a second red-team run for one checklist.
     """
-    _persist_failed(agent_id, run_id, exc)
+    run_id = state["run_id"]
     if task.request.retries < task.max_retries:
-        raise task.retry(exc=exc, countdown=2 ** task.request.retries)
+        log.warning(
+            "run_deployment_checklist.pass_handed_back",
+            agent_id=agent_id,
+            run_id=run_id,
+            pass_no=state["pass_no"],
+            attempts_spent=task.request.retries + 1,
+            error_type=type(exc).__name__,
+            error=str(exc) or repr(exc),
+        )
+        raise task.retry(
+            exc=exc,
+            countdown=2 ** task.request.retries,
+            args=[],
+            kwargs={"agent_id": agent_id, "wait_state": state},
+        )
+    _persist_failed(agent_id, run_id, exc)
     return {}
 
 
@@ -1401,8 +1519,7 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
     THE WAIT SPANS SEVERAL MESSAGES, NOT ONE LONG TASK BODY (#54 review). The
     first pass dispatches both jobs and opens a wait; every pass after it takes
     ONE look at the tenant DB and either re-queues itself with a countdown or
-    goes on to collect. `wait_state` is how a continuation knows which runs it is
-    waiting on, so a worker slot is never held while nothing is happening.
+    goes on to collect, so a worker slot is never held while nothing happens.
 
     Sequence:
         1. Fetch agent from control DB; decrypt conn_str at runtime. Every pass.
@@ -1435,16 +1552,17 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
     Args:
         agent_id: UUID string of the agent to check.
         wait_state: what the previous pass observed, or None on the first pass.
-            Never built by a caller outside this module.
+            Never built by a caller outside this module. It carries `pass_no`,
+            the number this continuation expects checklist_runs to hold; a
+            redelivered message carries a number the row has already moved past,
+            and stops at step 3b's beat (#124).
 
     Returns:
         {"status": "complete", "run_id": str, "recommendation": str}  on success.
         {"status": "waiting", "run_id": str, "pending": [str], ...}   while a job runs.
         {"status": "already_running"}                                  on idempotent skip.
-        {"status": "reaped", "run_id": str}   when the guard closed this run out
-            while it was working and a later checklist holds the agent. Every
-            write the chain makes is fenced on the row still saying 'running', so
-            this pass writes nothing rather than reopening a closed run.
+        {"status": "reaped", "run_id": str}   when the completing write took no
+            row, because the guard closed this run out while it was working.
         {}                                                             on retry exhaustion.
     """
     # ------------------------------------------------------------------
@@ -1509,7 +1627,7 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
     try:
         verdict = _compute_verdict(agent_id, conn_str, state)
     except Exception as exc:
-        return _failed_and_handed_back(self, agent_id, run_id, exc)
+        return _failed_and_handed_back(self, agent_id, state, exc)
 
     # ------------------------------------------------------------------
     # Step 5 - the narration turn, under ORCHESTRATOR_TIMEOUT_S. The shim awaits
@@ -1612,7 +1730,7 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
         # read. What reaches this block is a record read that raised, a decide()
         # refusal, or a control-DB write that failed, and none reached a decision.
         # ------------------------------------------------------------------
-        return _failed_and_handed_back(self, agent_id, run_id, exc)
+        return _failed_and_handed_back(self, agent_id, state, exc)
 
 
 def _orchestrator_ledger(

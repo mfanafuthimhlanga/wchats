@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, Index, Text, text
+from sqlalchemy import Boolean, DateTime, Index, Integer, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -65,6 +65,18 @@ class ChecklistRun(Base):
     # not polled yet, so the guard falls back to created_at.
     heartbeat_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    # Migration 0022 (#124): how many passes of run_deployment_checklist this run
+    # has taken. The checklist waits by re-queueing itself, and acks_late=True
+    # hands a lost continuation back to the broker, so one wait can fork into two
+    # chains carrying the same run_id: two orchestrator calls, two ledger rows and
+    # two verdicts written last-writer-wins. Every pass advances this counter in
+    # the same fenced UPDATE that stamps its beat, and a continuation whose
+    # carried number is not the one the row holds finds zero rows and stops. NOT
+    # NULL with a default of 0 because it counts, and zero passes is the true
+    # count for every row written before this column existed.
+    pass_no: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
     )
 
     __table_args__ = (

@@ -79,25 +79,52 @@ def _deployment_patch(name, **kwargs):
     return patch("app.worker.tasks.runtime.deployment." + name, **kwargs)
 
 
+def _fenced_pass(statement):
+    """The pass number this UPDATE fences on, or None when it fences on none.
+
+    Read off the statement's own WHERE criteria rather than from the caller, so a
+    fence that stops being written disappears from here too and the tests that
+    depend on it go red (#124).
+    """
+    for criterion in statement._where_criteria:
+        if getattr(getattr(criterion, "left", None), "key", None) == "pass_no":
+            return getattr(getattr(criterion, "right", None), "value", None)
+    return None
+
+
 def _fence_updates(mock_db, mock_run):
-    """Make this mock_db honour the chain's own WHERE status = 'running' fence.
+    """Make this mock_db honour the chain's own fence on its row.
 
     A MagicMock answers every statement with a truthy result, so a fence written
     against one can never be observed to hold and a test of it would be a
     tautology. This applies an UPDATE's values to `mock_run` only while the row
-    still says 'running', the way Postgres would, and hands back the run id or
-    nothing accordingly. Every other statement — the guard's SELECT — falls
-    through to the mock's own scripted answer.
+    still says 'running' AND still holds the pass number the statement names,
+    the way Postgres would, and hands back the run id or nothing accordingly.
+    Every other statement, the guard's SELECT among them, falls through to the
+    mock's own scripted answer.
+
+    THE PASS NUMBER IS THE SECOND HALF OF THE FENCE (#124). Status alone says the
+    run is live; it cannot tell one continuation of a live run from a redelivered
+    twin of it, and honouring only the status half here would let a forked chain
+    write in a test whose whole subject is that it cannot.
     """
     from sqlalchemy.sql.dml import Update
 
     scripted = mock_db.execute.return_value
+    # The column is INTEGER DEFAULT 0, so a freshly inserted row holds 0. A
+    # MagicMock in its place equals no number at all, and every fenced write
+    # would be refused for a reason about the double rather than about the code.
+    if not isinstance(mock_run.pass_no, int):
+        mock_run.pass_no = 0
 
     def _execute(statement, *_args, **_kwargs):
         if not isinstance(statement, Update):
             return scripted
         result = MagicMock()
-        if mock_run.status != "running":
+        expected = _fenced_pass(statement)
+        if mock_run.status != "running" or (
+            expected is not None and mock_run.pass_no != expected
+        ):
             result.first.return_value = None
             return result
         for column, bound in statement._values.items():
@@ -2656,7 +2683,13 @@ class TestTheVerdictIsComputedFromTheRecords:
 
 
 class TestATaskFailureBeforeTheVerdictStillFails:
-    """status='failed' is reserved for this, and only this (#54 criterion 5)."""
+    """status='failed' is reserved for this, and only this (#54 criterion 5).
+
+    The row is closed out on the LAST attempt, not the first. A pass with an
+    attempt still to come stays 'running' so its own retry can claim the row it
+    is retrying, which is why this drives the task with its retries already
+    spent (#124).
+    """
 
     def test_a_record_read_that_raises_marks_the_run_failed(self):
         from celery.exceptions import Retry
@@ -2714,10 +2747,15 @@ class TestATaskFailureBeforeTheVerdictStillFails:
                     "_compute_verdict", side_effect=RuntimeError("tenant DB unreachable")
                 )
             )
+            run_deployment_checklist.push_request(
+                retries=run_deployment_checklist.max_retries
+            )
             try:
                 run_deployment_checklist.run(agent_id=agent_id)
             except (Retry, RuntimeError):
                 pass
+            finally:
+                run_deployment_checklist.pop_request()
 
         assert mock_run.status == "failed", (
             "the decision was never reached, so there is nothing to complete on"
@@ -3156,6 +3194,7 @@ class TestTheReQueueGuardsTheChain:
             "statuses": {"eval": "complete", "red_team": None},
             "eval_dispatched": True,
             "red_team_dispatched": True,
+            "pass_no": 1,
         }
 
     def test_a_broker_failure_returns_false_and_names_the_run(self):
@@ -3741,7 +3780,7 @@ class TestEveryPassStampsTheRunsBeat:
         )
 
 
-def _continuation_state(run_id):
+def _continuation_state(run_id, pass_no=0):
     """The state a continuation carries, shaped the way `_open_wait` writes it."""
     return {
         "run_id": run_id,
@@ -3750,7 +3789,161 @@ def _continuation_state(run_id):
         "statuses": {"eval": None, "red_team": None},
         "eval_dispatched": True,
         "red_team_dispatched": True,
+        "pass_no": pass_no,
     }
+
+
+class TestOneWaitIsOneChain:
+    """A redelivered continuation is the same wait twice, not two waits (#124).
+
+    The checklist waits by re-queueing itself, and the task is acks_late=True. A
+    worker that dies between `apply_async` and the ack hands its message back, so
+    one wait forks into two chains carrying the same run_id and the same
+    wait_state. Both would poll, both would re-queue, both would pass the ceiling
+    and both would decide: two orchestrator turns billed to the tenant, two
+    ledger rows, and two `_persist_complete` writes landing last-writer-wins on
+    one row, which can disagree.
+
+    The step-2 guard cannot see any of it. A continuation carries wait_state and
+    skips steps 2 and 3 entirely, so nothing between the broker and the row ever
+    asked whether this message had already been handled. checklist_runs.pass_no
+    does: each pass names the number it expects the row to hold and advances it,
+    so exactly one fork writes and the other stops.
+    """
+
+    def _drive(self, state, polls, requeued):
+        """One continuation pass against `mock_run`, counting what it spends."""
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        with ExitStack() as stack:
+            for one in [
+                _deployment_patch("get_sync_db", new=_make_sync_db_ctx(self.db)),
+                _deployment_patch(
+                    "fernet_decrypt", return_value="postgresql://test/tenant"
+                ),
+                _deployment_patch(
+                    "latest_eval_run_status_since",
+                    new=lambda *_a, **_k: polls.append("eval"),
+                ),
+                _deployment_patch(
+                    "latest_red_team_run_status_since",
+                    new=lambda *_a, **_k: polls.append("red_team"),
+                ),
+                _deployment_patch(
+                    "_requeue_wait",
+                    new=lambda _agent_id, s: requeued.append(s) or True,
+                ),
+                _deployment_patch("log", new=self.log),
+            ]:
+                stack.enter_context(one)
+            return run_deployment_checklist.run(agent_id=str(uuid.uuid4()), wait_state=state)
+
+    def setup_method(self):
+        self.db, self.run = _build_full_happy_path_mock_db("run-1")
+        self.run.heartbeat_at = None
+        self.log = MagicMock()
+
+    def test_the_second_delivery_of_one_continuation_stops_before_it_polls(self):
+        """The defect itself: one message, delivered twice, run twice."""
+        state = _continuation_state("run-1", pass_no=0)
+        polls, requeued = [], []
+
+        first = self._drive(state, polls, requeued)
+        assert first["status"] == "waiting", (
+            f"the first delivery of this continuation has to run: {first}"
+        )
+        polls_after_first = len(polls)
+        requeues_after_first = len(requeued)
+
+        # The SAME state object the broker held, redelivered verbatim.
+        second = self._drive(state, polls, requeued)
+
+        assert second == {}, (
+            f"a redelivered continuation must hand nothing back: {second}"
+        )
+        assert len(polls) == polls_after_first, (
+            "the redelivered fork read the tenant DB, which is the first half of "
+            f"a second chain: {polls}"
+        )
+        assert len(requeued) == requeues_after_first, (
+            "the redelivered fork re-queued itself, so two chains now poll, "
+            "decide and persist for one checklist run"
+        )
+
+    def test_the_surviving_chain_carries_the_number_it_advanced_to(self):
+        """A fence nothing advances is a fence a redelivery walks straight past."""
+        polls, requeued = [], []
+
+        self._drive(_continuation_state("run-1", pass_no=0), polls, requeued)
+
+        assert self.run.pass_no == 1, (
+            f"the pass has to be taken ON THE ROW, or nothing was claimed: {self.run.pass_no}"
+        )
+        assert requeued[0]["pass_no"] == 1, (
+            "the next continuation is fenced on the number this pass advanced to, "
+            f"and it was handed {requeued[0]['pass_no']!r}"
+        )
+
+    def test_the_chain_walks_forward_pass_after_pass(self):
+        """Three deliveries in a row, each claiming the number the last handed on."""
+        polls, requeued = [], []
+
+        state = _continuation_state("run-1", pass_no=0)
+        for _ in range(3):
+            assert self._drive(state, polls, requeued)["status"] == "waiting"
+            state = requeued[-1]
+
+        assert [s["pass_no"] for s in requeued] == [1, 2, 3], (
+            f"a live chain must not be stopped by its own fence: {requeued}"
+        )
+        assert len(polls) == 6, (
+            f"three passes, both halves polled on each: {polls}"
+        )
+
+    def test_the_stopped_fork_says_it_was_superseded_rather_than_reaped(self):
+        """Two incidents, one symptom, and the log line is all a reader gets.
+
+        A reaped row means the guard read this chain as abandoned and something
+        else holds the agent. A superseded pass means the broker delivered one
+        message twice, which nothing else in the system ever records.
+        """
+        state = _continuation_state("run-1", pass_no=0)
+        polls, requeued = [], []
+        self._drive(state, polls, requeued)
+        self.log.reset_mock()
+
+        self._drive(state, polls, requeued)
+
+        events = [
+            call.args[0] for call in self.log.warning.call_args_list if call.args
+        ]
+        assert "run_deployment_checklist.continuation_superseded" in events, (
+            f"the redelivery has to be named as one: {events}"
+        )
+        assert "run_deployment_checklist.run_reaped_while_live" not in events, (
+            "a live row whose pass moved on was not reaped, and sending a reader "
+            f"to the guard is sending them to the wrong incident: {events}"
+        )
+
+    def test_a_continuation_carrying_no_pass_number_is_refused(self):
+        """An older build's state has no number, and defaulting one forks the chain."""
+        from app.worker.tasks.runtime.deployment import _require_wait_state
+
+        state = _continuation_state("run-1")
+        del state["pass_no"]
+
+        with pytest.raises(KeyError) as excinfo:
+            _require_wait_state(state)
+        assert "pass_no" in str(excinfo.value)
+
+    def test_a_pass_number_that_is_not_an_integer_is_refused(self):
+        """The fence compares against an INTEGER column, so a string stops a live
+        chain the broker never forked."""
+        from app.worker.tasks.runtime.deployment import _require_wait_state
+
+        with pytest.raises(ValueError) as excinfo:
+            _require_wait_state(_continuation_state("run-1", pass_no="1"))
+        assert "pass_no" in str(excinfo.value)
 
 
 class TestAReapedRunIsNeverWrittenOverByItsOwnChain:
@@ -3879,6 +4072,7 @@ class TestTheFirstPassIsFencedLikeTheContinuation:
             "statuses": {"eval": None, "red_team": None},
             "eval_dispatched": True,
             "red_team_dispatched": True,
+            "pass_no": 0,
         }
 
     def _drive(self, patches, wait_state=None):
@@ -3994,6 +4188,7 @@ class TestAContinuationIsValidatedByValue:
             "statuses": {"eval": "complete", "red_team": None},
             "eval_dispatched": True,
             "red_team_dispatched": True,
+            "pass_no": 1,
         }
         state.update(over)
         return state
@@ -4193,3 +4388,139 @@ class TestTheKnowledgeCollectorsRefuseLikeTheGatedTwo:
 
         assert told["verified_qa_stats"]["row_count"] is None
         assert told["corpus_stats"]["document_count"] is None
+
+
+class TestAFailedPassIsHandedBackOnANumberTheRowWillMatch:
+    """A retried pass has to be able to claim the row it is retrying (#124).
+
+    `Task.retry` re-sends the message's OWN kwargs, and the message carries the
+    pass number the row held BEFORE this pass beat on it. The beat is the claim:
+    it advances the counter every continuation is fenced on, so by the time the
+    pass fails the number in the message is one behind the row and the retry is
+    refused by the very fence that stops a redelivered twin. The chain's own
+    retry looked exactly like a fork of it, stopped, and the run was left for the
+    staleness reap.
+
+    The row's status is the other half. Closing the run out as 'failed' and then
+    asking for a retry says two things that cannot both be true, and the fence is
+    on the status as well, so the retry could not have claimed even carrying the
+    right number. A run with an attempt still to come is running; it lands
+    'failed' when the attempts are spent.
+    """
+
+    def setup_method(self):
+        self.db, self.run = _build_full_happy_path_mock_db("run-1")
+        self.run.heartbeat_at = None
+        self.run.pass_no = 0
+        self.agent_id = str(uuid.uuid4())
+
+    def _drive(self, wait_state, handed_back):
+        """One post-wait pass whose decision raises, with its retry captured."""
+        from celery.exceptions import Retry
+
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        def _retry(*_args, **kwargs):
+            handed_back.append(kwargs)
+            raise Retry("handed back to the broker")
+
+        with ExitStack() as stack:
+            for one in [
+                _deployment_patch("get_sync_db", new=_make_sync_db_ctx(self.db)),
+                _deployment_patch(
+                    "fernet_decrypt", return_value="postgresql://test/tenant"
+                ),
+                _deployment_patch(
+                    "latest_eval_run_status_since", return_value="complete"
+                ),
+                _deployment_patch(
+                    "latest_red_team_run_status_since", return_value="complete"
+                ),
+                _deployment_patch("_requeue_wait", return_value=True),
+                _deployment_patch(
+                    "_collect_signals",
+                    return_value={
+                        "eval_summary": {},
+                        "red_team_summary": {},
+                        "verified_qa_stats": {},
+                        "corpus_stats": {},
+                        "blast_radius": {},
+                    },
+                ),
+                _deployment_patch("_envelope_hash", return_value="hash"),
+                _deployment_patch(
+                    "_compute_verdict",
+                    side_effect=RuntimeError("the record read fell over"),
+                ),
+                patch.object(run_deployment_checklist, "retry", side_effect=_retry),
+            ]:
+                stack.enter_context(one)
+            with pytest.raises(Retry):
+                run_deployment_checklist.run(
+                    agent_id=self.agent_id, wait_state=wait_state
+                )
+
+    def test_the_retry_carries_the_pass_number_the_beat_advanced_to(self):
+        """What goes back to the broker names the number the row now holds."""
+        handed_back: list = []
+
+        self._drive(_continuation_state("run-1", pass_no=0), handed_back)
+
+        assert self.run.pass_no == 1, (
+            f"the pass never beat on the row, so this test proves nothing: "
+            f"{self.run.pass_no}"
+        )
+        resent = handed_back[0].get("kwargs")
+        assert resent is not None, (
+            "the retry re-sent the message's own kwargs, which carry the pass "
+            "number this pass already spent"
+        )
+        assert resent["wait_state"]["pass_no"] == 1, (
+            "the retry carries pass "
+            f"{resent['wait_state']['pass_no']} while the row holds "
+            f"{self.run.pass_no}; the fence that stops a redelivered fork stops "
+            "the chain's own retry too"
+        )
+        assert resent["agent_id"] == self.agent_id
+
+    def test_the_row_stays_claimable_while_an_attempt_is_still_to_come(self):
+        """The retry beats on the row and takes the next pass, like any continuation."""
+        handed_back: list = []
+
+        self._drive(_continuation_state("run-1", pass_no=0), handed_back)
+        assert self.run.status == "running", (
+            f"the run was closed out as {self.run.status!r} and then retried; "
+            "the fence is on the status too, so the retry can never claim it"
+        )
+
+        self._drive(handed_back[0]["kwargs"]["wait_state"], handed_back)
+
+        assert self.run.pass_no == 2, (
+            "the retried pass was refused the row and stopped, so this checklist "
+            f"never retried at all: pass_no={self.run.pass_no}"
+        )
+
+    def test_the_run_is_closed_out_once_the_attempts_are_spent(self):
+        """The last attempt is where 'failed' belongs, and it still lands there."""
+        from app.worker.tasks.runtime.deployment import (
+            _failed_and_handed_back,
+            run_deployment_checklist,
+        )
+
+        spent = MagicMock()
+        spent.request.retries = run_deployment_checklist.max_retries
+        spent.max_retries = run_deployment_checklist.max_retries
+
+        with _deployment_patch("get_sync_db", new=_make_sync_db_ctx(self.db)):
+            result = _failed_and_handed_back(
+                spent,
+                self.agent_id,
+                _continuation_state("run-1", pass_no=1),
+                RuntimeError("the last attempt fell over too"),
+            )
+
+        assert result == {}
+        assert self.run.status == "failed", (
+            "a checklist with no attempts left has to close its own row, or the "
+            f"guard is the only thing that will: {self.run.status!r}"
+        )
