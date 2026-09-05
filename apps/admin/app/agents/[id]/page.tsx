@@ -73,7 +73,14 @@ interface EvalRunSummary {
   // migration 0022, or a run that died before it wrote one. The API reports
   // null rather than 0, because 0 reads as "this run attempted nothing".
   scenario_count: number | null
-  aggregate_scores: {
+  // NUMERIC COMPATIBILITY PROJECTION, and nothing on this page reads it (#175).
+  // An unmeasured metric reads 0.0 here, so a tenant with a designated golden
+  // set would see four zeroes rather than four absences. The honest readings are
+  // the per-dataset Measurements `metrics` / `datasets` carry, which
+  // eval/evalSeries.ts reads. Declared, named for what it is, and left alone:
+  // deleting it would let the next reader add the field back without meeting
+  // this sentence.
+  aggregate_scores?: {
     faithfulness: number
     answer_relevancy: number
     context_precision: number

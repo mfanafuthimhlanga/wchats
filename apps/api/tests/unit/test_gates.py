@@ -122,7 +122,6 @@ PINNED_LIZARD = {
     ("app/services/agent_tools.py", "escalate_to_human_tool"): (4, 101),
     ("app/services/agent_tools.py", "lookup_structured_tool"): (5, 67),
     ("app/services/agent_tools.py", "retrieve_tool"): (28, 248),
-    ("app/services/alert_service.py", "check_and_write_alerts"): (17, 50),
     ("app/services/bench_service.py", "grade_trace"): (5, 66),
     ("app/services/bench_service.py", "list_failing_traces"): (8, 87),
     ("app/services/capability_service.py", "validate_tighten_only"): (31, 154),
