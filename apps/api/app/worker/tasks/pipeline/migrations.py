@@ -33,9 +33,18 @@ Connection probe (RESEARCH.md Pitfall 3):
     Probe exhaustion → retriable (retry_or_fail_the_job with exponential backoff).
 
 Failure modes (prd-M1.md §7.2):
-    Connection failure → retry 3x exponential backoff (via wait_for_neon_ready → RuntimeError),
-                         then the same ending as a migration error (#63)
-    Migration error   → fatal: sets agent.status="failed", job.status="failed", emits job.failed
+    Migration error → fatal. fail_the_job writes agent.status="failed",
+                      job.status="failed" and emits job.failed, and the chain ends
+                      here rather than retrying DDL that already refused.
+    Anything else   → retry_or_fail_the_job, countdown 2**retries, max 3. One handler
+                      around the whole body after the job row is found, because the
+                      job row is the thing that has to end. It covered the connection
+                      probe alone until 2026-09-04, so a fernet_decrypt on a bad key,
+                      an unreachable Redis under any emit, or a control-DB drop under
+                      get_current_alembic_revision raised straight out of the task and
+                      left the job 'running' with nothing on the stream saying it died
+                      the same hole provision_neon was observed falling through
+                      (staging, 15:25 UTC).
 
 Event emission order:
     migrations.running   ← emitted before Alembic runs
@@ -59,7 +68,7 @@ from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.models.job import Job
 from app.services.events import emit
-from app.services.job_failure import retry_or_fail_the_job
+from app.services.job_failure import fail_the_job, failure_reason, retry_or_fail_the_job
 from app.services.migrations import get_current_alembic_revision, run_tenant_migrations
 from app.services.neon import wait_for_neon_ready
 from app.worker.celery_app import celery_app
@@ -121,80 +130,69 @@ def apply_migrations(self, result: dict) -> None:
             log.info("apply_migrations.no_running_job", agent_id=agent_id)
             return
 
-        # ------------------------------------------------------------------
-        # Fetch and decrypt DIRECT connection string from control DB
-        # NEVER from the result dict — CLAUDE.md rule.
-        # direct_conn_string is intentionally not logged (T-03-02).
-        # ------------------------------------------------------------------
-        direct_conn_string = fernet_decrypt(require_ciphertext(agent.neon_direct_connection_string, "agents.neon_direct_connection_string"))
+        # Read the id once, here, while the session is known good. A commit
+        # expires every attribute, so `job.id` inside a failure handler is a
+        # SELECT on a session whose last statement may have raised, and it
+        # answers PendingRollbackError instead of the id the handler needs.
+        job_id = job.id
 
-        # ------------------------------------------------------------------
-        # Emit migrations.running — before Alembic runs
-        # ------------------------------------------------------------------
-        emit(job.id, "migrations.running", {"agent_id": agent_id}, db, _redis)
-
-        # ------------------------------------------------------------------
-        # Connection probe — wait for Neon compute to be query-ready
-        # (RESEARCH.md Pitfall 3: operations "finished" ≠ compute ready)
-        # ------------------------------------------------------------------
         try:
+            # ------------------------------------------------------------------
+            # Fetch and decrypt DIRECT connection string from control DB
+            # NEVER from the result dict — CLAUDE.md rule.
+            # direct_conn_string is intentionally not logged (T-03-02).
+            # ------------------------------------------------------------------
+            direct_conn_string = fernet_decrypt(require_ciphertext(agent.neon_direct_connection_string, "agents.neon_direct_connection_string"))
+
+            emit(job_id, "migrations.running", {"agent_id": agent_id}, db, _redis)
+
+            # Connection probe — wait for Neon compute to be query-ready
+            # (RESEARCH.md Pitfall 3: operations "finished" ≠ compute ready).
+            # Its RuntimeError reaches the handler below, which is where probe
+            # exhaustion was already being sent; it no longer needs a clause of
+            # its own to get there.
             wait_for_neon_ready(direct_conn_string)
-        except RuntimeError as exc:
-            # Probe exhausted — retry the whole task with exponential backoff
-            log.warning(
-                "apply_migrations.probe_exhausted",
+
+            # ------------------------------------------------------------------
+            # Run Alembic migrations
+            # Migration errors are FATAL — do not retry (prd-M1.md §7.2).
+            # Log only the exception type and message; never log conn string.
+            # ------------------------------------------------------------------
+            try:
+                run_tenant_migrations(direct_conn_string)
+            except Exception as exc:
+                log_failure(log, "apply_migrations.migration_failed", exc, level="error", agent_id=agent_id)
+                fail_the_job(job_id, failure_reason(exc), db, _redis, agent)
+                return  # Fatal — do not raise; chain ends here
+
+            # ------------------------------------------------------------------
+            # Record schema version and mark agent ready
+            # ------------------------------------------------------------------
+            revision = get_current_alembic_revision(direct_conn_string)
+            agent.schema_version = revision
+            agent.status = "ready"
+            job.status = "complete"
+            job.finished_at = datetime.now(timezone.utc)
+            db.commit()
+
+            log.info("apply_migrations.complete", agent_id=agent_id, schema_version=revision)
+
+            # Emit migrations.complete then job.complete
+            emit(job_id, "migrations.complete", {"schema_version": revision}, db, _redis)
+            emit(
+                job_id,
+                "job.complete",
+                {"agent_id": agent_id, "schema_version": revision},
+                db,
+                _redis,
+            )
+        except Exception as exc:
+            log_failure(
+                log,
+                "apply_migrations.failed",
+                exc,
+                level="error",
                 agent_id=agent_id,
                 attempt=self.request.retries,
             )
-            retry_or_fail_the_job(self, exc, job.id, db, _redis, 2**self.request.retries, agent)
-
-        # ------------------------------------------------------------------
-        # Run Alembic migrations
-        # Migration errors are FATAL — do not retry (prd-M1.md §7.2).
-        # Log only the exception type and message; never log conn string.
-        # ------------------------------------------------------------------
-        try:
-            run_tenant_migrations(direct_conn_string)
-        except Exception as exc:
-            log_failure(log, "apply_migrations.migration_failed", exc, level="error", agent_id=agent_id)
-            agent.status = "failed"
-            job.status = "failed"
-            job.error = str(exc)
-            job.finished_at = datetime.now(timezone.utc)
-            db.commit()
-            emit(job.id, "job.failed", {"error": str(exc)}, db, _redis)
-            return  # Fatal — do not raise; chain ends here
-
-        # ------------------------------------------------------------------
-        # Record schema version and mark agent ready
-        # ------------------------------------------------------------------
-        revision = get_current_alembic_revision(direct_conn_string)
-        agent.schema_version = revision
-        agent.status = "ready"
-        job.status = "complete"
-        job.finished_at = datetime.now(timezone.utc)
-        db.commit()
-
-        log.info(
-            "apply_migrations.complete",
-            agent_id=agent_id,
-            schema_version=revision,
-        )
-
-        # ------------------------------------------------------------------
-        # Emit migrations.complete then job.complete
-        # ------------------------------------------------------------------
-        emit(
-            job.id,
-            "migrations.complete",
-            {"schema_version": revision},
-            db,
-            _redis,
-        )
-        emit(
-            job.id,
-            "job.complete",
-            {"agent_id": agent_id, "schema_version": revision},
-            db,
-            _redis,
-        )
+            retry_or_fail_the_job(self, exc, job_id, db, _redis, 2**self.request.retries, agent)
