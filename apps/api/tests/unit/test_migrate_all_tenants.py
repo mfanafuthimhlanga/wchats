@@ -182,18 +182,18 @@ def test_no_log_line_carries_the_connection_string(seams):
     assert _PLACEHOLDER_CREDENTIAL not in rendered
 
 
-def test_a_tenant_with_no_ciphertext_is_a_failure_not_a_crash(seams):
+def test_a_tenant_with_no_ciphertext_is_stepped_over_not_crashed_on(seams):
     """`neon_direct_connection_string` is nullable, and a half-provisioned agent
-    is a row the fleet query can return. It counts as a failure and the walk
-    goes on, rather than ending the release on a tenant that never had a
-    database."""
+    is a row the fleet query can return. The walk reads it, says so, and carries
+    on to the tenants that do have a database."""
     seams()
     report = migrate_all.migrate_fleet(
         [("agent-aaa", "tenant-aaa", b"ciphertext-aaa"), ("agent-zzz", "tenant-zzz", None)]
     )
     assert report.migrated == 1
-    assert report.failed == 1
-    assert report.failures[0][0] == "agent-zzz"
+    assert report.skipped == 1
+    assert report.failed == 0
+    assert report.skips[0][0] == "agent-zzz"
 
 
 def test_the_exit_code_is_nonzero_when_any_tenant_failed(seams):
@@ -312,18 +312,71 @@ def test_the_failure_line_names_the_revision_the_tenant_rolled_back_to(neon_seam
     )
 
 
-def test_a_tenant_that_failed_before_the_decrypt_still_logs_a_failure(seams):
-    """`revision_before` and the DSN are both unbound when the ciphertext is
-    missing, and reading either would turn a named failure into a NameError
-    inside the handler for a named failure."""
+def test_a_row_with_no_dsn_is_skipped_rather_than_failed(seams):
+    """A half-finished provision is not a tenant that is behind.
+
+    An agent row can carry a Neon project id and no encrypted connection string:
+    provision_neon committed the id and died before storing the credential. The
+    walk used to raise MissingTenantDsn for that row, count it as a failed
+    tenant, and refuse the release. Observed on staging 2026-09-04:
+
+        migrate_all.complete  failed=1 migrated=0 tenants=1
+        1 of 1 tenant(s) did not reach head. The deployment is refused
+
+    for one abandoned signup. There is no database behind that row, so there is
+    nothing for it to be behind, and one dead signup may not stop every release.
+    """
     seams()
     with structlog.testing.capture_logs() as logs:
         report = migrate_all.migrate_fleet([("agent-zzz", "tenant-zzz", None)])
 
+    assert report.failed == 0, (
+        "a row with no connection string was counted as a tenant that did not "
+        "reach head, which refuses the whole release for one dead signup"
+    )
+    assert report.skipped == 1
+    assert report.skips == [("agent-zzz", "tenant-zzz")]
+    assert report.exit_code() == 0, "the release is refused over a row with no database"
+    assert [x for x in logs if x["event"] == "migrate_all.tenant_failed"] == []
+
+
+def test_the_skip_line_names_the_row_and_why_it_was_stepped_over(seams):
+    """Skipping quietly is how a fleet of half-provisioned agents accumulates
+    unseen. The line has to carry the agent id an operator would act on, the
+    reason, and the pointer to what actually went wrong upstream."""
+    seams()
+    with structlog.testing.capture_logs() as logs:
+        migrate_all.migrate_fleet([("agent-zzz", "tenant-zzz", None)])
+
+    line = next(x for x in logs if x["event"] == "migrate_all.tenant_skipped")
+    assert line["agent_id"] == "agent-zzz"
+    assert line["tenant_id"] == "tenant-zzz"
+    assert line["log_level"] == "warning", (
+        f"a skipped row logged at {line['log_level']!r} reads as routine"
+    )
+    assert "connection string" in line["reason"]
+    assert "provision_neon" in line["meaning"], (
+        "the line does not say which upstream step left the row half-finished, "
+        f"so the reader has nowhere to go next. got {line!r}"
+    )
+
+
+def test_a_skip_beside_a_real_failure_still_refuses_the_release(seams):
+    """The half the skip must not swallow. A tenant WITH a database that could
+    not reach head is still a release that must not ship, and the walk carries
+    both readings in one run."""
+    seams(fails_for="ciphertext-bbb")
+    report = migrate_all.migrate_fleet(
+        [("agent-zzz", "tenant-zzz", None)] + _FLEET
+    )
+
+    assert report.skipped == 1
     assert report.failed == 1
-    line = next(x for x in logs if x["event"] == "migrate_all.tenant_failed")
-    assert line["error_type"] == "MissingTenantDsn"
-    assert line["revision_before"] is None
+    assert report.migrated == 2
+    assert report.exit_code() == 1, (
+        "a suspended Neon endpoint stopped counting once a skipped row shared "
+        "the walk, so the new code would ship to a tenant still on the old schema"
+    )
 
 
 # --------------------------------------------------------------------------

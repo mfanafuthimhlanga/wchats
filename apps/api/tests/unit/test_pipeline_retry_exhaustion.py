@@ -429,6 +429,40 @@ def test_apply_migrations_retry_exhaustion_fails_the_job(monkeypatch):
     _assert_job_failed(captured, job_row, "TenantDatabaseGone")
 
 
+def test_apply_migrations_decrypt_failure_fails_the_job(monkeypatch):
+    """The half of this task that had no handler at all until 2026-09-04.
+
+    Only the connection probe was guarded, so the fernet_decrypt above it, both
+    emits, get_current_alembic_revision after a successful upgrade, and the
+    commit that writes agent.status='ready' all raised straight out of the task.
+    A malformed Fernet key is the one that was actually observed, in
+    provision_neon, on the same deployment's environment: the tenant DB reached
+    head and the job row still said 'running'.
+    """
+    from app.worker.tasks.pipeline import migrations as module
+
+    agent, job_row = _fake_agent(), _fake_job_row()
+    agent.status = "provisioning"
+    db = _fake_db(agent, job_row)
+
+    monkeypatch.setattr(module, "get_sync_db", _sync_db_context(db))
+    monkeypatch.setattr(
+        module,
+        "fernet_decrypt",
+        MagicMock(side_effect=ValueError("Fernet key must be 32 url-safe base64-encoded bytes")),
+    )
+    captured = _capture_events(monkeypatch, "app.worker.tasks.pipeline.migrations")
+
+    _at_last_attempt(module.apply_migrations)
+    try:
+        with pytest.raises(ValueError, match="Fernet key"):
+            module.apply_migrations.run({"agent_id": "a"})
+    finally:
+        module.apply_migrations.pop_request()
+
+    _assert_job_failed(captured, job_row, "ValueError")
+
+
 # ---------------------------------------------------------------------------
 # synthesize_retrieval_strategy
 # ---------------------------------------------------------------------------

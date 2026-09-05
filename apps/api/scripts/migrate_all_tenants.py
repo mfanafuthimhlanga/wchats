@@ -31,6 +31,22 @@ WHY IT STILL EXITS NONZERO
     migrate a tenant is a release that must not ship. The walk finishes first,
     so one run names every tenant that needs attention rather than the first.
 
+WHY A HALF-PROVISIONED TENANT IS SKIPPED AND NOT FAILED
+    An agent row can carry a Neon project id and no encrypted connection string:
+    `provision_neon` committed the id, then died before the line that stores the
+    credential. Until 2026-09-05 this walk raised `MissingTenantDsn` for such a
+    row, counted it as a failed tenant and refused the release. On staging that
+    read
+
+        migrate_all.complete  failed=1 migrated=0 tenants=1
+        1 of 1 tenant(s) did not reach head. The deployment is refused
+
+    for one abandoned signup, and it is the wrong reading twice over. A row with
+    no DSN has no database, so it cannot be behind a revision, and a release that
+    ships to nobody's benefit is held up by an agent nobody uses. The row is
+    skipped with a warning line naming it, and the exit code answers only for
+    tenants that HAVE a database and could not bring it to head.
+
 WHY NO CONNECTION STRING IS EVER AN ARGUMENT
     `CLAUDE.md` rule 1. The control DB hands out Fernet ciphertext; this script
     decrypts each tenant's DIRECT (non-pooled) URI at the point of use and never
@@ -100,26 +116,25 @@ def _redact(message: str, dsn: str) -> str:
 TenantRow = tuple[str, str, bytes | None]
 
 
-class MissingTenantDsn(RuntimeError):
-    """An agent carries a Neon project but no encrypted direct connection URI.
-
-    Half-provisioned: `provision_neon` wrote the project id and did not reach
-    the line that writes the credential. There is no database to migrate and
-    nothing this script can do about it, so it is a named failure rather than an
-    `AttributeError` from inside the decrypt.
-    """
-
-
 @dataclass
 class FleetReport:
     """What one walk did, in the shape a release log and an exit code need."""
 
     migrated: int = 0
     failed: int = 0
+    skipped: int = 0
     #: (agent_id, tenant_id, exception class name) per tenant that did not move.
     failures: list[tuple[str, str, str]] = field(default_factory=list)
+    #: (agent_id, tenant_id) per half-provisioned row the walk stepped over.
+    skips: list[tuple[str, str]] = field(default_factory=list)
 
     def exit_code(self) -> int:
+        """Nonzero only for a tenant that has a database and is not at head.
+
+        `skipped` is deliberately absent. A skipped row has no database, so it
+        is not behind, and counting it here refused a release for one abandoned
+        signup (staging, 2026-09-04).
+        """
         return 1 if self.failed else 0
 
 
@@ -159,22 +174,37 @@ def migrate_fleet(rows: list[TenantRow], *, apply: bool = True) -> FleetReport:
         apply: False reads each revision and writes nothing, for `--list`.
 
     Returns:
-        FleetReport. One log line per tenant either way, carrying the revision
-        it moved between or the class of the exception that stopped it. Neither
-        line carries the DSN.
+        FleetReport. One log line per tenant whichever of the three endings it
+        reached, carrying the revision it moved between, the class of the
+        exception that stopped it, or why it had no database to migrate. None of
+        the three carries the DSN.
     """
     report = FleetReport()
     for agent_id, tenant_id, encrypted in rows:
-        # Bound before the try: the failure handler reads both, and a tenant
-        # whose ciphertext is missing fails before either is assigned.
+        if not encrypted:
+            log.warning(
+                "migrate_all.tenant_skipped",
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                reason="no encrypted direct connection string",
+                meaning=(
+                    "provision_neon committed this agent's Neon project id and "
+                    "never reached the line that stores the credential, so there "
+                    "is no tenant database here to be behind a revision"
+                ),
+                action=(
+                    "finish or delete this agent. The release is not waiting on it"
+                ),
+            )
+            report.skipped += 1
+            report.skips.append((agent_id, tenant_id))
+            continue
+
+        # Bound before the try: the failure handler reads both, and a decrypt
+        # that raises on a malformed key assigns neither.
         dsn = ""
         before: str | None = None
         try:
-            if not encrypted:
-                raise MissingTenantDsn(
-                    f"agent {agent_id} has a Neon project and no encrypted "
-                    f"direct connection string"
-                )
             dsn = _decrypt(encrypted)
             before = _current_revision(dsn)
             if not apply:
@@ -293,8 +323,17 @@ def main(argv: list[str]) -> int:
         tenants=len(rows),
         migrated=report.migrated,
         failed=report.failed,
+        skipped=report.skipped,
         failures=[f"{agent_id}:{error}" for agent_id, _tenant, error in report.failures],
+        skips=[agent_id for agent_id, _tenant in report.skips],
     )
+    if report.skipped:
+        print(
+            f"{report.skipped} of {len(rows)} row(s) carry a Neon project and no "
+            f"connection string, so they have no database to migrate. They are "
+            f"half-finished provisions, named above by agent id, and they do not "
+            f"hold up this release."
+        )
     if report.failed:
         print(
             f"{report.failed} of {len(rows)} tenant(s) did not reach head. The "
