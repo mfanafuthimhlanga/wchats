@@ -1419,6 +1419,36 @@ RED_TEAM_RUN_STATUS_COMPLETE = "complete"
 #: this query hands back B's completed run so A's report carries B's coverage as
 #: measured. decide() reads the right record by id, so the verdict was safe; the
 #: gate's coverage checks and the owner-facing summary were not.
+#: THIS AGENT'S open findings, by severity (#162).
+#:
+#: A LIVE FINDING IS AN OPEN FINDING BELONGING TO THIS AGENT. It read
+#: `WHERE status = 'open'` across the whole table, and `red_team_findings` has no
+#: agent_id column, so on a tenant DB carrying two agents A's report counted B's
+#: open findings and `deployment_blocked` (True iff critical_count > 0) could
+#: block A's deploy on a critical finding that belongs to B. Migration 0012 wrote
+#: down why there is no column: "Each agent has its own dedicated Neon DB, so no
+#: agent_id column is needed". Rule 9 in CLAUDE.md is per-TENANT Neon projects,
+#: not per-agent, so that premise was never true, and #127 already had to fix the
+#: latest-run read for the same reason.
+#:
+#: The agent is on the run, as `kind = 'm7:{agent_id}'`, which is what
+#: `run_red_team` INSERTs. Joining through the run rather than filtering on
+#: `run_id IN (this agent's runs)` is what keeps the collector's own definition:
+#: its docstring records that a finding stays live ACROSS runs until it is
+#: contained or closed, and scoping to the agent leaves a finding from a
+#: superseded run of THIS agent counted, exactly as before.
+#:
+#: The join is INNER, so a finding with a NULL `run_id` is counted by nobody. It
+#: belongs to no agent, and counting it against this one is the defect above
+#: wearing a different shape. Nothing in this tree writes one: `run_red_team`
+#: Step 7c always has its run.
+_OPEN_FINDINGS_BY_SEVERITY_SQL = (
+    "SELECT f.severity, COUNT(*) FROM red_team_findings f "
+    "JOIN red_team_runs r ON r.id = f.run_id "
+    "WHERE f.status = 'open' AND r.kind = %s "
+    "GROUP BY f.severity"
+)
+
 _RED_TEAM_LATEST_SQL = (
     "SELECT started_at, status, coverage FROM red_team_runs "
     "WHERE kind = %s AND status <> 'running' "
@@ -1555,13 +1585,15 @@ def _latest_red_team_run(cur, conn, agent_id: str) -> tuple[tuple | None, object
 def _fetch_red_team_summary_sync(agent_id: str, conn_str: str) -> dict:
     """Fetch the live open-finding severity summary from the tenant DB.
 
-    OPS-15 (21-08): reads the first-class red_team_findings table — WHERE
-    status='open' GROUP BY severity — instead of parsing the red_team_runs
-    findings JSONB blob. deployment_blocked is True iff there is at least
-    one open critical finding, so a live critical finding always drives the
-    deploy gate to recommendation='block' regardless of which run produced
-    it (a finding stays "live" across runs until contained/closed via
+    OPS-15 (21-08): reads the first-class red_team_findings table instead of
+    parsing the red_team_runs findings JSONB blob. deployment_blocked is True iff
+    there is at least one open critical finding, so a live critical finding always
+    drives the deploy gate to recommendation='block' regardless of which run
+    produced it (a finding stays "live" across runs until contained/closed via
     POST /red-team/findings/{id}/contain).
+
+    LIVE MEANS THIS AGENT'S, which `_OPEN_FINDINGS_BY_SEVERITY_SQL` is where
+    #162 records.
 
     last_run_at still comes from the most recent red_team_runs row —
     red_team_findings has no run timestamp of its own.
@@ -1596,6 +1628,7 @@ def _fetch_red_team_summary_sync(agent_id: str, conn_str: str) -> dict:
     conn = psycopg2.connect(conn_str, connect_timeout=10)
     try:
         with conn.cursor() as cur:
+            kind = (f"m7:{agent_id}",)
             run_row, stored_coverage = _latest_red_team_run(cur, conn, agent_id)
             last_run_at = run_row[0].isoformat() if run_row and run_row[0] else None
             last_run_status = run_row[1] if run_row else None
@@ -1637,10 +1670,7 @@ def _fetch_red_team_summary_sync(agent_id: str, conn_str: str) -> dict:
                     ),
                 )
 
-            cur.execute(
-                "SELECT severity, COUNT(*) FROM red_team_findings "
-                "WHERE status = 'open' GROUP BY severity"
-            )
+            cur.execute(_OPEN_FINDINGS_BY_SEVERITY_SQL, kind)
             counts: dict[str, int] = {"critical": 0, "high": 0, "medium": 0, "low": 0}
             for sev, cnt in cur.fetchall():
                 if sev in counts:

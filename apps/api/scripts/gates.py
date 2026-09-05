@@ -241,7 +241,7 @@ LIZARD_BASELINE = {
     ("app/services/red_team_service.py", "run_identity_bypass_agent"): (17, 159),
     ("app/services/red_team_service.py", "run_value_bound_evasion_agent"): (17, 146),
     ("app/services/red_team_service.py", "seed_poisoned_chunk"): (2, 75),
-    ("app/services/redteam_programme_service.py", "read_programme"): (16, 99),
+    ("app/services/redteam_programme_service.py", "read_programme"): (16, 98),
     ("app/services/retrieval_service.py", "rrf_fuse"): (3, 65),
     ("app/services/retrieval_service.py", "rrf_fuse_with_expansion"): (8, 68),
     ("app/services/retrieval_service.py", "verified_qa_lookup"): (3, 61),

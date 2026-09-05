@@ -415,7 +415,25 @@ _SAFE_SCENARIO_REFERENCE_ANSWER = (
 )
 
 
-def _contain_finding_sync(conn_str: str, finding_id: str) -> dict | None:
+#: One finding of THIS AGENT'S, by id (#162). The route used to read it by
+#: primary key alone, on the premise that the tenant DB is the agent's own. It is
+#: the TENANT'S, so a tenant-key holder could contain another agent's critical
+#: finding by naming their own agent in the path, which drops that agent's
+#: deploy block. The agent is on the run, as `kind = 'm7:{agent_id}'`.
+#:
+#: A finding with a NULL `run_id` belongs to no agent, so it is counted by none
+#: and would be containable by none. It stays containable here: leaving a row
+#: nobody can act on is worse than letting anyone on the tenant close one that
+#: blocks nobody's gate.
+_CONTAIN_SELECT_SQL = (
+    "SELECT f.id, f.severity, f.status, f.probe_message "
+    "FROM red_team_findings f "
+    "LEFT JOIN red_team_runs r ON r.id = f.run_id "
+    "WHERE f.id = %s AND (r.kind = %s OR f.run_id IS NULL)"
+)
+
+
+def _contain_finding_sync(conn_str: str, finding_id: str, agent_id: str) -> dict | None:
     """Transition a red_team_findings row open -> contained.
 
     If the finding is severity='critical', files a source='red_team'
@@ -428,19 +446,19 @@ def _contain_finding_sync(conn_str: str, finding_id: str) -> dict | None:
     Args:
         conn_str: Decrypted tenant DB connection string — never logged (T-02-01).
         finding_id: UUID string of the red_team_findings row.
+        agent_id:   UUID string of the agent the route was called for. A finding
+                    belonging to a DIFFERENT agent on the same tenant DB reads as
+                    absent, which the route turns into the 404 it already returns
+                    for a finding that is not there (#162).
 
     Returns:
         {"finding": {id, severity, status}, "scenario_filed": bool} or None
-        if the finding does not exist.
+        if the finding does not exist for this agent.
     """
     conn = psycopg2.connect(conn_str, connect_timeout=10)
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, severity, status, probe_message "
-                "FROM red_team_findings WHERE id = %s",
-                (finding_id,),
-            )
+            cur.execute(_CONTAIN_SELECT_SQL, (finding_id, f"m7:{agent_id}"))
             row = cur.fetchone()
             if row is None:
                 return None
@@ -493,9 +511,14 @@ async def contain_red_team_finding(
 
     Security:
         Same IDOR prevention as the other red-team routes — agent ownership
-        verified via agent.tenant_id == tenant.id, 404-not-403. The finding
-        itself lives in the agent's own dedicated tenant DB, so ownership of
-        the finding is implied by ownership of the agent's conn_str.
+        verified via agent.tenant_id == tenant.id, 404-not-403.
+
+        AND THE FINDING IS SCOPED TO THE AGENT TOO (#162). The tenant DB is the
+        TENANT'S, not the agent's (CLAUDE.md rule 9), so "ownership of the agent's
+        conn_str" reached every agent of that tenant: naming agent A in the path
+        with B's finding id contained B's finding and dropped B's deploy block.
+        `_contain_finding_sync` takes the agent id and a finding of another
+        agent's reads as absent, which is the 404 this route already returns.
 
     Response shape:
         {"finding": {id, severity, status}, "scenario_filed": bool}
@@ -517,7 +540,9 @@ async def contain_red_team_finding(
     conn_str = fernet_decrypt(agent.neon_connection_string)
 
     # 5. Contain the finding in a thread pool to avoid blocking the event loop
-    result = await asyncio.to_thread(_contain_finding_sync, conn_str, str(finding_id))
+    result = await asyncio.to_thread(
+        _contain_finding_sync, conn_str, str(finding_id), str(agent_id)
+    )
     if result is None:
         raise HTTPException(status_code=404, detail="Finding not found")
 
