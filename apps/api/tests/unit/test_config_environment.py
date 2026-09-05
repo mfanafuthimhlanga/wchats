@@ -26,10 +26,19 @@ MAIN_PATH = Path(__file__).resolve().parents[2] / "app" / "main.py"
 
 DOC_ROUTES = ["/docs", "/redoc", "/openapi.json"]
 
+#: Every setting a known word makes mandatory, so this file keeps asserting the
+#: ENVIRONMENT validator rather than the newest production-only requirement.
+#: S3_EXPECTED_ENDPOINT_HOST (#133) refuses an empty value under production;
+#: tests/unit/test_storage_endpoint_seam.py is where that refusal is pinned.
+_PRODUCTION_REQUIREMENTS = {
+    "S3_EXPECTED_ENDPOINT_HOST": "ourownaccountid.r2.cloudflarestorage.com",
+}
+
 
 @pytest.mark.parametrize("word", ["development", "test", "staging", "production"])
 def test_the_known_words_boot(word):
-    assert Settings(ENVIRONMENT=word).ENVIRONMENT == word
+    extra = _PRODUCTION_REQUIREMENTS if word == "production" else {}
+    assert Settings(ENVIRONMENT=word, **extra).ENVIRONMENT == word
 
 
 @pytest.mark.parametrize("typo", ["Production", "prod", "production ", ""])
