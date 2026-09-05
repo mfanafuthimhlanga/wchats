@@ -63,7 +63,8 @@ def test_the_handler_logs_the_exception_TYPE_not_only_its_message():
 
     source = inspect.getsource(deployment)
     handler_start = source.index("run_deployment_checklist.orchestrator_failed")
-    handler = source[handler_start : handler_start + 400]
+    # From just before the event name, so the call that carries it is in view.
+    handler = source[max(0, handler_start - 80) : handler_start + 400]
 
     # Since #166 every failure log line goes through log_failure, which derives
     # the type name and a first-line message with a fallback itself. The
@@ -73,10 +74,8 @@ def test_the_handler_logs_the_exception_TYPE_not_only_its_message():
     assert "log_failure(" in handler and ", exc," in handler, (
         "the orchestrator failure handler does not hand the exception to "
         "log_failure. asyncio.TimeoutError stringifies to '', so a bare "
-        "error=str(exc) records a blank where the cause should be.
-"
-        f"handler:
-{handler}"
+        "error=str(exc) records a blank where the cause should be."
+        f"handler:\n{handler}"
     )
     from app.core import log_bounds
 
