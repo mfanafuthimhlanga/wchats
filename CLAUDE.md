@@ -47,7 +47,7 @@ pnpm run check:ops-room-wiring     # exit 0
 pnpm run check:chart-render        # exit 0, about 26s. Measures every eval-chart pin, mark and
                                    # leader head against the chart box in Chromium, 9 fixtures x 4
                                    # viewports. The only gate reading rendered geometry
-pnpm run test:unit                 # 69, browserless
+pnpm run test:unit                 # 108, browserless
 pnpm run test:e2e                  # 135 tests, not 113: corrected 2026-08-12 by running it.
                                    # Observed 7 failed / 128 passed / 35.9 min; all 7 are 90s
                                    # networkidle timeouts beside Clerk load errors, not assertion
