@@ -49,6 +49,7 @@ import pytest  # noqa: E402
 from app.domain.model_call import ModelCall, ModelSource  # noqa: E402
 from app.domain.pricing import (  # noqa: E402
     FX_RATES,
+    PER_MILLION,
     PRICE_BOOK,
     FxRate,
     PriceBook,
@@ -56,8 +57,10 @@ from app.domain.pricing import (  # noqa: E402
     UnknownFxRate,
     UnknownPrice,
     Window,
+    ceiling_cost_usd,
     cost_usd,
     cost_zar,
+    dearest_rate_per_million,
     window_for,
 )
 
@@ -536,3 +539,59 @@ def test_the_seeded_book_still_prices_deepseek_by_window():
 
     assert peak == Decimal("0.484")
     assert off_peak == Decimal("0.0968")
+
+
+# ---------------------------------------------------------------------------
+# What a call the book cannot price counts as, for a guard that must decide (#178)
+# ---------------------------------------------------------------------------
+
+
+class TestTheCeilingCharge:
+    """`cost_usd` refuses an unpriced call. A spend ceiling cannot take the refusal.
+
+    `_over_budget` in app.services.agent_loop caught UnknownPrice and returned
+    False, which switched the turn's ceiling off for exactly the call nothing
+    knows the price of. These two functions are what it charges instead.
+    """
+
+    def test_the_dearest_rate_is_the_highest_figure_in_either_table(self):
+        """Both tables, every window. DeepSeek peak output is the dearest row today."""
+        every = [
+            *PRICE_BOOK.rates_per_million.values(),
+            *PRICE_BOOK.flat_rates_per_million.values(),
+        ]
+        assert dearest_rate_per_million() == max(every)
+
+    def test_every_token_is_charged_at_that_rate_whatever_its_kind(self):
+        """Kind and window are unknown for a model the book does not name, so neither applies."""
+        call = _call(input_tokens=1000, output_tokens=500)
+
+        assert ceiling_cost_usd(call) == dearest_rate_per_million() * 1500 / PER_MILLION
+
+    def test_the_charge_reads_high_rather_than_low(self):
+        """The error runs one way, so a ceiling trips early rather than late."""
+        call = _call(input_tokens=1000, output_tokens=500)
+
+        priced, _ = cost_usd(call)
+        assert ceiling_cost_usd(call) > priced
+
+    def test_a_call_that_spent_nothing_costs_nothing(self):
+        """Zero tokens is zero at any rate. The ceiling charge is not a flat fee."""
+        assert ceiling_cost_usd(_call(input_tokens=0, output_tokens=0)) == 0
+
+    def test_a_smaller_book_charges_its_own_dearest_rate(self):
+        """The rate is read off the book passed in, never off the module default."""
+        book = PriceBook(
+            price_version="test",
+            utc_offset_hours=2,
+            peak_windows_cat=(),
+            peak_weekdays=(),
+            rates_per_million={},
+            flat_rates_per_million={
+                (PROVIDER, MODEL, TokenKind.INPUT): Decimal("2"),
+                (PROVIDER, MODEL, TokenKind.OUTPUT): Decimal("7"),
+            },
+        )
+
+        assert dearest_rate_per_million(book) == Decimal("7")
+        assert ceiling_cost_usd(_call(input_tokens=1_000_000, output_tokens=0), book) == 7

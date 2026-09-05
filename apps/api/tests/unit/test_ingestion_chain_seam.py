@@ -125,6 +125,10 @@ def _control_db(job_row):
     agent.neon_connection_string = b"encrypted-conn"
     db = MagicMock()
     db.get.side_effect = lambda model, _id: job_row if model.__name__ == "Job" else agent
+    # finish_ingestion asks whether a job.complete row is already on the stream.
+    # A MagicMock answers truthily to everything, which would read as "already
+    # emitted" and the drive below would end with no terminal event at all.
+    db.execute.return_value.first.return_value = None
     return db
 
 
@@ -148,7 +152,7 @@ class _Run:
 
 @pytest.fixture
 def run(monkeypatch):
-    """Fake every outside edge of all five hops; leave the five task functions real."""
+    """Fake every outside edge of all six hops; leave the six task functions real."""
     state = _Run()
     job_row = MagicMock()
     job_row.status = "running"
@@ -242,14 +246,22 @@ def run(monkeypatch):
         run_strategist=lambda signals_json, container, job, tenant_dsn: None,
     )
 
+    # finish opens no tenant connection and decrypts nothing. It reads the job
+    # row, writes the terminal state and emits the run's one terminal event.
+    monkeypatch.setattr(
+        "app.worker.tasks.pipeline.finish.get_sync_db", lambda: _sync_db(_control_db(job_row))
+    )
+    monkeypatch.setattr("app.worker.tasks.pipeline.finish.emit", state.record_emit)
+
     state.job_row = job_row
     return state
 
 
 def _drive(state):
-    """Run the five hops, each on what the previous hop returned. Return the last dict."""
+    """Run the six hops, each on what the previous hop returned. Return the last dict."""
     from app.worker.tasks.pipeline.chunk import chunk_documents
     from app.worker.tasks.pipeline.embed import embed_and_migrate
+    from app.worker.tasks.pipeline.finish import finish_ingestion
     from app.worker.tasks.pipeline.metadata import generate_metadata
     from app.worker.tasks.pipeline.parse import parse_documents
     from app.worker.tasks.pipeline.strategy import synthesize_retrieval_strategy
@@ -261,6 +273,7 @@ def _drive(state):
         ("chunk to metadata", generate_metadata),
         ("metadata to embed", embed_and_migrate),
         ("embed to strategy", synthesize_retrieval_strategy),
+        ("strategy to finish", finish_ingestion),
     ):
         # What crossed this join is what the previous hop returned, never rebuilt here.
         state.joins[name] = handed_on
@@ -289,7 +302,7 @@ def test_the_job_survives_every_hop(run):
 
 
 def test_every_join_carries_the_same_job(run):
-    """At each of the four joins, the dict on the wire is the job.
+    """At each of the five joins, the dict on the wire is the job.
 
     Read one join at a time, this is hop N's output being hop N+1's input, which
     is the thing no single hop's own tests can see.
@@ -301,18 +314,20 @@ def test_every_join_carries_the_same_job(run):
         "chunk to metadata": JOB,
         "metadata to embed": JOB,
         "embed to strategy": JOB,
+        "strategy to finish": JOB,
     }
 
 
 def test_the_cores_hand_the_type_along_without_the_wire(run):
-    """The four cores below the head compose on the type itself, with no dict between them.
+    """The five cores below the head compose on the type itself, with no dict between them.
 
     The edges convert because Celery serialises JSON. Underneath, this is one
     function per hop taking an IngestionJob and returning one, and the tail of
-    the chain is those four composed.
+    the chain is those five composed.
     """
     from app.worker.tasks.pipeline.chunk import chunk_documents
     from app.worker.tasks.pipeline.embed import embed_and_migrate
+    from app.worker.tasks.pipeline.finish import finish_ingestion
     from app.worker.tasks.pipeline.metadata import generate_metadata
     from app.worker.tasks.pipeline.strategy import synthesize_retrieval_strategy
 
@@ -322,6 +337,7 @@ def test_the_cores_hand_the_type_along_without_the_wire(run):
         generate_metadata,
         embed_and_migrate,
         synthesize_retrieval_strategy,
+        finish_ingestion,
     ):
         job = task.run.__wrapped__(task, job)
         assert isinstance(job, IngestionJob)
@@ -395,13 +411,14 @@ def test_each_hop_writes_the_rows_its_own_test_asserts(run):
 
 
 def test_the_run_emits_one_job_ids_worth_of_events_start_to_finish(run):
-    """Every event of the run carries the job_id the head was given.
+    """Every event of the run carries the job_id the head was given, and job.complete is last.
 
     An empty or mismatched job_id publishes to a channel nobody is subscribed
     to, which is silent. The ingest page simply never updates.
 
-    embed closes the job row and emits job.complete, and strategy runs after it,
-    so strategy.synthesized ends the run rather than job.complete.
+    `job.complete` ending the run is the whole of #168. embed emitted it while
+    strategy still had to run, so a subscriber that closes on the terminal event
+    closed a hop early and never saw the strategy step or its failure.
     """
     _drive(run)
 
@@ -409,20 +426,25 @@ def test_the_run_emits_one_job_ids_worth_of_events_start_to_finish(run):
 
     event_types = [event_type for _, event_type in run.events]
     assert event_types[0] == "ingestion.started"
-    assert event_types[-1] == "strategy.synthesized"
+    assert event_types[-1] == "job.complete", (
+        f"the run's terminal event is not last: {event_types}"
+    )
+    assert event_types.count("job.complete") == 1, (
+        f"one task owns the terminal event: {event_types}"
+    )
     for expected in (
         "parsing.complete",
         "chunking.complete",
         "metadata.complete",
         "embedding.complete",
         "ingestion.complete",
-        "job.complete",
+        "strategy.synthesized",
     ):
         assert expected in event_types, f"{expected} missing from {event_types}"
 
 
 def test_the_job_row_is_marked_complete(run):
-    """embed closes the control DB job row, as it does on its own."""
+    """finish_ingestion closes the control DB job row, as it does on its own."""
     _drive(run)
 
     assert run.job_row.status == "complete"

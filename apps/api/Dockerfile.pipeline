@@ -30,6 +30,15 @@ COPY . /app
 # Transfer ownership to non-root user
 RUN chown -R appuser /app
 
+# rapidocr downloads its OCR weights into its own package directory on first
+# use, and that directory is root's. Observed on staging 2026-09-05 as
+# worker.docling_warmup_failed error="[Errno 13] Permission denied:
+# '/usr/local/lib/python3.12/site-packages/rapidocr/models/PP-OCRv6_det_small.pth'",
+# which would recur on every first parse, warm-up or not. The directory is
+# resolved from the installed package rather than spelled out, so a Python or
+# package bump moves it with the install.
+RUN d="$(python -c "import os, rapidocr; print(os.path.join(os.path.dirname(rapidocr.__file__), 'models'))")"     && mkdir -p "$d" && chown -R appuser "$d"
+
 USER appuser
 
 CMD ["celery", "-A", "app.worker.celery_app", "worker", "--queues=pipeline", "--hostname=pipeline@%h", "--loglevel=info"]

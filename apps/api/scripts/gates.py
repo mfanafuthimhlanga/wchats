@@ -1,7 +1,8 @@
 """Structural gates for apps/api. Standard library only, no dependencies.
 
     python scripts/gates.py static  ruff, import contracts, complexity, source
-                                    assertions. None of them imports app code
+                                    assertions, log bounds, process-wide keys.
+                                    None of them imports app code
     python scripts/gates.py mypy    the type baseline on its own, which is what CI runs
     python scripts/gates.py fast    static, plus mypy, plus whole-suite test collection
     python scripts/gates.py full    the above, plus the unit suite
@@ -12,12 +13,14 @@ disappears silently, which reads exactly like a gate that was never declared.
 Test collection imports the whole app: docling pulls transformers and torch, and
 it was measured at 142.5s on 2026-08-18 against 78.8s on 2026-08-15, growing with
 the dependency tree rather than with the suite. It crossed the clamp and the hook
-gate was killed mid-run. `static` runs the four steps that never import app code:
+gate was killed mid-run. `static` runs the six steps that never import app code:
 
     ruff                1.8s   measured 2026-08-18
     import contracts    1.4s   measured 2026-08-18
     complexity          2.6s   measured 2026-08-24, lizard parses, it does not import
     source assertions   3.6s   measured 2026-08-24, one text pass over tests/
+    log bounds          1.1s   measured 2026-09-05, one AST pass over app/
+    process-wide keys   0.2s   measured 2026-09-05, one AST pass over tests/integration
 
 That is the hook's gate now. mypy, collection and the suite belong to `fast` and
 `full`, which are run deliberately and detached, not at the end of every session.
@@ -37,6 +40,7 @@ Tightening a threshold is a deliberate act: move it down, watch the gate go red,
 fix the code, move it down again. Never raise one to make a red gate green.
 """
 
+import ast
 import os
 import re
 import subprocess
@@ -176,7 +180,7 @@ LIZARD_FLAGS = ["-C", "15", "-L", "60", "-a", "11", "--warnings_only"]
 # improves. A function over the standard is work to do, never a line to add here.
 # tests/unit/test_gates.py snapshots this dict and goes red on an addition.
 LIZARD_BASELINE = {
-    ("app/api/deps.py", "get_current_tenant"): (19, 120),
+    ("app/api/deps.py", "get_current_tenant"): (19, 110),
     ("app/api/v1/agent_chat.py", "get_agent_conversations"): (4, 69),
     ("app/api/v1/agent_chat.py", "post_agent_chat"): (8, 160),
     ("app/api/v1/agents.py", "patch_agent"): (13, 61),
@@ -184,12 +188,12 @@ LIZARD_BASELINE = {
     ("app/api/v1/deployment.py", "_refuse_if_a_critical_finding_is_open"): (4, 77),
     ("app/api/v1/deployment.py", "acknowledge_warnings"): (17, 66),
     ("app/api/v1/deployment.py", "approve_deployment"): (12, 143),
-    ("app/api/v1/documents.py", "delete_document"): (10, 176),
+    ("app/api/v1/documents.py", "delete_document"): (10, 175),
     ("app/api/v1/documents.py", "get_document_detail"): (12, 133),
-    ("app/api/v1/documents.py", "upload_documents"): (15, 194),
+    ("app/api/v1/documents.py", "upload_documents"): (15, 188),
     ("app/api/v1/evals.py", "get_eval_run_results"): (16, 98),
     ("app/api/v1/evals.py", "list_eval_runs"): (13, 87),
-    ("app/api/v1/pending_confirmations.py", "resolve_pending_confirmation"): (8, 178),
+    ("app/api/v1/pending_confirmations.py", "resolve_pending_confirmation"): (8, 177),
     ("app/api/v1/query.py", "post_agent_query"): (3, 77),
     ("app/api/v1/red_team.py", "_contain_finding_sync"): (6, 64),
     ("app/api/v1/webhooks.py", "clerk_webhook"): (9, 79),
@@ -200,13 +204,13 @@ LIZARD_BASELINE = {
     ("app/api/v1/widget.py", "post_widget_identity_request"): (3, 63),
     ("app/api/v1/widget.py", "post_widget_identity_verify"): (5, 88),
     ("app/api/v1/widget.py", "widget_job_events"): (2, 73),
-    ("app/services/actor_seam.py", "call_actor_gate"): (10, 157),
+    ("app/services/actor_seam.py", "call_actor_gate"): (10, 152),
     # 81 to 64: #182 moved the prompt body out of the function into the
     # module-level `_TEMPLATE`, which is what `SYSTEM_PROMPT_MAX_CHARS` measures.
     ("app/services/agent_prompt.py", "build_system_prompt"): (14, 64),
     ("app/services/agent_tools.py", "escalate_to_human_tool"): (4, 101),
     ("app/services/agent_tools.py", "lookup_structured_tool"): (5, 67),
-    ("app/services/agent_tools.py", "retrieve_tool"): (28, 248),
+    ("app/services/agent_tools.py", "retrieve_tool"): (28, 244),
     ("app/services/bench_service.py", "grade_trace"): (5, 66),
     ("app/services/bench_service.py", "list_failing_traces"): (8, 87),
     ("app/services/capability_service.py", "validate_tighten_only"): (31, 154),
@@ -214,12 +218,12 @@ LIZARD_BASELINE = {
     ("app/services/deployment_service.py", "_agent_not_invoked_warning"): (3, 76),
     ("app/services/deployment_service.py", "_eval_summary"): (2, 63),
     ("app/services/deployment_service.py", "_fetch_blast_radius_sync"): (11, 147),
-    ("app/services/deployment_service.py", "_fetch_eval_summary_sync"): (12, 204),
+    ("app/services/deployment_service.py", "_fetch_eval_summary_sync"): (12, 200),
     ("app/services/deployment_service.py", "_fetch_red_team_summary_sync"): (11, 114),
     ("app/services/deployment_service.py", "apply_signal_evidence_gate"): (7, 133),
     ("app/services/deployment_service.py", "derive_blast_radius_warnings"): (8, 77),
     ("app/services/digest_service.py", "_collect_digest_stats"): (10, 71),
-    ("app/services/eval_service.py", "build_eval_run_config"): (11, 207),
+    ("app/services/eval_service.py", "build_eval_run_config"): (11, 191),
     ("app/services/eval_service.py", "insert_eval_run"): (4, 62),
     ("app/services/eval_service.py", "run_ragas_eval"): (11, 153),
     ("app/services/eval_service.py", "summarise_agent_invocation"): (31, 186),
@@ -231,18 +235,18 @@ LIZARD_BASELINE = {
     ("app/services/neon.py", "create_neon_project"): (6, 76),
     ("app/services/red_team_probe.py", "_build_transactional_probe_fn"): (1, 119),
     ("app/services/red_team_service.py", "_run_attacker"): (5, 81),
-    ("app/services/red_team_service.py", "build_probe_tools"): (1, 91),
+    ("app/services/red_team_service.py", "build_probe_tools"): (1, 87),
     ("app/services/red_team_service.py", "classify_severity"): (2, 77),
     ("app/services/red_team_service.py", "run_confused_deputy_agent"): (1, 69),
     ("app/services/red_team_service.py", "run_content_injection_agent"): (13, 153),
     ("app/services/red_team_service.py", "run_identity_bypass_agent"): (17, 159),
     ("app/services/red_team_service.py", "run_value_bound_evasion_agent"): (17, 146),
     ("app/services/red_team_service.py", "seed_poisoned_chunk"): (2, 75),
-    ("app/services/redteam_programme_service.py", "read_programme"): (16, 99),
+    ("app/services/redteam_programme_service.py", "read_programme"): (16, 98),
     ("app/services/retrieval_service.py", "rrf_fuse"): (3, 65),
     ("app/services/retrieval_service.py", "rrf_fuse_with_expansion"): (8, 68),
     ("app/services/retrieval_service.py", "verified_qa_lookup"): (3, 61),
-    ("app/services/scenario_service.py", "generate_eval_suite_for_agent"): (7, 66),
+    ("app/services/scenario_service.py", "generate_eval_suite_for_agent"): (7, 61),
     ("app/services/scenario_service.py", "generate_scenarios_from_chunks"): (5, 65),
     ("app/services/scenario_service.py", "mine_production_scenarios"): (11, 114),
     ("app/services/sse.py", "event_generator"): (13, 96),
@@ -253,44 +257,43 @@ LIZARD_BASELINE = {
     ("app/services/transactional/adapters/stripe_adapter.py", "place_order"): (1, 63),
     ("app/services/transactional/audit.py", "write_audit_row"): (2, 69),
     ("app/services/transactional/confirmation_resolution.py", "execute_approved_confirmation"): (12, 290),
-    ("app/services/transactional/credential_service.py", "_fetch_credential_config"): (3, 69),
+    ("app/services/transactional/credential_service.py", "_fetch_credential_config"): (3, 65),
     ("app/services/transactional/enforcement.py", "apply_rate_and_constraint_checks"): (8, 96),
     ("app/services/transactional/enforcement.py", "check_capability_access"): (4, 76),
     ("app/services/transactional/idempotency.py", "reserve_idempotency"): (1, 185),
     ("app/services/transactional/idempotency.py", "reserve_idempotency._inner"): (14, 150),
     ("app/services/transactional/provider_adapter.py", "get_adapter_for_skill"): (10, 150),
     ("app/services/transactional/tools.py", "_execute_adapter_and_audit"): (3, 142),
-    ("app/services/transactional/tools.py", "_execute_transactional_tool"): (34, 793),
+    ("app/services/transactional/tools.py", "_execute_transactional_tool"): (34, 788),
     ("app/services/validation_service.py", "call_auditor"): (2, 88),
     ("app/services/validation_service.py", "call_strategist"): (6, 77),
-    ("app/worker/tasks/pipeline/chunk.py", "chunk_documents"): (15, 216),
-    ("app/worker/tasks/pipeline/embed.py", "embed_and_migrate"): (13, 253),
-    ("app/worker/tasks/pipeline/migrations.py", "apply_migrations"): (6, 124),
-    ("app/worker/tasks/pipeline/parse.py", "parse_documents"): (17, 252),
+    ("app/worker/tasks/pipeline/chunk.py", "chunk_documents"): (15, 208),
+    ("app/worker/tasks/pipeline/embed.py", "embed_and_migrate"): (13, 238),
+    ("app/worker/tasks/pipeline/migrations.py", "apply_migrations"): (6, 119),
+    ("app/worker/tasks/pipeline/parse.py", "parse_documents"): (17, 248),
     ("app/worker/tasks/pipeline/provision.py", "provision_neon"): (17, 208),
-    ("app/worker/tasks/pipeline/reembed.py", "reembed_corpus"): (13, 177),
+    ("app/worker/tasks/pipeline/reembed.py", "reembed_corpus"): (13, 169),
     ("app/worker/tasks/pipeline/staleness.py", "compute_index_staleness_summary"): (11, 77),
-    ("app/worker/tasks/pipeline/strategy.py", "synthesize_retrieval_strategy"): (12, 144),
+    ("app/worker/tasks/pipeline/strategy.py", "synthesize_retrieval_strategy"): (12, 124),
     ("app/worker/tasks/runtime/agent.py", "_judge_retrieved_context"): (11, 98),
     ("app/worker/tasks/runtime/agent.py", "_persist_messages"): (2, 73),
-    ("app/worker/tasks/runtime/agent.py", "_resolve_turn_prompt_version"): (5, 70),
+    ("app/worker/tasks/runtime/agent.py", "_resolve_turn_prompt_version"): (5, 69),
     ("app/worker/tasks/runtime/agent.py", "_write_turn_metrics"): (1, 65),
-    ("app/worker/tasks/runtime/agent.py", "run_agent_turn"): (20, 474),
-    ("app/worker/tasks/runtime/bench.py", "promote_trace_to_scenario"): (12, 164),
+    ("app/worker/tasks/runtime/agent.py", "run_agent_turn"): (18, 461),
+    ("app/worker/tasks/runtime/bench.py", "promote_trace_to_scenario"): (12, 158),
     ("app/worker/tasks/runtime/confirmations.py", "resolve_approved_confirmation"): (5, 111),
-    ("app/worker/tasks/runtime/deployment.py", "_dispatch_eval_run"): (2, 62),
-    ("app/worker/tasks/runtime/deployment.py", "run_deployment_checklist"): (12, 223),
-    ("app/worker/tasks/runtime/eval.py", "_invoke_agent_for_scenarios"): (14, 223),
+    ("app/worker/tasks/runtime/deployment.py", "run_deployment_checklist"): (11, 221),
+    ("app/worker/tasks/runtime/eval.py", "_invoke_agent_for_scenarios"): (14, 221),
     ("app/worker/tasks/runtime/eval.py", "_run_one_eval_turn"): (3, 80),
-    ("app/worker/tasks/runtime/eval.py", "generate_eval_suite"): (8, 81),
-    ("app/worker/tasks/runtime/eval.py", "run_eval_suite"): (28, 593),
+    ("app/worker/tasks/runtime/eval.py", "generate_eval_suite"): (8, 73),
+    ("app/worker/tasks/runtime/eval.py", "run_eval_suite"): (28, 576),
     ("app/worker/tasks/runtime/red_team.py", "_build_probe_fn"): (11, 65),
-    ("app/worker/tasks/runtime/red_team.py", "run_red_team"): (28, 447),
+    ("app/worker/tasks/runtime/red_team.py", "run_red_team"): (28, 425),
     ("app/worker/tasks/runtime/retrieval_eval.py", "run_retrieval_faithfulness"): (12, 82),
-    ("app/worker/tasks/runtime/retrieve.py", "retrieve_and_rank"): (12, 217),
-    ("app/worker/tasks/runtime/validators.py", "run_auditor"): (15, 189),
-    ("app/worker/tasks/runtime/validators.py", "run_gatekeeper"): (5, 107),
-    ("app/worker/tasks/runtime/validators.py", "run_strategist"): (9, 116),
+    ("app/worker/tasks/runtime/retrieve.py", "retrieve_and_rank"): (12, 212),
+    ("app/worker/tasks/runtime/validators.py", "run_auditor"): (15, 184),
+    ("app/worker/tasks/runtime/validators.py", "run_gatekeeper"): (5, 102),
+    ("app/worker/tasks/runtime/validators.py", "run_strategist"): (9, 111),
 }
 
 # One lizard warning line, verbatim, 2026-08-24:
@@ -937,6 +940,406 @@ def run_source_assertions():
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Log bounds (#166): an exception's own text may not reach a log line whole.
+#
+# `log.warning("x.failed", error=str(exc))` publishes whatever the exception
+# carries. psycopg2 puts the failing statement in DETAIL and CONTEXT and the
+# statements this tree fails on bind model output as a parameter; pydantic puts
+# `input_value=` below line one; a connect failure renders the DSN. #164 bounded
+# the red-team task, #166 converted the 120 sites in the other 46 modules to
+# `app.core.log_bounds.log_failure`, and this gate is what stops the 121st.
+#
+# A site is a NAME THE MODULE BINDS AS AN EXCEPTION, read inside a keyword
+# argument of a `log.<level>(...)` call. Binding is structural, not a spelling:
+# `except ... as name` anywhere in the module, or a parameter annotated with an
+# exception type. That is why `agent_id=str(agent_id)` is not a site while
+# `error=f"{type(exc).__name__}: {exc}"` is, and why the scan sees the shapes a
+# grep for `error=str(exc)` misses: `repr(exc)`, `exc.args`, `"%s" % exc`,
+# `str(exc)[:200]`.
+#
+# What the gate is protecting is THE EXCEPTION'S OWN RENDERING, which is the part
+# no author chose and no author bounded. Three readings are allowed through:
+#
+#   type(exc).__name__       a class name, and the field log_failure adds itself
+#   bounded_error_detail(x)  the one function permitted to render the message
+#   exc.<field>              a value the exception's own author named and sized,
+#                            `NeonHTTPError.status_code` and `.message` being the
+#                            two in this tree, the second cut to 200 where it is
+#                            raised. `exc.args` is NOT a field in that sense: it
+#                            is the message every exception carries, so it is a
+#                            site. A chain like `exc.response.text` is not read
+#                            past its first field and the gate would miss it;
+#                            nothing in the tree does that today.
+#
+# `log_failure(log, event, exc, ...)` is not a `log.<level>` call at all, so a
+# converted site never reaches the walk.
+#
+# THE PIN IS ZERO. There is no baseline to add a file to. A new site is a new
+# leak, and the remedy is `log_failure`, never an entry here.
+LOG_LEVELS = ("debug", "info", "warning", "error", "critical", "exception")
+
+#: The two renderings of an exception that are bounded by construction.
+BOUNDED_READERS = ("bounded_error_detail",)
+
+
+def exception_bound_names(tree):
+    """Every name this module binds to an exception, by either structural route."""
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = node.args
+            for arg in list(args.posonlyargs) + list(args.args) + list(args.kwonlyargs):
+                if arg.annotation is None:
+                    continue
+                text = ast.dump(arg.annotation)
+                if "Exception" in text or "Error" in text:
+                    names.add(arg.arg)
+    return names
+
+
+def is_a_log_call(node):
+    """True for `log.<level>(...)` and `logger.<level>(...)`, the two spellings here."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    return (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+        and func.value.id in ("log", "logger")
+        and func.attr in LOG_LEVELS
+    )
+
+
+def reads_an_exception(value, names):
+    """True when this keyword value reads one of `names` outside a bounded reader.
+
+    The walk is explicit rather than `ast.walk` so a bounded subtree can be cut
+    whole: descending into `type(exc).__name__` would find the Name and report a
+    site on the one reading that carries no message at all.
+    """
+    if isinstance(value, ast.Name):
+        return value.id in names
+    if isinstance(value, ast.Attribute):
+        if value.attr == "__name__" and _is_type_of_call(value.value, names):
+            return False
+        if isinstance(value.value, ast.Name) and value.value.id in names:
+            return value.attr == "args"
+        return reads_an_exception(value.value, names)
+    if isinstance(value, ast.Call):
+        if isinstance(value.func, ast.Name) and value.func.id in BOUNDED_READERS:
+            return False
+    for child in ast.iter_child_nodes(value):
+        if reads_an_exception(child, names):
+            return True
+    return False
+
+
+def _is_type_of_call(node, names):
+    """True for `type(<an exception name>)`."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "type"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id in names
+    )
+
+
+def unbounded_log_sites(text):
+    """(line, keyword) for every log keyword in one module that reads an exception."""
+    tree = ast.parse(text)
+    names = exception_bound_names(tree)
+    if not names:
+        return []
+    sites = []
+    for node in ast.walk(tree):
+        if not is_a_log_call(node):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg is None:
+                continue
+            if reads_an_exception(keyword.value, names):
+                sites.append((keyword.value.lineno, keyword.arg))
+    return sorted(sites)
+
+
+def walk_app_files():
+    """(path relative to apps/api, absolute path) for every .py file under app/."""
+    root = os.path.join(API_DIR, "app")
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(name for name in dirnames if name != "__pycache__")
+        for name in sorted(filenames):
+            if not name.endswith(".py"):
+                continue
+            full = os.path.join(dirpath, name)
+            yield os.path.relpath(full, API_DIR).replace("\\", "/"), full
+
+
+def log_bound_failures(found, scanned):
+    """Failure lines for one scan of app/. Empty means pass.
+
+    An empty scan fails. A rename of `app/` would otherwise make this gate report
+    a clean tree while reading nothing, which is the shape FM-013 already cost.
+    """
+    if not scanned:
+        return [
+            "log bounds: the scan read 0 files, so it proved nothing.",
+            "walk_app_files found no app/ tree under " + API_DIR + ".",
+        ]
+    if not found:
+        return []
+    total = sum(len(sites) for sites in found.values())
+    failures = [
+        "log bounds: %d log line(s) in %d file(s) read an exception directly."
+        % (total, len(found)),
+        "Each one publishes whatever the exception carries. Use",
+        "app.core.log_bounds.log_failure(log, event, exc, **fields) instead:",
+    ]
+    for path in sorted(found):
+        for line, keyword in found[path]:
+            failures.append("  %s:%d  %s=" % (path, line, keyword))
+    return failures
+
+
+def run_log_bounds():
+    """Fail on any log line in app/ that reads an exception outside a bounded reader."""
+    print("\n$ log bounds over app/", flush=True)
+
+    found = {}
+    scanned = 0
+    for relative, full in walk_app_files():
+        with open(full, encoding="utf-8", errors="replace") as handle:
+            sites = unbounded_log_sites(handle.read())
+        scanned += 1
+        if sites:
+            found[relative] = sites
+    print("scanned %d file(s), %d with sites." % (scanned, len(found)), flush=True)
+
+    failures = log_bound_failures(found, scanned)
+    if failures:
+        print("")
+        for line in failures:
+            print(line)
+        return 1
+
+    print("log bounds: clean, every failure line goes through log_failure.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Process-wide keys (#101, #178): one source decides them, and it is
+# tests/integration/conftest.py.
+#
+# `settings` freezes on the environment at the first `import app` in a process.
+# pytest then IMPORTS every module under tests/integration, and a module-scope
+# write after that freeze changes what a SPAWNED WORKER inherits while this
+# process keeps the frozen value. The observed failure was every CI Integration
+# run from 33150052552 onward: the worker encrypted with K2 and pytest decrypted
+# with K1, and the error was InvalidToken, which names neither process.
+#
+# conftest.py is exempt, and it is the only exemption. pytest loads a directory's
+# conftest before any test module in it, so it is the one place that can decide a
+# value the rest of the directory inherits. Its own writes are unconditional on
+# purpose: the root conftest already set CONTROL_DB_URL with setdefault, so an
+# integration run pointing at the local cluster has to overwrite it.
+#
+# THE SCAN IS STRUCTURAL. The guard this replaces matched
+# `^os.environ["KEY"] =` at column 0, and a probe file carrying five module-scope
+# rebinds passed it: an assignment indented under `if True:`, one inside `try:`,
+# `os.environ.update({...})`, `os.putenv`, and a helper called at import. Every
+# one of those is module scope in Python, and column 0 is not what module scope
+# means. This walks the tree instead: every statement outside a `def` or `class`,
+# including the bodies of `if`, `try`, `with`, `for` and `while`, plus any
+# module-level helper such a statement calls.
+#
+# `os.environ.setdefault` is the remedy and reads as no write at all: it takes the
+# value already in the environment when there is one, which is the whole point.
+#
+# THE PIN IS ZERO, and an empty scan FAILS. A renamed tests/integration would
+# otherwise leave this reporting a clean tree over nothing, which is the shape
+# FM-013 already cost.
+PROCESS_WIDE_KEYS = (
+    "NEON_ENCRYPTION_KEY",
+    "PLATFORM_CREDENTIAL_KEY",
+    "CONTROL_DB_URL",
+    "CONTROL_DB_SYNC_URL",
+)
+
+#: A write whose key is not a literal. Nothing can say which key it sets, so it
+#: counts against every one of them rather than none.
+UNKNOWN_KEY = "<not a literal>"
+
+#: os.environ methods that change the environment. `setdefault` is absent
+#: deliberately: it is what a module is told to use instead.
+ENV_MUTATORS = ("update", "pop", "clear", "__setitem__", "__delitem__")
+
+
+def _is_the_environment(node):
+    """True for `os.environ` and for a bare `environ` taken by from-import."""
+    if isinstance(node, ast.Attribute) and node.attr == "environ":
+        return isinstance(node.value, ast.Name) and node.value.id == "os"
+    return isinstance(node, ast.Name) and node.id == "environ"
+
+
+def _literal_or_unknown(node):
+    """One key name, or UNKNOWN_KEY when the expression is not a plain string."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return UNKNOWN_KEY
+
+
+def _keys_written_by(node):
+    """Keys one statement or expression writes into the environment, any spelling."""
+    keys = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            targets = sub.targets if isinstance(sub, ast.Assign) else [sub.target]
+            for target in targets:
+                if isinstance(target, ast.Subscript) and _is_the_environment(target.value):
+                    keys.add(_literal_or_unknown(target.slice))
+        if isinstance(sub, ast.Delete):
+            for target in sub.targets:
+                if isinstance(target, ast.Subscript) and _is_the_environment(target.value):
+                    keys.add(_literal_or_unknown(target.slice))
+        if not isinstance(sub, ast.Call):
+            continue
+        func = sub.func
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            if func.value.id == "os" and func.attr in ("putenv", "unsetenv"):
+                keys.add(_literal_or_unknown(sub.args[0]) if sub.args else UNKNOWN_KEY)
+        if isinstance(func, ast.Attribute) and _is_the_environment(func.value):
+            if func.attr not in ENV_MUTATORS:
+                continue
+            if func.attr == "update":
+                keys.update(_keys_of_the_mapping(sub))
+            elif sub.args:
+                keys.add(_literal_or_unknown(sub.args[0]))
+            else:
+                keys.add(UNKNOWN_KEY)
+    return keys
+
+
+def _keys_of_the_mapping(call):
+    """The keys an `os.environ.update(...)` sets, from a dict literal or keywords."""
+    keys = set()
+    for keyword in call.keywords:
+        keys.add(keyword.arg if keyword.arg else UNKNOWN_KEY)
+    for arg in call.args:
+        if isinstance(arg, ast.Dict):
+            for key in arg.keys:
+                keys.add(_literal_or_unknown(key) if key is not None else UNKNOWN_KEY)
+        else:
+            keys.add(UNKNOWN_KEY)
+    return keys
+
+
+def module_scope_statements(body):
+    """Every statement at module scope, walking into blocks but never into a def."""
+    for node in body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        yield node
+        for field in ("body", "orelse", "finalbody"):
+            for child in getattr(node, field, []) or []:
+                yield from module_scope_statements([child])
+        for handler in getattr(node, "handlers", []) or []:
+            yield from module_scope_statements(handler.body)
+
+
+def helpers_that_write(tree):
+    """name -> the keys that module-level function writes, for the ones that write."""
+    writers = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            keys = set()
+            for statement in node.body:
+                keys |= _keys_written_by(statement)
+            if keys:
+                writers[node.name] = keys
+    return writers
+
+
+def process_wide_env_writes(text):
+    """Process-wide keys one module rebinds at import time, by any spelling."""
+    tree = ast.parse(text)
+    writers = helpers_that_write(tree)
+    keys = set()
+    for statement in module_scope_statements(tree.body):
+        keys |= _keys_written_by(statement)
+        for sub in ast.walk(statement):
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
+                keys |= writers.get(sub.func.id, set())
+    guarded = set(PROCESS_WIDE_KEYS)
+    if UNKNOWN_KEY in keys:
+        return sorted(guarded | {UNKNOWN_KEY})
+    return sorted(keys & guarded)
+
+
+def walk_integration_files():
+    """(path relative to apps/api, absolute path) for every .py under tests/integration.
+
+    RECURSIVE. The glob this replaces was not, so a future tests/integration/<dir>/
+    was unscanned. conftest.py is the directory's single source and is skipped.
+    """
+    root = os.path.join(API_DIR, "tests", "integration")
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(name for name in dirnames if name != "__pycache__")
+        for name in sorted(filenames):
+            if not name.endswith(".py") or name == "conftest.py":
+                continue
+            full = os.path.join(dirpath, name)
+            yield os.path.relpath(full, API_DIR).replace("\\", "/"), full
+
+
+def process_wide_key_failures(found, scanned):
+    """Failure lines for one scan of tests/integration. Empty means pass."""
+    if not scanned:
+        return [
+            "process-wide keys: the scan read 0 files, so it proved nothing.",
+            "walk_integration_files found no tests/integration tree under " + API_DIR + ".",
+        ]
+    if not found:
+        return []
+    failures = [
+        "process-wide keys: %d module(s) rebind a process-wide key at import time."
+        % len(found),
+        "Every worker spawned after collection inherits a value this process has",
+        "already frozen past (#101). Use os.environ.setdefault, or put the value in",
+        "tests/integration/conftest.py, which is the one source that decides these:",
+    ]
+    for path in sorted(found):
+        failures.append("  %s  %s" % (path, ", ".join(found[path])))
+    return failures
+
+
+def run_process_wide_keys():
+    """Fail on any module under tests/integration that rebinds a process-wide key."""
+    print("\n$ process-wide keys over tests/integration", flush=True)
+
+    found = {}
+    scanned = 0
+    for relative, full in walk_integration_files():
+        with open(full, encoding="utf-8", errors="replace") as handle:
+            keys = process_wide_env_writes(handle.read())
+        scanned += 1
+        if keys:
+            found[relative] = keys
+    print("scanned %d file(s), %d with writes." % (scanned, len(found)), flush=True)
+
+    failures = process_wide_key_failures(found, scanned)
+    if failures:
+        print("")
+        for line in failures:
+            print(line)
+        return 1
+
+    print("process-wide keys: clean, conftest.py is the only source.")
+    return 0
+
 #: The unit suite's argv, named so a test can read what `steps("full")` runs.
 #: `-rs` prints every skip with its reason. Under `-q` alone a test that stopped
 #: running because its database or its marker went missing is one more dot, and a
@@ -961,11 +1364,13 @@ def steps(mode):
         ("import contracts", lambda: run([tool("lint-imports")])),
         ("complexity", run_complexity),
         ("source assertions", run_source_assertions),
+        ("log bounds", run_log_bounds),
+        ("process-wide keys", run_process_wide_keys),
     ]
     if mode == "static":
         return static
     # mypy stays out of `static`. It builds a type graph over the whole tree, and warm
-    # runs here took 26s to 80s on 2026-09-02 against 11s to 16s for the four static
+    # runs here took 26s to 80s on 2026-09-02 against 11s to 16s for the six static
     # steps together. `static` is what the Stop hook runs. CI's Type-check job runs this
     # mode on its own.
     if mode == "mypy":

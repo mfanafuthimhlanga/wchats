@@ -1,8 +1,9 @@
 """
 generate_metadata — Celery task: metadata + entity extraction per chunk.
 
-Position in M2 chain (3rd of 4):
+Position in the ingestion chain (3rd of 6):
     parse_documents → chunk_documents → generate_metadata → embed_and_migrate
+    → synthesize_retrieval_strategy → finish_ingestion
 
 Layout:
     generate_metadata    the task, one tenant connection, the document loop, the
@@ -88,7 +89,8 @@ Cost design (batched model calls):
 Event emission order (CONTEXT.md §SSE Event Vocabulary):
     metadata.started  ← emitted per document (before the batch loop)
     metadata.progress ← emitted after each batch ({processed, total})
-    metadata.complete ← emitted per document (after all chunks processed)
+    metadata.complete ← emitted per document that produced metadata, or owed none
+    metadata.failed   ← emitted per document whose every batch failed (#168)
     job.failed        ← terminal, only on the wholly-failed path
 
 Return value (chain contract):
@@ -119,6 +121,7 @@ import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import fernet_decrypt, require_ciphertext
@@ -241,11 +244,10 @@ def _enrich_pending(
         except Exception as exc:
             # One bad batch does not abort the document. Every batch taking this
             # path is what the wholly-failed rule catches.
-            log.warning(
-                "generate_metadata.batch_extraction_failed",
+            log_failure(
+                log, "generate_metadata.batch_extraction_failed", exc,
                 batch_start=batch_start,
                 batch_size=len(batch),
-                error=str(exc),
             )
             continue
 
@@ -286,6 +288,22 @@ def _enrich_document(
 
     pending = _pending_chunks(tenant_conn, chunk_rows)
     enriched = _enrich_pending(tenant_conn, db, job_id, pending, ledger)
+
+    # A document whose every batch failed did not complete (#168). This emitted
+    # `metadata.complete` regardless, so a subscriber read `complete` for the
+    # document and then `job.failed` for the run it was the whole of. A document
+    # that owed nothing (no pending chunks) is complete, and so is a partial one:
+    # both produced the metadata they were able to.
+    if pending and not enriched:
+        emit(
+            job_id,
+            "metadata.failed",
+            {"document_id": doc_id, "chunks_seen": len(pending), "chunks_enriched": 0},
+            db,
+            _redis,
+        )
+        log.error("generate_metadata.document_enriched_nothing", document_id=doc_id, chunks_seen=len(pending))
+        return len(pending), enriched
 
     emit(job_id, "metadata.complete", {"document_id": doc_id}, db, _redis)
     log.info("generate_metadata.complete", document_id=doc_id, chunks_enriched=enriched)
@@ -366,7 +384,7 @@ def generate_metadata(self, job: IngestionJob) -> IngestionJob:
                 tenant_conn.rollback()
             except Exception:
                 pass
-            log.error("generate_metadata.unexpected_error", error_type=type(exc).__name__, error=str(exc))
+            log_failure(log, "generate_metadata.unexpected_error", exc, level="error")
             retry_or_fail_the_job(self, exc, job_id, db, _redis, 2**self.request.retries)
         finally:
             tenant_conn.close()

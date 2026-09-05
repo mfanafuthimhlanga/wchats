@@ -93,6 +93,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_credential_kind, get_current_tenant
 from app.core.database import get_async_db
+from app.core.log_bounds import log_failure
 from app.core.security import fernet_decrypt
 from app.domain.eval_result import (
     DatasetOutcome,
@@ -325,10 +326,9 @@ def _record_of(run_id: str, payload) -> EvalResult | None:
     try:
         return EvalResult.from_payload(payload)
     except InvalidEvalResult as exc:
-        log.error(
-            "list_eval_runs.record_unreadable",
+        log_failure(
+            log, "list_eval_runs.record_unreadable", exc, level="error",
             run_id=run_id,
-            error=str(exc),
             detail="the stored record breaks a rule; the run reads as unmeasured",
         )
         return None

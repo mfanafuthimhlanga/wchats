@@ -161,7 +161,7 @@ class TestAgentSoulUpdate:
 
 
 # ---------------------------------------------------------------------------
-# AgentSoulUpdate — the size caps that make a turn's cost derivable (#182)
+# AgentSoulUpdate, and the size caps that make a turn's cost derivable (#182)
 # ---------------------------------------------------------------------------
 
 

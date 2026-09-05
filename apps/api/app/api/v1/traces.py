@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_tenant
 from app.core.database import get_async_db
+from app.core.log_bounds import log_failure
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.models.tenant import Tenant
@@ -169,11 +170,10 @@ async def grade_trace(
             # Do NOT fail the request: the filing itself succeeded and the task is
             # idempotent, so it can be safely re-dispatched. Log loudly so a silently
             # un-promoted trace is visible rather than lost.
-            log.error(
-                "grade_trace.promote_dispatch_failed",
+            log_failure(
+                log, "grade_trace.promote_dispatch_failed", exc, level="error",
                 agent_id=str(agent_id),
                 trace_id=str(trace_id),
-                error=str(exc),
             )
 
     log.info(

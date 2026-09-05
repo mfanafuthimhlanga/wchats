@@ -38,6 +38,8 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
+from app.core.log_bounds import log_failure
+
 log = structlog.get_logger(__name__)
 
 
@@ -209,9 +211,5 @@ async def _fetch_credential_config(conn_str: str, skill: str) -> _CredentialConf
     try:
         return await asyncio.to_thread(_sync_fetch)
     except Exception as exc:  # noqa: BLE001
-        log.warning(
-            "credential_service.fetch_failed",
-            skill=skill,
-            error=str(exc),
-        )
+        log_failure(log, "credential_service.fetch_failed", exc, skill=skill)
         return None

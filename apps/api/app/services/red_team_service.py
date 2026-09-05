@@ -32,6 +32,7 @@ import psycopg2
 import structlog
 from pydantic import BaseModel
 
+from app.core.log_bounds import log_failure
 from app.core.model_client import LedgerContext, make_async_client, route_for
 from app.domain.chunk_id import deterministic_chunk_id
 from app.domain.red_team_finding import RedTeamFinding
@@ -617,14 +618,14 @@ def read_red_team_result(run_id: str, conn_str: str) -> RedTeamResult | None:
     try:
         return RedTeamResult.from_payload(row[0])
     except InvalidRedTeamResult as exc:
-        log.error(
+        log_failure(
+            log,
             "read_red_team_result.unreadable",
+            exc,
+            level="error",
             run_id=run_id,
-            error=str(exc),
-            detail=(
-                "the stored record breaks a construction rule; the run reads as "
-                "unmeasured"
-            ),
+            detail="the stored record breaks a construction rule; the run reads as "
+                "unmeasured",
         )
         return None
 
@@ -1017,11 +1018,7 @@ def build_probe_tools(
         except Exception as exc:
             session.probe_errors += 1
             session.last_probe_error = str(exc)
-            log.warning(
-                "red_team_agent.probe_failed",
-                agent_type=session.attack_vector,
-                error=str(exc),
-            )
+            log_failure(log, "red_team_agent.probe_failed", exc, agent_type=session.attack_vector)
             return {
                 "content": [{"type": "text", "text": f"send_probe failed: {exc}"}],
                 "is_error": True,
@@ -1689,7 +1686,7 @@ def remove_poisoned_chunk(conn_str: str, chunk_id: str) -> None:
         finally:
             conn.close()
     except Exception as exc:
-        log.warning("red_team_probe.poisoned_chunk_cleanup_failed", error=str(exc))
+        log_failure(log, "red_team_probe.poisoned_chunk_cleanup_failed", exc)
 
 
 def run_content_injection_agent(

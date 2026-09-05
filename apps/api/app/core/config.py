@@ -556,11 +556,16 @@ class Settings(BaseSettings):
     # one call with stop_reason='budget_exceeded', priced from real ModelCall rows
     # through the real book. The mechanism works; the constant was the problem.
     #
-    # The same run closed this field's other half. The response reports
-    # `gpt-5.6-luna`, the alias, not a dated snapshot, so cost_usd raises no
-    # UnknownPrice here today. What happens WHEN it does is #178's: `_over_budget`
-    # catches UnknownPrice and returns False, so one unpriced model id turns this
-    # ceiling off for the whole turn.
+    # WHERE THIS MEETS #178. A call the book cannot price is charged at
+    # `dearest_rate_per_million` rather than switching the ceiling off. The
+    # book's dearest row is $1.32 per million against Luna's $0.20 for input, so
+    # the SAME worst permitted turn charged that way runs about six times its
+    # real cost and this ceiling stops it in the first few calls with an empty
+    # answer. `model_client` takes `served_model` from `response_body["model"]`
+    # verbatim and the book matches exactly, so a dated snapshot id in place of
+    # the alias is enough to reach it, for every turn, for the life of that id.
+    # test_an_unpriced_model_id_cuts_the_same_turn_short pins the interaction so
+    # a change on either side is red here rather than in a tenant's inbox.
     #
     # Set AGENT_MAX_BUDGET_USD in .env to override, tighter in production.
     AGENT_MAX_BUDGET_USD: float = 0.40

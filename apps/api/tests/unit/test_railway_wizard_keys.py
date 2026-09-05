@@ -35,6 +35,42 @@ WIZARD_LOCAL_KEYS = {
 }
 
 
+#: Names the wizard PRINTS that are real environment variables but not settings:
+#: the platform or a library reads each one, and `Settings` never sees it.
+NON_SETTING_VARIABLES = {
+    # The dynamic loader's path, needed by the docling image's native libraries.
+    "LD_LIBRARY_PATH",
+    # huggingface_hub's switch for the Xet transfer endpoint.
+    "HF_HUB_DISABLE_XET_ENDPOINT",
+}
+
+#: Any all-caps token carrying an underscore, which is what an environment
+#: variable looks like and what an English word in this file does not.
+_VARIABLE_SHAPED = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")
+
+#: The four helpers that put a line on the operator's screen.
+_OPERATOR_LINE = re.compile(r"^\s*(?:note|say|step|warn)\s+(.*)$", re.MULTILINE)
+
+#: A shell expansion. The shell replaces it with a value before the operator
+#: sees anything, so the name inside is the script's own, not one on screen.
+_EXPANSION = re.compile(r"\$\{[^}]*\}?|\$[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _printed_variable_names() -> set[str]:
+    """Every variable-shaped name the wizard shows the operator.
+
+    `write_env` is not the only way a name reaches Railway. The shared-variables
+    stage prints a list the operator types in by hand, and nothing in the script
+    ever reads those names back, so a wrong one is invisible until an upload
+    fails. Shell locals are excluded by reading only the four print helpers.
+    """
+    text = WIZARD.read_text(encoding="utf-8")
+    names: set[str] = set()
+    for line in _OPERATOR_LINE.findall(text):
+        names.update(_VARIABLE_SHAPED.findall(_EXPANSION.sub(" ", line)))
+    return names
+
+
 def _written_keys() -> list[str]:
     """Every KEY in a `write_env KEY ...` call, in file order.
 
@@ -56,6 +92,33 @@ def test_every_persisted_key_is_a_settings_field_or_a_named_local():
         f"the wizard writes {unknown!r}, which is neither a Settings field nor "
         f"listed in WIZARD_LOCAL_KEYS. A key that is meant to reach Railway has "
         f"to be spelled the way Settings declares it, or nothing reads it back."
+    )
+
+
+def test_every_variable_the_wizard_shows_is_one_the_app_reads():
+    """A name printed on screen is a name the operator types into Railway.
+
+    `#170`. The wizard told the operator to set the vendor-prefixed credential
+    pair while `storage_service._require_credentials` reads `S3_ACCESS_KEY_ID`
+    and `S3_SECRET_ACCESS_KEY` and refuses by name when they are unset. Nothing
+    in the wizard reads a printed name back, so the mismatch survived until the
+    first upload returned `StorageNotConfigured`.
+    """
+    allowed = set(Settings.model_fields) | WIZARD_LOCAL_KEYS | NON_SETTING_VARIABLES
+    unknown = sorted(name for name in _printed_variable_names() if name not in allowed)
+    assert not unknown, (
+        f"the wizard shows the operator {unknown!r}, which the app never reads. "
+        f"A variable name it prints has to be a Settings field, or listed in "
+        f"NON_SETTING_VARIABLES with the reader named."
+    )
+
+
+def test_the_storage_credentials_are_named_the_way_the_uploader_reads_them():
+    """`#170`, pinned by name so the vendor spelling cannot come back."""
+    printed = _printed_variable_names()
+    assert {"S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"} <= printed, (
+        "the R2 token pair is what the operator has to set, under the two names "
+        "storage_service reads"
     )
 
 

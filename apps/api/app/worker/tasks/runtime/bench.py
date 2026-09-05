@@ -79,6 +79,7 @@ import structlog
 from sqlalchemy import text as sa_text
 
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.models.job_event import JobEvent
@@ -185,11 +186,7 @@ def promote_trace_to_scenario(self, agent_id: str, trace_id: str) -> dict:
         try:
             question = _fetch_customer_turn(conn_str, conversation_id, agent_turn)
         except Exception as exc:
-            log.warning(
-                "promote_trace_to_scenario.fetch_customer_turn_failed",
-                trace_id=trace_id,
-                error=str(exc),
-            )
+            log_failure(log, "promote_trace_to_scenario.fetch_customer_turn_failed", exc, trace_id=trace_id)
 
     try:
         conn = psycopg2.connect(conn_str, connect_timeout=5)
@@ -224,11 +221,10 @@ def promote_trace_to_scenario(self, agent_id: str, trace_id: str) -> dict:
         finally:
             conn.close()
     except Exception as exc:
-        log.error(
-            "promote_trace_to_scenario.insert_failed",
+        log_failure(
+            log, "promote_trace_to_scenario.insert_failed", exc, level="error",
             agent_id=agent_id,
             trace_id=trace_id,
-            error=str(exc),
         )
         if self.request.retries >= self.max_retries:
             return {}
@@ -267,11 +263,10 @@ def promote_trace_to_scenario(self, agent_id: str, trace_id: str) -> dict:
             )
             db.commit()
     except Exception as note_exc:
-        log.warning(
-            "promote_trace_to_scenario.trace_note_failed",
+        log_failure(
+            log, "promote_trace_to_scenario.trace_note_failed", note_exc,
             agent_id=agent_id,
             trace_id=trace_id,
-            error=str(note_exc),
         )
 
     log.info(

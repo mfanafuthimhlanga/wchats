@@ -4,6 +4,7 @@ from __future__ import annotations
 import structlog
 
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent, select_beat_fanout_agents
 from app.services.alert_service import check_and_write_alerts
@@ -66,7 +67,7 @@ def run_alert_check(self, agent_id: str) -> dict:
         log.info("run_alert_check.complete", agent_id=agent_id, new_alerts=len(new_alerts))
         return {"agent_id": agent_id, "new_alerts": len(new_alerts)}
     except Exception as exc:
-        log.error("run_alert_check.failed", agent_id=agent_id, error=str(exc))
+        log_failure(log, "run_alert_check.failed", exc, level="error", agent_id=agent_id)
         if self.request.retries >= self.max_retries:
             raise
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)

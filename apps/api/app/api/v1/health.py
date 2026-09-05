@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_async_redis
 from app.core.database import get_async_db
+from app.core.log_bounds import log_failure
 
 router = APIRouter(tags=["health"])
 
@@ -45,12 +46,7 @@ async def health_check(
     except Exception as exc:
         db_status = "error"
         body["db_error"] = type(exc).__name__
-        log.warning(
-            "health.db_probe_failed",
-            error_type=type(exc).__name__,
-            error=str(exc),
-            exc_info=True,
-        )
+        log_failure(log, "health.db_probe_failed", exc, exc_info=True)
 
     # Probe Redis
     try:
@@ -59,11 +55,6 @@ async def health_check(
     except Exception as exc:
         redis_status = "error"
         body["redis_error"] = type(exc).__name__
-        log.warning(
-            "health.redis_probe_failed",
-            error_type=type(exc).__name__,
-            error=str(exc),
-            exc_info=True,
-        )
+        log_failure(log, "health.redis_probe_failed", exc, exc_info=True)
 
     return {**body, "redis": redis_status, "db": db_status}

@@ -34,8 +34,9 @@ paragraph naming what the plan failed to anticipate.
 # backend (apps/api)
 uv sync --extra dev --extra pipeline    # BOTH extras. `--extra dev` alone uninstalls docling
 .venv/Scripts/python.exe scripts/gates.py full
-#   static  ruff (count-pinned), import contracts, lizard, source assertions: the four steps that
-#           never import app code, and what the Stop hook runs
+#   static  ruff (count-pinned), import contracts, lizard, source assertions, log bounds,
+#           process-wide keys: the six steps that never import app code, and what the Stop
+#           hook runs
 #   mypy    the type baseline alone, which is what CI's Type-check job runs
 #   fast    static + mypy + whole-suite collection
 #   full    fast + the unit suite. mutmut is dead config on native Windows
@@ -105,8 +106,9 @@ column that is not there (#64).
   removed before. Restore with the `uv sync` above and `pnpm install` in each front end; check a
   gate can run before reporting it green.
 - **Ingestion needs S3.** Uploads go to S3 and `parse` and `chunk` read them back. Locally, set
-  `S3_ENDPOINT_URL` (a dev seam, refused when `ENVIRONMENT=production`), `S3_UPLOADS_BUCKET` and
-  AWS credentials, and run MinIO's Windows binary as a plain process. Set
+  `S3_ENDPOINT_URL` (a dev seam, refused when `ENVIRONMENT=production`), `S3_UPLOADS_BUCKET`,
+  `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` (named for the protocol, not the vendor: boto3's
+  default credential chain is not read), and run MinIO's Windows binary as a plain process. Set
   `EMBEDDING_PROVIDER=voyage`; the `bedrock` default reaches real AWS.
 - `scripts/probe_environment.py` reports what this shell actually reaches.
 

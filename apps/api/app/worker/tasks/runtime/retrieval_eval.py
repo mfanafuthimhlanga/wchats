@@ -88,6 +88,7 @@ from sqlalchemy import text as sa_text
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.model_client import (
     OPENAI_PROVIDER,
     LedgerContext,
@@ -200,7 +201,7 @@ def _fetch_last_user_message(conn_str: str, conversation_id: str) -> str | None:
         finally:
             conn.close()
     except Exception as exc:  # noqa: BLE001 — best-effort, never fails the task
-        log.warning("run_retrieval_faithfulness.question_fetch_failed", error=str(exc))
+        log_failure(log, "run_retrieval_faithfulness.question_fetch_failed", exc)
         return None
     return row[0] if row else None
 
@@ -513,7 +514,7 @@ def _compute_ragas_faithfulness(
         llm = _build_instructor_llm(JUDGE_PURPOSE, ledger)
         metrics = _build_faithfulness_metrics(llm)
     except Exception as exc:  # noqa: BLE001 — import or client construction
-        log.warning("run_retrieval_faithfulness.ragas_import_failed", error=str(exc))
+        log_failure(log, "run_retrieval_faithfulness.ragas_import_failed", exc)
         return None
 
     try:
@@ -527,7 +528,7 @@ def _compute_ragas_faithfulness(
         raw = result.value
         return float(raw) if raw is not None and raw == raw else None  # raw == raw: NaN check
     except Exception as exc:  # noqa: BLE001 — never fail the task on a Ragas/API error
-        log.warning("run_retrieval_faithfulness.ragas_call_failed", error=str(exc))
+        log_failure(log, "run_retrieval_faithfulness.ragas_call_failed", exc)
         return None
 
 
@@ -554,7 +555,7 @@ def _scored_report(
     try:
         _update_retrieval_metrics(conn_str, job_id, citation_coverage, faithfulness, identity_row)
     except Exception as exc:  # noqa: BLE001, never fail/retry an already-served turn
-        log.warning("run_retrieval_faithfulness.update_failed", job_id=job_id, error=str(exc))
+        log_failure(log, "run_retrieval_faithfulness.update_failed", exc, job_id=job_id)
         return {}
 
     log.info(

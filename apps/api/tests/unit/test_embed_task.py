@@ -10,8 +10,11 @@ Tests:
   3. test_embed_and_migrate_calls_voyage_via_service            — embed_chunks called with chunk texts
   4. test_embed_and_migrate_upserts_with_on_conflict_chunk_id   — SQL shape: INSERT INTO embeddings + ON CONFLICT (chunk_id) DO UPDATE
   5. test_embed_and_migrate_runs_reindex_concurrently           — REINDEX SQL + AUTOCOMMIT isolation set before execute
-  6. test_embed_and_migrate_emits_terminal_event_sequence       — event order: embedding.started → embedding.complete → ingestion.complete → job.complete
-  7. test_embed_and_migrate_sets_job_status_complete            — job.status = "complete" + finished_at set
+  6. test_embed_and_migrate_emits_its_own_step_events_and_nothing_terminal
+     event order: embedding.started → embedding.complete → ingestion.complete,
+     and job.complete is absent. finish_ingestion owns it (#168)
+  7. test_embed_and_migrate_leaves_the_job_row_alone. The terminal row write
+     moved to finish_ingestion with the event (#168)
 
 Patch targets are symbols imported into app.worker.tasks.pipeline.embed, NOT
 the original module paths (e.g. patch app.worker.tasks.pipeline.embed.fernet_decrypt,
@@ -45,7 +48,6 @@ os.environ.setdefault("MAX_UPLOAD_SIZE_MB", "50")
 
 import inspect
 from contextlib import contextmanager
-from datetime import datetime
 from unittest.mock import MagicMock
 
 from structlog.testing import capture_logs
@@ -457,16 +459,17 @@ def test_embed_and_migrate_runs_reindex_concurrently(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 6: Terminal event order — embedding.started → embedding.complete → ingestion.complete → job.complete
+# Test 6: step events only, in order, and no terminal event (#168)
 # ---------------------------------------------------------------------------
 
 
-def test_embed_and_migrate_emits_terminal_event_sequence(monkeypatch):
-    """Terminal events are emitted in the mandatory order:
-    embedding.started → embedding.complete → ingestion.complete → job.complete.
+def test_embed_and_migrate_emits_its_own_step_events_and_nothing_terminal(monkeypatch):
+    """embedding.started, embedding.complete, ingestion.complete, in that order.
 
-    The positions of these event types in the captured emit() call list must be
-    monotonically increasing in this exact order.
+    `job.complete` used to be the fourth. This hop stopped being the chain's last
+    when synthesize_retrieval_strategy joined, so a subscriber that closes on the
+    terminal event closed with a hop still to run. finish_ingestion owns it now,
+    and `tests/unit/test_ingestion_terminal_event.py` holds the whole rule.
     """
     mock_db, mock_dml_conn, mock_reindex_conn, _, _, mock_embed, _, _ = _build_standard_mocks()
 
@@ -479,68 +482,49 @@ def test_embed_and_migrate_emits_terminal_event_sequence(monkeypatch):
 
     event_types = [et for _, et in emitted_events]
 
-    # All four terminal events must appear
-    required_events = [
-        "embedding.started",
-        "embedding.complete",
-        "ingestion.complete",
-        "job.complete",
-    ]
-    for evt in required_events:
+    assert "job.complete" not in event_types, (
+        f"embed_and_migrate may not end the run: {event_types}"
+    )
+    assert "job.failed" not in event_types, (
+        f"embed_and_migrate may not end the run: {event_types}"
+    )
+
+    for evt in ("embedding.started", "embedding.complete", "ingestion.complete"):
         assert evt in event_types, (
-            f"Required terminal event '{evt}' not found in emitted events: {event_types}"
+            f"required step event '{evt}' not found in emitted events: {event_types}"
         )
 
-    # Events must appear in the correct relative order
     def _find_first(event_name):
-        try:
-            return next(i for i, e in enumerate(event_types) if e == event_name)
-        except StopIteration:
-            return -1
+        return next(i for i, e in enumerate(event_types) if e == event_name)
 
     pos_started = _find_first("embedding.started")
     pos_embed_complete = _find_first("embedding.complete")
     pos_ingestion_complete = _find_first("ingestion.complete")
-    pos_job_complete = _find_first("job.complete")
 
-    assert pos_started < pos_embed_complete, (
-        f"'embedding.started' (pos {pos_started}) must come before "
-        f"'embedding.complete' (pos {pos_embed_complete}). "
-        f"Full sequence: {event_types}"
-    )
-    assert pos_embed_complete < pos_ingestion_complete, (
-        f"'embedding.complete' (pos {pos_embed_complete}) must come before "
-        f"'ingestion.complete' (pos {pos_ingestion_complete}). "
-        f"Full sequence: {event_types}"
-    )
-    assert pos_ingestion_complete < pos_job_complete, (
-        f"'ingestion.complete' (pos {pos_ingestion_complete}) must come before "
-        f"'job.complete' (pos {pos_job_complete}). "
-        f"Full sequence: {event_types}"
+    assert pos_started < pos_embed_complete < pos_ingestion_complete, (
+        f"the three step events are out of order: {event_types}"
     )
 
 
 # ---------------------------------------------------------------------------
-# Test 7: job.status = "complete" and finished_at set to a datetime
+# Test 7: the terminal row write moved out with the terminal event (#168)
 # ---------------------------------------------------------------------------
 
 
-def test_embed_and_migrate_sets_job_status_complete(monkeypatch):
-    """embed_and_migrate sets job.status = 'complete' and job.finished_at to a datetime.
+def test_embed_and_migrate_leaves_the_job_row_alone(monkeypatch):
+    """The row and the event are one record, so they moved together.
 
-    This proves the terminal state write contract. agent.status must NOT be set
-    (M2 does not touch agent status — M1-only behaviour).
+    A row saying 'complete' while two hops still had to run is the same defect as
+    the event, and it is the half a reader of the jobs table sees. agent.status is
+    not touched either; that stays M1-only behaviour.
     """
     mock_db, mock_dml_conn, mock_reindex_conn, _, _, mock_embed, mock_emit, mock_job = _build_standard_mocks()
 
     _run_task_with_mocks(monkeypatch, mock_db, mock_dml_conn, mock_reindex_conn, mock_embed, mock_emit)
 
-    assert mock_job.status == "complete", (
-        f"Expected job.status = 'complete' but got {mock_job.status!r}"
+    assert mock_job.status != "complete", (
+        f"finish_ingestion writes the terminal row state, not this hop: {mock_job.status!r}"
     )
-    assert mock_job.finished_at is not None, (
-        "Expected job.finished_at to be set but it is None"
-    )
-    assert isinstance(mock_job.finished_at, datetime), (
-        f"Expected job.finished_at to be a datetime instance but got {type(mock_job.finished_at)}"
+    assert mock_job.finished_at is None, (
+        f"a run that has two hops to go has not finished: {mock_job.finished_at!r}"
     )

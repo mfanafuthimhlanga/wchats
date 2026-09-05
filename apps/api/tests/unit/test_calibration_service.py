@@ -386,7 +386,11 @@ class TestTheMismatchLog:
 
         entry = _one_event(logs, "calibration_artifact_unreadable")
         assert entry["path"] == str(artifact)
-        assert entry["error"].startswith("JSONDecodeError")
+        # #166 split the one interpolated string in two: the class now has its own
+        # field, and `error` carries the message alone, first line and capped.
+        assert entry["error_type"] == "JSONDecodeError"
+        assert "\n" not in entry["error"]
+        assert len(entry["error"]) <= 200
 
     def test_a_refused_artifact_logs_once_naming_the_rule_it_broke(self, tmp_path):
         """A whole artifact with one bad field, so the line names the field and

@@ -337,10 +337,22 @@ class TestUploadDocuments422Empty:
 # ---------------------------------------------------------------------------
 
 
+#: The ingestion chain's hops in order, one sentinel name each. The route reads
+#: app.api.v1.documents.INGESTION_CHAIN, so that tuple is what the two tests below
+#: replace; #168 appended finish_ingestion to it as the terminal owner.
+_HOP_NAMES = ("parse", "chunk", "meta", "embed", "strategy", "finish")
+
+
 @pytest.mark.asyncio
 class TestUploadDocumentsChainSignature:
     async def test_upload_documents_dispatches_chain_with_correct_signature(self, monkeypatch):
-        """Chain called with four task .s() factories in correct order (ING-01)."""
+        """chain() is called with one signature per hop, in INGESTION_CHAIN order.
+
+        The route reads the chain off `INGESTION_CHAIN` (#168), so the chain is what
+        this patches. Patching the six task names individually would leave the tuple
+        holding the real tasks and the assertions would pass over a route that never
+        touched a mock.
+        """
         fake_tenant = _make_fake_tenant()
         ready_agent = _make_ready_agent(fake_tenant)
         mock_db, job_id = _make_mock_db_with_agent(ready_agent)
@@ -355,10 +367,10 @@ class TestUploadDocumentsChainSignature:
                 patch("app.api.v1.documents.fernet_decrypt", return_value="postgresql://fake/db"),
                 patch("app.api.v1.documents.psycopg2.connect") as mock_connect,
                 patch("app.api.v1.documents.chain") as mock_chain,
-                patch("app.api.v1.documents.parse_documents") as mock_parse,
-                patch("app.api.v1.documents.chunk_documents") as mock_chunk,
-                patch("app.api.v1.documents.generate_metadata") as mock_meta,
-                patch("app.api.v1.documents.embed_and_migrate") as mock_embed,
+                patch(
+                    "app.api.v1.documents.INGESTION_CHAIN",
+                    tuple(MagicMock(name=hop) for hop in _HOP_NAMES),
+                ) as mock_hops,
                 # P13-06: route now writes to S3 — mock put_bytes to avoid real AWS calls
                 patch("app.services.storage_service.put_bytes"),
             ):
@@ -377,11 +389,10 @@ class TestUploadDocumentsChainSignature:
 
                 mock_chain.side_effect = capture_chain
 
-                # Set up .s() to return a sentinel value
-                mock_parse.s = MagicMock(return_value="parse_sig")
-                mock_chunk.s = MagicMock(return_value="chunk_sig")
-                mock_meta.s = MagicMock(return_value="meta_sig")
-                mock_embed.s = MagicMock(return_value="embed_sig")
+                # Each hop's .s() returns its own sentinel, so the captured chain
+                # args are the hop order the route built.
+                for hop, name in zip(mock_hops, _HOP_NAMES):
+                    hop.s = MagicMock(return_value=name + "_sig")
 
                 async with AsyncClient(
                     transport=ASGITransport(app=app), base_url="http://test"
@@ -396,12 +407,10 @@ class TestUploadDocumentsChainSignature:
 
         assert response.status_code == 202
 
-        # Verify chain was called with all four task signatures
         assert mock_chain.called, "chain() was not called"
-        assert mock_parse.s.called, "parse_documents.s() was not called"
-        assert mock_chunk.s.called, "chunk_documents.s() was not called"
-        assert mock_meta.s.called, "generate_metadata.s() was not called"
-        assert mock_embed.s.called, "embed_and_migrate.s() was not called"
+        assert chain_args_captured == [name + "_sig" for name in _HOP_NAMES], (
+            f"the chain was not built from INGESTION_CHAIN in order: {chain_args_captured}"
+        )
 
         # Verify apply_async called with queue='pipeline'
         mock_chain_instance.apply_async.assert_called_once()
@@ -434,10 +443,10 @@ class TestUploadDocumentsNoConnStringInArgs:
                 patch("app.api.v1.documents.fernet_decrypt", return_value="postgresql://neon-test.neon.tech/db?password=secret123"),
                 patch("app.api.v1.documents.psycopg2.connect") as mock_connect,
                 patch("app.api.v1.documents.chain") as mock_chain,
-                patch("app.api.v1.documents.parse_documents") as mock_parse,
-                patch("app.api.v1.documents.chunk_documents"),
-                patch("app.api.v1.documents.generate_metadata"),
-                patch("app.api.v1.documents.embed_and_migrate"),
+                patch(
+                    "app.api.v1.documents.INGESTION_CHAIN",
+                    tuple(MagicMock(name=hop) for hop in _HOP_NAMES),
+                ) as mock_hops,
                 # P13-06: route now writes to S3 — mock put_bytes to avoid real AWS calls
                 patch("app.services.storage_service.put_bytes"),
             ):
@@ -451,7 +460,9 @@ class TestUploadDocumentsNoConnStringInArgs:
                     captured_parse_args.extend(args)
                     return "parse_sig"
 
-                mock_parse.s = MagicMock(side_effect=capture_parse_s)
+                mock_hops[0].s = MagicMock(side_effect=capture_parse_s)
+                for hop in mock_hops[1:]:
+                    hop.s = MagicMock(return_value="sig")
                 mock_chain.return_value.apply_async = MagicMock()
 
                 async with AsyncClient(
@@ -466,6 +477,9 @@ class TestUploadDocumentsNoConnStringInArgs:
             app.dependency_overrides.clear()
 
         assert response.status_code == 202
+
+        # A vacuous loop proves nothing: the head has to have been called.
+        assert captured_parse_args, "the chain head's .s() was never called"
 
         # Sentinel check: no arg contains a connection string pattern
         for arg in captured_parse_args:

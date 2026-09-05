@@ -6,7 +6,7 @@ Test coverage:
   2. test_build_system_prompt_populated_soul   — role/voice/do/donot values appear in output
   3. test_build_system_prompt_includes_few_shot — FEW_SHOT_SUFFIX substrings present
   4. test_build_system_prompt_does_not_leak_field_names — "soul_role" and "soul_voice" absent
-  5. the length bound — a maximal agent's prompt fits SYSTEM_PROMPT_MAX_CHARS, and that
+  5. the length bound: a maximal agent's prompt fits SYSTEM_PROMPT_MAX_CHARS, and that
      number is tight enough to be a measurement rather than slack (#182)
 
 Uses MagicMock(spec=Agent) to stub agent attributes — ORM model is not instantiated.

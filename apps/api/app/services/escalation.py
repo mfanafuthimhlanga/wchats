@@ -19,6 +19,7 @@ from email.mime.text import MIMEText
 import structlog
 
 from app.core.config import settings
+from app.core.log_bounds import log_failure
 
 log = structlog.get_logger(__name__)
 
@@ -78,8 +79,4 @@ def send_escalation_email(agent, reason: str, context: str) -> None:
         )
     except Exception as exc:
         # Fire-and-forget: log warning but NEVER re-raise (T-04-03-03).
-        log.warning(
-            "escalation.email_failed",
-            error=str(exc),
-            agent_id=str(getattr(agent, "id", "")),
-        )
+        log_failure(log, "escalation.email_failed", exc, agent_id=str(getattr(agent, "id", "")))

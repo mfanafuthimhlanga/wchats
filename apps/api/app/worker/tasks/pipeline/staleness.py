@@ -52,6 +52,7 @@ import psycopg2
 import structlog
 
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent, select_beat_fanout_agents
 from app.services import alert_service, bedrock_embedding_service
@@ -118,7 +119,7 @@ def compute_index_staleness_summary(conn_str: str) -> dict:
                 stale_count += 1
                 stale_document_ids.append(str(doc_id))
     except Exception as exc:  # noqa: BLE001 — degrade this signal to not_tracked, never fabricate
-        log.warning("check_index_staleness.staleness_scan_failed", error=str(exc))
+        log_failure(log, "check_index_staleness.staleness_scan_failed", exc)
         stale_count = NOT_TRACKED
         stale_document_ids = []
 
@@ -136,7 +137,7 @@ def compute_index_staleness_summary(conn_str: str) -> dict:
         drift_model_counts = {model: count for model, count in rows}
         drift_detected = any(model != target_model for model in drift_model_counts)
     except Exception as exc:  # noqa: BLE001 — degrade this signal to not_tracked, never fabricate
-        log.warning("check_index_staleness.drift_scan_failed", error=str(exc))
+        log_failure(log, "check_index_staleness.drift_scan_failed", exc)
         drift_detected = NOT_TRACKED
         drift_model_counts = NOT_TRACKED
 
@@ -213,7 +214,7 @@ def check_index_staleness(self, agent_id: str) -> dict:  # noqa: ARG001
         try:
             _raise_alerts_if_needed(db, agent, summary)
         except Exception as exc:  # noqa: BLE001 — alerting must never fail the scan
-            log.warning("check_index_staleness.alert_failed", agent_id=agent_id, error=str(exc))
+            log_failure(log, "check_index_staleness.alert_failed", exc, agent_id=agent_id)
 
     log.info(
         "check_index_staleness.complete",

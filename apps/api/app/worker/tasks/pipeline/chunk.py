@@ -1,8 +1,9 @@
 """
 chunk_documents — Celery task: chunk parsed documents via HybridChunker + table Markdown path.
 
-Position in M2 chain (2nd of 4):
+Position in the ingestion chain (2nd of 6):
     parse_documents → chunk_documents → generate_metadata → embed_and_migrate
+    → synthesize_retrieval_strategy → finish_ingestion
 
 Layer 2 idempotency (ON CONFLICT DO UPDATE):
     Chunk IDs are derived via uuid5(NAMESPACE_URL, f"{document_id}:{ordinal}") — stable
@@ -56,6 +57,7 @@ import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.domain.docling_service import parse_document_from_bytes
@@ -218,11 +220,7 @@ def chunk_documents(self, job: IngestionJob) -> IngestionJob:
 
                 except RuntimeError as exc:
                     # Fatal Docling error — log and skip this document
-                    log.error(
-                        "chunk_documents.docling_fatal_error",
-                        document_id=doc_id,
-                        error=str(exc),
-                    )
+                    log_failure(log, "chunk_documents.docling_fatal_error", exc, level="error", document_id=doc_id)
                     # Reopen connection to continue with next document
                     tenant_conn = psycopg2.connect(conn_str)
                     continue
@@ -298,11 +296,7 @@ def chunk_documents(self, job: IngestionJob) -> IngestionJob:
                     tenant_conn.rollback()
             except Exception:
                 pass
-            log.error(
-                "chunk_documents.unexpected_error",
-                error_type=type(exc).__name__,
-                error=str(exc),
-            )
+            log_failure(log, "chunk_documents.unexpected_error", exc, level="error")
             retry_or_fail_the_job(self, exc, job_id, db, _redis, 2**self.request.retries)
         finally:
             if tenant_conn is not None:

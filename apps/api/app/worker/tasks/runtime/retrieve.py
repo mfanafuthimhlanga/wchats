@@ -39,6 +39,7 @@ from sqlalchemy import text as sa_text
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
@@ -255,12 +256,7 @@ def retrieve_and_rank(self, job_id: str, agent_id: str, query: str) -> dict:
             )
 
         except Exception as exc:
-            log.error(
-                "retrieve_and_rank.failed",
-                job_id=job_id,
-                agent_id=agent_id,
-                error=str(exc),
-            )
+            log_failure(log, "retrieve_and_rank.failed", exc, level="error", job_id=job_id, agent_id=agent_id)
 
             # On final retry exhaustion, mark job failed and emit failure event
             if self.request.retries >= self.max_retries:

@@ -66,6 +66,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_tenant
 from app.core.database import get_async_db
+from app.core.log_bounds import log_failure
 from app.domain.transactional_schemas import SKILL_INPUT_MODELS
 from app.models.agent import Agent
 from app.models.tenant import Tenant
@@ -435,13 +436,12 @@ async def resolve_pending_confirmation(
             resolve_approved_confirmation.delay(str(claimed["id"]))
             enqueued = True
         except Exception as exc:  # noqa: BLE001
-            log.error(
-                "resolve_pending_confirmation.dispatch_failed",
+            log_failure(
+                log, "resolve_pending_confirmation.dispatch_failed", exc, level="error",
                 agent_id=str(agent_id),
                 tenant_id=str(tenant.id),
                 confirmation_id=str(confirmation_id),
                 skill=claimed["skill"],
-                error=str(exc),
             )
             await write_audit_row(
                 agent_id=str(agent_id),

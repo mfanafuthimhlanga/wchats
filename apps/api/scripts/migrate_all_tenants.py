@@ -3,9 +3,10 @@ r"""Run `alembic upgrade head` against EVERY tenant database in the fleet.
     python scripts/migrate_all_tenants.py            # migrate the fleet
     python scripts/migrate_all_tenants.py --list     # read revisions, write nothing
 
-This is the API service's `preDeployCommand` (`railway.api.toml`), so it runs
-once per release, after the image is built and before any of the four services
-serve the new code.
+`scripts/predeploy.py` is the API service's `preDeployCommand`
+(`railway.api.toml`) and this walk is its second half, so it runs once per
+release, after the image is built, after the control DB has reached head, and
+before any of the four services serve the new code.
 
 WHY A RELEASE STEP AND NOT A TASK
     `apply_migrations` runs exactly once per tenant, at provision. Nothing has

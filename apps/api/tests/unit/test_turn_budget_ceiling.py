@@ -20,6 +20,9 @@ So this file asserts in both directions at once.
                                                   schemas turns this file red
     a runaway is stopped                          a ceiling that cannot fire is a
                                                   note, not a gate (#82)
+    an unpriced model id cuts it short            where this constant meets #178,
+                                                  written down rather than found
+                                                  in production
 
 THE SHAPE OF THE WORST PERMITTED TURN, every term a named constant:
 
@@ -73,7 +76,7 @@ import pytest
 from app.core.config import settings
 from app.core.model_client import route_for
 from app.domain.model_call import ModelCall, ModelSource
-from app.domain.pricing import cost_usd
+from app.domain.pricing import UnknownPrice, ceiling_cost_usd, cost_usd
 from app.services.agent_loop import MAX_MODEL_CALLS_PER_TURN, AgentTurn, run_agent_loop
 from app.services.agent_prompt import (
     AGENT_NAME_MAX_CHARS,
@@ -129,11 +132,25 @@ TOOL_SCHEMA_TOKENS_FLOOR = 2000
 
 def _luna_call(input_tokens: int, output_tokens: int) -> ModelCall:
     """One ledger row, the shape the recorder tees in live."""
+    return _call(input_tokens, output_tokens, served_model="gpt-5.6-luna")
+
+
+def _unpriced_call(input_tokens: int, output_tokens: int) -> ModelCall:
+    """The same row, served by a model id the price book has no row for.
+
+    A dated snapshot in place of the alias is the shape #178 names:
+    `model_client` takes `served_model` from `response_body["model"]` verbatim
+    and the book matches exactly.
+    """
+    return _call(input_tokens, output_tokens, served_model="gpt-5.6-luna-2026-08-01")
+
+
+def _call(input_tokens: int, output_tokens: int, *, served_model: str) -> ModelCall:
     return ModelCall(
         purpose="agent_turn",
         provider="openai",
         requested_model="gpt-5.6-luna",
-        served_model="gpt-5.6-luna",
+        served_model=served_model,
         model_source=ModelSource.REPORTED,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -218,7 +235,15 @@ class _WorstTurn:
     def __init__(self, out, client, calls):
         self.out = out
         self.client = client
-        self.spend = [cost_usd(call)[0] for call in calls]
+        # The same fallback `_over_budget` applies since #178: a call the book
+        # cannot price counts at the dearest rate the book knows, rather than
+        # switching the ceiling off for the rest of the turn.
+        self.spend = []
+        for call in calls:
+            try:
+                self.spend.append(cost_usd(call)[0])
+            except UnknownPrice:
+                self.spend.append(ceiling_cost_usd(call))
 
     @property
     def total_usd(self) -> float:
@@ -248,6 +273,7 @@ async def _drive(
     history_row_chars: int,
     retrieves: int,
     chunk_chars: int = CHUNK_CONTENT_CHAR_LIMIT,
+    record=_luna_call,
 ) -> _WorstTurn:
     """One real `run_agent_loop`, billed per call at `o200k_base`.
 
@@ -286,7 +312,7 @@ async def _drive(
 
     calls: list[ModelCall] = []
     client = TokenBilledClient(
-        calls, *replies, record=_luna_call, output_tokens=count_tokens(answer)
+        calls, *replies, record=record, output_tokens=count_tokens(answer)
     )
     history = [
         {
@@ -333,6 +359,22 @@ async def _worst_permitted_turn(budget: float) -> _WorstTurn:
         history_rows=TURN_HISTORY_MAX_MESSAGES,
         history_row_chars=TURN_HISTORY_MAX_ROW_CHARS,
         retrieves=_RETRIEVE_CALLS_PER_TURN_MAX,
+    )
+
+
+async def _worst_permitted_turn_unpriced(budget: float) -> _WorstTurn:
+    """The same shape, served by a model id the price book has no row for."""
+    from app.worker.tasks.runtime.agent import (
+        TURN_HISTORY_MAX_MESSAGES,
+        TURN_HISTORY_MAX_ROW_CHARS,
+    )
+
+    return await _drive(
+        budget=budget,
+        history_rows=TURN_HISTORY_MAX_MESSAGES,
+        history_row_chars=TURN_HISTORY_MAX_ROW_CHARS,
+        retrieves=_RETRIEVE_CALLS_PER_TURN_MAX,
+        record=_unpriced_call,
     )
 
 
@@ -439,6 +481,35 @@ class TestTheCeilingAgainstTheWorstPermittedTurn:
         assert turn.out["stop_reason"] == "budget_exceeded", (
             f"a context ten times the configured per-chunk limit ran to its end "
             f"under the shipped ceiling. {turn}"
+        )
+        assert turn.out["num_turns"] < MAX_MODEL_CALLS_PER_TURN
+
+    async def test_an_unpriced_model_id_cuts_the_same_turn_short(self):
+        """Where this constant meets #178, stated rather than discovered live.
+
+        #178 changed `_over_budget` so a call the book cannot price is charged at
+        `dearest_rate_per_million` instead of switching the ceiling off. That is
+        the right direction, and it is not free. The book's dearest row is 1.32
+        dollars per million against Luna's 0.20 for input, so the SAME worst
+        permitted turn, charged that way, runs about six times its real cost and
+        this ceiling stops it in the first few calls with an empty answer.
+
+        Nothing exotic is needed to reach it: `model_client` takes `served_model`
+        from `response_body["model"]` verbatim and the book matches the string
+        exactly, so a dated snapshot id in place of the alias is enough, and it
+        would then apply to every turn for the life of that id.
+
+        This test does not argue with either decision. It makes the interaction
+        red the day a price-book change or a ceiling change alters it, because
+        the alternative is a whole tenant's turns ending empty while both sides
+        look correct on their own.
+        """
+        turn = await _worst_permitted_turn_unpriced(settings.AGENT_MAX_BUDGET_USD)
+
+        assert turn.out["stop_reason"] == "budget_exceeded", (
+            f"an unpriced served_model no longer stops the worst permitted turn. "
+            f"If #178's substitution changed, or the dearest row in the price "
+            f"book moved, this file's headroom claim needs re-measuring. {turn}"
         )
         assert turn.out["num_turns"] < MAX_MODEL_CALLS_PER_TURN
 

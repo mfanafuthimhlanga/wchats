@@ -93,7 +93,7 @@ PINNED_MYPY = {
 }
 
 PINNED_LIZARD = {
-    ("app/api/deps.py", "get_current_tenant"): (19, 120),
+    ("app/api/deps.py", "get_current_tenant"): (19, 110),
     ("app/api/v1/agent_chat.py", "get_agent_conversations"): (4, 69),
     ("app/api/v1/agent_chat.py", "post_agent_chat"): (8, 160),
     ("app/api/v1/agents.py", "patch_agent"): (13, 61),
@@ -101,12 +101,12 @@ PINNED_LIZARD = {
     ("app/api/v1/deployment.py", "_refuse_if_a_critical_finding_is_open"): (4, 77),
     ("app/api/v1/deployment.py", "acknowledge_warnings"): (17, 66),
     ("app/api/v1/deployment.py", "approve_deployment"): (12, 143),
-    ("app/api/v1/documents.py", "delete_document"): (10, 176),
+    ("app/api/v1/documents.py", "delete_document"): (10, 175),
     ("app/api/v1/documents.py", "get_document_detail"): (12, 133),
-    ("app/api/v1/documents.py", "upload_documents"): (15, 194),
+    ("app/api/v1/documents.py", "upload_documents"): (15, 188),
     ("app/api/v1/evals.py", "get_eval_run_results"): (16, 98),
     ("app/api/v1/evals.py", "list_eval_runs"): (13, 87),
-    ("app/api/v1/pending_confirmations.py", "resolve_pending_confirmation"): (8, 178),
+    ("app/api/v1/pending_confirmations.py", "resolve_pending_confirmation"): (8, 177),
     ("app/api/v1/query.py", "post_agent_query"): (3, 77),
     ("app/api/v1/red_team.py", "_contain_finding_sync"): (6, 64),
     ("app/api/v1/webhooks.py", "clerk_webhook"): (9, 79),
@@ -117,11 +117,11 @@ PINNED_LIZARD = {
     ("app/api/v1/widget.py", "post_widget_identity_request"): (3, 63),
     ("app/api/v1/widget.py", "post_widget_identity_verify"): (5, 88),
     ("app/api/v1/widget.py", "widget_job_events"): (2, 73),
-    ("app/services/actor_seam.py", "call_actor_gate"): (10, 157),
-    ("app/services/agent_prompt.py", "build_system_prompt"): (14, 81),
+    ("app/services/actor_seam.py", "call_actor_gate"): (10, 152),
+    ("app/services/agent_prompt.py", "build_system_prompt"): (14, 64),
     ("app/services/agent_tools.py", "escalate_to_human_tool"): (4, 101),
     ("app/services/agent_tools.py", "lookup_structured_tool"): (5, 67),
-    ("app/services/agent_tools.py", "retrieve_tool"): (28, 248),
+    ("app/services/agent_tools.py", "retrieve_tool"): (28, 244),
     ("app/services/bench_service.py", "grade_trace"): (5, 66),
     ("app/services/bench_service.py", "list_failing_traces"): (8, 87),
     ("app/services/capability_service.py", "validate_tighten_only"): (31, 154),
@@ -129,12 +129,12 @@ PINNED_LIZARD = {
     ("app/services/deployment_service.py", "_agent_not_invoked_warning"): (3, 76),
     ("app/services/deployment_service.py", "_eval_summary"): (2, 63),
     ("app/services/deployment_service.py", "_fetch_blast_radius_sync"): (11, 147),
-    ("app/services/deployment_service.py", "_fetch_eval_summary_sync"): (12, 204),
+    ("app/services/deployment_service.py", "_fetch_eval_summary_sync"): (12, 200),
     ("app/services/deployment_service.py", "_fetch_red_team_summary_sync"): (11, 114),
     ("app/services/deployment_service.py", "apply_signal_evidence_gate"): (7, 133),
     ("app/services/deployment_service.py", "derive_blast_radius_warnings"): (8, 77),
     ("app/services/digest_service.py", "_collect_digest_stats"): (10, 71),
-    ("app/services/eval_service.py", "build_eval_run_config"): (11, 207),
+    ("app/services/eval_service.py", "build_eval_run_config"): (11, 191),
     ("app/services/eval_service.py", "insert_eval_run"): (4, 62),
     ("app/services/eval_service.py", "run_ragas_eval"): (11, 153),
     ("app/services/eval_service.py", "summarise_agent_invocation"): (31, 186),
@@ -146,18 +146,18 @@ PINNED_LIZARD = {
     ("app/services/neon.py", "create_neon_project"): (6, 76),
     ("app/services/red_team_probe.py", "_build_transactional_probe_fn"): (1, 119),
     ("app/services/red_team_service.py", "_run_attacker"): (5, 81),
-    ("app/services/red_team_service.py", "build_probe_tools"): (1, 91),
+    ("app/services/red_team_service.py", "build_probe_tools"): (1, 87),
     ("app/services/red_team_service.py", "classify_severity"): (2, 77),
     ("app/services/red_team_service.py", "run_confused_deputy_agent"): (1, 69),
     ("app/services/red_team_service.py", "run_content_injection_agent"): (13, 153),
     ("app/services/red_team_service.py", "run_identity_bypass_agent"): (17, 159),
     ("app/services/red_team_service.py", "run_value_bound_evasion_agent"): (17, 146),
     ("app/services/red_team_service.py", "seed_poisoned_chunk"): (2, 75),
-    ("app/services/redteam_programme_service.py", "read_programme"): (16, 99),
+    ("app/services/redteam_programme_service.py", "read_programme"): (16, 98),
     ("app/services/retrieval_service.py", "rrf_fuse"): (3, 65),
     ("app/services/retrieval_service.py", "rrf_fuse_with_expansion"): (8, 68),
     ("app/services/retrieval_service.py", "verified_qa_lookup"): (3, 61),
-    ("app/services/scenario_service.py", "generate_eval_suite_for_agent"): (7, 66),
+    ("app/services/scenario_service.py", "generate_eval_suite_for_agent"): (7, 61),
     ("app/services/scenario_service.py", "generate_scenarios_from_chunks"): (5, 65),
     ("app/services/scenario_service.py", "mine_production_scenarios"): (11, 114),
     ("app/services/sse.py", "event_generator"): (13, 96),
@@ -168,44 +168,43 @@ PINNED_LIZARD = {
     ("app/services/transactional/adapters/stripe_adapter.py", "place_order"): (1, 63),
     ("app/services/transactional/audit.py", "write_audit_row"): (2, 69),
     ("app/services/transactional/confirmation_resolution.py", "execute_approved_confirmation"): (12, 290),
-    ("app/services/transactional/credential_service.py", "_fetch_credential_config"): (3, 69),
+    ("app/services/transactional/credential_service.py", "_fetch_credential_config"): (3, 65),
     ("app/services/transactional/enforcement.py", "apply_rate_and_constraint_checks"): (8, 96),
     ("app/services/transactional/enforcement.py", "check_capability_access"): (4, 76),
     ("app/services/transactional/idempotency.py", "reserve_idempotency"): (1, 185),
     ("app/services/transactional/idempotency.py", "reserve_idempotency._inner"): (14, 150),
     ("app/services/transactional/provider_adapter.py", "get_adapter_for_skill"): (10, 150),
     ("app/services/transactional/tools.py", "_execute_adapter_and_audit"): (3, 142),
-    ("app/services/transactional/tools.py", "_execute_transactional_tool"): (34, 793),
+    ("app/services/transactional/tools.py", "_execute_transactional_tool"): (34, 788),
     ("app/services/validation_service.py", "call_auditor"): (2, 88),
     ("app/services/validation_service.py", "call_strategist"): (6, 77),
-    ("app/worker/tasks/pipeline/chunk.py", "chunk_documents"): (15, 216),
-    ("app/worker/tasks/pipeline/embed.py", "embed_and_migrate"): (13, 253),
-    ("app/worker/tasks/pipeline/migrations.py", "apply_migrations"): (6, 124),
-    ("app/worker/tasks/pipeline/parse.py", "parse_documents"): (17, 252),
+    ("app/worker/tasks/pipeline/chunk.py", "chunk_documents"): (15, 208),
+    ("app/worker/tasks/pipeline/embed.py", "embed_and_migrate"): (13, 238),
+    ("app/worker/tasks/pipeline/migrations.py", "apply_migrations"): (6, 119),
+    ("app/worker/tasks/pipeline/parse.py", "parse_documents"): (17, 248),
     ("app/worker/tasks/pipeline/provision.py", "provision_neon"): (17, 208),
-    ("app/worker/tasks/pipeline/reembed.py", "reembed_corpus"): (13, 177),
+    ("app/worker/tasks/pipeline/reembed.py", "reembed_corpus"): (13, 169),
     ("app/worker/tasks/pipeline/staleness.py", "compute_index_staleness_summary"): (11, 77),
-    ("app/worker/tasks/pipeline/strategy.py", "synthesize_retrieval_strategy"): (12, 144),
+    ("app/worker/tasks/pipeline/strategy.py", "synthesize_retrieval_strategy"): (12, 124),
     ("app/worker/tasks/runtime/agent.py", "_judge_retrieved_context"): (11, 98),
     ("app/worker/tasks/runtime/agent.py", "_persist_messages"): (2, 73),
-    ("app/worker/tasks/runtime/agent.py", "_resolve_turn_prompt_version"): (5, 70),
+    ("app/worker/tasks/runtime/agent.py", "_resolve_turn_prompt_version"): (5, 69),
     ("app/worker/tasks/runtime/agent.py", "_write_turn_metrics"): (1, 65),
-    ("app/worker/tasks/runtime/agent.py", "run_agent_turn"): (20, 474),
-    ("app/worker/tasks/runtime/bench.py", "promote_trace_to_scenario"): (12, 164),
+    ("app/worker/tasks/runtime/agent.py", "run_agent_turn"): (18, 461),
+    ("app/worker/tasks/runtime/bench.py", "promote_trace_to_scenario"): (12, 158),
     ("app/worker/tasks/runtime/confirmations.py", "resolve_approved_confirmation"): (5, 111),
-    ("app/worker/tasks/runtime/deployment.py", "_dispatch_eval_run"): (2, 62),
-    ("app/worker/tasks/runtime/deployment.py", "run_deployment_checklist"): (12, 223),
-    ("app/worker/tasks/runtime/eval.py", "_invoke_agent_for_scenarios"): (14, 223),
+    ("app/worker/tasks/runtime/deployment.py", "run_deployment_checklist"): (11, 221),
+    ("app/worker/tasks/runtime/eval.py", "_invoke_agent_for_scenarios"): (14, 221),
     ("app/worker/tasks/runtime/eval.py", "_run_one_eval_turn"): (3, 80),
-    ("app/worker/tasks/runtime/eval.py", "generate_eval_suite"): (8, 81),
-    ("app/worker/tasks/runtime/eval.py", "run_eval_suite"): (28, 593),
+    ("app/worker/tasks/runtime/eval.py", "generate_eval_suite"): (8, 73),
+    ("app/worker/tasks/runtime/eval.py", "run_eval_suite"): (28, 576),
     ("app/worker/tasks/runtime/red_team.py", "_build_probe_fn"): (11, 65),
-    ("app/worker/tasks/runtime/red_team.py", "run_red_team"): (28, 447),
+    ("app/worker/tasks/runtime/red_team.py", "run_red_team"): (28, 425),
     ("app/worker/tasks/runtime/retrieval_eval.py", "run_retrieval_faithfulness"): (12, 82),
-    ("app/worker/tasks/runtime/retrieve.py", "retrieve_and_rank"): (12, 217),
-    ("app/worker/tasks/runtime/validators.py", "run_auditor"): (15, 189),
-    ("app/worker/tasks/runtime/validators.py", "run_gatekeeper"): (5, 107),
-    ("app/worker/tasks/runtime/validators.py", "run_strategist"): (9, 116),
+    ("app/worker/tasks/runtime/retrieve.py", "retrieve_and_rank"): (12, 212),
+    ("app/worker/tasks/runtime/validators.py", "run_auditor"): (15, 184),
+    ("app/worker/tasks/runtime/validators.py", "run_gatekeeper"): (5, 102),
+    ("app/worker/tasks/runtime/validators.py", "run_strategist"): (9, 111),
 }
 
 PINNED_SOURCE = {
@@ -557,3 +556,178 @@ SITE_CASES = [
 def test_source_assertion_sites(label, snippet, expected):
     """The matcher counts app-source reads and skips fixture reads and self reads."""
     assert gates.source_assertion_sites(snippet) == expected
+
+
+# ---------------------------------------------------------------------------
+# Log bounds (#166). Every snippet below is a whole module, because the scan
+# reads a module: the names it treats as exceptions come from the `except`
+# clauses and the annotated parameters of the same file.
+
+HANDLER = """
+def work():
+    try:
+        run()
+    except Exception as exc:
+        %s
+"""
+
+LOG_BOUND_CASES = [
+    ("the shape #166 converted", 'log.warning("x.failed", error=str(exc))', 1),
+    ("an id rendered beside it", 'log.warning("x.failed", agent_id=str(agent_id))', 0),
+    ("the class name on its own", 'log.warning("x.failed", error_type=type(exc).__name__)', 0),
+    ("the bounded reader", 'log.warning("x.failed", error=bounded_error_detail(exc))', 0),
+    ("a repr instead of a str", 'log.warning("x.failed", error=repr(exc))', 1),
+    ("a slice of the message", 'log.warning("x.failed", exc_msg=str(exc)[:200])', 1),
+    ("an f-string carrying both", 'log.warning("x.failed", error=f"{type(exc).__name__}: {exc}")', 1),
+    ("percent formatting", 'log.warning("x.failed", error="%s" % exc)', 1),
+    ("the exception passed whole", 'log.warning("x.failed", error=exc)', 1),
+    ("args, the message every exception has", 'log.warning("x.failed", error=exc.args)', 1),
+    ("a field the raiser named and sized", 'log.warning("x.failed", detail=exc.message)', 0),
+    ("a scalar field", 'log.warning("x.failed", status_code=exc.status_code)', 0),
+    ("two leaks in one call", 'log.error("x.failed", a=str(exc), b=repr(exc))', 2),
+    ("the converted call", 'log_failure(log, "x.failed", exc, agent_id=agent_id)', 0),
+    ("the event, which is positional", 'log.warning(str(exc))', 0),
+]
+
+
+@pytest.mark.parametrize("label, call, expected", LOG_BOUND_CASES)
+def test_unbounded_log_sites(label, call, expected):
+    """The scan reports the exception's own rendering and nothing else."""
+    assert len(gates.unbounded_log_sites(HANDLER % call)) == expected
+
+
+def test_an_exception_reaches_the_scan_through_an_annotation_too():
+    """A helper that takes the exception as a parameter has no except clause to find."""
+    module = 'def note(exc: Exception) -> None:\n    log.warning("x.failed", error=str(exc))\n'
+    assert len(gates.unbounded_log_sites(module)) == 1
+
+
+def test_a_module_that_binds_no_exception_is_read_as_clean():
+    """Without a bound name there is nothing to leak, and `str` is left alone."""
+    assert gates.unbounded_log_sites('log.info("started", agent_id=str(agent_id))\n') == []
+
+
+def test_the_log_bounds_pin_is_zero():
+    """One site anywhere fails the gate. There is no baseline to add a file to."""
+    assert gates.log_bound_failures({}, 162) == []
+    report = "\n".join(gates.log_bound_failures({"app/one.py": [(12, "error")]}, 162))
+    assert "app/one.py:12  error=" in report
+    assert "log_failure" in report
+
+
+def test_a_scan_that_read_nothing_is_not_a_pass():
+    """A renamed app/ makes the walk return nothing, and a gate over nothing is vacuous."""
+    assert gates.log_bound_failures({}, 0) != []
+
+
+def test_log_bounds_runs_in_the_static_mode():
+    """The gate the Stop hook runs is the one that carries this check."""
+    assert "log bounds" in [label for label, _ in gates.steps("static")]
+
+
+# ---------------------------------------------------------------------------
+# Process-wide keys (#101, #178). The five spellings below are the ones a probe
+# file carried straight past the column-0 regex this replaced. Each snippet is a
+# whole module, because module scope is what the scan is about.
+
+KEY = "NEON_ENCRYPTION_KEY"
+
+ENV_WRITE_CASES = [
+    ("the plain assignment, column 0", 'import os\nos.environ["%s"] = "k"\n' % KEY, [KEY]),
+    (
+        "indented under a module-scope if",
+        'import os\nif True:\n    os.environ["%s"] = "k"\n' % KEY,
+        [KEY],
+    ),
+    (
+        "inside a try block",
+        'import os\ntry:\n    os.environ["%s"] = "k"\nexcept Exception:\n    pass\n' % KEY,
+        [KEY],
+    ),
+    (
+        "inside the except block",
+        'import os\ntry:\n    pass\nexcept Exception:\n    os.environ["%s"] = "k"\n' % KEY,
+        [KEY],
+    ),
+    ("update with a dict literal", 'import os\nos.environ.update({"%s": "k"})\n' % KEY, [KEY]),
+    ("update with a keyword", "import os\nos.environ.update(%s='k')\n" % KEY, [KEY]),
+    ("putenv", 'import os\nos.putenv("%s", "k")\n' % KEY, [KEY]),
+    ("pop", 'import os\nos.environ.pop("%s", None)\n' % KEY, [KEY]),
+    (
+        "a helper called at import time",
+        'import os\ndef _bind():\n    os.environ["%s"] = "k"\n_bind()\n' % KEY,
+        [KEY],
+    ),
+    (
+        "environ taken by from-import",
+        'from os import environ\nenviron["%s"] = "k"\n' % KEY,
+        [KEY],
+    ),
+    (
+        "the remedy, which is not a write",
+        'import os\nos.environ.setdefault("%s", "k")\n' % KEY,
+        [],
+    ),
+    (
+        "a helper that is defined and never called",
+        'import os\ndef _bind():\n    os.environ["%s"] = "k"\n' % KEY,
+        [],
+    ),
+    (
+        "a write inside a test function, which runs after collection",
+        'import os\ndef test_it():\n    os.environ["%s"] = "k"\n' % KEY,
+        [],
+    ),
+    ("a key nothing guards", 'import os\nos.environ["PATH"] = "k"\n', []),
+    ("a read, not a write", 'import os\nvalue = os.environ["%s"]\n' % KEY, []),
+]
+
+
+@pytest.mark.parametrize("label, module, expected", ENV_WRITE_CASES)
+def test_process_wide_env_writes(label, module, expected):
+    """Module scope by any spelling, and nothing that runs later."""
+    assert gates.process_wide_env_writes(module) == expected
+
+
+def test_a_key_that_is_not_a_literal_counts_against_every_guarded_key():
+    """Nothing can say which key it sets, so the scan fails closed rather than open."""
+    found = gates.process_wide_env_writes("import os\nos.environ[name] = value\n")
+    assert gates.UNKNOWN_KEY in found
+    for key in gates.PROCESS_WIDE_KEYS:
+        assert key in found
+
+
+def test_control_db_url_is_guarded_too():
+    """It is the same class of key, and it was outside the old guard's set."""
+    assert "CONTROL_DB_URL" in gates.PROCESS_WIDE_KEYS
+    assert gates.process_wide_env_writes(
+        'import os\nos.environ["CONTROL_DB_URL"] = "x"\n'
+    ) == ["CONTROL_DB_URL"]
+
+
+def test_the_process_wide_key_pin_is_zero():
+    """One rebind anywhere fails the gate. There is no baseline to add a file to."""
+    assert gates.process_wide_key_failures({}, 32) == []
+    report = "\n".join(
+        gates.process_wide_key_failures({"tests/integration/test_x.py": [KEY]}, 32)
+    )
+    assert "tests/integration/test_x.py" in report
+    assert "setdefault" in report
+
+
+def test_a_key_scan_that_read_nothing_is_not_a_pass():
+    """A renamed tests/integration would leave the old glob asserting over []."""
+    assert gates.process_wide_key_failures({}, 0) != []
+
+
+def test_the_scan_walks_the_integration_tree_recursively_and_skips_conftest():
+    """conftest is the one source; a subdirectory was unscanned by the old glob."""
+    scanned = [relative for relative, _ in gates.walk_integration_files()]
+    assert scanned, "the walk found no integration modules at all"
+    assert not [path for path in scanned if path.endswith("conftest.py")]
+    assert "tests/integration/test_usage_rollup_e2e.py" in scanned
+
+
+def test_process_wide_keys_runs_in_the_static_mode():
+    """The gate the Stop hook runs is the one that carries this check."""
+    assert "process-wide keys" in [label for label, _ in gates.steps("static")]
