@@ -1262,3 +1262,34 @@ class TestMakeInstructorClient:
                 lambda call: None,
                 route=ModelRoute(provider="deepseek", model="deepseek-v4-flash"),
             )
+
+    # `is_async` picks the builder AND the kind of httpx client that builder can
+    # hook, and only the first half was enforced. The pair below drives the two
+    # mismatches. Neither raised before `_instructor_target`: the sync client
+    # reached `AsyncOpenAI` as its transport and failed at the first await inside
+    # the SDK, and the async one reached the sync SDK the same way.
+
+    def test_an_async_build_refuses_a_sync_http_client(self):
+        """A sync transport under AsyncOpenAI fails at the first await, far from here."""
+        with pytest.raises(TypeError, match="passed an httpx.Client"):
+            make_instructor_client(
+                "judge_faithfulness",
+                tenant_id=TENANT,
+                recorder=lambda call: None,
+                credentials=Credentials(api_key="test-key"),
+                http_client=httpx.Client(),
+                clock=lambda: AT,
+                is_async=True,
+            )
+
+    def test_a_sync_build_refuses_an_async_http_client(self):
+        """And the same mismatch the other way round, which the sync SDK cannot use."""
+        with pytest.raises(TypeError, match="passed an httpx.AsyncClient"):
+            make_instructor_client(
+                "judge_faithfulness",
+                tenant_id=TENANT,
+                recorder=lambda call: None,
+                credentials=Credentials(api_key="test-key"),
+                http_client=httpx.AsyncClient(),
+                clock=lambda: AT,
+            )

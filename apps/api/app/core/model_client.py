@@ -112,7 +112,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import Protocol, cast
+from typing import Protocol, TypedDict, cast
 
 import anthropic as _anthropic
 import httpx
@@ -135,6 +135,21 @@ ProviderClient = _anthropic.Anthropic | _openai.OpenAI
 #: What `make_instructor_client` hands back. `AsyncInstructor` is the one Ragas
 #: accepts, because `InstructorLLM.agenerate` refuses a synchronous client.
 InstructorClient = _instructor.Instructor | _instructor.AsyncInstructor
+
+
+class _InstructorDefaults(TypedDict, total=False):
+    """The two instructor defaults a route supplies, and only these two.
+
+    `from_openai` declares `mode: Mode` beside its `**kwargs`, so spreading a plain
+    `dict[str, str]` into it offers a str for that enum and matches no overload.
+    Naming the keys checks each against the parameter it actually lands on: `model`
+    against `model: str | None`, `reasoning_effort` against `**kwargs`. `total=False`
+    because a non-judge route names no effort and the key is then absent, which is a
+    different request from an explicit null.
+    """
+
+    model: str
+    reasoning_effort: str
 
 
 class LedgerCursor(Protocol):
@@ -979,6 +994,88 @@ def make_async_client(
     )
 
 
+# ---------------------------------------------------------------------------
+# WHAT `_instructor_over_openai` DECIDES, and why the decision has a name
+#
+# `is_async` picks the builder AND the kind of httpx client that builder can hook,
+# and only the first half was written down. One `build = a if is_async else b` left
+# both branches holding the same union, so nothing said which client belongs to
+# which builder, and mypy read the one call as two wrong arguments. The two
+# isinstance checks say it. There is no third case: httpx.Client and
+# httpx.AsyncClient are unrelated classes.
+#
+# THE SDK ALREADY REFUSED THE MISMATCH, loudly, with "Invalid `http_client`
+# argument; Expected an instance of `httpx.AsyncClient`". Refusing it here is not a
+# rescue from silence. It names the factory and the argument that were called, and
+# it lands before `attach_async_ledger_hook` appends a response hook to a client the
+# construction is about to reject.
+#
+# THE INSTRUCTOR WRAP HAPPENS INSIDE EACH BRANCH, not after them. `from_openai` is
+# overloaded on the client type and answers `AsyncInstructor` for one and
+# `Instructor` for the other, so a union reaching it matches no variant. In a branch
+# the client is one concrete class and the overload resolves.
+# ---------------------------------------------------------------------------
+
+
+def _instructor_over_openai(
+    purpose: str,
+    *,
+    tenant_id: str,
+    recorder: Recorder,
+    agent_id: str | None,
+    job_id: str | None,
+    credentials: Credentials | None,
+    http_client: httpx.Client | httpx.AsyncClient | None,
+    clock: Clock,
+    is_async: bool,
+    defaults: _InstructorDefaults,
+) -> InstructorClient:
+    """Build the OpenAI client this route needs and wrap it in instructor.
+
+    The block comment above carries the three rules this follows.
+
+    Args:
+        http_client: an httpx client to hook instead of a fresh one. Async when
+                     `is_async` is set, sync otherwise.
+        is_async:    build on `AsyncOpenAI`, which Ragas needs.
+        defaults:    what this route supplies as instructor defaults: the model,
+                     and the reasoning effort for a judge purpose.
+
+    Returns:
+        An `AsyncInstructor` when `is_async` is set, an `Instructor` otherwise.
+
+    Raises:
+        TypeError: the httpx client does not match `is_async`.
+    """
+    if is_async:
+        if isinstance(http_client, httpx.Client):
+            raise TypeError(
+                "make_instructor_client(is_async=True) hooks an httpx.AsyncClient, and "
+                "this call passed an httpx.Client."
+            )
+        async_client = make_async_client(
+            purpose, tenant_id=tenant_id, recorder=recorder, agent_id=agent_id,
+            job_id=job_id, credentials=credentials, http_client=http_client, clock=clock,
+        )
+        return _instructor.from_openai(async_client, **defaults)
+    if isinstance(http_client, httpx.AsyncClient):
+        raise TypeError(
+            "make_instructor_client hooks an httpx.Client unless is_async is set, and "
+            "this call passed an httpx.AsyncClient."
+        )
+    # `_sdk_client` answers with the OpenAI SDK for OPENAI_PROVIDER and the Anthropic
+    # one for anything else, so naming the provider here IS the narrowing, and the
+    # constant is what the only caller passes: `make_instructor_client` raises
+    # UnsupportedProvider for a route naming any other one. A cast rather than an
+    # isinstance check, matching `LedgerContext.client`.
+    sync_client = _hooked_sdk_client(
+        purpose, tenant_id=tenant_id, recorder=recorder, agent_id=agent_id,
+        job_id=job_id, provider=OPENAI_PROVIDER, credentials=credentials,
+        http_client=http_client, clock=clock,
+    )
+    return _instructor.from_openai(cast(_openai.OpenAI, sync_client), **defaults)
+
+
 def make_instructor_client(
     purpose: str,
     *,
@@ -1028,16 +1125,14 @@ def make_instructor_client(
             f"Purpose {purpose!r} routes to {route.provider!r}, and this factory wraps "
             f"only {OPENAI_PROVIDER!r} clients in instructor."
         )
-    build = make_async_client if is_async else _hooked_sdk_client
-    client = build(
-        purpose, tenant_id=tenant_id, recorder=recorder, agent_id=agent_id,
-        job_id=job_id, credentials=credentials, http_client=http_client, clock=clock,
-        **({} if is_async else {"provider": route.provider}),
-    )
-    defaults: dict[str, str] = {"model": route.model}
+    defaults: _InstructorDefaults = {"model": route.model}
     if route.reasoning_effort is not None:
         defaults["reasoning_effort"] = route.reasoning_effort
-    return _instructor.from_openai(client, **defaults)
+    return _instructor_over_openai(
+        purpose, tenant_id=tenant_id, recorder=recorder, agent_id=agent_id,
+        job_id=job_id, credentials=credentials, http_client=http_client, clock=clock,
+        is_async=is_async, defaults=defaults,
+    )
 
 
 def record_model_call(call: ModelCall, target: str | LedgerConnection) -> None:
