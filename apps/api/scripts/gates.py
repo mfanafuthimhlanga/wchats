@@ -284,7 +284,7 @@ LIZARD_BASELINE = {
     ("app/worker/tasks/runtime/eval.py", "generate_eval_suite"): (8, 81),
     ("app/worker/tasks/runtime/eval.py", "run_eval_suite"): (28, 593),
     ("app/worker/tasks/runtime/red_team.py", "_build_probe_fn"): (11, 65),
-    ("app/worker/tasks/runtime/red_team.py", "run_red_team"): (30, 463),
+    ("app/worker/tasks/runtime/red_team.py", "run_red_team"): (28, 447),
     ("app/worker/tasks/runtime/retrieval_eval.py", "run_retrieval_faithfulness"): (12, 82),
     ("app/worker/tasks/runtime/retrieve.py", "retrieve_and_rank"): (12, 217),
     ("app/worker/tasks/runtime/validators.py", "run_auditor"): (15, 189),
