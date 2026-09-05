@@ -40,15 +40,29 @@ WHERE A PURPOSE GOES
     rather than before it is known. The `provider` argument survives as the seam a
     test drives another provider through; nothing under `app/` passes it.
 
-    `make_instructor_client` applies the route's model and reasoning effort as
-    instructor defaults, which a call site can still override per call. In the
-    installed instructor 1.15.4,
+    THE ROUTE'S EFFORT REACHES THE WIRE ON EVERY SEAM. `make_instructor_client`
+    applies the route's model and reasoning effort as instructor defaults, which
+    a call site can still override per call: in the installed instructor 1.15.4,
     `.venv/Lib/site-packages/instructor/v2/core/client.py` stores the extra kwargs
     on the `Instructor`, and `handle_kwargs` fills in each one the call did not
-    name. So a purpose whose route names an effort belongs to that seam, not to
-    `make_client`. The OpenAI SDK takes default headers and a default query but no
-    default body parameter (`.venv/Lib/site-packages/openai/_client.py`, openai
-    2.45.0), so a raw client carries no effort and every call site would repeat it.
+    name. The OpenAI SDK takes default headers and a default query but no default
+    body parameter (`.venv/Lib/site-packages/openai/_client.py`, openai 2.45.0),
+    so `make_client` and `make_async_client` install the same default themselves
+    through `_carry_route_effort`, on the one `chat.completions` resource the SDK
+    caches per client. A raw call that names no effort goes out with the route's;
+    one that names an effort wins, the rule instructor already applies.
+
+    OBSERVED 2026-09-05 on staging (worker-runtime, agent ee8087ed): the provider
+    answers `400 Function tools with reasoning_effort are not supported for
+    gpt-5.6-luna in /v1/chat/completions. To use function tools, use
+    /v1/responses or set reasoning_effort to 'none'.` to a tool-bearing call
+    that sends no effort field, and to one that sends `low`. Reproduced from
+    this box the same day: `none` with tools succeeds, no field with tools is
+    refused, `none` without tools succeeds. Until then the raw seam dropped the
+    effort and refused any route naming one, so every raw purpose that attaches
+    a tool (scenario generation, the red team, the deployment Orchestrator, the
+    validation trio) failed at the provider, and the first staging checklist
+    blocked on a Judge that never ran.
 
 WHY THE PROVIDER SDKS ARE IMPORTED HERE AND NOWHERE ELSE
     One home for `anthropic`, `openai` and `instructor` means one place to change
@@ -105,6 +119,7 @@ Rung: `app.core` imports the standard library, third-party packages and
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import uuid
@@ -112,7 +127,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import Protocol, TypedDict, cast
+from typing import Protocol, TypedDict, TypeVar, cast
 
 import anthropic as _anthropic
 import httpx
@@ -132,6 +147,8 @@ Clock = Callable[[], datetime]
 #: What `make_client` hands back. Which one depends on the provider, and both
 #: carry the same ledger hook on the httpx client underneath.
 ProviderClient = _anthropic.Anthropic | _openai.OpenAI
+_C = TypeVar("_C", bound="ProviderClient | _openai.AsyncOpenAI")
+_R = TypeVar("_R")
 #: What `make_instructor_client` hands back. `AsyncInstructor` is the one Ragas
 #: accepts, because `InstructorLLM.agenerate` refuses a synchronous client.
 InstructorClient = _instructor.Instructor | _instructor.AsyncInstructor
@@ -281,9 +298,8 @@ class LedgerContext:
         which would cost the suite its cheapest seam and prove nothing about
         production, where the routing table already decides this.
 
-        Raises whatever `make_client` raises, including on a purpose the routing
-        table does not hold and on a judge purpose, which belongs to
-        `instructor_client` because its route names a reasoning effort.
+        Raises whatever `make_client` raises, which is `UnknownPurpose` on a
+        purpose the routing table does not hold.
         """
         return cast(
             _openai.OpenAI,
@@ -348,19 +364,6 @@ class UnsupportedProvider(ValueError):
     """A route names a provider this factory has no client for."""
 
 
-class EffortNeedsInstructor(ValueError):
-    """A raw client was asked for a purpose whose route names a reasoning effort.
-
-    The OpenAI SDK takes default headers and a default query and no default body
-    parameter, so a raw client sends no effort and every call site would have to
-    repeat it. `make_instructor_client` stores the route's effort as an instructor
-    default instead, and instructor fills it into each call that did not name it.
-    A judge built on the raw path would bill under a judge purpose while running
-    at whatever effort the provider picks, which is not the figure decision #34
-    priced.
-    """
-
-
 OPENAI_PROVIDER = "openai"
 LUNA_MODEL = "gpt-5.6-luna"
 
@@ -389,20 +392,20 @@ TRANSIENT_ERRORS: tuple[type[Exception], ...] = (
 # 2.45.0, so it is a real effort and never a stand-in for a missing value.
 _JUDGE = ModelRoute(OPENAI_PROVIDER, LUNA_MODEL, reasoning_effort="none")
 
-# No effort field at all, so the provider default applies. Sending an explicit
-# null is a different request from sending nothing, and nobody has measured what
-# an effort buys on these purposes.
-_LUNA = ModelRoute(OPENAI_PROVIDER, LUNA_MODEL)
+# Effort `none`, the one value the provider accepts beside a function tool on
+# `/v1/chat/completions` (OBSERVED 2026-09-05, see WHERE A PURPOSE GOES). Sending
+# no field asked for the provider default, and the provider refuses that request
+# the moment a tool is attached, which most of these purposes do.
+_LUNA = ModelRoute(OPENAI_PROVIDER, LUNA_MODEL, reasoning_effort="none")
 
 # Decision #34 prices the Agent turn at effort none, $0.76 per thousand turns.
 # The model comes off AGENT_TURN_MODEL so the eval run record and the wire name
 # the same model.
 #
 # WHAT KEEPS THE EFFORT ON THE WIRE is `agent_loop._request_kwargs`, which puts
-# `turn.route.reasoning_effort` on every request body it builds. `make_client`'s
-# EffortNeedsInstructor refusal never fires for this purpose, because the loop
-# builds its client through `make_async_client`, and that function runs no
-# purpose check at all.
+# `turn.route.reasoning_effort` on every request body it builds, and since
+# 2026-09-05 `make_async_client` installs the same value as a default, so a
+# body the loop did not build carries it too.
 #
 # THE CONSEQUENCE THAT FOLLOWS: `make_async_client` hardcodes the OpenAI
 # provider. Re-point this route at another provider and the loop would build an
@@ -455,24 +458,10 @@ PURPOSE_ROUTES: Mapping[str, ModelRoute] = MappingProxyType({
     "auditor": _LUNA,
     # Added by ticket #154. The judge the calibration harness correlates against
     # the owner's labels (#58) built its own Anthropic client under `tests/`, so
-    # it left no row and #153 did not reach it.
-    #
-    # `_LUNA` AND NOT `_JUDGE`, and #154 chose the raw path rather than being
-    # forced onto it. `_check_raw_purpose` does refuse an effort-bearing route on
-    # the raw client `tests/evals/judge.py` builds (OBSERVED 2026-09-03:
-    # `make_client("judge_faithfulness", ...)` raises `EffortNeedsInstructor`),
-    # yet this repo keeps an effort on the wire two other ways: through
-    # `make_instructor_client`, which stores the route's effort as a default that
-    # a `response_model=None` call still carries while returning a raw
-    # completion, and through `agent_loop._request_kwargs`, which writes
-    # `route.reasoning_effort` onto every body it builds. The choice costs a
-    # measurement, because the five production judges run at effort `none` (the
-    # figure decision #34 priced) while this one runs at Luna's provider default,
-    # so a calibration run measures a judge at a different effort from the judges
-    # it calibrates and its per-verdict cost for #60 is a number nobody chose.
-    # Routing this purpose at `_JUDGE` and building the judge through
-    # `LedgerContext.instructor_client` is the alternative, once #58 decides which
-    # judge the calibration is of.
+    # it left no row and #153 did not reach it. It runs on the raw path, because
+    # `tests/evals/judge.py` forces a tool over `chat.completions.create`, and so
+    # at `_LUNA`'s effort: the same `none` the five production judges run at,
+    # which is what lets its `judge_identity()` name a real Judge.
     "calibration_judge": _LUNA,
 })
 
@@ -821,28 +810,47 @@ def _sdk_client(
     )
 
 
-def _check_raw_purpose(purpose: str) -> None:
-    """Refuse a purpose the raw client path cannot serve, before anything is built.
+def _with_default(call: Callable[..., _R], **defaults: object) -> Callable[..., _R]:
+    """`call`, with each of `defaults` filled into a kwarg the caller left out.
 
-    Two refusals, both read off `PURPOSE_ROUTES`. A purpose the table does not
-    route used to reach the ledger unread, so a typo billed a real tenant under a
-    name no rollup groups and no report expects. A purpose whose route names a
-    reasoning effort belongs to the instructor seam, because that is the only
-    place a default effort survives to the wire.
-
-    Raises:
-        UnknownPurpose:        the table routes no such purpose. The message
-                               lists the ones it does hold.
-        EffortNeedsInstructor: the route names an effort a raw client drops.
+    One plain wrapper serves the sync and the async method alike, because the
+    async one returns a coroutine and this hands it back unawaited. OBSERVED
+    2026-09-05, openai 2.45.0: `inspect.iscoroutinefunction` already answers
+    False for the SDK's own `AsyncCompletions.create`, which the SDK wraps in
+    `required_args`; only `inspect.unwrap` reaches the coroutine function, and
+    `functools.wraps` keeps that chain intact through this wrapper too. Ragas
+    reads the instructor method, not this one (`ragas/llms/base.py`,
+    `_check_client_async`, ragas 0.4.3).
     """
-    route = route_for(purpose)
-    if route.reasoning_effort is not None:
-        raise EffortNeedsInstructor(
-            f"Purpose {purpose!r} runs at reasoning effort "
-            f"{route.reasoning_effort!r}, which a raw client sends no field for. "
-            "Build it with make_instructor_client, where the route's effort "
-            "becomes a default."
-        )
+
+    @functools.wraps(call)
+    def filled(*args: object, **kwargs: object) -> _R:
+        for name, value in defaults.items():
+            kwargs.setdefault(name, value)
+        return call(*args, **kwargs)
+
+    return filled
+
+
+def _carry_route_effort(client: _C, route: ModelRoute) -> _C:
+    """Put the route's reasoning effort on every raw call that did not name one.
+
+    The OpenAI SDK has no default body parameter, so the default goes on the
+    `chat.completions` resource itself, which the SDK builds once per client
+    (`cached_property` in `.venv/Lib/site-packages/openai/_client.py`). `create`
+    and `parse` are the two methods a call site under `app/` reaches. An
+    Anthropic client is handed back untouched: nothing routes there today, and
+    its API has no such field.
+    """
+    if route.reasoning_effort is None:
+        return client
+    if not isinstance(client, (_openai.OpenAI, _openai.AsyncOpenAI)):
+        return client
+    completions = client.chat.completions
+    for name in ("create", "parse"):
+        filled = _with_default(getattr(completions, name), reasoning_effort=route.reasoning_effort)
+        setattr(completions, name, filled)
+    return client
 
 
 def _hooked_sdk_client(
@@ -859,9 +867,9 @@ def _hooked_sdk_client(
 ) -> ProviderClient:
     """Build the client and bolt the hook on. The construction half of `make_client`.
 
-    Separate from the check above so `make_instructor_client` can come straight
-    here. The effort a raw client drops is exactly what that seam is about to
-    install as an instructor default, so the refusal would be wrong there.
+    Separate from `make_client` so `make_instructor_client` can come straight
+    here. That seam installs the route's effort as an instructor default itself,
+    so this function hands back the client bare.
     """
     provider = provider or route_for(purpose).provider
     credentials = credentials or resolve_credentials(provider)
@@ -912,25 +920,27 @@ def make_client(
 
     Returns:
         An `OpenAI` client for the `openai` provider, an `Anthropic` one
-        for everyone else. Both carry the same hook on the same httpx client, and
-        neither carries a reasoning effort. See WHERE A PURPOSE GOES above.
+        for everyone else. Both carry the same hook on the same httpx client. The
+        OpenAI one also carries the route's reasoning effort as a default on
+        `chat.completions`. See WHERE A PURPOSE GOES above.
 
     Raises:
-        UnknownPurpose:        the table routes no such purpose.
-        EffortNeedsInstructor: the purpose runs at an effort a raw client drops.
+        UnknownPurpose: the table routes no such purpose. Raised here, before
+                        anything is built, so a typo never reaches the ledger.
     """
-    _check_raw_purpose(purpose)
-    return _hooked_sdk_client(
+    route = route_for(purpose)
+    client = _hooked_sdk_client(
         purpose,
         tenant_id=tenant_id,
         recorder=recorder,
         agent_id=agent_id,
         job_id=job_id,
-        provider=provider,
+        provider=provider or route.provider,
         credentials=credentials,
         http_client=http_client,
         clock=clock,
     )
+    return _carry_route_effort(client, route)
 
 
 def make_async_client(
@@ -956,13 +966,11 @@ def make_async_client(
     function directly. The owned loop awaits `chat.completions.create` once per
     iteration of a customer turn, so nothing sync would serve it either.
 
-    NEITHER CALLER RUNS THE PURPOSE CHECK, and this function runs none for them.
-    `_check_raw_purpose` refuses a route that names a reasoning effort, because a
-    raw client sends no effort field. `make_instructor_client` stores the route's
-    effort as an instructor default, and the loop puts the route's effort on every
-    request body in `_request_kwargs`, so both already carry what the raw path
-    would drop. Each caller reads `PURPOSE_ROUTES` itself, so a purpose the table
-    does not hold still raises `UnknownPurpose`.
+    The route's effort rides along as a default on `chat.completions`, through
+    `_carry_route_effort`, the same way `make_client` carries it. Instructor and
+    `_request_kwargs` each name the effort on their own calls as well, and a
+    named effort wins over the default, so nothing is sent twice. `route_for`
+    runs here, so a purpose the table does not hold raises `UnknownPurpose`.
 
     OpenAI is the only provider here, because decision #34 routes every purpose to
     `gpt-5.6-luna`. A second provider gets added when a second provider has an
@@ -987,11 +995,12 @@ def make_async_client(
         recorder=recorder,
         clock=clock,
     )
-    return _openai.AsyncOpenAI(
+    client = _openai.AsyncOpenAI(
         api_key=credentials.api_key,
         base_url=credentials.base_url,
         http_client=http_client,
     )
+    return _carry_route_effort(client, route_for(purpose))
 
 
 # ---------------------------------------------------------------------------

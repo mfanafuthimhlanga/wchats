@@ -253,7 +253,7 @@ def close_judge_clients() -> None:
 
 
 def judge_identity():
-    """Which Judge `judge()` is, built from what it actually sends. None today.
+    """Which Judge `judge()` is, built from what it actually sends.
 
     THE IDENTITY IS REPORTED BY THE CALLER, NEVER LOOKED UP BESIDE IT. The
     calibration harness read a static table keyed on the dimension, so a hand
@@ -261,19 +261,18 @@ def judge_identity():
     never scored those rows. The three fields below come from the route the
     request is built out of, so the artifact says what ran.
 
-    None is the answer today and it is the correct one. The `calibration_judge`
-    route names no reasoning effort, this judge therefore sends no reasoning
-    parameter, `JudgeIdentity` refuses an empty field, and inventing one would
-    widen the key until two different Judges grouped under one calibration
-    figure. So every artifact this harness writes carries no identity and can
-    never claim `calibrated`, which is what #58 exists to fix.
-
-    #154 did not fix it by giving the route an effort, and that was deliberate.
-    An effort-bearing route is refused on the raw client path — `make_client`
-    raises `EffortNeedsInstructor`, observed against `judge_faithfulness` on
-    2026-09-03 — and this judge forces a tool over `chat.completions.create`,
-    which is that path. Choosing an effort here is a measurement decision with a
-    price attached, and it belongs to #58 rather than to a routing edit.
+    The three fields come from the route the request is built out of, and
+    `JudgeIdentity` refuses an empty one rather than let an invented value widen
+    the key until two different Judges grouped under one calibration figure.
+    Since 2026-09-05 the `calibration_judge` route names effort `none`, because
+    the provider refuses a tool-bearing call on `/v1/chat/completions` that
+    sends any other effort or none at all, and `make_client` puts that effort
+    on every call this judge makes. So the identity is real: Luna, at `none`,
+    under `JUDGE_RUBRIC_VERSION`, the same effort the five production judges
+    run at. The prompt version is `ai-spec-5.2` where an eval run stamps
+    `ragas-<version>`, so the deploy path still reads an artifact from this
+    judge as `identity_mismatch`; which Judge the calibration is of remains
+    #58's call.
 
     Returns:
         JudgeIdentity when all three fields are real, None when any is not.
