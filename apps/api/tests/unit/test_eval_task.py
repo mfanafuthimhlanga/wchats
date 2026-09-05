@@ -1419,3 +1419,52 @@ class TestRunEvalSuiteBeat:
         assert " and " in where, (
             f"the two filters must both hold, not either one (#134): {where}"
         )
+
+
+class TestTheEvalRunBound:
+    """`eval_run_bound_s` is read by two modules and written down in neither.
+
+    Its product sets the idempotency window a redelivered message is judged
+    against, and in the deployment checklist it sets how long a silent chain may
+    go before the guard stops trusting the clock. Both callers imported it and
+    no test ever called it, so a wrong product would have been read as right in
+    two places at once.
+    """
+
+    def test_it_is_the_invocation_ceiling_times_the_per_turn_bound(self):
+        """P2 made a run invoke the customer agent once per scenario, so the
+        worst case is every scenario the ceiling admits taking a whole turn."""
+        from app.services.eval_service import AGENT_INVOCATION_MAX_CALLS_PER_RUN
+        from app.worker.tasks.runtime.agent import AGENT_TURN_TIMEOUT_S
+
+        assert (
+            mod.eval_run_bound_s()
+            == AGENT_INVOCATION_MAX_CALLS_PER_RUN * AGENT_TURN_TIMEOUT_S
+        ), (
+            "anything smaller under-reports how long one run can hold the "
+            "runtime queue, and the checklist guard reaps live chains on it"
+        )
+
+    def test_a_longer_turn_budget_moves_the_bound(self):
+        """ONE copy of the number, imported (audit D3). A literal would not move."""
+        before = mod.eval_run_bound_s()
+
+        with patch("app.worker.tasks.runtime.agent.AGENT_TURN_TIMEOUT_S", 180):
+            after = mod.eval_run_bound_s()
+
+        assert after == before * 2, (
+            "doubling agent.py's per-turn bound doubles how long a run can "
+            f"take, and this bound did not follow it: {before} then {after}"
+        )
+
+    def test_a_wider_invocation_ceiling_moves_the_bound(self):
+        """The other term. More scenarios invoked is more wall clock spent."""
+        before = mod.eval_run_bound_s()
+
+        with patch.object(mod, "AGENT_INVOCATION_MAX_CALLS_PER_RUN", 120):
+            after = mod.eval_run_bound_s()
+
+        assert after == before * 2, (
+            "the ceiling on invocations is one of the two factors, and raising "
+            f"it left the bound where it was: {before} then {after}"
+        )

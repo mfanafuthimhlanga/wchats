@@ -22,7 +22,7 @@ Dual-DB split (PATTERNS.md — non-negotiable):
 
 Flow (run_deployment_checklist):
     1. Fetch agent from control DB; decrypt conn_str
-    2. Idempotency guard — skip if a running checklist_run for this agent exists within 60 min
+    2. Idempotency guard — skip while a 'running' checklist_run for this agent is still beating
     3. Insert checklist_runs row (status='running') in control DB via ORM
     3b. THE CHECKLIST SEQUENCES THE JOBS IT GRADES (#54, decision 19 rule 5).
        Dispatch BOTH the eval chain and a red-team run, then wait for each to
@@ -58,10 +58,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import structlog
-from sqlalchemy import select, text
+from sqlalchemy import select, update
 
 from app.core.config import settings
 from app.core.database import get_sync_db
@@ -99,6 +99,7 @@ from app.services.deployment_service import (
     poll_terminal_statuses,
     red_team_summary_did_not_finish,
     render_verdict,
+    running_runs_since,
     verdict_warnings,
 )
 from app.services.eval_service import read_eval_result
@@ -136,8 +137,8 @@ def _dispatch_eval_run(agent_id: str) -> bool:
 
     AND NO LONGER CONDITIONAL AT ALL (#54). Step 4b chose between those states by
     reading a signal collected BEFORE the dispatch, the ordering the sequencer
-    removes. The spend bound is the checklist's own 60-minute idempotency guard,
-    one eval per agent per hour, tighter than the conditional ever was.
+    removes. The spend bound is the checklist's own idempotency guard, one eval
+    per live checklist chain, tighter than the conditional ever was.
 
     `generate_eval_suite` runs first because a tenant whose scenario generation
     has never run has nothing to evaluate against; both tasks carry their own
@@ -215,8 +216,8 @@ def _continue_wait(agent_id: str, wait_state: object) -> dict | None:
 
     An unreadable continuation stops, and stopping must not leave the row
     'running' forever (#125): when the state still names its run, that run is
-    marked failed so the 60-minute guard frees up. A state too broken to name
-    one is logged and dropped, which is the #125 residual.
+    marked failed so the guard stops reading it as a live chain. A state too
+    broken to name one is logged and dropped, which is the #125 residual.
     """
     try:
         return _require_wait_state(wait_state)
@@ -268,14 +269,58 @@ def _hand_off(
     }
 
 
-def _log_wait_outcome(agent_id: str, statuses: dict, waited_s: float) -> None:
-    """Name which half ran out of ceiling, with the wait actually observed.
+def _dispatched(state: dict) -> dict:
+    """Which halves the broker actually accepted when the wait opened."""
+    return {
+        "eval": state["eval_dispatched"],
+        "red_team": state["red_team_dispatched"],
+    }
 
-    The observed number rather than the configured one: a run that ran the
-    ceiling out and a run that expired because the poll returned None instantly
-    are different incidents, and only the measured wait tells them apart.
+
+def _pending(state: dict) -> list:
+    """The halves this wait can still be waiting FOR.
+
+    A HALF THE BROKER REFUSED IS NOT PENDING (#130). `_open_wait` recorded the
+    refusal, so that half is decided the moment the wait opens: no run of this
+    checklist's exists to reach terminal, and every poll until the ceiling asks a
+    question already answered. It reads as an absent measurement and the gate
+    blocks either way; the only thing the ceiling bought was forty-five minutes
+    of it.
+
+    The poll still runs and its answer still counts. `run_eval_suite`'s own guard
+    absorbs a dispatch made while a run is in flight, and the nightly beat starts
+    runs this checklist did not, so a terminal row at or after `since` is this
+    checklist's evidence whatever the broker said about the dispatch.
     """
-    timed_out = sorted(name for name, status in statuses.items() if status is None)
+    dispatched = _dispatched(state)
+    return sorted(
+        name
+        for name, status in state["statuses"].items()
+        if status is None and dispatched[name]
+    )
+
+
+def _log_wait_outcome(agent_id: str, state: dict, waited_s: float) -> None:
+    """Name which half the wait ended without, and which of the two ways.
+
+    A job that ran the ceiling out and a job that never reached a queue are
+    different incidents with the same effect on the report, and a reader sent to
+    the wrong one looks for a slow eval when the broker is down. The observed
+    wait rather than the configured ceiling, for the same reason: a run that
+    expired because the poll returned None instantly did not wait at all.
+    """
+    statuses, dispatched = state["statuses"], _dispatched(state)
+    absent = [name for name, status in statuses.items() if status is None]
+    never_dispatched = sorted(name for name in absent if not dispatched[name])
+    timed_out = sorted(name for name in absent if dispatched[name])
+    if never_dispatched:
+        log.warning(
+            "run_deployment_checklist.wait_closed_undispatched",
+            agent_id=agent_id,
+            never_dispatched=never_dispatched,
+            waited_s=round(waited_s, 1),
+            detail="the broker refused the dispatch, so no run of this check exists",
+        )
     if timed_out:
         log.warning(
             "run_deployment_checklist.wait_ceiling_expired",
@@ -285,14 +330,14 @@ def _log_wait_outcome(agent_id: str, statuses: dict, waited_s: float) -> None:
             ceiling_s=settings.CHECKLIST_WAIT_CEILING_S,
             detail="each named job reads as an absent measurement and blocks",
         )
-        return
-    log.info(
-        "run_deployment_checklist.both_runs_terminal",
-        agent_id=agent_id,
-        waited_s=round(waited_s, 1),
-        eval_status=statuses.get("eval"),
-        red_team_status=statuses.get("red_team"),
-    )
+    if not absent:
+        log.info(
+            "run_deployment_checklist.both_runs_terminal",
+            agent_id=agent_id,
+            waited_s=round(waited_s, 1),
+            eval_status=statuses.get("eval"),
+            red_team_status=statuses.get("red_team"),
+        )
 
 
 #: Every key one continuation of the checklist carries across the broker. They
@@ -366,7 +411,7 @@ def _open_wait(run_id: str, agent_id: str, conn_str: str) -> dict:
     flight for the whole wait rather than one after the other.
 
     NO SECOND IDEMPOTENCY GUARD LIVES HERE, and that is deliberate (#85 family).
-    What absorbs a broker redelivery is the 60-minute 'running' checklist_runs
+    What absorbs a broker redelivery is the beating-'running' checklist_runs
     guard in step 2, which is still holding this run's own row for as long as the
     wait lasts. A guard added here would be a second answer to a question step 2
     has already answered, and the two would drift the way the timeout in BACKLOG
@@ -406,6 +451,498 @@ def _poll_wait(agent_id: str, conn_str: str, state: dict) -> dict:
         },
     )
     return {**state, "statuses": statuses}
+
+
+#: The stretch after the last poll, which beats nothing: five collectors, the two
+#: record reads, the Orchestrator's turn under ORCHESTRATOR_TIMEOUT_S and the
+#: control DB write. Only the turn carries a bound of its own, so this is a budget
+#: rather than a measurement, and it is one of the four terms `_stale_after_s`
+#: sums. The other three are bounds their own modules already state.
+CHECKLIST_DECIDE_GRACE_S = 900
+
+
+def _eval_run_bound_s() -> float:
+    """The wall clock one eval run can spend, from eval.py's own arithmetic.
+
+    Lazy on _dispatch_eval_run's terms: the eval task module pulls in
+    scenario_service and the Neon client, and the `runtime` worker has already
+    imported every task module by the time a checklist pass runs, so this is a
+    dict lookup there rather than a load.
+    """
+    from app.worker.tasks.runtime.eval import eval_run_bound_s  # noqa: PLC0415
+
+    return eval_run_bound_s()
+
+
+def _red_team_run_bound_s() -> float:
+    """The wall clock one red-team run can spend, from red_team.py's own plan."""
+    from app.worker.tasks.runtime.red_team import red_team_run_bound_s  # noqa: PLC0415
+
+    return red_team_run_bound_s()
+
+
+def _stale_after_s() -> float:
+    """How long a 'running' row may go quiet before the clock stops vouching for it.
+
+    ANCHORED ON THE LAST BEAT, NEVER ON created_at (#129). The guard used to read
+    a row created more than sixty minutes ago as gone, and a congested chain
+    outlives that. Past minute sixty a second trigger found no live row and
+    started a second checklist for the same agent, and both persisted.
+
+    THE CEILING IS NOT A GAP BETWEEN BEATS, and sizing this number on it is what
+    the guard was still getting wrong. A pass beats when it RUNS, so the longest
+    silence a live chain can produce is the queue wait in front of its next
+    continuation plus the deciding pass's own CHECKLIST_DECIDE_GRACE_S. The
+    ceiling bounds the WAIT, which is a different quantity, and it was shorter:
+    the guard reaped a chain that was still working, the chain's next write
+    landed on the reaped row, and two checklists ran on one agent again by a
+    different route.
+
+    So the threshold sums what ONE AGENT'S OWN JOBS can make a pass wait for: the
+    eval invocation bound, the red-team bound, the wait ceiling and the decide
+    grace, each read from the module that owns it. Derived rather than
+    configured, for the reason BACKLOG 1.33 records: a second number sized by
+    hand beside the first drifts away from it.
+
+    THAT SUM IS NOT THE WHOLE QUEUE, AND NO CLOCK HERE COULD BE. `runtime` is
+    shared, so a second agent's jobs ahead of this chain's continuation add
+    silence this arithmetic never saw. `_chain_jobs_are_live` is what covers
+    that: past this threshold the guard stops trusting the clock and asks the
+    tenant DB whether either job this chain dispatched is still running.
+
+    THE COST A DEAD WORKER PAYS IS THIS NUMBER. A chain killed mid-flight holds
+    its agent's checklist from its last beat until the threshold expires, and
+    only then does the next trigger get through. Shortening it to shrink that
+    hold is what reaps live chains, so the hold is the price and the job check is
+    what keeps it from ever being paid by a chain still working.
+    """
+    return (
+        _eval_run_bound_s()
+        + _red_team_run_bound_s()
+        + settings.CHECKLIST_WAIT_CEILING_S
+        + CHECKLIST_DECIDE_GRACE_S
+    )
+
+
+def _still_beating(run: ChecklistRun, now: datetime) -> bool:
+    """Whether this row's last beat is recent enough to mean a live chain.
+
+    A row that has never beaten falls back to when it was created, which is what
+    a first pass between its insert and its first poll looks like. Reading that
+    NULL as "abandoned" would reap a run in the middle of opening its own wait.
+
+    A beat is a worker clock on both ends: `_beat` stamps
+    `datetime.now(timezone.utc)` and so does the caller, so the only skew that can
+    matter is between two workers. THE FALLBACK IS NOT. `created_at` carries the
+    table's `now()` server default, so a row that has never beaten is compared
+    across the control database's clock and this worker's, and the threshold
+    absorbs that difference the same way it absorbs a lost pass.
+    """
+    last_beat = run.heartbeat_at or run.created_at
+    return (now - last_beat).total_seconds() < _stale_after_s()
+
+
+def _reap(db, agent_id: str, run: ChecklistRun) -> bool:
+    """Close out a 'running' row no continuation is coming back to.
+
+    The guard is the only thing that ever looks at an abandoned row, so it is the
+    only place that can end one. Left alone it would block this agent's checklist
+    for as long as the row existed, which is the cost of a guard that no longer
+    forgets a run after an hour.
+
+    FENCED, BECAUSE TWO TRIGGERS READ THE SAME STALE ROW. The read, the decision
+    and the write were three steps, so both triggers found the row 'running',
+    both reaped it and both went on to insert. Returning False here says the row
+    was already closed by the trigger that got there first, whose own fresh run
+    holds the partial unique index by now: the caller treats this agent as
+    already having a live checklist rather than starting a second one.
+    """
+    log.warning(
+        "run_deployment_checklist.abandoned_run_reaped",
+        agent_id=agent_id,
+        run_id=str(run.id),
+        created_at=run.created_at.isoformat(),
+        last_beat=run.heartbeat_at.isoformat() if run.heartbeat_at else None,
+        stale_after_s=_stale_after_s(),
+    )
+    return _claimed(db, str(run.id), status="failed")
+
+
+#: How far before a checklist row's own created_at the guard looks for the jobs
+#: that row's chain dispatched. `created_at` carries the CONTROL database's clock
+#: and `eval_runs.started_at` the TENANT's, so the two sides of `started_at >=
+#: since` are read from different servers. A tenant clock a few seconds behind
+#: would put this chain's own eval run before its own boundary, the guard would
+#: see nothing running and reap a chain that is working, which is the failure the
+#: job check exists to remove. A minute of slack costs nothing in the other
+#: direction: the query only ever sees this agent's runs, and it is only ever
+#: asked about a row already stale by the clock.
+GUARD_CLOCK_SKEW_ALLOWANCE_S = 60
+
+
+def _chain_jobs_are_live(agent_id: str, conn_str: str, run: ChecklistRun) -> bool:
+    """Whether a job this row's chain dispatched is still running in the tenant DB.
+
+    THE CLOCK CANNOT SEE QUEUE DEPTH AND THE JOBS CAN. `_stale_after_s` sums one
+    agent's own bounds, but `runtime` is shared: two agents on the solo worker
+    put a second agent's jobs in front of this chain's continuation, and the
+    silence outlasts a threshold that never counted them. The fence and 0021's
+    index bound what that costs to repeated spend rather than two live
+    checklists, but a chain still working is still thrown away. Its own runs are
+    the evidence no clock can supply.
+
+    AN UNREADABLE TENANT DB READS AS LIVE. `running_runs_since` answers None for
+    a database it could not reach and `{}` for one holding nothing of this
+    agent's, and merging the two would reap on exactly the outage that silences a
+    chain in the first place. The withheld reap is logged, because an agent that
+    looks blocked for no reason is the other way this goes wrong.
+    """
+    since = run.created_at - timedelta(seconds=GUARD_CLOCK_SKEW_ALLOWANCE_S)
+    running = running_runs_since(agent_id, conn_str, since)
+    if running is None:
+        log.warning(
+            "run_deployment_checklist.reap_withheld_jobs_unread",
+            agent_id=agent_id,
+            run_id=str(run.id),
+            detail=(
+                "the tenant DB could not say whether this chain's eval or "
+                "red-team run is still going, so the row is left alone; an "
+                "outage is not evidence that a chain is dead"
+            ),
+        )
+        return True
+    if running:
+        log.info(
+            "run_deployment_checklist.reap_withheld_job_running",
+            agent_id=agent_id,
+            run_id=str(run.id),
+            still_running={name: run_id for name, (run_id, _) in running.items()},
+            detail="the chain is queued behind a job it dispatched, not abandoned",
+        )
+        return True
+    return False
+
+
+def _a_run_is_already_live(agent_id: str, conn_str: str) -> bool:
+    """Step 2's idempotency guard, against the CONTROL DB through the ORM.
+
+    KEYED ON THE ROW'S STATE, NOT ON ITS AGE (#129). A 'running' row is a running
+    checklist however old it is, for as long as its chain keeps beating; a row
+    whose beat has gone quiet AND whose two jobs have both finished is abandoned
+    and is closed out here so the next trigger gets through. Widening the old
+    created_at window instead would have moved the same defect further out rather
+    than removed it.
+
+    TWO THINGS HAVE TO AGREE BEFORE ANYTHING IS REAPED. The clock says the chain
+    has been silent longer than its own jobs could explain; the tenant DB says
+    neither of those jobs is still running. The clock alone was wrong whenever
+    another agent's work sat in front of this chain on the shared `runtime`
+    queue, which is why it no longer decides on its own.
+
+    Takes `conn_str` because that second question is a tenant DB question. Step 1
+    has already decrypted it for this pass, so nothing extra is fetched or
+    decrypted here.
+
+    FIRST PASS ONLY. A continuation would find the row this run inserted itself
+    and skip, which would abandon its own wait.
+    """
+    with get_sync_db() as db:
+        existing = db.execute(
+            select(ChecklistRun)
+            .where(
+                ChecklistRun.agent_id == agent_id,
+                ChecklistRun.status == "running",
+            )
+            .order_by(ChecklistRun.created_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if existing is None:
+            return False
+        if _still_beating(existing, datetime.now(timezone.utc)):
+            return True
+        if _chain_jobs_are_live(agent_id, conn_str, existing):
+            return True
+        return not _reap(db, agent_id, existing)
+
+
+def _claimed(db, run_id: str, **values) -> bool:
+    """Write these columns onto this run, and only while the row says 'running'.
+
+    THE CHAIN STOPS OWNING ITS ROW THE MOMENT THE GUARD REAPS IT. Every write the
+    chain makes now reads the status it is writing over in the same statement, so
+    a row another trigger closed out takes nothing further from this chain: zero
+    rows back means the run was reaped. An unconditional UPDATE by primary key
+    stamped a beat onto the reaped row and then flipped it to 'complete', which
+    is the two-checklists-on-one-agent outcome the guard exists to prevent,
+    reached from the other side.
+
+    The fence is the WHERE clause rather than a status read before the write,
+    because between that read and that write is exactly where the guard runs.
+    """
+    claimed = db.execute(
+        update(ChecklistRun)
+        .where(ChecklistRun.id == run_id, ChecklistRun.status == "running")
+        .values(**values)
+        .returning(ChecklistRun.id)
+    ).first()
+    db.commit()
+    return claimed is not None
+
+
+def _log_reaped(agent_id: str, run_id: str, write: str) -> None:
+    """The one thing a chain says when it finds its own row already closed."""
+    log.warning(
+        "run_deployment_checklist.run_reaped_while_live",
+        agent_id=agent_id,
+        run_id=run_id,
+        write=write,
+        detail=(
+            "the guard read this chain as abandoned and closed its row out; the "
+            "chain stops here rather than writing over the run that replaced it"
+        ),
+    )
+
+
+def _beat(agent_id: str, run_id: str) -> bool:
+    """Say on the row that this pass ran, so the guard can read the chain as live.
+
+    Once per pass, from the worker clock the guard compares against. Returns
+    False only when the row is no longer this chain's to write.
+
+    A beat that FAILS is not that, and returns True. It costs freshness and
+    nothing else: the row keeps its previous beat and `_stale_after_s` absorbs a
+    lost pass, so a control DB blip never turns into a checklist reaped out from
+    under itself. A beat that reaches the row and finds it closed is the opposite
+    kind of news, and the chain ends on it.
+    """
+    try:
+        with get_sync_db() as db:
+            still_ours = _claimed(
+                db, run_id, heartbeat_at=datetime.now(timezone.utc)
+            )
+    except Exception as exc:
+        log.warning(
+            "run_deployment_checklist.heartbeat_failed",
+            agent_id=agent_id,
+            run_id=run_id,
+            error=str(exc) or repr(exc),
+        )
+        return True
+    if not still_ours:
+        _log_reaped(agent_id, run_id, "heartbeat")
+    return still_ours
+
+
+#: What the first pass hands back when this agent already has a live checklist.
+#: Identity is what the task tests, so `_opened_or_skipped` returns this object
+#: itself and the task returns a copy of it: the result reaches Celery's backend,
+#: and a sentinel a caller can mutate is one that stops being a sentinel.
+ALREADY_RUNNING: dict = {"status": "already_running"}
+
+
+def _insert_run(agent_id: str) -> str | None:
+    """Step 3. This run's own row, in the CONTROL DB only (T-08-03-04).
+
+    None means another trigger's row got there first. The guard and this insert
+    are two transactions, and between them is the window two triggers reading one
+    stale row used to both come through. 0021's partial unique index on
+    (agent_id) WHERE status = 'running' closes it, and the loser reads the
+    refusal as what it is: this agent already has a live checklist, which is the
+    answer the guard would have given a moment later.
+    """
+    from sqlalchemy.exc import IntegrityError  # noqa: PLC0415
+
+    try:
+        with get_sync_db() as db:
+            run = ChecklistRun(agent_id=agent_id, status="running")
+            db.add(run)
+            db.commit()
+            db.refresh(run)
+            run_id = str(run.id)
+    except IntegrityError:
+        log.info(
+            "run_deployment_checklist.insert_lost_the_race",
+            agent_id=agent_id,
+            detail=(
+                "another trigger inserted this agent's live row between the "
+                "guard and this insert; the index refused the second"
+            ),
+        )
+        return None
+    log.info("run_deployment_checklist.started", agent_id=agent_id, run_id=run_id)
+    return run_id
+
+
+def _opened_or_skipped(agent_id: str, conn_str: str) -> dict | None:
+    """Steps 2, 3 and 3b of a first pass, or the skip the guard decided.
+
+    Hands back the opened wait, ALREADY_RUNNING when this agent holds a live
+    checklist, or None when the open fell over having already marked its own row.
+    """
+    if _a_run_is_already_live(agent_id, conn_str):
+        log.info("run_deployment_checklist.idempotency_skip", agent_id=agent_id)
+        return ALREADY_RUNNING
+    run_id = _insert_run(agent_id)
+    if run_id is None:
+        return ALREADY_RUNNING
+    return _open_first_wait(agent_id, run_id, conn_str)
+
+
+def _orphaned_runs(
+    agent_id: str, conn_str: str, since: datetime
+) -> dict[str, tuple[str, datetime]]:
+    """This agent's runs still going that started BEFORE this wait's boundary.
+
+    A CHAIN THE GUARD REAPED LEAVES ITS JOBS BEHIND. Reaped while its dispatched
+    eval job was still sitting in the `runtime` queue, it leaves that job to
+    start afterwards, so the row lands before the replacement checklist's own
+    dispatch moment and no since-reader of this wait's will ever see it.
+
+    STILL GOING, AND STARTED BEFORE `since`. Still going is what keeps last
+    night's terminal run out (#128), which is the whole reason a boundary exists;
+    started before `since` is what tells an orphan from the runs this wait's own
+    dispatch has just caused.
+
+    THE WINDOW IS `_stale_after_s` AND THAT IS NOT AN ARBITRARY NUMBER. A run
+    going for longer than the guard's whole threshold has outlived both job
+    bounds and will not reach terminal inside this wait's ceiling either, so
+    adopting it would buy the same did_not_finish more slowly.
+    """
+    running = running_runs_since(
+        agent_id, conn_str, since - timedelta(seconds=_stale_after_s())
+    )
+    return {
+        name: (job_id, started_at)
+        for name, (job_id, started_at) in (running or {}).items()
+        if started_at < since
+    }
+
+
+def _adopted_since(agent_id: str, conn_str: str, state: dict) -> dict:
+    """This wait's state, with its boundary moved back over any orphan found.
+
+    WITHOUT THIS THE REPLACEMENT GRADES NOTHING. `run_eval_suite`'s idempotency
+    guard answers `already_running` while the orphan runs, so the run this
+    checklist asked for never starts, and the boundary drawn after the orphan
+    admits neither. The replacement burns the whole ceiling and reports
+    did_not_finish about a run that was going to finish, on an agent already
+    graded once for nothing. The orphan's own `started_at` is the earliest
+    boundary that admits it and admits no row older than it.
+
+    ONE BOUNDARY SERVES BOTH HALVES, so adopting an eval orphan also widens the
+    red-team half by the orphan's age. `_pending` already records the trade that
+    makes that acceptable: the beat starts runs this checklist did not, and a
+    terminal row at or after `since` is this checklist's evidence whichever
+    dispatched it.
+
+    Best-effort. A failure costs the adoption and nothing else: the wait keeps
+    the dispatch moment it opened on, which is where it was before.
+    """
+    try:
+        since = datetime.fromisoformat(state["since"])
+        orphans = _orphaned_runs(agent_id, conn_str, since)
+    except Exception as exc:
+        log.warning(
+            "run_deployment_checklist.adoption_unread",
+            agent_id=agent_id,
+            run_id=state["run_id"],
+            error_type=type(exc).__name__,
+            error=str(exc) or repr(exc),
+        )
+        return state
+    if not orphans:
+        return state
+    adopted = min(started_at for _, started_at in orphans.values())
+    log.info(
+        "run_deployment_checklist.adopted_orphaned_run",
+        agent_id=agent_id,
+        run_id=state["run_id"],
+        adopted={name: job_id for name, (job_id, _) in orphans.items()},
+        since=state["since"],
+        adopted_since=adopted.isoformat(),
+        detail=(
+            "a chain the guard reaped left this run in flight; its own guard "
+            "refuses this checklist a second one, so this wait grades that run "
+            "rather than expiring on a boundary drawn after it"
+        ),
+    )
+    return {**state, "since": adopted.isoformat()}
+
+
+def _open_first_wait(agent_id: str, run_id: str, conn_str: str) -> dict | None:
+    """Step 3b's opened wait, or None with the run marked failed.
+
+    THE CHECKLIST SEQUENCES THE JOBS IT GRADES (#54, decision 19 rule 5). Both
+    are dispatched inside `_open_wait`, unconditionally. Step 4 used to run
+    first, which is why the first checklist ever executed reported
+    eval_signal=no_runs about the eval it had started seconds earlier.
+
+    THE STRETCH FROM THE INSERT TO HERE SAT OUTSIDE EVERY TRY (#125). The row
+    exists from the insert onwards, so anything raising across it left the row
+    'running' with no terminal update, and the step-2 guard then refused every
+    re-run behind it for the rest of the window. The fence is `_continue_wait`'s:
+    the run is marked failed and the error type reaches the log.
+
+    The adoption runs AFTER the dispatch and outside that fence. After, because
+    a run started before this wait's own dispatch moment is the only thing it
+    adopts; outside, because failing to widen a boundary is not a reason to fail
+    a checklist that would otherwise report.
+    """
+    try:
+        state = _open_wait(run_id, agent_id, conn_str)
+    except Exception as exc:
+        log.error(
+            "run_deployment_checklist.wait_unopened",
+            agent_id=agent_id,
+            run_id=run_id,
+            error_type=type(exc).__name__,
+            error=str(exc) or repr(exc),
+        )
+        _persist_failed(agent_id, run_id, exc)
+        return None
+    return _adopted_since(agent_id, conn_str, state)
+
+
+def _polled(agent_id: str, conn_str: str, state: dict | None) -> dict | None:
+    """One fenced look at both runs, or None when this pass has no wait left.
+
+    A None `state` comes from an open or a continuation that already fell over
+    and already marked its row, so one place in the task stops a dead pass rather
+    than three.
+
+    A poll that raises is the same failure one message later (#125). The tenant
+    DB read sits inside `_latest_run_since`'s own except, but the fold around it
+    does not, and an exception here used to leave the row 'running'.
+
+    A look that succeeded is also this pass's heartbeat (#129): the guard reads
+    that beat to tell a chain still working from one nothing will ever finish,
+    and reaching the tenant DB is the strongest thing a pass can say about
+    itself.
+
+    AND THE BEAT IS WHERE THE CHAIN LEARNS IT WAS REAPED. The write is fenced on
+    the row still saying 'running', so a beat that lands nowhere means the guard
+    already closed this run out and something else is running for this agent.
+    None stops the pass there: nothing is re-queued, nothing is collected and
+    nothing is completed. The one look already taken is spent, which is a tenant
+    DB read rather than a wrong report.
+    """
+    if state is None:
+        return None
+    try:
+        polled = _poll_wait(agent_id, conn_str, state)
+    except Exception as exc:
+        log.error(
+            "run_deployment_checklist.poll_failed",
+            agent_id=agent_id,
+            run_id=state["run_id"],
+            error_type=type(exc).__name__,
+            error=str(exc) or repr(exc),
+        )
+        _persist_failed(agent_id, state["run_id"], exc)
+        return None
+    if not _beat(agent_id, state["run_id"]):
+        return None
+    return polled
 
 
 def _waited_s(state: dict) -> float:
@@ -488,6 +1025,12 @@ def _collected(agent_id: str, event: str, fetch, fallback):
 # onboarding flow never routes to. It softens nothing: the gate still blocks on a
 # signal that is not 'measured', because a measurement that was STARTED is not a
 # measurement.
+#
+# `red_team_dispatched` rides on the security signal for the other half of that
+# sentence. Both did_not_finish warnings told the owner the check "was still
+# running when this readiness check gave up waiting", which describes a job the
+# broker refused as one that is working, so the instruction to wait a little
+# while pointed at nothing.
 
 
 def _collect_signals(
@@ -500,7 +1043,9 @@ def _collect_signals(
     breaks the tenant-DB-only convention the others follow.
     """
     if state["statuses"]["eval"] is None:
-        eval_summary = eval_summary_did_not_finish(waited_s)
+        eval_summary = eval_summary_did_not_finish(
+            waited_s, dispatched=state["eval_dispatched"]
+        )
     else:
         eval_summary = _collected(
             agent_id,
@@ -511,7 +1056,9 @@ def _collect_signals(
     eval_summary["eval_dispatched"] = state["eval_dispatched"]
 
     if state["statuses"]["red_team"] is None:
-        red_team_summary = red_team_summary_did_not_finish(waited_s)
+        red_team_summary = red_team_summary_did_not_finish(
+            waited_s, dispatched=state["red_team_dispatched"]
+        )
     else:
         red_team_summary = _collected(
             agent_id,
@@ -519,6 +1066,7 @@ def _collect_signals(
             lambda: _fetch_red_team_summary_sync(agent_id, conn_str),
             lambda: dict(RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL),
         )
+    red_team_summary["red_team_dispatched"] = state["red_team_dispatched"]
 
     return {
         "eval_summary": eval_summary,
@@ -756,7 +1304,12 @@ def _narration(agent_id: str, run_id: str, result_container: dict) -> tuple[str,
 
 
 def _persist_failed(agent_id: str, run_id: str, exc: Exception) -> None:
-    """Mark the run failed, and never let that write hide the original failure."""
+    """Mark the run failed, and never let that write hide the original failure.
+
+    Fenced like every other write this chain makes: a row the guard already
+    reaped is not this chain's to close, and the reap wrote 'failed' onto it
+    anyway.
+    """
     log.error(
         "run_deployment_checklist.failed",
         agent_id=agent_id,
@@ -766,10 +1319,7 @@ def _persist_failed(agent_id: str, run_id: str, exc: Exception) -> None:
     )
     try:
         with get_sync_db() as db:
-            run_obj = db.get(ChecklistRun, run_id)
-            if run_obj:
-                run_obj.status = "failed"
-                db.commit()
+            still_ours = _claimed(db, run_id, status="failed")
     except Exception as update_exc:
         log.warning(
             "run_deployment_checklist.update_failed_status_error",
@@ -777,12 +1327,20 @@ def _persist_failed(agent_id: str, run_id: str, exc: Exception) -> None:
             run_id=run_id,
             error=str(update_exc),
         )
+        return
+    if not still_ours:
+        _log_reaped(agent_id, run_id, "failed")
 
 
 def _persist_complete(
     run_id: str, report, signals: dict, verdict: Verdict, envelope_hash, warnings: list
-) -> None:
+) -> bool:
     """One transaction: status, recommendation, report, warnings and the hash.
+
+    Returns False when the row was reaped while this chain was working, in which
+    case nothing is written: a run the guard closed out has already been replaced
+    by the checklist that started in its place, and completing it would put two
+    reports on one agent.
 
     BLR-02: the hash lands with the rest. Acknowledgement (the sibling timestamp
     column) is never stamped here, because that is the owner's act at approve
@@ -793,21 +1351,35 @@ def _persist_complete(
     see every rule that produced it rather than the one word it came to.
     """
     with get_sync_db() as db:
-        run_obj = db.get(ChecklistRun, run_id)
-        if run_obj is None:
-            return
-        run_obj.status = "complete"
-        run_obj.recommendation = report.recommendation
-        run_obj.report = {
-            **signals,
-            "verdict": verdict.payload,
-            "summary": report.summary,
-            "recommendation": report.recommendation,
-        }
-        run_obj.warnings = [warning.model_dump() for warning in warnings]
-        run_obj.envelope_hash = envelope_hash
-        db.commit()
-        db.refresh(run_obj)
+        return _claimed(
+            db,
+            run_id,
+            status="complete",
+            recommendation=report.recommendation,
+            report={
+                **signals,
+                "verdict": verdict.payload,
+                "summary": report.summary,
+                "recommendation": report.recommendation,
+            },
+            warnings=[warning.model_dump() for warning in warnings],
+            envelope_hash=envelope_hash,
+        )
+
+
+def _failed_and_handed_back(task, agent_id: str, run_id: str, exc: Exception) -> dict:
+    """Close the run out and hand the message back to the broker if it can be.
+
+    The two places the task's own failures land say exactly this, so they say it
+    once. `Task.retry` RAISES `celery.exceptions.Retry` itself, so the `raise` in
+    front of it never runs; it is written that way because `retry(throw=False)`
+    would return the exception instead, and because a reader has to see at the
+    call site that this branch does not come back.
+    """
+    _persist_failed(agent_id, run_id, exc)
+    if task.request.retries < task.max_retries:
+        raise task.retry(exc=exc, countdown=2 ** task.request.retries)
+    return {}
 
 
 @celery_app.task(
@@ -834,9 +1406,9 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
 
     Sequence:
         1. Fetch agent from control DB; decrypt conn_str at runtime. Every pass.
-        2. Idempotency guard — skip if a 'running' checklist_run for this agent
-           was created within the last 60 minutes. FIRST PASS ONLY: on a
-           continuation the row it would find is this run's own.
+        2. Idempotency guard — skip while a 'running' checklist_run for this
+           agent is still beating. FIRST PASS ONLY: on a continuation the row it
+           would find is this run's own.
         3. Insert checklist_runs row (status='running') in control DB via ORM.
            First pass only, for the same reason.
         3b. First pass: dispatch the eval chain and the red-team run and open the
@@ -869,6 +1441,10 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
         {"status": "complete", "run_id": str, "recommendation": str}  on success.
         {"status": "waiting", "run_id": str, "pending": [str], ...}   while a job runs.
         {"status": "already_running"}                                  on idempotent skip.
+        {"status": "reaped", "run_id": str}   when the guard closed this run out
+            while it was working and a later checklist holds the agent. Every
+            write the chain makes is fenced on the row still saying 'running', so
+            this pass writes nothing rather than reopening a closed run.
         {}                                                             on retry exhaustion.
     """
     # ------------------------------------------------------------------
@@ -887,67 +1463,30 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
         conn_str = fernet_decrypt(agent.neon_connection_string)
         tenant_id = str(agent.tenant_id)
 
+    # Steps 2, 3 and 3b, on the first pass only: guard, insert, dispatch both
+    # jobs and open the wait. A continuation's state comes off the message
+    # instead, and either path can hand back None having already marked its own
+    # row failed (#125).
     if wait_state is None:
-        # ------------------------------------------------------------------
-        # Step 2 — Idempotency guard: check checklist_runs for a recent running row
-        # Uses control DB (ORM) — NOT psycopg2 against tenant DB.
-        # 60-minute window because this checklist waits on two jobs and then
-        # makes a model call. Independent of red_team.py's window, which is sized
-        # to ITS bound.
-        #
-        # FIRST PASS ONLY. A continuation would find the row this run inserted
-        # itself and skip, which would abandon its own wait.
-        # ------------------------------------------------------------------
-        with get_sync_db() as db:
-            existing = db.execute(
-                select(ChecklistRun).where(
-                    ChecklistRun.agent_id == agent_id,
-                    ChecklistRun.status == "running",
-                    ChecklistRun.created_at > text("now() - interval '60 minutes'"),
-                )
-            ).scalar_one_or_none()
-            if existing:
-                log.info(
-                    "run_deployment_checklist.idempotency_skip", agent_id=agent_id
-                )
-                return {"status": "already_running"}
-
-        # ------------------------------------------------------------------
-        # Step 3 — Insert checklist_runs row in control DB via ORM
-        # (NOT in tenant DB — checklist_runs is control DB only, T-08-03-04)
-        # ------------------------------------------------------------------
-        with get_sync_db() as db:
-            run = ChecklistRun(agent_id=agent_id, status="running")
-            db.add(run)
-            db.commit()
-            db.refresh(run)
-            run_id = str(run.id)
-
-        log.info("run_deployment_checklist.started", agent_id=agent_id, run_id=run_id)
-
-        # ------------------------------------------------------------------
-        # Step 3b. THE CHECKLIST SEQUENCES THE JOBS IT GRADES (#54, decision 19
-        # rule 5). Both are dispatched here, unconditionally. Step 4 used to run
-        # first, which is why the first checklist ever executed reported
-        # eval_signal=no_runs about the eval it had started seconds earlier.
-        # ------------------------------------------------------------------
-        state = _open_wait(run_id, agent_id, conn_str)
+        state = _opened_or_skipped(agent_id, conn_str)
+        if state is ALREADY_RUNNING:
+            return dict(ALREADY_RUNNING)
     else:
-        continued = _continue_wait(agent_id, wait_state)
-        if continued is None:
-            return {}
-        state, run_id = continued, continued["run_id"]
+        state = _continue_wait(agent_id, wait_state)
 
     # One look, then either hand the wait to the next message or go on. A job
     # that never reaches terminal inside the ceiling reads as an ABSENT record,
     # so the gate blocks on it; the pre-dispatch summary is never read.
-    state = _poll_wait(agent_id, conn_str, state)
+    state = _polled(agent_id, conn_str, state)
+    if state is None:
+        return {}
+    run_id = state["run_id"]
     waited_s = _waited_s(state)
-    pending = sorted(name for name, status in state["statuses"].items() if status is None)
+    pending = _pending(state)
     if _wait_continues(pending, waited_s):
         return _hand_off(agent_id, run_id, state, pending, waited_s)
 
-    _log_wait_outcome(agent_id, state["statuses"], waited_s)
+    _log_wait_outcome(agent_id, state, waited_s)
 
     # ------------------------------------------------------------------
     # Step 4 — Collect the five signals and the BLR-02 envelope hash. Always
@@ -970,10 +1509,7 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
     try:
         verdict = _compute_verdict(agent_id, conn_str, state)
     except Exception as exc:
-        _persist_failed(agent_id, run_id, exc)
-        if self.request.retries < self.max_retries:
-            raise self.retry(exc=exc, countdown=2 ** self.request.retries)
-        return {}
+        return _failed_and_handed_back(self, agent_id, run_id, exc)
 
     # ------------------------------------------------------------------
     # Step 5 - the narration turn, under ORCHESTRATOR_TIMEOUT_S. The shim awaits
@@ -1048,9 +1584,10 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
             + derive_blast_radius_warnings(signals["blast_radius"])
             + derive_quality_warnings(signals["verified_qa_stats"], red_team_summary),
         )
-        _persist_complete(
+        if not _persist_complete(
             run_id, report, signals, verdict, envelope_hash, merged_warnings
-        )
+        ):
+            return {"status": "reaped", "run_id": run_id}
 
         log.info(
             "run_deployment_checklist.complete",
@@ -1075,10 +1612,7 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
         # read. What reaches this block is a record read that raised, a decide()
         # refusal, or a control-DB write that failed, and none reached a decision.
         # ------------------------------------------------------------------
-        _persist_failed(agent_id, run_id, exc)
-        if self.request.retries < self.max_retries:
-            raise self.retry(exc=exc, countdown=2 ** self.request.retries)
-        return {}
+        return _failed_and_handed_back(self, agent_id, run_id, exc)
 
 
 def _orchestrator_ledger(

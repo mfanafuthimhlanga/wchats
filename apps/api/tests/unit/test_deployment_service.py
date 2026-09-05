@@ -1774,6 +1774,26 @@ class TestEvidenceGate:
         assert recommendation == "block"
         assert any(w.warning_id == "red_team_signal_unavailable" for w in warnings)
 
+    def test_a_summary_with_no_signal_at_all_reads_as_unreadable(self):
+        """The absent key, not the unavailable value.
+
+        `_red_team_evidence_warnings` reads the signal off the summary dict, so
+        a summary that carries no `signal` key hands the warning table None. It
+        must land on the unreadable warning and block, exactly as a signal the
+        table does not know does. Nothing pinned this branch, and it is the one
+        a type narrowing could quietly change.
+        """
+        summary = _measured_red_team()
+        del summary["signal"]
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", _measured_eval(), summary
+        )
+        assert recommendation == "block"
+        assert any(w.warning_id == "red_team_signal_unavailable" for w in warnings), (
+            f"a summary with no signal did not read as unreadable: "
+            f"{[w.warning_id for w in warnings]}"
+        )
+
     def test_a_run_that_recorded_incomplete_coverage_refuses_to_ship(self):
         """P4 review. This used to warn and ship, and the warning could not fire.
 
@@ -3153,6 +3173,50 @@ class TestTheCeilingExpirySubstitutes:
         for warning in warnings:
             assert "again" in warning.message.lower()
 
+    def test_a_refused_dispatch_is_not_described_as_a_check_still_running(self):
+        """#130's other half. The detail branched here and the warning did not.
+
+        The owner reads the warning, never `signal_detail`. Telling them a check
+        the broker refused "keeps running on its own" sends them away to wait for
+        a job nothing is working on.
+        """
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship",
+            {
+                **eval_summary_did_not_finish(0.0, dispatched=False),
+                "eval_dispatched": False,
+            },
+            {
+                **red_team_summary_did_not_finish(0.0, dispatched=False),
+                "red_team_dispatched": False,
+            },
+        )
+
+        assert recommendation == "block"
+        by_id = {w.warning_id: w.message for w in warnings}
+        assert sorted(by_id) == ["eval_did_not_finish", "red_team_did_not_finish"]
+        for warning_id, message in by_id.items():
+            assert "still running" not in message, (
+                f"{warning_id} describes a job that was never started as one "
+                f"that is working: {message!r}"
+            )
+            assert "never started" in message, (
+                f"{warning_id} has to name what actually happened: {message!r}"
+            )
+
+    def test_a_started_run_still_reads_as_one_to_come_back_to(self):
+        """The branch is scoped to a refusal, and the ordinary case is a slow run."""
+        _, warnings = apply_signal_evidence_gate(
+            "ship",
+            {**eval_summary_did_not_finish(2700.0), "eval_dispatched": True},
+            {**red_team_summary_did_not_finish(2700.0), "red_team_dispatched": True},
+        )
+
+        for warning in warnings:
+            assert "still running" in warning.message, (
+                f"{warning.warning_id}: {warning.message!r}"
+            )
+
 
 class TestPollTerminalStatuses:
     """One look, driven directly. The loop it replaces held the worker slot."""
@@ -3277,7 +3341,7 @@ class TestAVerdictReachesTheOwnerAsWarnings:
             _VERDICT_WARNING_CATEGORIES.values()
         )
         assert len(_VERDICT_WARNING_CATEGORIES) == 12, (
-            "RULE_VERSION 2 has twelve slugs across eleven rule functions"
+            "DECISION_RULE_VERSION 2 has twelve slugs across eleven rule functions"
         )
         assert slugs, "the rule table stopped being discoverable by name"
 
@@ -3959,3 +4023,311 @@ class TestVerifiedQaStatsAgainstTheProbeCluster:
         assert isinstance(stats["avg_faithfulness"], float)
         assert stats["avg_faithfulness"] == pytest.approx(0.75)
         assert stats["avg_relevance"] == pytest.approx(0.5)
+
+
+# ---------------------------------------------------------------------------
+# TestTheSinceReadersAgainstTheProbeCluster - two rows, ordered by PostgreSQL
+# ---------------------------------------------------------------------------
+
+
+class TestTheSinceReadersAgainstTheProbeCluster:
+    """#128: a newer in-flight run masked the awaited run's completion.
+
+    `ORDER BY started_at DESC LIMIT 1` with no status predicate answers "the
+    newest run since the mark", and the wait is asking "has the run I started
+    finished". The checklist's own run completes, the nightly beat starts a
+    second one before the next poll, and every poll from then on reads the newer
+    'running' row: the wait burns the whole ceiling for a run that finished in
+    minutes, and the id the collector re-queries belongs to a run still going, so
+    read_eval_result hands back None and the report blocks while logging nothing
+    that names the reason.
+
+    A MOCK CANNOT SEE THIS. Every other test of these readers scripts `fetchone`,
+    so the predicate is never evaluated and two rows are never ordered against
+    each other. These execute the statement.
+
+    The rows are written under a kind unique to each test, so nothing existing is
+    deleted, and the transaction is rolled back either way.
+    """
+
+    @pytest.fixture
+    def probe_conn(self):
+        try:
+            conn = psycopg2.connect(PROBE_DB_URL, connect_timeout=5)
+        except psycopg2.OperationalError as exc:
+            pytest.skip(f"no local tenant probe cluster at {PROBE_DB_URL}: {exc}")
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('eval_runs'), to_regclass('red_team_runs')")
+                if None in cur.fetchone():
+                    pytest.skip(
+                        "the probe database has no eval_runs/red_team_runs table: "
+                        "run run_tenant_migrations against it first"
+                    )
+            yield conn
+        finally:
+            conn.rollback()
+            conn.close()
+
+    def _since(self):
+        from datetime import timezone
+
+        return datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+
+    def _at(self, seconds):
+        from datetime import timedelta
+
+        return self._since() + timedelta(seconds=seconds)
+
+    def _eval_run(self, conn, kind, status, seconds):
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO eval_runs (kind, started_at, status) "
+                "VALUES (%s, %s, %s) RETURNING id::text",
+                (kind, self._at(seconds), status),
+            )
+            return cur.fetchone()[0]
+
+    def _red_team_run(self, conn, kind, status, seconds):
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO red_team_runs (kind, started_at, status) "
+                "VALUES (%s, %s, %s) RETURNING id::text",
+                (kind, self._at(seconds), status),
+            )
+            return cur.fetchone()[0]
+
+    def _read(self, conn, reader, agent_id):
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=_LendConnection(conn),
+        ):
+            return reader(agent_id, PROBE_DB_URL, self._since())
+
+    def test_a_newer_running_eval_does_not_mask_the_completed_one(self, probe_conn):
+        from app.services.deployment_service import latest_eval_run_status_since
+
+        agent_id = str(uuid.uuid4())
+        finished = self._eval_run(probe_conn, f"m6:{agent_id}", "complete", 10)
+        self._eval_run(probe_conn, f"m6:{agent_id}", "running", 20)
+
+        status = self._read(probe_conn, latest_eval_run_status_since, agent_id)
+
+        assert status == "complete", (
+            "the run this checklist started finished; a second run somebody else "
+            f"began after it is not an answer to that question: {status!r}"
+        )
+        assert finished, "the fixture wrote no completed run to find"
+
+    def test_the_eval_id_is_the_completed_run_the_status_came_from(self, probe_conn):
+        """The record read at collect time has to belong to the run observed."""
+        from app.services.deployment_service import latest_eval_run_id_since
+
+        agent_id = str(uuid.uuid4())
+        finished = self._eval_run(probe_conn, f"m6:{agent_id}", "complete", 10)
+        self._eval_run(probe_conn, f"m6:{agent_id}", "running", 20)
+
+        run_id = self._read(probe_conn, latest_eval_run_id_since, agent_id)
+
+        assert run_id == finished, (
+            "read_eval_result against a run that is still going returns None and "
+            f"the report blocks on a run that had finished: {run_id!r}"
+        )
+
+    def test_a_newer_running_red_team_run_does_not_mask_the_completed_one(
+        self, probe_conn
+    ):
+        from app.services.deployment_service import latest_red_team_run_status_since
+
+        agent_id = str(uuid.uuid4())
+        self._red_team_run(probe_conn, f"m7:{agent_id}", "complete", 10)
+        self._red_team_run(probe_conn, f"m7:{agent_id}", "running", 20)
+
+        status = self._read(probe_conn, latest_red_team_run_status_since, agent_id)
+
+        assert status == "complete"
+
+    def test_the_red_team_id_is_the_completed_run_too(self, probe_conn):
+        from app.services.deployment_service import latest_red_team_run_id_since
+
+        agent_id = str(uuid.uuid4())
+        finished = self._red_team_run(probe_conn, f"m7:{agent_id}", "complete", 10)
+        self._red_team_run(probe_conn, f"m7:{agent_id}", "running", 20)
+
+        assert self._read(probe_conn, latest_red_team_run_id_since, agent_id) == finished
+
+    def test_a_run_that_is_only_running_reads_as_no_run_at_all(self, probe_conn):
+        """The wait's question is "has it finished", so 'running' is not an answer.
+
+        `poll_terminal_statuses` discarded a 'running' status anyway, so this
+        changes no verdict. It changes what the reader CLAIMS, and the id reader
+        beside it acted on that claim.
+        """
+        from app.services.deployment_service import (
+            latest_eval_run_id_since,
+            latest_eval_run_status_since,
+        )
+
+        agent_id = str(uuid.uuid4())
+        self._eval_run(probe_conn, f"m6:{agent_id}", "running", 10)
+
+        assert self._read(probe_conn, latest_eval_run_status_since, agent_id) is None
+        assert self._read(probe_conn, latest_eval_run_id_since, agent_id) is None
+
+    def test_a_failed_run_is_still_a_finished_one(self, probe_conn):
+        """'failed' is terminal. The wait stops on it and the gate blocks on it."""
+        from app.services.deployment_service import latest_eval_run_status_since
+
+        agent_id = str(uuid.uuid4())
+        self._eval_run(probe_conn, f"m6:{agent_id}", "failed", 10)
+
+        assert self._read(probe_conn, latest_eval_run_status_since, agent_id) == "failed"
+
+    def test_a_finished_run_before_the_mark_is_still_excluded(self, probe_conn):
+        """The status predicate is added BESIDE the boundary, never instead of it."""
+        from app.services.deployment_service import latest_eval_run_status_since
+
+        agent_id = str(uuid.uuid4())
+        self._eval_run(probe_conn, f"m6:{agent_id}", "complete", -600)
+
+        assert self._read(probe_conn, latest_eval_run_status_since, agent_id) is None, (
+            "last night's terminal run satisfying the wait is the staleness the "
+            "whole boundary exists to remove"
+        )
+
+    def test_another_agents_completed_run_is_not_read_as_this_ones(self, probe_conn):
+        from app.services.deployment_service import latest_eval_run_status_since
+
+        self._eval_run(probe_conn, f"m6:{uuid.uuid4()}", "complete", 10)
+
+        assert (
+            self._read(probe_conn, latest_eval_run_status_since, str(uuid.uuid4()))
+            is None
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestTheRedTeamCollectorAgainstTheProbeCluster - two agents, one tenant DB
+# ---------------------------------------------------------------------------
+
+
+class TestTheRedTeamCollectorAgainstTheProbeCluster:
+    """#127: the security half's latest-run read was not agent-scoped.
+
+    `_LATEST_RUN_SQL` on the eval half filters `kind = 'm6:{agent_id}'` precisely
+    so a second agent sharing a tenant DB is not read as this one.
+    `_RED_TEAM_LATEST_SQL` filtered `status <> 'running'` alone. Two agents A and
+    B on one tenant DB: A's own wait sees its run fail, because the since-readers
+    ARE kind-scoped, and then the collector's latest read returns B's completed
+    run and A's report carries B's coverage as measured. decide() reads the right
+    record, so the verdict is safe; the gate's coverage checks and the owner's
+    summary are not.
+
+    A MOCK CANNOT SEE THIS. A scripted `fetchone` hands back whichever row the
+    test chose and the predicate is never evaluated, so the query cannot be shown
+    to pick the wrong agent's run. These execute the statement against two agents'
+    rows in one database.
+
+    Every row is written under a kind unique to the test, so nothing existing is
+    deleted, and the transaction is rolled back.
+    """
+
+    @pytest.fixture
+    def probe_conn(self):
+        try:
+            conn = psycopg2.connect(PROBE_DB_URL, connect_timeout=5)
+        except psycopg2.OperationalError as exc:
+            pytest.skip(f"no local tenant probe cluster at {PROBE_DB_URL}: {exc}")
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT to_regclass('red_team_runs'), to_regclass('red_team_findings')"
+                )
+                if None in cur.fetchone():
+                    pytest.skip(
+                        "the probe database has no red_team tables: run "
+                        "run_tenant_migrations against it first"
+                    )
+                # The open-finding counts are read across the whole table and
+                # this DELETE is inside the transaction the teardown rolls back,
+                # so rows that were here before the test are here after it.
+                cur.execute("DELETE FROM red_team_findings")
+            yield conn
+        finally:
+            conn.rollback()
+            conn.close()
+
+    def _run(self, conn, agent_id, status, seconds):
+        """One red_team_runs row for this agent, at a fixed distance from a mark."""
+        from datetime import timedelta, timezone
+
+        started = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc) + timedelta(
+            seconds=seconds
+        )
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO red_team_runs (kind, started_at, status) "
+                "VALUES (%s, %s, %s) RETURNING id::text",
+                (f"m7:{agent_id}", started, status),
+            )
+            return cur.fetchone()[0]
+
+    def _summary(self, conn, agent_id):
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=_LendConnection(conn),
+        ):
+            return _fetch_red_team_summary_sync(agent_id, PROBE_DB_URL)
+
+    def test_another_agents_completed_run_is_not_this_agents_security_summary(
+        self, probe_conn
+    ):
+        """A has never been probed. B, on the same tenant DB, has."""
+        agent_a, agent_b = str(uuid.uuid4()), str(uuid.uuid4())
+        self._run(probe_conn, agent_b, "complete", 20)
+
+        summary = self._summary(probe_conn, agent_a)
+
+        assert summary["signal"] == "no_runs", (
+            "an agent nothing has ever attacked must read as unmeasured, not as "
+            f"whatever the agent beside it scored: {summary}"
+        )
+        assert summary["critical_count"] is None, (
+            "every count outside the measured state is None, because a zero "
+            f"nobody measured is not a zero: {summary}"
+        )
+
+    def test_this_agents_own_failed_run_is_what_its_report_carries(self, probe_conn):
+        """A's own newest run failed while B's completed. A's report says failed."""
+        agent_a, agent_b = str(uuid.uuid4()), str(uuid.uuid4())
+        self._run(probe_conn, agent_a, "failed", 10)
+        self._run(probe_conn, agent_b, "complete", 20)
+
+        summary = self._summary(probe_conn, agent_a)
+
+        assert summary["signal"] == "run_failed", (
+            f"A's own newest run is the one its report is about: {summary}"
+        )
+
+    def test_an_agents_own_completed_run_is_still_read(self, probe_conn):
+        """The scoping closes a read; it must not close the right one."""
+        agent_a, agent_b = str(uuid.uuid4()), str(uuid.uuid4())
+        self._run(probe_conn, agent_a, "complete", 10)
+        self._run(probe_conn, agent_b, "failed", 20)
+
+        summary = self._summary(probe_conn, agent_a)
+
+        assert summary["signal"] == "measured", (
+            f"A ran to completion, so A's numbers are readable: {summary}"
+        )
+        assert summary["critical_count"] == 0
+        assert summary["last_run_at"] is not None
+
+    def test_an_in_flight_run_of_this_agents_is_still_not_a_measurement(
+        self, probe_conn
+    ):
+        """The status predicate survives the kind predicate landing beside it."""
+        agent_a = str(uuid.uuid4())
+        self._run(probe_conn, agent_a, "running", 10)
+
+        assert self._summary(probe_conn, agent_a)["signal"] == "no_runs"
