@@ -140,7 +140,7 @@ _CITATION_ENTRY = re.compile(r"- Document: (.+) \| Section: (.+)")
 AGENT_TURN_TIMEOUT_S = 90
 
 
-def _judge_retrieved_context(tool_calls_log: list[dict]) -> tuple[list[str], int]:
+def _judge_retrieved_context(tool_calls_log: list[dict]) -> tuple[list[str], dict[str, int]]:
     """The retrieved context the Auditor is judged against — what the AGENT saw.
 
     BACKLOG 5.16. This used to be
