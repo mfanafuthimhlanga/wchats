@@ -498,11 +498,72 @@ class Settings(BaseSettings):
     # versioned book and stops the turn once the total reaches this number, so
     # what it guards is a runaway turn (T-04-03-06) and not a monthly bill.
     #
-    # 0.50 was derived for a Haiku extended-thinking turn under ClaudeAgentOptions
-    # and NOBODY HAS RE-DERIVED IT for gpt-5.6-luna at reasoning effort none.
-    # Issue #82 carries that decision. The value stands until #82 lands.
+    # 0.40 IS TWICE THE WORST TURN THE CONFIGURED LIMITS PERMIT, measured
+    # 2026-09-05 by driving the real `run_agent_loop` and pricing every ModelCall
+    # row through app.domain.pricing, exactly as `_over_budget` does. #182 carries
+    # the derivation; #82 asked for it. Two earlier numbers, 0.0038 and 0.04, both
+    # cut ordinary turns off with an empty answer and were reverted, because both
+    # were measured against a turn smaller than the configuration allows.
+    #
+    # THE ARITHMETIC. The worst turn is MAX_MODEL_CALLS_PER_TURN model calls, each
+    # re-sending everything before it, carrying all of:
+    #
+    #   agent_tools._RETRIEVE_CALLS_PER_TURN_MAX   8 retrieves, FRONT-LOADED into
+    #                                              call 1 so all eight ride on
+    #                                              calls 2 to 6
+    #   agent_tools.MAX_CHUNKS                     5 chunks per retrieve
+    #   agent_tools.CHUNK_CONTENT_CHAR_LIMIT       2000 characters per chunk
+    #   agent.TURN_HISTORY_MAX_MESSAGES            40 rows, on every call
+    #   agent.TURN_HISTORY_MAX_ROW_CHARS           4000 characters per row
+    #   agent_prompt.SYSTEM_PROMPT_MAX_CHARS       the soul at both list caps
+    #   the eleven tool schemas                    on every call
+    #
+    # priced at CJK, the densest content the product can carry (1.37 characters
+    # per token against English prose's 5.67), and billed with tiktoken o200k_base
+    # over the real request body rather than at characters over four:
+    #
+    #   input tokens per call   127,749 / 191,699 / 194,696 / 197,693 / 200,690 / 203,687
+    #   whole turn              $0.244260
+    #   through call 5          $0.200019   <- what the guard compares against
+    #
+    # 0.40 is 2.00 times that $0.200019 and 1.64 times the whole turn.
+    #
+    # THE CHECK READS THE PREVIOUS CALL. `_over_budget` runs at the TOP of a call
+    # against rows recorded through the one before it, so the effective ceiling is
+    # this number plus one full call (#82, measured live 2026-08-27). That is why
+    # the headroom is stated over the through-call-5 figure and not the whole turn.
+    #
+    # EVERY CONSTANT NAMED ABOVE MAKES THIS NUMBER STALE WHEN IT MOVES, and so
+    # does the price book. tests/unit/test_turn_budget_ceiling.py drives both
+    # directions against this constant: the worst permitted turn has to reach its
+    # answer, the fixture has to still cost what the derivation says, and a
+    # context beyond every configured limit has to be stopped.
+    #
+    # ONE GLOBAL CONSTANT CANNOT BE TIGHT FOR EVERY TENANT. Derived at CJK, this
+    # ceiling sits roughly four times above an English tenant's own worst turn.
+    # Derived at English prose it would cut every Chinese turn off mid-answer,
+    # which is what the reverted numbers did. A per-tenant or per-token bound is
+    # the real fix; this is the honest setting for one number.
+    #
+    # NOT BOUNDED, ASSUMED: the loop sends no `max_tokens`, so the OUTPUT side of
+    # a turn is bounded only by the provider default. The measurement prices
+    # output at TURN_HISTORY_MAX_ROW_CHARS of the densest content per call, which
+    # is what the product treats as a maximal assistant message.
+    #
+    # The measurement live against gpt-5.6-luna on 2026-08-27 with the owner's key
+    # (#82) still stands beside this: a two-call grounded turn with retrieval ran
+    # $0.000114 to $0.000227, and a turn under a $0.00002 ceiling stopped after
+    # one call with stop_reason='budget_exceeded', priced from real ModelCall rows
+    # through the real book. The mechanism works; the constant was the problem.
+    #
+    # The same run closed this field's other half. The response reports
+    # `gpt-5.6-luna`, the alias, not a dated snapshot, so cost_usd raises no
+    # UnknownPrice here today. What happens WHEN it does is #178's: `_over_budget`
+    # catches UnknownPrice and returns False, so one unpriced model id turns this
+    # ceiling off for the whole turn.
+    #
     # Set AGENT_MAX_BUDGET_USD in .env to override, tighter in production.
-    AGENT_MAX_BUDGET_USD: float = 0.50
+    AGENT_MAX_BUDGET_USD: float = 0.40
 
     # Phase 21 (OPS-07): sampled Ragas 0.4.x faithfulness + citation-coverage rate.
     # Online-scoring norm is 1-10% of live traffic (DOMAIN-NOTES §2) + 100% of
