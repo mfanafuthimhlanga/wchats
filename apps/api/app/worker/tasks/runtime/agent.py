@@ -362,9 +362,37 @@ def _validate_conversation_owner(conn, conv_id: str, agent_id: str) -> dict | No
 #: together.
 TURN_HISTORY_MAX_MESSAGES = 40
 
+#: How many characters of ONE resumed message travel into the next turn.
+#:
+#: #182. `TURN_HISTORY_MAX_MESSAGES` bounded the row COUNT and nothing bounded a
+#: row's SIZE, so "forty rows" described no amount of context at all. The
+#: customer's half was already capped: `agent_chat.AgentChatRequest.message` is
+#: `max_length=2000`. The agent's half never was, and an assistant row is
+#: whatever the model wrote, joined across up to six model calls.
+#:
+#: THE CAP IS APPLIED AT THE READ, not at `_persist_messages`. Three reasons.
+#: The read is what decides per-call cost, and it is the read that repeats on
+#: every turn for the life of the conversation. It bounds rows ALREADY in the
+#: table, written before this cap existed, which a write-side cap cannot reach.
+#: And `messages` stays the honest record of what the customer was actually
+#: served, which is what a support argument or an audit needs; only what travels
+#: back into a model call is cut.
+#:
+#: 4,000 rather than the customer's 2,000, because an assistant row carries an
+#: answer AND its CITATIONS block while a customer row carries a question. The
+#: longest `messages.content` reachable from this machine is 16 characters
+#: (`wchats_tenant_probe`, 4 rows), and the live tenant databases are per-tenant
+#: Neon projects this box does not hold, so no observed row is anywhere near it.
+TURN_HISTORY_MAX_ROW_CHARS = 4000
+
 
 def _read_turn_history(conn, conv_id: str) -> list[dict]:
     """The conversation so far, oldest first, as the loop's `history` argument.
+
+    Bounded on both axes: `TURN_HISTORY_MAX_MESSAGES` rows, each cut to
+    `TURN_HISTORY_MAX_ROW_CHARS` characters. Both bounds are here rather than at
+    the write because this is the read every turn repeats, and it is what decides
+    what rides on every model call.
 
     The caller owns the connection lifecycle — this helper does NOT open or
     close the connection (PROD-05: one pooled connection per turn).
@@ -399,8 +427,11 @@ def _read_turn_history(conn, conv_id: str) -> list[dict]:
     # an empty assistant message into the next turn's context, where the model
     # reads it as a turn in which it chose to say nothing. The row stays in the
     # table, because it is the record of what happened; it just does not travel.
+    #
+    # The slice is TURN_HISTORY_MAX_ROW_CHARS, the second half of the bound this
+    # read owes the turn. Forty rows of unbounded size is not a bounded context.
     return [
-        {"role": role, "content": content}
+        {"role": role, "content": str(content)[:TURN_HISTORY_MAX_ROW_CHARS]}
         for role, content in rows
         if content and str(content).strip()
     ]

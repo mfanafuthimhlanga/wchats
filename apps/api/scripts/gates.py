@@ -201,7 +201,9 @@ LIZARD_BASELINE = {
     ("app/api/v1/widget.py", "post_widget_identity_verify"): (5, 88),
     ("app/api/v1/widget.py", "widget_job_events"): (2, 73),
     ("app/services/actor_seam.py", "call_actor_gate"): (10, 157),
-    ("app/services/agent_prompt.py", "build_system_prompt"): (14, 81),
+    # 81 to 64: #182 moved the prompt body out of the function into the
+    # module-level `_TEMPLATE`, which is what `SYSTEM_PROMPT_MAX_CHARS` measures.
+    ("app/services/agent_prompt.py", "build_system_prompt"): (14, 64),
     ("app/services/agent_tools.py", "escalate_to_human_tool"): (4, 101),
     ("app/services/agent_tools.py", "lookup_structured_tool"): (5, 67),
     ("app/services/agent_tools.py", "retrieve_tool"): (28, 248),
