@@ -1,4 +1,4 @@
-"""Pins the standards the static gate enforces and the never-add rule on all three baselines.
+"""Pins the standards the static gate enforces and holds all four baselines to a snapshot.
 
 scripts/ is not a package, so this loads gates.py by path.
 
@@ -36,10 +36,50 @@ def test_lizard_flags_pin_the_standard():
     assert gates.LIZARD_FLAGS == ["-C", "15", "-L", "60", "-a", "11", "--warnings_only"]
 
 
-# The three snapshots below are the baselines as measured on 2026-08-24. The assertions
-# that read them accept a smaller value and a missing key, and reject a new key or a
-# larger value. Shrinking a baseline therefore needs no edit here. Growing one cannot
-# happen without editing this file, which is the point.
+def test_the_unit_suite_runs_with_rs(monkeypatch):
+    """`steps("full")`'s unit-tests step passes -rs, so every skip prints its reason.
+
+    Under -q alone a test that stopped running is one more dot, and a skip read as
+    a pass is how a gate goes quiet without going red.
+
+    The argv is recorded off a stubbed `run` rather than read from
+    UNIT_PYTEST_ARGS, because the step is a lambda: one that stopped reading the
+    constant and spelled its own command would still satisfy an assertion on the
+    constant alone.
+    """
+    recorded = []
+    monkeypatch.setattr(gates, "run", lambda command: recorded.append(command) or 0)
+
+    unit = [step for label, step in gates.steps("full") if label == "unit tests"]
+    assert len(unit) == 1, (
+        'steps("full") no longer has exactly one step labelled "unit tests". '
+        "re-point this test at whatever runs the unit suite now"
+    )
+    assert unit[0]() == 0
+    assert len(recorded) == 1, "the unit-tests step ran %d commands" % len(recorded)
+
+    argv = recorded[0]
+    assert argv[0] == gates.PYTHON
+    assert "tests/unit" in argv, (
+        "the unit-tests step no longer names tests/unit, so this test is pinning "
+        "the flags of some other command: %r" % (argv,)
+    )
+    assert "-rs" in argv, (
+        "the unit suite runs without -rs: %r. A test that skips because its "
+        "database or its marker went missing then reports as one more `s` with no "
+        "reason anywhere in the log." % (argv,)
+    )
+
+
+# The four snapshots below mirror the baselines in scripts/gates.py exactly. The
+# assertions that read them reject every difference in either direction: a new key, a
+# dropped key, a larger value and a smaller one. Moving a pin therefore edits this file
+# in the same commit, which is the point.
+#
+# A ceiling ("the gate is at or below the snapshot") looks like the same rule and is
+# not. A pin that comes down under a ceiling leaves the gap between the two numbers as
+# slack, and a later commit can raise the pin back up through that slack with no edit
+# here and nothing red.
 
 PINNED_RUFF = {}
 
@@ -64,8 +104,8 @@ PINNED_LIZARD = {
     ("app/api/v1/documents.py", "delete_document"): (10, 176),
     ("app/api/v1/documents.py", "get_document_detail"): (12, 133),
     ("app/api/v1/documents.py", "upload_documents"): (15, 194),
-    ("app/api/v1/evals.py", "get_eval_run_results"): (20, 107),
-    ("app/api/v1/evals.py", "list_eval_runs"): (25, 160),
+    ("app/api/v1/evals.py", "get_eval_run_results"): (16, 98),
+    ("app/api/v1/evals.py", "list_eval_runs"): (13, 87),
     ("app/api/v1/pending_confirmations.py", "resolve_pending_confirmation"): (8, 178),
     ("app/api/v1/query.py", "post_agent_query"): (3, 77),
     ("app/api/v1/red_team.py", "_contain_finding_sync"): (6, 64),
@@ -76,7 +116,7 @@ PINNED_LIZARD = {
     ("app/api/v1/widget.py", "post_widget_feedback"): (4, 88),
     ("app/api/v1/widget.py", "post_widget_identity_request"): (3, 63),
     ("app/api/v1/widget.py", "post_widget_identity_verify"): (5, 88),
-    ("app/api/v1/widget.py", "widget_job_events"): (3, 76),
+    ("app/api/v1/widget.py", "widget_job_events"): (2, 73),
     ("app/services/actor_seam.py", "call_actor_gate"): (10, 157),
     ("app/services/agent_prompt.py", "build_system_prompt"): (14, 81),
     ("app/services/agent_tools.py", "escalate_to_human_tool"): (4, 101),
@@ -86,43 +126,42 @@ PINNED_LIZARD = {
     ("app/services/bench_service.py", "grade_trace"): (5, 66),
     ("app/services/bench_service.py", "list_failing_traces"): (8, 87),
     ("app/services/capability_service.py", "validate_tighten_only"): (31, 154),
-    ("app/services/chunking_service.py", "chunk_document"): (10, 102),
+    ("app/services/chunking_service.py", "chunk_document"): (10, 98),
     ("app/services/deployment_service.py", "_agent_not_invoked_warning"): (3, 76),
-    ("app/services/deployment_service.py", "_eval_summary"): (5, 69),
+    ("app/services/deployment_service.py", "_eval_summary"): (2, 63),
     ("app/services/deployment_service.py", "_fetch_blast_radius_sync"): (11, 147),
-    ("app/services/deployment_service.py", "_fetch_eval_summary_sync"): (18, 312),
-    ("app/services/deployment_service.py", "_fetch_red_team_summary_sync"): (11, 122),
-    ("app/services/deployment_service.py", "apply_signal_evidence_gate"): (20, 292),
+    ("app/services/deployment_service.py", "_fetch_eval_summary_sync"): (12, 204),
+    ("app/services/deployment_service.py", "_fetch_red_team_summary_sync"): (11, 114),
+    ("app/services/deployment_service.py", "apply_signal_evidence_gate"): (7, 133),
     ("app/services/deployment_service.py", "derive_blast_radius_warnings"): (8, 77),
-    ("app/services/digest_service.py", "_collect_digest_stats"): (12, 81),
+    ("app/services/digest_service.py", "_collect_digest_stats"): (10, 71),
     ("app/services/eval_service.py", "build_eval_run_config"): (11, 207),
     ("app/services/eval_service.py", "insert_eval_run"): (4, 62),
-    ("app/services/eval_service.py", "run_ragas_eval"): (24, 169),
-    ("app/services/eval_service.py", "summarise_agent_invocation"): (33, 197),
+    ("app/services/eval_service.py", "run_ragas_eval"): (11, 153),
+    ("app/services/eval_service.py", "summarise_agent_invocation"): (31, 186),
     ("app/services/eval_service.py", "summarise_run_validity"): (17, 117),
     ("app/services/eval_service.py", "update_eval_run_config"): (4, 70),
     ("app/services/identity_service.py", "verify_otp"): (8, 103),
     ("app/services/label_service.py", "record_human_label"): (6, 120),
     ("app/services/metrics_service.py", "_build_metrics_dict"): (16, 74),
     ("app/services/neon.py", "create_neon_project"): (6, 76),
-    ("app/services/red_team_probe.py", "_build_transactional_probe_fn"): (1, 130),
+    ("app/services/red_team_probe.py", "_build_transactional_probe_fn"): (1, 119),
     ("app/services/red_team_service.py", "_run_attacker"): (5, 81),
-    ("app/services/red_team_service.py", "build_probe_tools"): (1, 93),
+    ("app/services/red_team_service.py", "build_probe_tools"): (1, 91),
     ("app/services/red_team_service.py", "classify_severity"): (2, 77),
     ("app/services/red_team_service.py", "run_confused_deputy_agent"): (1, 69),
     ("app/services/red_team_service.py", "run_content_injection_agent"): (13, 153),
-    ("app/services/red_team_service.py", "run_coverage"): (10, 61),
     ("app/services/red_team_service.py", "run_identity_bypass_agent"): (17, 159),
     ("app/services/red_team_service.py", "run_value_bound_evasion_agent"): (17, 146),
     ("app/services/red_team_service.py", "seed_poisoned_chunk"): (2, 75),
     ("app/services/redteam_programme_service.py", "read_programme"): (16, 99),
     ("app/services/retrieval_service.py", "rrf_fuse"): (3, 65),
-    ("app/services/retrieval_service.py", "rrf_fuse_with_expansion"): (8, 69),
+    ("app/services/retrieval_service.py", "rrf_fuse_with_expansion"): (8, 68),
     ("app/services/retrieval_service.py", "verified_qa_lookup"): (3, 61),
     ("app/services/scenario_service.py", "generate_eval_suite_for_agent"): (7, 66),
     ("app/services/scenario_service.py", "generate_scenarios_from_chunks"): (5, 65),
     ("app/services/scenario_service.py", "mine_production_scenarios"): (11, 114),
-    ("app/services/sse.py", "event_generator"): (13, 99),
+    ("app/services/sse.py", "event_generator"): (13, 96),
     ("app/services/strategy_service.py", "_fetch_corpus_signals_sync"): (10, 74),
     ("app/services/transactional/adapters/calendly_adapter.py", "book_slot"): (2, 81),
     ("app/services/transactional/adapters/shopify_adapter.py", "issue_refund"): (3, 89),
@@ -131,7 +170,7 @@ PINNED_LIZARD = {
     ("app/services/transactional/audit.py", "write_audit_row"): (2, 69),
     ("app/services/transactional/confirmation_resolution.py", "execute_approved_confirmation"): (12, 290),
     ("app/services/transactional/credential_service.py", "_fetch_credential_config"): (3, 69),
-    ("app/services/transactional/enforcement.py", "apply_rate_and_constraint_checks"): (9, 117),
+    ("app/services/transactional/enforcement.py", "apply_rate_and_constraint_checks"): (8, 96),
     ("app/services/transactional/enforcement.py", "check_capability_access"): (4, 76),
     ("app/services/transactional/idempotency.py", "reserve_idempotency"): (1, 185),
     ("app/services/transactional/idempotency.py", "reserve_idempotency._inner"): (14, 150),
@@ -140,31 +179,30 @@ PINNED_LIZARD = {
     ("app/services/transactional/tools.py", "_execute_transactional_tool"): (34, 793),
     ("app/services/validation_service.py", "call_auditor"): (2, 88),
     ("app/services/validation_service.py", "call_strategist"): (6, 77),
-    ("app/worker/tasks/pipeline/chunk.py", "chunk_documents"): (19, 243),
-    ("app/worker/tasks/pipeline/embed.py", "embed_and_migrate"): (19, 296),
-    ("app/worker/tasks/pipeline/metadata.py", "generate_metadata"): (17, 239),
+    ("app/worker/tasks/pipeline/chunk.py", "chunk_documents"): (15, 216),
+    ("app/worker/tasks/pipeline/embed.py", "embed_and_migrate"): (13, 253),
     ("app/worker/tasks/pipeline/migrations.py", "apply_migrations"): (6, 124),
-    ("app/worker/tasks/pipeline/parse.py", "parse_documents"): (17, 257),
-    ("app/worker/tasks/pipeline/provision.py", "provision_neon"): (21, 224),
+    ("app/worker/tasks/pipeline/parse.py", "parse_documents"): (17, 252),
+    ("app/worker/tasks/pipeline/provision.py", "provision_neon"): (17, 208),
     ("app/worker/tasks/pipeline/reembed.py", "reembed_corpus"): (13, 177),
     ("app/worker/tasks/pipeline/staleness.py", "compute_index_staleness_summary"): (11, 77),
-    ("app/worker/tasks/pipeline/strategy.py", "synthesize_retrieval_strategy"): (17, 153),
-    ("app/worker/tasks/runtime/agent.py", "_judge_retrieved_context"): (11, 99),
+    ("app/worker/tasks/pipeline/strategy.py", "synthesize_retrieval_strategy"): (12, 144),
+    ("app/worker/tasks/runtime/agent.py", "_judge_retrieved_context"): (11, 98),
     ("app/worker/tasks/runtime/agent.py", "_persist_messages"): (2, 73),
     ("app/worker/tasks/runtime/agent.py", "_resolve_turn_prompt_version"): (5, 70),
     ("app/worker/tasks/runtime/agent.py", "_write_turn_metrics"): (1, 65),
-    ("app/worker/tasks/runtime/agent.py", "run_agent_turn"): (27, 506),
+    ("app/worker/tasks/runtime/agent.py", "run_agent_turn"): (20, 474),
     ("app/worker/tasks/runtime/bench.py", "promote_trace_to_scenario"): (12, 164),
     ("app/worker/tasks/runtime/confirmations.py", "resolve_approved_confirmation"): (5, 111),
     ("app/worker/tasks/runtime/deployment.py", "_dispatch_eval_run"): (2, 62),
-    ("app/worker/tasks/runtime/deployment.py", "run_deployment_checklist"): (26, 372),
-    ("app/worker/tasks/runtime/eval.py", "_invoke_agent_for_scenarios"): (23, 236),
-    ("app/worker/tasks/runtime/eval.py", "_run_one_eval_turn"): (3, 91),
+    ("app/worker/tasks/runtime/deployment.py", "run_deployment_checklist"): (12, 223),
+    ("app/worker/tasks/runtime/eval.py", "_invoke_agent_for_scenarios"): (14, 223),
+    ("app/worker/tasks/runtime/eval.py", "_run_one_eval_turn"): (3, 80),
     ("app/worker/tasks/runtime/eval.py", "generate_eval_suite"): (8, 81),
-    ("app/worker/tasks/runtime/eval.py", "run_eval_suite"): (28, 612),
+    ("app/worker/tasks/runtime/eval.py", "run_eval_suite"): (28, 593),
     ("app/worker/tasks/runtime/red_team.py", "_build_probe_fn"): (11, 65),
-    ("app/worker/tasks/runtime/red_team.py", "run_red_team"): (33, 527),
-    ("app/worker/tasks/runtime/retrieval_eval.py", "run_retrieval_faithfulness"): (14, 90),
+    ("app/worker/tasks/runtime/red_team.py", "run_red_team"): (28, 447),
+    ("app/worker/tasks/runtime/retrieval_eval.py", "run_retrieval_faithfulness"): (12, 82),
     ("app/worker/tasks/runtime/retrieve.py", "retrieve_and_rank"): (12, 217),
     ("app/worker/tasks/runtime/validators.py", "run_auditor"): (15, 189),
     ("app/worker/tasks/runtime/validators.py", "run_gatekeeper"): (5, 107),
@@ -174,13 +212,13 @@ PINNED_LIZARD = {
 PINNED_SOURCE = {
     "tests/integration/test_paramstyle_real_db.py": 2,
     "tests/unit/retrieval/test_retrieval_service.py": 1,
-    "tests/unit/test_agent_options_seam.py": 5,
+    "tests/unit/test_agent_options_seam.py": 3,
     "tests/unit/test_agreement_threshold.py": 1,
     "tests/unit/test_calibration_harness.py": 3,
     "tests/unit/test_capability_service.py": 2,
     "tests/unit/test_confirmation_resolution.py": 1,
     "tests/unit/test_deployment_service.py": 1,
-    "tests/unit/test_eval_agent_invocation.py": 8,
+    "tests/unit/test_eval_agent_invocation.py": 5,
     "tests/unit/test_eval_service.py": 5,
     "tests/unit/test_eval_task.py": 1,
     "tests/unit/test_idv_message_verdict_pin.py": 2,
@@ -207,7 +245,7 @@ PINNED_SOURCE = {
     "tests/unit/test_promote_trace.py": 3,
     "tests/unit/test_recorded_side_effects.py": 2,
     "tests/unit/test_red_team_rtx_runners.py": 1,
-    "tests/unit/test_red_team_service.py": 3,
+    "tests/unit/test_red_team_service.py": 2,
     "tests/unit/test_s3_uploads.py": 1,
     "tests/unit/test_tool_loop_agents_are_given_tools.py": 2,
     "tests/unit/test_shopify_adapter.py": 1,
@@ -219,41 +257,61 @@ PINNED_SOURCE = {
 }
 
 
-def test_ruff_baseline_only_shrinks():
-    """Every pinned violation is in the snapshot, at or below its snapshot count."""
-    for key, count in gates.RUFF_BASELINE.items():
-        assert key in PINNED_RUFF, "%s was added to RUFF_BASELINE" % (key,)
-        assert count <= PINNED_RUFF[key], "%s was raised to %d" % (key, count)
+def snapshot_differences(name, baseline, snapshot):
+    """Every disagreement between one gate baseline and its snapshot. Empty means equal.
+
+    Reports both directions. A key the snapshot lacks is an unpinned entry someone added
+    to the baseline; a key the baseline lacks is a pin that left the gate and can come
+    back at the snapshot's number unnoticed; a differing value is slack in either
+    direction.
+    """
+    differences = []
+    for key, value in baseline.items():
+        if key not in snapshot:
+            differences.append("%r was added to %s and the snapshot does not carry it" % (key, name))
+        elif value != snapshot[key]:
+            differences.append(
+                "%r is %r in %s and %r in the snapshot" % (key, value, name, snapshot[key])
+            )
+    for key in snapshot:
+        if key not in baseline:
+            differences.append("%r left %s and the snapshot still carries it" % (key, name))
+    return sorted(differences)
 
 
-def test_mypy_baseline_only_shrinks():
-    """Every pinned file is in the snapshot, at or below its count, and still exists.
+def test_ruff_baseline_equals_the_snapshot():
+    """Every RUFF_BASELINE count equals its snapshot count, and neither side has a spare key."""
+    assert snapshot_differences("RUFF_BASELINE", gates.RUFF_BASELINE, PINNED_RUFF) == []
+
+
+def test_mypy_baseline_equals_the_snapshot():
+    """Every MYPY_BASELINE count equals its snapshot count, is above zero, and names a real file.
 
     A pin at zero errors, or a pin on a path that has left the tree, is a line the gate
     can never satisfy: run_mypy reads both as stale and stays red until someone deletes
-    the line. The last two assertions catch that here rather than after a 44s mypy run.
+    the line. The loop catches that here rather than after a 44s mypy run.
     """
+    assert snapshot_differences("MYPY_BASELINE", gates.MYPY_BASELINE, PINNED_MYPY) == []
     for path, count in gates.MYPY_BASELINE.items():
-        assert path in PINNED_MYPY, "%s was added to MYPY_BASELINE" % path
-        assert count <= PINNED_MYPY[path], "%s was raised to %d" % (path, count)
         assert count > 0, "%s is pinned at 0 errors. Delete the line" % path
         assert (API_DIR / path).exists(), "%s is pinned and is not in the tree" % path
 
 
-def test_lizard_baseline_only_shrinks():
-    """Every pinned function is in the snapshot, at or below its snapshot numbers."""
-    for key, (ccn, length) in gates.LIZARD_BASELINE.items():
-        assert key in PINNED_LIZARD, "%s was added to LIZARD_BASELINE" % (key,)
-        pinned_ccn, pinned_length = PINNED_LIZARD[key]
-        assert ccn <= pinned_ccn, "%s was raised to ccn %d" % (key, ccn)
-        assert length <= pinned_length, "%s was raised to length %d" % (key, length)
+def test_lizard_baseline_equals_the_snapshot():
+    """Every LIZARD_BASELINE pin equals its snapshot pair, and neither side has a spare key."""
+    assert snapshot_differences("LIZARD_BASELINE", gates.LIZARD_BASELINE, PINNED_LIZARD) == []
 
 
-def test_source_assertion_baseline_only_shrinks():
-    """Every pinned test file is in the snapshot, at or below its snapshot count."""
-    for path, count in gates.SOURCE_ASSERTION_BASELINE.items():
-        assert path in PINNED_SOURCE, "%s was added to SOURCE_ASSERTION_BASELINE" % path
-        assert count <= PINNED_SOURCE[path], "%s was raised to %d" % (path, count)
+def test_source_assertion_baseline_equals_the_snapshot():
+    """Every SOURCE_ASSERTION_BASELINE count equals its snapshot count, both directions."""
+    assert (
+        snapshot_differences(
+            "SOURCE_ASSERTION_BASELINE",
+            gates.SOURCE_ASSERTION_BASELINE,
+            PINNED_SOURCE,
+        )
+        == []
+    )
 
 
 COMPLEXITY_PIN = {("app/one.py", "f"): (10, 20)}

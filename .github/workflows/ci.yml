@@ -55,6 +55,25 @@ jobs:
     # Redis is required: test_agent_task.py exercises the Celery result backend
     # against a real client. Without it the job dies on ConnectionRefusedError.
     services:
+      # PostgreSQL is required too: the unit suite reads a tenant database.
+      # test_migration_tenant_0016.py's "The probe cluster" reads 0016's three
+      # columns and both arms of its CHECK off one, and with no server here those
+      # tests skipped on every CI run, which is unobserved rather than passing.
+      # pgvector's image, not plain postgres:17-alpine, for the same reason the
+      # integration job gives: 0001_tenant_v1_schema runs CREATE EXTENSION vector.
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: wchats
+          POSTGRES_PASSWORD: wchats
+          POSTGRES_DB: wchats_tenant_probe
+        options: >-
+          --health-cmd "pg_isready -U wchats -d wchats_tenant_probe"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
       redis:
         image: redis:7-alpine
         options: >-
@@ -86,13 +105,23 @@ jobs:
         run: |
           echo "NEON_ENCRYPTION_KEY=$(python -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")" >> $GITHUB_ENV
 
+      - name: Apply the tenant migrations to the probe database
+        working-directory: apps/api
+        # The production path, the same call app/worker/tasks/pipeline/migrations.py
+        # makes for a real tenant. Observed against an empty local database: it
+        # reaches head 0024 and 0016's three columns are there afterwards.
+        run: |
+          python -c "from app.services.migrations import run_tenant_migrations; run_tenant_migrations('postgresql://wchats:wchats@localhost:5432/wchats_tenant_probe')"
+
       - name: Run unit tests
         working-directory: apps/api
         # No -x: halting at the first failure reports one defect and hides the rest,
         # which is the opposite of what a gate is for. The two ignored modules need
         # docling, which is not in the [dev] extra and cannot be collected here.
+        # -rs prints every skip with its reason, so a test that stopped running
+        # names itself in the log instead of showing up as one more `s`.
         run: >-
-          python -m pytest tests/unit --tb=short
+          python -m pytest tests/unit --tb=short -rs
           --cov=app --cov-fail-under=80
           --ignore=tests/unit/test_chunking_service.py
           --ignore=tests/unit/test_docling_service.py

@@ -233,8 +233,8 @@ _LAST_TURN_TOOL_CALLS = """
 def shape_tool_call(tool_name, arguments, retrieved_chunks) -> dict:
     """One tool_calls row as the corpus records it.
 
-    Separate from the query so the NULL-versus-empty rule is testable on a
-    machine with no PostgreSQL, which is every machine this project runs on.
+    Separate from the query so the NULL versus empty rule is exercised on rows a
+    test writes, rather than on whatever a corpus happens to hold.
 
     NULL becomes an ABSENT result, which validate_corpus.py reports BLIND: the
     call retrieves nothing, or its capture could not be decoded, and neither is
