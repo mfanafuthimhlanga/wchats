@@ -1,11 +1,10 @@
 """
-Wave 0 test scaffold for the M5 validation chain (Plan 05-01).
+Unit tests for the M5 validation chain: app.services.validation_service and
+app.worker.tasks.runtime.validators.
 
-All tests are marked @pytest.mark.xfail(strict=False) because the implementation
-modules (app.services.validation_service, app.worker.tasks.runtime.validators)
-do not yet exist — they are created in Plans 05-02 and 05-03 respectively.
+Every test below runs and must pass. Nothing here is xfail.
 
-Test coverage intent (per VAL-01 through VAL-06):
+Coverage (per VAL-01 through VAL-06):
   test_gatekeeper_verdict        — VAL-01: GatekeeperVerdict Pydantic model validates + normalises
   test_run_gatekeeper_task       — VAL-02: run_gatekeeper Celery task: idempotency + emit
   test_auditor_verdict           — VAL-03: AuditorVerdict Pydantic model validates + normalises
@@ -17,7 +16,7 @@ Test coverage intent (per VAL-01 through VAL-06):
 Mock strategy mirrors test_agent_task.py:
   - patch at module boundary (app.worker.tasks.runtime.validators.*)
   - _make_agent() includes strategy_resynthesis_flagged=False (RESEARCH Pitfall 4)
-  - symbol imports are inside test bodies so collection never fails on missing modules
+  - symbol imports sit inside test bodies, so a broken import fails one test rather than collection
 """
 
 from __future__ import annotations

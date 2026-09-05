@@ -48,9 +48,10 @@ otherwise leave this process:
                                     are Claude judges. Unpatched they either
                                     reach the model or sit on the runtime queue
                                     waiting to.
-    - `_emit_langfuse_turn_trace`-> LANGFUSE_PUBLIC_KEY is set by the root
-                                    conftest, so the module-level client is real
-                                    and its flush() would dial localhost:3000.
+    - `_emit_langfuse_turn_trace`-> the root conftest clears the Langfuse keys, so
+                                    the module-level client is already None. The
+                                    patch keeps the test independent of a shell
+                                    that sets them back.
 
     `fernet_decrypt` and `psycopg2.connect` are deliberately NOT mocked. The
     agent row carries a real Fernet ciphertext (encrypted with the app's own

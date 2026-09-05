@@ -45,7 +45,6 @@ import uuid
 
 import psycopg2
 import structlog
-from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.database import get_sync_db
@@ -53,7 +52,7 @@ from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.security import fernet_decrypt
 from app.domain.red_team_finding import RedTeamFinding
 from app.domain.red_team_result import RedTeamResult
-from app.models.agent import Agent
+from app.models.agent import Agent, select_beat_fanout_agents
 from app.services.agent_tools import (
     RetrievalStrategy,
     bind_tool_context,
@@ -206,11 +205,11 @@ def _build_probe_fn(agent: "Agent", conn_str: str, ledger: LedgerContext):
     name="app.worker.tasks.runtime.red_team.run_red_team_beat",
 )
 def run_red_team_beat(self) -> dict:
-    """Beat-triggered dispatcher: find all deployed agents and dispatch run_red_team per agent.
+    """Beat-triggered dispatcher: one run_red_team per deployed, ready agent.
 
-    Queries the control DB for agents with is_deployed=True and fans out one
-    run_red_team task per agent. No conn_str is passed — the per-agent task
-    fetches and decrypts at runtime (CTL-08).
+    select_beat_fanout_agents() carries the selection and why each half of it is
+    there. No conn_str is passed — the per-agent task fetches and decrypts at
+    runtime (CTL-08).
 
     No idempotency guard needed here — the weekly beat fires once at 03:00 UTC Monday;
     duplicate dispatches are harmless because run_red_team itself is idempotent.
@@ -220,7 +219,7 @@ def run_red_team_beat(self) -> dict:
     """
     with get_sync_db() as db:
         agents = db.execute(
-            select(Agent).where(Agent.is_deployed == True)  # noqa: E712
+            select_beat_fanout_agents()
         ).scalars().all()
 
     dispatched = 0
