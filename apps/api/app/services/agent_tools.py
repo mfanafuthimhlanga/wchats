@@ -136,6 +136,27 @@ MAX_CHUNK_TOKENS: int = 500  # approximate; character proxy = MAX_CHUNK_TOKENS *
 CHUNK_CONTENT_CHAR_LIMIT: int = MAX_CHUNK_TOKENS * 4  # 2000 chars
 
 # ---------------------------------------------------------------------------
+# MODEL-FACING JSON ESCAPING (#182). `retrieve_tool` renders its chunks with
+# `json.dumps(..., ensure_ascii=False)`, and the flag is the largest single term
+# in a non-English turn's bill.
+#
+# `json.dumps` defaults to ensure_ascii=True, which rewrites every character
+# outside ASCII as six literal characters: a backslash, a u, and four hex digits.
+# That is NOT the transport escaping a provider strips before the model sees the
+# request. It happens inside this tool, before the string becomes a `tool`
+# message, so the model reads those six characters and the tenant is billed for
+# every one of them.
+#
+# Measured through o200k_base over one retrieve result at the configured maximum,
+# MAX_CHUNKS chunks of CHUNK_CONTENT_CHAR_LIMIT characters of Chinese: escaped is
+# 34,506 tokens against 7,481 unescaped, a factor of 4.61. An ASCII corpus is
+# byte-identical either way, so the English tenants pay nothing for this. Both
+# forms are valid JSON and either parses, so nothing downstream is given up.
+# tests/unit/test_token_meter.py holds the token measurement and the ASCII
+# control; tests/unit/test_agent_tools.py holds the wire.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
 # SEC-02/L6 (OD-5): data-not-instructions framing on retrieve_tool's tool-result
 # text. Mirrors the labeled-delimiter "treat as data" convention already shipped
 # in app.services.actor_seam (lines ~210-232) at a new boundary: retrieved chunk
@@ -874,11 +895,11 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     # sanitize_chunk_text at ingest is complementary rather than superseded — this
     # is the retrieval-time layer, that is the admit-time layer, against the same
     # indirect-prompt-injection threat.
-    # THE JSON SEAM (#48). The framed text is JSON for the MODEL to read, and
-    # nothing calls `json.loads` on it. The loop takes its chunks from the
-    # `_retrieved_context` ride-along, which is why `to_json` still decides keys.
+    # THE JSON SEAM (#48). The framed text is JSON for the MODEL to read, nothing
+    # calls `json.loads` on it, and `to_json` decides the keys because the loop
+    # reads chunks off the ride-along. MODEL-FACING JSON ESCAPING says why False.
     context = retrieved.to_json()
-    model_text = _frame_retrieved_context(json.dumps(context["chunks"]))
+    model_text = _frame_retrieved_context(json.dumps(context["chunks"], ensure_ascii=False))
     return {
         "content": [{"type": "text", "text": model_text}],
         "_citations": citations,

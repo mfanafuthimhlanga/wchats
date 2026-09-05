@@ -20,6 +20,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.services.agent_prompt import (
+    AGENT_NAME_MAX_CHARS,
+    SOUL_LIST_ITEM_MAX_CHARS,
+    SOUL_LIST_MAX_ITEMS,
+    SOUL_ROLE_MAX_CHARS,
+    SOUL_VOICE_MAX_CHARS,
+)
 from app.utils.sanitize import sanitize_chunk_text
 
 
@@ -30,7 +37,12 @@ class SoulSchema(BaseModel):
 
 
 class AgentCreate(BaseModel):
-    name: str
+    # The same cap AgentSoulUpdate.name carries. `agents.name` greets the
+    # customer in the first line of every system prompt, so an uncapped name here
+    # left `build_system_prompt`'s output unbounded from the create route while
+    # the patch route was bounded (#182). `soul` is the legacy JSONB column,
+    # which no prompt reads.
+    name: str = Field(..., min_length=1, max_length=AGENT_NAME_MAX_CHARS)
     soul: SoulSchema
     role: Literal["support", "sales", "helpdesk"]
 
@@ -66,13 +78,32 @@ class AgentSoulUpdate(BaseModel):
     (use model_dump(exclude_unset=True) in the route handler).
 
     Threat mitigation T-04-06-01: Pydantic enforces size constraints server-side.
+
+    Every cap is a constant of `app.services.agent_prompt`, because the reason a
+    cap exists is that `build_system_prompt` joins the field onto all six model
+    calls of every turn. `SYSTEM_PROMPT_MAX_CHARS` is the sum they add up to.
     """
 
-    name: str | None = Field(None, min_length=1, max_length=60)
-    soul_role: str | None = Field(None, max_length=120)
-    soul_voice: str | None = Field(None, max_length=500)
-    soul_do_list: list[Annotated[str, Field(min_length=1, max_length=200)]] | None = None
-    soul_donot_list: list[Annotated[str, Field(min_length=1, max_length=200)]] | None = None
+    name: str | None = Field(None, min_length=1, max_length=AGENT_NAME_MAX_CHARS)
+    soul_role: str | None = Field(None, max_length=SOUL_ROLE_MAX_CHARS)
+    soul_voice: str | None = Field(None, max_length=SOUL_VOICE_MAX_CHARS)
+    # max_length on the OUTER list is the item count (#182). Without it a tenant
+    # set a thousand rules from the admin UI, and every one of them rode on every
+    # model call of every turn afterwards.
+    soul_do_list: (
+        Annotated[
+            list[Annotated[str, Field(min_length=1, max_length=SOUL_LIST_ITEM_MAX_CHARS)]],
+            Field(max_length=SOUL_LIST_MAX_ITEMS),
+        ]
+        | None
+    ) = None
+    soul_donot_list: (
+        Annotated[
+            list[Annotated[str, Field(min_length=1, max_length=SOUL_LIST_ITEM_MAX_CHARS)]],
+            Field(max_length=SOUL_LIST_MAX_ITEMS),
+        ]
+        | None
+    ) = None
 
     @field_validator("soul_voice", "soul_role", mode="before")
     @classmethod

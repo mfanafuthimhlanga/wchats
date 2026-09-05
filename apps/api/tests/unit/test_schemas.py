@@ -15,6 +15,11 @@ from pydantic import ValidationError
 # env vars are set in conftest.py (loaded before this file);
 # the setdefault calls in individual test files use setdefault so conftest wins.
 from app.schemas.agent import AgentCreate, AgentCreateResponse, AgentSoulUpdate, SoulSchema
+from app.services.agent_prompt import (
+    AGENT_NAME_MAX_CHARS,
+    SOUL_LIST_ITEM_MAX_CHARS,
+    SOUL_LIST_MAX_ITEMS,
+)
 
 # ---------------------------------------------------------------------------
 # SoulSchema
@@ -153,6 +158,87 @@ class TestAgentSoulUpdate:
         )
         assert update.soul_voice == "Be friendly and professional"
         assert update.soul_role == "Support agent"
+
+
+# ---------------------------------------------------------------------------
+# AgentSoulUpdate, and the size caps that make a turn's cost derivable (#182)
+# ---------------------------------------------------------------------------
+
+
+class TestTheSoulListsAreBoundedOnBothAxes:
+    """A per-item cap without an item-count cap bounds nothing.
+
+    WHAT WENT WRONG WITHOUT IT. `build_system_prompt` joins every item of both
+    lists onto the system prompt, and that prompt is the first message of every
+    model call of every turn, up to `MAX_MODEL_CALLS_PER_TURN` of them. The
+    200-character per-item cap has been here since T-04-06-01 and no cap on the
+    NUMBER of items ever was, so a tenant raised the per-call floor of every
+    turn from the admin soul editor, with no code change and no deploy. #182
+    could not derive a turn budget while that was true.
+    """
+
+    def _items(self, count: int) -> list[str]:
+        return [f"rule {index}" for index in range(count)]
+
+    @pytest.mark.parametrize("field", ["soul_do_list", "soul_donot_list"])
+    def test_a_list_at_the_cap_is_accepted(self, field):
+        update = AgentSoulUpdate(**{field: self._items(SOUL_LIST_MAX_ITEMS)})
+        assert len(getattr(update, field)) == SOUL_LIST_MAX_ITEMS
+
+    @pytest.mark.parametrize("field", ["soul_do_list", "soul_donot_list"])
+    def test_one_item_over_the_cap_is_refused(self, field):
+        with pytest.raises(ValidationError) as exc:
+            AgentSoulUpdate(**{field: self._items(SOUL_LIST_MAX_ITEMS + 1)})
+
+        assert field in str(exc.value)
+
+    @pytest.mark.parametrize("field", ["soul_do_list", "soul_donot_list"])
+    def test_the_per_item_cap_still_bites(self, field):
+        """Both axes at once. A count cap alone would leave one item unbounded."""
+        with pytest.raises(ValidationError):
+            AgentSoulUpdate(**{field: ["X" * (SOUL_LIST_ITEM_MAX_CHARS + 1)]})
+
+    @pytest.mark.parametrize("field", ["soul_do_list", "soul_donot_list"])
+    def test_blank_rows_are_stripped_before_the_count_is_checked(self, field):
+        """The admin editor submits blank rows, and they may not consume the budget.
+
+        `sanitise_list_field` runs `mode="before"`, so it drops the blanks and
+        the count cap then reads the list that will actually reach the prompt.
+        A list of `SOUL_LIST_MAX_ITEMS` real rules plus five empty rows is a
+        list of `SOUL_LIST_MAX_ITEMS` rules.
+        """
+        submitted = self._items(SOUL_LIST_MAX_ITEMS) + ["", "  ", "", "", ""]
+
+        update = AgentSoulUpdate(**{field: submitted})
+
+        assert len(getattr(update, field)) == SOUL_LIST_MAX_ITEMS
+
+
+class TestTheCreateRouteCapsTheNameToo:
+    """`agents.name` greets the customer in the prompt's first line.
+
+    `AgentSoulUpdate.name` has been capped at 60 since T-04-06-01 and
+    `AgentCreate.name` was a bare `str`, so the create route left
+    `build_system_prompt`'s output unbounded while the patch route bounded it.
+    """
+
+    def test_a_name_at_the_cap_is_accepted(self):
+        agent = AgentCreate(
+            name="N" * AGENT_NAME_MAX_CHARS, soul=_valid_soul(), role="support"
+        )
+        assert len(agent.name) == AGENT_NAME_MAX_CHARS
+
+    def test_one_character_over_the_cap_is_refused(self):
+        with pytest.raises(ValidationError) as exc:
+            AgentCreate(
+                name="N" * (AGENT_NAME_MAX_CHARS + 1), soul=_valid_soul(), role="support"
+            )
+
+        assert "name" in str(exc.value)
+
+    def test_an_empty_name_is_refused(self):
+        with pytest.raises(ValidationError):
+            AgentCreate(name="", soul=_valid_soul(), role="support")
 
 
 # ---------------------------------------------------------------------------

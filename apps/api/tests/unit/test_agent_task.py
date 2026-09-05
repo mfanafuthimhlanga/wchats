@@ -1638,6 +1638,71 @@ def test_the_history_cap_takes_the_newest_rows():
     assert history[-1]["content"] == f"message {total - 1}"
 
 
+def test_a_long_assistant_row_is_cut_to_the_row_cap_before_it_travels():
+    """#182's second input. Forty rows of unbounded size is not a bounded context.
+
+    `TURN_HISTORY_MAX_MESSAGES` capped the row COUNT and nothing capped a row's
+    SIZE, so "forty rows" described no amount of context at all. The customer's
+    half was already bounded, at `AgentChatRequest.message`'s max_length of 2000;
+    the agent's half is whatever the model wrote, joined across up to six model
+    calls, and every character of it rides on every model call of the NEXT turn.
+
+    The cap is at the read, so it also bounds rows written before the cap
+    existed, which is what this scripted row stands in for.
+    """
+    from app.worker.tasks.runtime.agent import (
+        TURN_HISTORY_MAX_ROW_CHARS,
+        _read_turn_history,
+    )
+
+    overlong = "A" * (TURN_HISTORY_MAX_ROW_CHARS * 3)
+    conn = _OrderedConn([
+        _row("user", "what is the return policy?", 100, 1),
+        _row("assistant", overlong, 100, 2),
+    ])
+
+    history = _read_turn_history(conn, CONV)
+
+    assert len(history[1]["content"]) == TURN_HISTORY_MAX_ROW_CHARS, (
+        f"an assistant row of {len(overlong)} characters travelled into the next "
+        f"turn as {len(history[1]['content'])}. Every history row is re-sent on "
+        "every model call, so an uncapped row is an uncapped turn cost."
+    )
+    assert history[1]["content"] == overlong[:TURN_HISTORY_MAX_ROW_CHARS]
+    assert history[0]["content"] == "what is the return policy?", (
+        "a row under the cap was altered; the cap is a ceiling, not a pad"
+    )
+
+
+def test_the_whole_history_a_turn_can_carry_is_bounded_by_the_two_caps():
+    """Both caps at once, which is the number the turn budget is derived from.
+
+    Either cap alone bounds nothing useful: forty unbounded rows and one bounded
+    row of any count are both infinite. The product of the two is what
+    `AGENT_MAX_BUDGET_USD` is measured against.
+    """
+    from app.worker.tasks.runtime.agent import (
+        TURN_HISTORY_MAX_MESSAGES,
+        TURN_HISTORY_MAX_ROW_CHARS,
+        _read_turn_history,
+    )
+
+    rows = [
+        _row("user" if i % 2 == 0 else "assistant", "A" * 50_000, i, i + 1)
+        for i in range(TURN_HISTORY_MAX_MESSAGES + 10)
+    ]
+
+    history = _read_turn_history(_OrderedConn(rows), CONV)
+
+    carried = sum(len(row["content"]) for row in history)
+    ceiling = TURN_HISTORY_MAX_MESSAGES * TURN_HISTORY_MAX_ROW_CHARS
+    assert carried == ceiling, (
+        f"the history a turn resumes is {carried} characters against a declared "
+        f"ceiling of {ceiling}. That product is what the per-turn budget is "
+        "derived from, so the two have to agree."
+    )
+
+
 def test_an_empty_assistant_row_does_not_travel_into_the_next_turn():
     """What a `max_model_calls` exhaustion persists, and why it stays behind.
 
