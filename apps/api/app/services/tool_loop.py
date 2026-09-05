@@ -202,6 +202,76 @@ def first_choice(completion):
     return choices[0] if choices else None
 
 
+class ForcedToolCallTruncated(RuntimeError):
+    """A forced tool call was cut off at `max_completion_tokens` (BACKLOG 5.14).
+
+    Distinct from "the model returned no tool call" on purpose, and from a
+    schema violation on purpose. A truncated call is a *budget* failure whose
+    remedy is the ceiling; the other two are *prompt* failures. Collapsing them
+    into one message is what made the Auditor's ceiling look like a
+    model-quality problem for the whole time it was set to 512.
+
+    On the OpenAI wire a truncated tool call arrives with its `function.arguments`
+    string cut mid-JSON, so `tool_arguments` cannot parse it and
+    `forced_tool_arguments` would otherwise report the same absence as a model
+    that talked instead of calling the tool. Seven call sites force one tool;
+    this class is how all seven say which of the two happened.
+
+    Above all: a truncated call carries NO result. Nothing may record it as one.
+    Missing data is never passing data, and it is never failing data either.
+    """
+
+
+def forced_tool_arguments(completion, name: str, *, truncation_note: str = "") -> dict | None:
+    """The arguments of one named tool call, or None when the reply carried none.
+
+    The forced-tool-choice sites in `validation_service`, `actor_seam`,
+    `scenario_service`, `red_team_service` and `strategy_service` ask for exactly
+    one call and validate its arguments into a typed verdict. They read the wire
+    here rather than each spelling it out, so `choices`, `tool_calls`, a
+    malformed argument string and the token ceiling are handled once.
+
+    THE CEILING IS READ FIRST, and BACKLOG 5.14 is why. A call cut off at
+    `max_completion_tokens` arrives as an unparseable `function.arguments`
+    string, which reaches the bottom of this function as the same `None` a model
+    that answered in prose produces. The caller then says "returned no tool
+    call", which points at the prompt while the fault is the budget. All seven
+    forced-tool sites raise `ForcedToolCallTruncated` here instead.
+
+    None covers three different absences, and every caller treats them alike
+    because all three mean the same thing to it: no verdict arrived. The reply
+    had no choices, or the model talked instead of calling the tool, or it called
+    the tool with arguments that are not a JSON object. Each caller raises its
+    own error, because the sentence a judge owes its reader is not the one a
+    Strategist owes a fallback path.
+
+    Args:
+        completion:      an OpenAI chat completion.
+        name:            the function the call site forced.
+        truncation_note: one sentence this site's reader needs beside the budget
+                         fact. The Auditor uses it to say that a truncated
+                         verdict is not an `ungrounded` verdict.
+
+    Raises:
+        ForcedToolCallTruncated: the reply stopped at the token ceiling.
+    """
+    choice = first_choice(completion)
+    if choice is None:
+        return None
+    if choice.finish_reason == "length":
+        raise ForcedToolCallTruncated(
+            f"the reply that was to carry the forced {name} tool call hit "
+            "max_completion_tokens, so its arguments never arrived whole. This is a "
+            "BUDGET failure and its remedy is the ceiling, not the prompt or the "
+            f"schema. {truncation_note}".strip()
+        )
+    for call in getattr(choice.message, "tool_calls", None) or []:
+        if call.function.name == name:
+            args, refusal = tool_arguments(name, call.function.arguments)
+            return None if refusal else args
+    return None
+
+
 @dataclass
 class ToolLoopResult:
     """What one `run_tool_loop` sequence produced.

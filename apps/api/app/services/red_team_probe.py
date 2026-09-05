@@ -3,9 +3,9 @@ red_team_probe — the substrate that makes RTX-01/02/03 meaningful (Phase 18, O
 
 Why this module exists:
     ``_build_probe_fn`` in `app/worker/tasks/runtime/red_team.py` sends a plain
-    ``messages.create(...)`` with **no `tools=` kwarg at all**. It never attempts a
-    tool call, so it never reaches the capability envelope (L1), the Actor gate (L3),
-    or the IDV gate. A red-team suite built on it would
+    ``chat.completions.create(...)`` with **no `tools=` kwarg at all**. It never
+    attempts a tool call, so it never reaches the capability envelope (L1), the
+    Actor gate (L3), or the IDV gate. A red-team suite built on it would
     report zero findings regardless of whether any of those layers actually work — the
     finding would be vacuous, satisfying RTX-04's "zero high-severity findings" success
     criterion for the wrong reason (RESEARCH.md Pitfall 1).

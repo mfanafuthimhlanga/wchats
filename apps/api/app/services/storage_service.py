@@ -78,30 +78,23 @@ def _bucket() -> str:
 #: The S3-compatible hosts a production process may write customer documents
 #: to, by hostname suffix (decision #14.6: R2 or B2, chosen when the owner
 #: creates the keys). Everything else, MinIO included, stays refused there.
+#:
+#: This is the SECOND gate, and on its own it bounds the provider rather than
+#: the account (#133). S3_EXPECTED_ENDPOINT_HOST is the first one.
 PRODUCTION_ENDPOINT_SUFFIXES: tuple[str, ...] = (
     ".r2.cloudflarestorage.com",
     ".backblazeb2.com",
 )
 
 
-def _require_production_endpoint(endpoint: str) -> None:
-    """Refuse a production endpoint outside PRODUCTION_ENDPOINT_SUFFIXES.
+def _refuse_unsafe_endpoint_shape(parsed) -> None:
+    """The two faults in the URL itself, before any host is considered.
 
-    The suffix check runs on the PARSED hostname, never on the raw string: a
-    URL like https://evil.example/?x=.r2.cloudflarestorage.com carries the
-    suffix without pointing there. Userinfo is refused outright, because an
-    endpoint URL that embeds credentials puts them one log line or one
-    misconfigured client away from disclosure. Scheme is https or nothing:
-    customer bytes do not travel cleartext.
-
-    THE BOUND IS THE PROVIDER, NOT THE ACCOUNT. Any R2 or B2 tenant's host
-    carries these suffixes, so a mistyped or hostile S3_ENDPOINT_URL can still
-    name an account that is not ours; pinning the owner's own host is #133.
+    Scheme is https or nothing: customer bytes do not travel cleartext.
+    Userinfo is refused outright, because an endpoint URL that embeds
+    credentials puts them one log line or one misconfigured client away from
+    disclosure.
     """
-    from urllib.parse import urlsplit  # noqa: PLC0415
-
-    parsed = urlsplit(endpoint)
-    host = (parsed.hostname or "").lower()
     if parsed.scheme != "https":
         raise StorageNotConfigured(
             "S3_ENDPOINT_URL must be https while ENVIRONMENT=production; over "
@@ -113,6 +106,47 @@ def _require_production_endpoint(endpoint: str) -> None:
             "S3_ENDPOINT_URL embeds credentials while ENVIRONMENT=production. "
             "Move the key into the AWS credential variables and keep the URL "
             "to scheme and host."
+        )
+
+
+def _require_production_endpoint(endpoint: str) -> None:
+    """Refuse a production endpoint that is not the owner's own bucket host.
+
+    The account gate is the one this function exists for.
+    S3_EXPECTED_ENDPOINT_HOST carries the one host this deployment writes to,
+    and the PARSED hostname has to equal it: a URL like
+    https://evil.example/?x=.r2.cloudflarestorage.com carries the words without
+    pointing there. An unset expected host refuses rather than falling through
+    to the suffix list, because the suffix list was the defect (#133).
+
+    The provider gate then stays as it was. Decision #14.6 names R2 and B2, and
+    an expected host set to something else (a MinIO box, an operator's own
+    domain) has only made the equality check agree with itself.
+    """
+    from urllib.parse import urlsplit  # noqa: PLC0415
+
+    parsed = urlsplit(endpoint)
+    host = (parsed.hostname or "").lower()
+    expected = settings.S3_EXPECTED_ENDPOINT_HOST.strip().lower()
+    _refuse_unsafe_endpoint_shape(parsed)
+    if not expected:
+        raise StorageNotConfigured(
+            "S3_EXPECTED_ENDPOINT_HOST is unset while ENVIRONMENT=production "
+            "and S3_ENDPOINT_URL is set. It names the one object-store host "
+            "this deployment may write customer documents to; without it the "
+            "endpoint check bounds the provider and not the account, so any "
+            "R2 or B2 bucket would pass. Set it to the host inside "
+            "S3_ENDPOINT_URL."
+        )
+    if host != expected:
+        raise StorageNotConfigured(
+            "S3_ENDPOINT_URL points at "
+            + (host or "an unreadable host")
+            + ", which is not the host S3_EXPECTED_ENDPOINT_HOST names, while "
+            "ENVIRONMENT=production. Customer documents go to this "
+            "deployment's own bucket and nowhere else, and every other "
+            "account at the same provider carries the same hostname suffix. "
+            "Correct whichever of the two variables is wrong."
         )
     if not any(host.endswith(suffix) for suffix in PRODUCTION_ENDPOINT_SUFFIXES):
         raise StorageNotConfigured(

@@ -2,11 +2,11 @@
 Unit tests for app.services.scenario_service (M6 eval scenario generation).
 
 Tests:
-    test_generate_scenarios_from_chunks_calls_haiku
-        — Claude Haiku API called with forced tool_choice (D-12 LOCKED)
+    test_generate_scenarios_from_chunks_forces_its_tool
+        — the model is called with a forced tool_choice (D-12 LOCKED)
         — returned scenarios tagged source='generated' (D-13 LOCKED)
-    test_generate_scenarios_raises_on_no_tool_block
-        — ValueError raised when response.content has no tool_use block
+    test_generate_scenarios_raises_on_no_tool_call
+        — ValueError raised when the reply carries no submit_scenarios call
     test_store_scenarios_idempotent
         — INSERT uses ON CONFLICT DO NOTHING (idempotency rule)
 
@@ -24,28 +24,30 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tests.model_doubles import ledger
+from tests.model_doubles import completion, ledger, tool_call
 
 # ---------------------------------------------------------------------------
-# test_generate_scenarios_from_chunks_calls_haiku
+# test_generate_scenarios_from_chunks_forces_its_tool
 # ---------------------------------------------------------------------------
+
+
+def _scenarios(payload: dict):
+    """One forced `submit_scenarios` call, the way the generator answers."""
+    return completion(
+        tool_calls=[tool_call("submit_scenarios", payload)], finish_reason="tool_calls"
+    )
 
 
 class TestGenerateScenariosFromChunks:
-    """Tests for the Claude Haiku scenario generator."""
+    """Tests for the scenario generator."""
 
     @patch("app.core.model_client.make_client")
-    def test_generate_scenarios_from_chunks_calls_haiku(self, mock_factory):
-        """Haiku is called with forced tool_choice and scenarios have source='generated' (D-12/D-13).
-        """
+    def test_generate_scenarios_from_chunks_forces_its_tool(self, mock_factory):
+        """The generator forces its tool and scenarios carry source='generated' (D-12/D-13)."""
         mock_client = mock_factory.return_value
         from app.services.scenario_service import generate_scenarios_from_chunks
 
-        # Build a mock tool_use block
-        mock_tool_block = MagicMock()
-        mock_tool_block.type = "tool_use"
-        mock_tool_block.name = "submit_scenarios"
-        mock_tool_block.input = {
+        mock_client.chat.completions.create.return_value = _scenarios({
             "scenarios": [
                 {
                     "question": "What is your return policy?",
@@ -53,11 +55,7 @@ class TestGenerateScenariosFromChunks:
                     "scenario_category": "factual",
                 }
             ]
-        }
-
-        mock_response = MagicMock()
-        mock_response.content = [mock_tool_block]
-        mock_client.messages.create.return_value = mock_response
+        })
 
         scenarios = generate_scenarios_from_chunks(
             [{"content": "Our return policy allows 30-day returns."}], ledger(), n=1
@@ -81,52 +79,43 @@ class TestGenerateScenariosFromChunks:
         )
 
         # D-12 LOCKED: forced tool_choice must be used
-        assert mock_client.messages.create.called
-        call_kwargs = mock_client.messages.create.call_args[1]
-        tool_choice = call_kwargs.get("tool_choice", {})
-        assert tool_choice.get("type") == "tool", (
-            "D-12 violation: tool_choice type must be 'tool' for forced structured output"
-        )
-        assert tool_choice.get("name") == "submit_scenarios", (
-            "D-12 violation: tool_choice name must be 'submit_scenarios'"
+        assert mock_client.chat.completions.create.called
+        call_kwargs = mock_client.chat.completions.create.call_args[1]
+        assert call_kwargs.get("tool_choice") == {
+            "type": "function",
+            "function": {"name": "submit_scenarios"},
+        }, (
+            "D-12 violation: structured output here is a forced submit_scenarios call. "
+            f"tool_choice={call_kwargs.get('tool_choice')!r}"
         )
 
     @patch("app.core.model_client.make_client")
-    def test_generate_scenarios_sends_thinking_disabled(self, mock_factory):
-        """The forced tool_choice must ship with thinking off.
+    def test_generate_scenarios_sends_no_anthropic_only_parameter(self, mock_factory):
+        """`thinking`, `system` and `max_tokens` left with the endpoint that took them.
 
-        Observed 2026-08-16: DeepSeek's Anthropic-format endpoint, which was the
-        default provider then via ANTHROPIC_BASE_URL, rejects a forced tool_choice with
-        HTTP 400 "Thinking mode does not support this tool_choice" unless
-        thinking is explicitly disabled. The parameter is inert on the real
-        Anthropic API, so the flag is provider-neutral.
+        `thinking={"type": "disabled"}` cleared an HTTP 400 observed 2026-08-16 on
+        DeepSeek's Anthropic-format endpoint. Issue #76 moved this call to OpenAI,
+        which rejects a body field it does not declare, so the parameter that used
+        to be required is now the one that breaks the call.
         """
         mock_client = mock_factory.return_value
         from app.services.scenario_service import generate_scenarios_from_chunks
 
-        mock_tool_block = MagicMock()
-        mock_tool_block.type = "tool_use"
-        mock_tool_block.name = "submit_scenarios"
-        mock_tool_block.input = {
+        mock_client.chat.completions.create.return_value = _scenarios({
             "scenarios": [
                 {"question": "Q", "reference_answer": "A", "scenario_category": "factual"}
             ]
-        }
-
-        mock_response = MagicMock()
-        mock_response.content = [mock_tool_block]
-        mock_client.messages.create.return_value = mock_response
+        })
 
         generate_scenarios_from_chunks([{"content": "Some knowledge base content."}], ledger(), n=1)
 
-        call_kwargs = mock_client.messages.create.call_args[1]
-        # Precondition: with no forced tool_choice there is nothing to disable
-        # thinking for, and the assertion below would pin an unrelated call.
-        assert call_kwargs.get("tool_choice", {}).get("type") == "tool"
-        assert call_kwargs.get("thinking") == {"type": "disabled"}, (
-            f"scenario generation sent thinking={call_kwargs.get('thinking')!r}; the "
-            "default provider returns HTTP 400 on a forced tool_choice without it, so "
-            "no scenarios would ever be generated in production"
+        call_kwargs = mock_client.chat.completions.create.call_args[1]
+        # Precondition: with no forced tool_choice this pins an unrelated call.
+        assert call_kwargs.get("tool_choice", {}).get("type") == "function"
+        leftovers = [f for f in ("thinking", "system", "max_tokens") if f in call_kwargs]
+        assert leftovers == [], (
+            f"scenario generation sent {leftovers!r}, which OpenAI rejects as "
+            "unrecognised body fields, so no scenarios would ever be generated"
         )
 
     @patch("app.core.model_client.make_client")
@@ -135,10 +124,7 @@ class TestGenerateScenariosFromChunks:
         mock_client = mock_factory.return_value
         from app.services.scenario_service import generate_scenarios_from_chunks
 
-        mock_tool_block = MagicMock()
-        mock_tool_block.type = "tool_use"
-        mock_tool_block.name = "submit_scenarios"
-        mock_tool_block.input = {
+        mock_client.chat.completions.create.return_value = _scenarios({
             "scenarios": [
                 {
                     "question": "Q",
@@ -146,11 +132,7 @@ class TestGenerateScenariosFromChunks:
                     "scenario_category": "factual",
                 }
             ]
-        }
-
-        mock_response = MagicMock()
-        mock_response.content = [mock_tool_block]
-        mock_client.messages.create.return_value = mock_response
+        })
 
         chunk_text = "Chunk content about return policies."
         scenarios = generate_scenarios_from_chunks([{"content": chunk_text}], ledger(), n=1)
@@ -159,34 +141,29 @@ class TestGenerateScenariosFromChunks:
         assert chunk_text in scenarios[0]["retrieved_contexts"]
 
     @patch("app.core.model_client.make_client")
-    def test_generate_scenarios_raises_on_no_tool_block(self, mock_factory):
-        """ValueError raised when response.content has no tool_use block."""
+    def test_generate_scenarios_raises_on_no_tool_call(self, mock_factory):
+        """ValueError raised when the model talked instead of calling the tool."""
         mock_client = mock_factory.return_value
         from app.services.scenario_service import generate_scenarios_from_chunks
 
-        mock_response = MagicMock()
-        mock_response.content = []  # empty — no tool_use block
-        mock_client.messages.create.return_value = mock_response
+        mock_client.chat.completions.create.return_value = completion(
+            content="Here are some scenarios."
+        )
 
-        with pytest.raises(ValueError, match="No tool_use block"):
+        with pytest.raises(ValueError, match="submit_scenarios"):
             generate_scenarios_from_chunks([{"content": "some content"}], ledger(), n=1)
 
     @patch("app.core.model_client.make_client")
     def test_generate_scenarios_raises_on_wrong_tool_name(self, mock_factory):
-        """ValueError raised when tool block has wrong name (not submit_scenarios)."""
+        """ValueError raised when the call names a tool other than submit_scenarios."""
         mock_client = mock_factory.return_value
         from app.services.scenario_service import generate_scenarios_from_chunks
 
-        mock_tool_block = MagicMock()
-        mock_tool_block.type = "tool_use"
-        mock_tool_block.name = "wrong_tool"
-        mock_tool_block.input = {}
+        mock_client.chat.completions.create.return_value = completion(
+            tool_calls=[tool_call("wrong_tool", {})], finish_reason="tool_calls"
+        )
 
-        mock_response = MagicMock()
-        mock_response.content = [mock_tool_block]
-        mock_client.messages.create.return_value = mock_response
-
-        with pytest.raises(ValueError, match="No tool_use block"):
+        with pytest.raises(ValueError, match="submit_scenarios"):
             generate_scenarios_from_chunks([{"content": "some content"}], ledger(), n=1)
 
 

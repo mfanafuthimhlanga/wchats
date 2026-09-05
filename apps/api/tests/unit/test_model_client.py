@@ -33,12 +33,14 @@ import json
 from datetime import datetime, timezone
 from decimal import Decimal
 
+import anthropic
 import httpx
 import openai
 import pytest
 import structlog
 from pydantic import BaseModel
 
+from app.core.config import settings
 from app.core.model_client import (
     PURPOSE_ROUTES,
     CallContext,
@@ -53,7 +55,6 @@ from app.core.model_client import (
     make_async_client,
     make_client,
     make_instructor_client,
-    provider_for_base_url,
     record_model_call,
     route_for,
     served_model_for,
@@ -235,20 +236,6 @@ class TestServedModel:
 
         assert recorded[0].served_model == "deepseek-v4-flash"
         assert recorded[0].model_source is ModelSource.MAPPED_BY_DOCS
-
-
-class TestProviderForBaseUrl:
-    def test_no_base_url_is_anthropic(self):
-        assert provider_for_base_url(None) == "anthropic"
-
-    def test_a_deepseek_endpoint_is_deepseek(self):
-        assert provider_for_base_url("https://api.deepseek.com/anthropic") == "deepseek"
-
-    def test_an_unknown_host_is_recorded_as_itself(self):
-        """The price book then raises rather than pricing a call from a guess."""
-        assert provider_for_base_url("https://gateway.internal:8443/v1") == (
-            "gateway.internal"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -768,11 +755,6 @@ class TestABodyMatchingNeitherShape:
         assert [entry for entry in logs if entry["event"] == "model_ledger.shape_skipped"] == []
 
 
-class TestProviderForAnOpenAiEndpoint:
-    def test_an_openai_endpoint_is_openai(self):
-        assert provider_for_base_url("https://api.openai.com/v1") == "openai"
-
-
 class TestTheAsyncHookFailsOpenToo:
     """The async twin of TestRecordingFailureIsFailOpen, on the client Ragas drives.
 
@@ -872,6 +854,10 @@ EVERY_PURPOSE = [
     # against a model no route named, so a checklist run could not report what
     # its own assessment cost. It bills like everything else now.
     "deployment_orchestrator",
+    # Ticket #154. The judge the calibration harness correlates against the
+    # owner's labels lives under `tests/`, which is why #153 stopped short of it
+    # and it kept building its own Anthropic client.
+    "calibration_judge",
 ]
 
 #: The purposes decision #34 priced at effort `none`.
@@ -1022,6 +1008,82 @@ class TestTheRawPathChecksThePurpose:
         )
 
         assert isinstance(client, openai.OpenAI)
+
+
+class TestTheFactoryTakesItsProviderFromTheRoute:
+    """Issue #88. The route decides which client gets built, and nothing else does.
+
+    `make_client` used to read the provider off the credentials' base url, and
+    an absent `OPENAI_BASE_URL` made `provider_for_base_url(None)` answer
+    `anthropic`. Every raw purpose below therefore built an `anthropic.Anthropic`
+    while its `PURPOSE_ROUTES` row said `openai / gpt-5.6-luna`, and
+    `ANTHROPIC_API_KEY` has been empty since the credential was retired on
+    2026-08-26.
+
+    These tests name no provider, which is what an ordinary call site does. A
+    green `route_for(purpose).provider == "openai"` is a claim about the table;
+    these are claims about the object the factory hands back.
+    """
+
+    RAW_PURPOSES = [p for p in EVERY_PURPOSE if p not in EFFORT_NONE_PURPOSES]
+
+    @pytest.mark.parametrize("purpose", RAW_PURPOSES)
+    def test_a_purpose_routed_to_luna_builds_an_openai_client(self, purpose):
+        client = make_client(
+            purpose,
+            tenant_id=TENANT,
+            recorder=lambda call: None,
+            credentials=Credentials(api_key="test-key"),
+            http_client=httpx.Client(transport=_transport(_openai_body())),
+        )
+
+        assert isinstance(client, openai.OpenAI)
+
+    def test_the_key_comes_from_the_routed_provider(self, monkeypatch):
+        """The credentials follow the provider, so the order of those two lines matters.
+
+        Resolving credentials first and the provider second reads the Anthropic
+        key for an OpenAI route, which is the bug one line up from the one above.
+        """
+        monkeypatch.setattr(settings, "OPENAI_API_KEY", "openai-key")
+        monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", "anthropic-key")
+
+        client = make_client(
+            "gatekeeper",
+            tenant_id=TENANT,
+            recorder=lambda call: None,
+            http_client=httpx.Client(transport=_transport(_openai_body())),
+        )
+
+        assert client.api_key == "openai-key"
+
+    def test_the_row_the_hook_writes_names_the_routed_provider(self):
+        """A row filed under `anthropic` prices against a book that never served it."""
+        recorded = []
+        make_client(
+            "query_expansion",
+            tenant_id=TENANT,
+            recorder=recorded.append,
+            credentials=Credentials(api_key="test-key"),
+            http_client=httpx.Client(transport=_transport(_openai_body())),
+            clock=lambda: AT,
+        ).chat.completions.create(model=LUNA, messages=[{"role": "user", "content": "x"}])
+
+        assert len(recorded) == 1, f"expected one ledger row, got {len(recorded)}"
+        assert recorded[0].provider == "openai"
+
+    def test_an_explicit_provider_still_wins(self):
+        """The argument survives as the seam a test drives another provider through."""
+        client = make_client(
+            "gatekeeper",
+            tenant_id=TENANT,
+            recorder=lambda call: None,
+            provider="deepseek",
+            credentials=Credentials(api_key="test-key", base_url="https://provider.example"),
+            http_client=httpx.Client(transport=_transport(_body())),
+        )
+
+        assert isinstance(client, anthropic.Anthropic)
 
 
 # ---------------------------------------------------------------------------

@@ -1,25 +1,29 @@
 """The client every direct-API site builds, where it is routed, and the row it leaves.
 
 WHY THE HOOK IS ON THE HTTP LAYER
-    Ten call sites in `apps/api/app` build a client and read the text back.
-    `make_instructor_client` wraps one in `instructor.from_openai(...)`, and Ragas
-    wraps that again, so a recorder attached to a wrapper method stops firing the
-    moment someone adds another wrapper. `usage` and `model` arrive as bytes on
-    the wire, and the httpx response hook is the one place every wrapper still
-    passes through. `attach_ledger_hook` therefore takes an httpx client it did
-    not construct, which is what keeps the seam intact under instructor.
+    Every direct-API site in `apps/api/app` builds its client here and reads the
+    text back. `make_instructor_client` wraps one in `instructor.from_openai(...)`,
+    and Ragas wraps that again, so a recorder attached to a wrapper method stops
+    firing the moment someone adds another wrapper. `usage` and `model` arrive as
+    bytes on the wire, and the httpx response hook is the one place every wrapper
+    still passes through. `attach_ledger_hook` therefore takes an httpx client it
+    did not construct, which is what keeps the seam intact under instructor.
 
-TWO PROVIDERS, TWO USAGE SHAPES, ONE ROW
+ONE WIRE, TWO USAGE SHAPES, ONE ROW
     Decision #34 routes every purpose to OpenAI `gpt-5.6-luna`, the Agent turn
-    included since #48 replaced the SDK harness with an owned loop. The hook
-    still reads both shapes and writes one `ModelCall` either way, because the
-    nine `messages` call sites below stay on DeepSeek's Anthropic-format
-    endpoint until #76 rewrites them. Anthropic reports fresh input, output
-    and the two cache counts separately. OpenAI reports `prompt_tokens` with the cached ones
-    INCLUDED, so fresh input is the difference and cache creation is zero. A body
-    whose `usage` matches neither shape records nothing and logs
-    `model_ledger.shape_skipped`, the same treatment a stream gets, because spend
-    nobody can read is a hole and not a zero.
+    included since #48 replaced the SDK harness with an owned loop. Since #76
+    rewrote the direct-API sites onto `chat.completions`, every call this platform
+    makes speaks the OpenAI wire, and `make_client`'s `provider` argument is the
+    seam a test drives another one through.
+
+    The hook reads both usage shapes anyway and writes one `ModelCall` either way,
+    because that seam is real: a body arriving through it must land a row rather
+    than a gap. Anthropic reports fresh input, output and the two cache counts
+    separately. OpenAI reports `prompt_tokens` with the cached ones INCLUDED, so
+    fresh input is the difference and cache creation is zero. A body whose `usage`
+    matches neither shape records nothing and logs `model_ledger.shape_skipped`,
+    the same treatment a stream gets, because spend nobody can read is a hole and
+    not a zero.
 
 WHERE A PURPOSE GOES
     `PURPOSE_ROUTES` is the whole routing decision as data, one row per purpose,
@@ -28,16 +32,13 @@ WHERE A PURPOSE GOES
     #48, and the owned loop builds its client through this factory like every
     other purpose, so each loop iteration leaves a `model_calls` row.
 
-    A ROUTE IS NOT YET A REDIRECT FOR THE messages SITES. `make_instructor_client`
-    reads the table and builds on the provider it names. `make_client` does not:
-    it takes the provider as an argument and defaults to whatever the base url
-    says, which is the Anthropic-format endpoint. Nine call sites migrated in
-    #47 send `messages.create` and `messages.parse` bodies and read Anthropic
-    content blocks back, and `OpenAI` has no `.messages` at all (checked
-    against the installed openai 2.45.0). Naming their purpose is what makes each
-    one countable and separable today; moving them to the route's provider is a
-    rewrite of the request and the response at every one of them, and issue #76
-    carries that work rather than this construction change.
+    THE ROUTE DECIDES WHICH CLIENT GETS BUILT, on both seams. `make_client`
+    derived the provider from the credentials' base url until issue #88, and an
+    absent `OPENAI_BASE_URL` derived `anthropic`, so every purpose this table
+    routes to `openai / gpt-5.6-luna` built an `anthropic.Anthropic`. The provider
+    comes off the route now, and the credentials are resolved for that provider
+    rather than before it is known. The `provider` argument survives as the seam a
+    test drives another provider through; nothing under `app/` passes it.
 
     `make_instructor_client` applies the route's model and reasoning effort as
     instructor defaults, which a call site can still override per call. In the
@@ -94,8 +95,9 @@ A STREAM LEAVES A GAP, AND THE GAP SAYS SO
     A streamed body belongs to the caller, so this hook never reads one and never
     records the tokens it spent. `model_ledger.stream_skipped` names the purpose
     and the requested model at every skip, which turns a silent hole in a tenant's
-    day into a line somebody can count. Parsing the stream belongs to the
-    owned-loop ticket. Until it lands, this event is what makes the hole countable.
+    day into a line somebody can count. No call site under `app/` asks for a
+    stream, so the event guards against one arriving rather than explaining a gap
+    in today's rows.
 
 Rung: `app.core` imports the standard library, third-party packages and
 `app.domain`. It imports no sibling of its own rung.
@@ -110,8 +112,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import Protocol
-from urllib.parse import urlparse
+from typing import Protocol, cast
 
 import anthropic as _anthropic
 import httpx
@@ -250,20 +251,34 @@ class LedgerContext:
     agent_id: str | None = None
     job_id: str | None = None
 
-    def client(self, purpose: str, **kwargs) -> ProviderClient:
+    def client(self, purpose: str, **kwargs) -> _openai.OpenAI:
         """A factory client for one purpose, billed to these ids.
+
+        The declared type is narrower than `make_client`'s. That function still
+        answers with either SDK, because its `provider` argument can name one.
+        This seam never passes that argument, every `PURPOSE_ROUTES` row names
+        `openai`, and #88 made the route the thing `make_client` reads, so the
+        object a call site gets here is an `OpenAI` and its `.chat` is real.
+
+        A `cast` rather than an isinstance check. The check would refuse the
+        doubles that stand in for a client in every unit test of a call site,
+        which would cost the suite its cheapest seam and prove nothing about
+        production, where the routing table already decides this.
 
         Raises whatever `make_client` raises, including on a purpose the routing
         table does not hold and on a judge purpose, which belongs to
         `instructor_client` because its route names a reasoning effort.
         """
-        return make_client(
-            purpose,
-            tenant_id=self.tenant_id,
-            recorder=self.recorder,
-            agent_id=self.agent_id,
-            job_id=self.job_id,
-            **kwargs,
+        return cast(
+            _openai.OpenAI,
+            make_client(
+                purpose,
+                tenant_id=self.tenant_id,
+                recorder=self.recorder,
+                agent_id=self.agent_id,
+                job_id=self.job_id,
+                **kwargs,
+            ),
         )
 
     def instructor_client(self, purpose: str, **kwargs) -> InstructorClient:
@@ -422,6 +437,27 @@ PURPOSE_ROUTES: Mapping[str, ModelRoute] = MappingProxyType({
     "strategist": _LUNA,
     "gatekeeper": _LUNA,
     "auditor": _LUNA,
+    # Added by ticket #154. The judge the calibration harness correlates against
+    # the owner's labels (#58) built its own Anthropic client under `tests/`, so
+    # it left no row and #153 did not reach it.
+    #
+    # `_LUNA` AND NOT `_JUDGE`, and #154 chose the raw path rather than being
+    # forced onto it. `_check_raw_purpose` does refuse an effort-bearing route on
+    # the raw client `tests/evals/judge.py` builds (OBSERVED 2026-09-03:
+    # `make_client("judge_faithfulness", ...)` raises `EffortNeedsInstructor`),
+    # yet this repo keeps an effort on the wire two other ways: through
+    # `make_instructor_client`, which stores the route's effort as a default that
+    # a `response_model=None` call still carries while returning a raw
+    # completion, and through `agent_loop._request_kwargs`, which writes
+    # `route.reasoning_effort` onto every body it builds. The choice costs a
+    # measurement, because the five production judges run at effort `none` (the
+    # figure decision #34 priced) while this one runs at Luna's provider default,
+    # so a calibration run measures a judge at a different effort from the judges
+    # it calibrates and its per-verdict cost for #60 is a number nobody chose.
+    # Routing this purpose at `_JUDGE` and building the judge through
+    # `LedgerContext.instructor_client` is the alternative, once #58 decides which
+    # judge the calibration is of.
+    "calibration_judge": _LUNA,
 })
 
 
@@ -447,25 +483,6 @@ def route_for(purpose: str, routes: Mapping[str, ModelRoute] = PURPOSE_ROUTES) -
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def provider_for_base_url(base_url: str | None) -> str:
-    """The price book's name for whoever serves this endpoint.
-
-    An unrecognised host is returned as itself rather than guessed at, so the
-    price book raises `UnknownPrice` on the read instead of pricing a call from
-    an assumption.
-    """
-    if not base_url:
-        return "anthropic"
-    host = urlparse(base_url).hostname or base_url
-    if "deepseek" in host:
-        return "deepseek"
-    if "openai" in host:
-        return OPENAI_PROVIDER
-    if "anthropic" in host:
-        return "anthropic"
-    return host
 
 
 def resolve_credentials(provider: str | None = None) -> Credentials:
@@ -831,8 +848,8 @@ def _hooked_sdk_client(
     here. The effort a raw client drops is exactly what that seam is about to
     install as an instructor default, so the refusal would be wrong there.
     """
+    provider = provider or route_for(purpose).provider
     credentials = credentials or resolve_credentials(provider)
-    provider = provider or provider_for_base_url(credentials.base_url)
     http_client = http_client or httpx.Client()
     attach_ledger_hook(
         http_client,
@@ -869,8 +886,9 @@ def make_client(
                      records nothing is the failure this ticket exists to end.
         agent_id:    UUID string of the agent, or None for a platform call.
         job_id:      UUID string of the job, or None.
-        provider:    the price book's name for who serves the calls. Derived from
-                     the base url when absent.
+        provider:    the price book's name for who serves the calls. Read off the
+                     purpose's route when absent, which is what every call site
+                     under `app/` does.
         credentials: api key and base url. Resolved from Settings when absent, for
                      the provider named above.
         http_client: an httpx client to hook instead of a fresh one.

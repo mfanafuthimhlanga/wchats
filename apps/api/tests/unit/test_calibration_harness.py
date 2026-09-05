@@ -21,7 +21,7 @@ agreement with a model — which is the exact tautology the instrument exists to
 detect — so the tests here pin that nothing in the harness writes that file,
 and never assert anything about what the owner has or has not scored.
 
-No network, no ANTHROPIC_API_KEY, no judge call: `judge_fn` is injected into
+No network, no credentials, no judge call: `judge_fn` is injected into
 compute_correlation() and `readiness()` is local by construction.
 """
 
@@ -114,6 +114,29 @@ def _write_second_pass(
     return path
 
 
+def judge_environment(monkeypatch, *, key: str | None = "sk-test", ledger: bool = True):
+    """Every input `readiness()` reads out of the environment, present.
+
+    TWO PLACES, AND THE SPLIT IS REAL. The judge's key reaches the provider
+    through Settings, which pydantic fills from `.env`, so it is set as an
+    attribute here and an unexported key still authenticates. The two ledger
+    variables are read straight from `os.environ` by
+    `tests.evals.judge.calibration_ledger`, so for those `.env` is not enough.
+    """
+    import tests.evals.judge as judge_module
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", key or "")
+    for name, value in (
+        (judge_module.TENANT_ID_ENV, "11111111-1111-1111-1111-111111111111"),
+        (judge_module.TENANT_DSN_ENV, "postgresql://tenant-probe"),
+    ):
+        if ledger:
+            monkeypatch.setenv(name, value)
+        else:
+            monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def calibration_tree(tmp_path, monkeypatch):
     """Point the harness at a tmp scenarios/responses/csv triple.
@@ -134,6 +157,12 @@ def calibration_tree(tmp_path, monkeypatch):
     # drive `cc.main([])`, and while this constant stayed real every one of them
     # wrote a calibration record into the owner's own directory.
     monkeypatch.setattr(cc, "CALIBRATION_ARTIFACT_JSON", tmp_path / "calibration.json")
+
+    # #154. Readiness reads three inputs out of the environment, and until they
+    # were set here every test that asserted READY passed only because the
+    # developer's own shell happened to carry the old ANTHROPIC_API_KEY. A test
+    # about a MISSING input removes it; nothing else has to think about it.
+    judge_environment(monkeypatch)
 
     def build(rows, *, capture: set[str] | None = None, with_scores: bool = True,
               second_pass: str | None = "match"):
@@ -190,6 +219,19 @@ def _judge_returning(
         }
 
     return _judge
+
+
+def _run_report(judge_fn, capsys):
+    """Drive the run and the report it prints, past main's readiness gate.
+
+    F2 put `readiness()` in front of the loop, so a tree readiness refuses no
+    longer reaches the report through `main`. What the report SAYS over a run
+    that did happen is a behaviour of its own, and these are the two halves
+    `main` calls once it is satisfied the run can go ahead.
+    """
+    result = cc.compute_correlation(judge_fn)
+    code = cc.print_run_report(result)
+    return code, capsys.readouterr().out
 
 
 _FOUR_ROWS = [
@@ -863,6 +905,68 @@ class TestReadiness:
 
         assert cc.main(["--check"]) == cc.EXIT_NOT_CALIBRATED_YET
 
+    def test_a_run_refuses_before_the_loop_when_the_ledger_ids_are_unset(
+        self, calibration_tree, monkeypatch, capsys
+    ):
+        """F2, adversarial review 2026-09-03.
+
+        `readiness()` ran under `--check` and nowhere else, so a shell without
+        `CALIBRATION_TENANT_ID` reached the loop, asked the judge once per
+        labelled row, turned every one of them into an ERROR verdict off the
+        `calibration_ledger()` ValueError, and reported NOT CALIBRATED YET about
+        a judge that had never been asked anything. Every input readiness reads
+        is local, so none of that had to be discovered by spending.
+        """
+        import tests.evals.judge as judge_module
+
+        calibration_tree(_FOUR_ROWS)
+        monkeypatch.delenv(judge_module.TENANT_ID_ENV, raising=False)
+
+        # Answers PASS rather than raising, so the failure this test reports is
+        # "the judge was asked" and never a crash on the way back.
+        called: list = []
+
+        def _recording_judge(dimension, transcript, tool_calls_log):
+            called.append(dimension)
+            return {
+                "dimension": dimension, "verdict": "PASS", "score": 5,
+                "reason": "this double should never be asked", "judge_identity": None,
+            }
+
+        monkeypatch.setattr(judge_module, "judge", _recording_judge)
+
+        exit_code = cc.main([])
+        out = capsys.readouterr().out
+
+        assert called == [], (
+            "the judge was asked over an environment `--check` would have refused"
+        )
+        assert exit_code == cc.EXIT_NOT_CALIBRATED_YET, out
+        assert exit_code != cc.EXIT_CALIBRATED, out
+        assert judge_module.TENANT_ID_ENV in out, (
+            "a refusal has to name the input that stopped it, the way --check does"
+        )
+
+    def test_a_ready_tree_still_reaches_the_judge(
+        self, calibration_tree, monkeypatch, capsys
+    ):
+        """The other half, so the refusal above cannot pass by refusing everything."""
+        import tests.evals.judge as judge_module
+
+        calibration_tree(_FOUR_ROWS)
+        monkeypatch.setattr(
+            judge_module, "judge",
+            _judge_returning({"S-101": 1, "S-102": 2, "S-103": 4, "S-104": 5}),
+        )
+
+        exit_code = cc.main([])
+        out = capsys.readouterr().out
+
+        assert exit_code == cc.EXIT_CALIBRATED, out
+        assert "Calibration readiness" in out, (
+            "the readiness block a run prints is the block --check prints"
+        )
+
 
 # ---------------------------------------------------------------------------
 # BACKLOG 8.1 — calibration reads run 0, because run 0 is the row the human scored
@@ -1375,7 +1479,7 @@ class TestWhatTheOwnerActuallySees:
     ):
         """A part that was never measured must not render as a part that failed."""
         calibration_tree(_TWENTY_BALANCED, second_pass=None)
-        code, out = self._run(monkeypatch, capsys, _judge_wrong_about(0))
+        code, out = _run_report(_judge_wrong_about(0), capsys)
 
         assert code == cc.EXIT_NOT_CALIBRATED_YET, out
         assert "never measured" in out, "an absent ceiling says so on its own line"
@@ -1398,7 +1502,7 @@ class TestWhatTheOwnerActuallySees:
         was 1.000 four lines above, and the remedy it named - relabel a scenario
         the other way - means writing a verdict the owner does not believe."""
         calibration_tree(_TWENTY_BALANCED, second_pass=None)
-        _code, out = self._run(monkeypatch, capsys, _judge_wrong_about(0))
+        _code, out = _run_report(_judge_wrong_about(0), capsys)
 
         assert "NOT CALIBRATED YET" in out
         assert "one label was used for every row" not in out
@@ -1412,9 +1516,12 @@ class TestWhatTheOwnerActuallySees:
         paths where nothing had been computed, contradicting the matrix three
         lines above it."""
         calibration_tree(_FOUR_ROWS, capture={"S-101", "S-102"})
-        _code, out = self._run(
-            monkeypatch, capsys,
-            _judge_returning({"S-101": 1, "S-102": 2, "S-103": 4, "S-104": 5}),
+        _code, out = _run_report(
+            _judge_returning({"S-101": 1, "S-102": 2, "S-103": 4, "S-104": 5}), capsys
+        )
+
+        assert "Calibration run" in out, (
+            "a report that printed nothing would satisfy every negative below"
         )
 
         assert "one label on both sides" not in out
@@ -1573,30 +1680,75 @@ class TestReadinessChecksWhatItCanCheckLocally:
     has been paid for.
     """
 
-    def test_an_unexported_api_key_is_named_and_blocks_ready(
+    def test_missing_judge_credentials_are_named_and_block_ready(
         self, calibration_tree, monkeypatch
     ):
-        """Present in `.env` is not enough: the settings loader and the Anthropic
-        client read different places, which CLAUDE.md records costing four
-        debugging cycles."""
-        calibration_tree(_FOUR_ROWS)
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        """#154. Each of the three is discovered otherwise only after the owner has
+        paid for a judge call per labelled row.
 
+        The names moved with the judge. It reached Anthropic and named its own
+        model until #154; it now builds its client from `PURPOSE_ROUTES` through
+        `app.core.model_client`, so the key it needs is OPENAI_API_KEY and the two
+        ledger variables say who its `model_calls` rows are billed to.
+        """
+        calibration_tree(_FOUR_ROWS)
+        assert cc.readiness()["judge_can_run"] is True, (
+            "the fixture supplies all three, otherwise every case below passes "
+            "for the wrong reason"
+        )
+
+        judge_environment(monkeypatch, key=None)
         report = cc.readiness()
-        assert report["api_key_exported"] is False
+        assert report["judge_key_present"] is False
+        assert report["judge_can_run"] is False
         assert report["ready_to_calibrate"] is False
 
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-        assert cc.readiness()["api_key_exported"] is True
+        judge_environment(monkeypatch, ledger=False)
+        report = cc.readiness()
+        assert report["judge_ledger_env_missing"] == [
+            "CALIBRATION_TENANT_ID",
+            "CALIBRATION_TENANT_DSN",
+        ]
+        assert report["judge_can_run"] is False
+        assert report["ready_to_calibrate"] is False
+
+    def test_check_names_all_three_inputs_and_never_the_anthropic_key(
+        self, calibration_tree, monkeypatch, capsys
+    ):
+        """A `--check` that names the wrong variable costs the owner an evening.
+
+        It printed ANTHROPIC_API_KEY for eight days after the judge stopped
+        reaching Anthropic, which is the failure CLAUDE.md calls quoting a
+        constraint rather than testing it.
+        """
+        calibration_tree(_FOUR_ROWS)
+        judge_environment(monkeypatch, key=None, ledger=False)
+
+        cc.main(["--check"])
+        out = capsys.readouterr().out
+
+        assert "ANTHROPIC" not in out, out
+        for name in ("OPENAI_API_KEY", "CALIBRATION_TENANT_ID", "CALIBRATION_TENANT_DSN"):
+            assert name in out, f"--check never names {name}"
+
+    def test_the_two_ledger_names_are_the_ones_the_judge_actually_reads(self):
+        """`--check` spells them so its CLI parse stays free of app imports, and
+        two spellings of one variable is how an operator exports a name nothing
+        reads and is told the input is still missing."""
+        import tests.evals.judge as judge_module
+
+        assert cc.JUDGE_LEDGER_ENV == (
+            judge_module.TENANT_ID_ENV,
+            judge_module.TENANT_DSN_ENV,
+        )
 
     def test_a_one_sided_sheet_is_refused_before_the_money_is_spent(
-        self, calibration_tree, monkeypatch
+        self, calibration_tree
     ):
         """Kappa needs both labels, and a resample loses one entirely with
         probability about e^-m. At m=1 that is 37% of resamples, so the run can
         only ever report "not a measurement" - which is knowable from the sheet.
         """
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
         rows = [(f"S-8{i:02d}", "grounding_fidelity", "5") for i in range(6)]
         calibration_tree(rows)
 
@@ -1607,9 +1759,8 @@ class TestReadinessChecksWhatItCanCheckLocally:
         assert report["balance_is_workable"] is False
         assert report["ready_to_calibrate"] is False
 
-    def test_a_balanced_sheet_is_ready(self, calibration_tree, monkeypatch):
+    def test_a_balanced_sheet_is_ready(self, calibration_tree):
         """Otherwise the test above would pass for the wrong reason."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
         rows = [(f"S-8{i:02d}", "grounding_fidelity", "5" if i < 3 else "1")
                 for i in range(6)]
         calibration_tree(rows)
@@ -1623,14 +1774,13 @@ class TestReadinessChecksWhatItCanCheckLocally:
 
 class TestEveryReasonReachesTheReader:
     def test_the_gate_speaks_on_the_undefined_kappa_path_too(
-        self, calibration_tree, monkeypatch
+        self, calibration_tree
     ):
         """That branch rebuilt `errors` from scratch and dropped every gate reason.
 
         It is the one path where the gate's reason is the ONLY notice that the
         ceiling is unusable, because `ceiling["missing"]` is empty there.
         """
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
         rows = [(f"S-9{i:02d}", "grounding_fidelity", "5") for i in range(6)]
         calibration_tree(rows, second_pass="match")
 
@@ -1648,14 +1798,9 @@ class TestEveryReasonReachesTheReader:
     ):
         """Printing the reason somewhere else in the output is not the same as
         printing it under the headline that asks 'why'."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
         calibration_tree(_TWENTY_BALANCED, second_pass=None)
 
-        import tests.evals.judge as judge_module
-
-        monkeypatch.setattr(judge_module, "judge", _judge_wrong_about(0))
-        cc.main([])
-        out = capsys.readouterr().out
+        _code, out = _run_report(_judge_wrong_about(0), capsys)
 
         _, _, after = out.partition("NOT CALIBRATED YET")
         assert "no second labelling pass" in after, (

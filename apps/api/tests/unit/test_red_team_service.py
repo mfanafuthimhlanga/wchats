@@ -4,7 +4,7 @@ Tests:
     TestClassifySeverity
         test_classify_severity_critical       — Haiku returns critical for successful injection
         test_classify_severity_low            — Haiku returns low for resistant agent
-        test_classify_severity_raises_on_no_tool_use — ValueError when no tool_use block
+        test_classify_severity_raises_on_no_tool_call — ValueError when the model talked instead
 
     TestSDKAttackerWiring / TestSDKAttackerLoop  (P4, audit D4)
         the four conversational attackers, driven through their real tool
@@ -92,32 +92,30 @@ from app.services.red_team_service import (
 )
 from app.services.tool_loop import dispatch
 from app.services.transactional import enforcement
-from tests.model_doubles import factory, ledger
+from tests.model_doubles import completion, factory, ledger, openai_client, tool_call
 
 # ---------------------------------------------------------------------------
 # TestClassifySeverity
 # ---------------------------------------------------------------------------
 
 
+def _severity(payload: dict):
+    """One forced `submit_severity` call, the way the classifier answers."""
+    return completion(
+        tool_calls=[tool_call("submit_severity", payload)], finish_reason="tool_calls"
+    )
+
+
 class TestClassifySeverity:
-    """Tests for the Haiku severity classifier (classify_severity)."""
+    """Tests for the severity classifier (classify_severity)."""
 
     def test_classify_severity_critical(self):
-        """Haiku judge returns critical severity for successful prompt injection."""
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-
-        # Simulate a tool_use block in the response content
-        mock_tool_block = MagicMock()
-        mock_tool_block.type = "tool_use"
-        mock_tool_block.name = "submit_severity"
-        mock_tool_block.input = {
+        """The judge returns critical severity for a successful prompt injection."""
+        mock_client = openai_client(create=lambda **kw: _severity({
             "severity": "critical",
             "confidence": 0.95,
             "reason": "Agent followed injected instructions verbatim.",
-        }
-        mock_response.content = [mock_tool_block]
-        mock_client.messages.create.return_value = mock_response
+        }))
 
         with factory(mock_client):
             verdict = classify_severity(
@@ -131,20 +129,12 @@ class TestClassifySeverity:
         assert verdict.confidence >= 0.9
 
     def test_classify_severity_low(self):
-        """Haiku judge returns low severity when agent resisted."""
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-
-        mock_tool_block = MagicMock()
-        mock_tool_block.type = "tool_use"
-        mock_tool_block.name = "submit_severity"
-        mock_tool_block.input = {
+        """The judge returns low severity when the agent resisted."""
+        mock_client = openai_client(create=lambda **kw: _severity({
             "severity": "low",
             "confidence": 0.8,
             "reason": "Agent resisted but with mildly concerning phrasing.",
-        }
-        mock_response.content = [mock_tool_block]
-        mock_client.messages.create.return_value = mock_response
+        }))
 
         with factory(mock_client):
             verdict = classify_severity(
@@ -156,30 +146,23 @@ class TestClassifySeverity:
 
         assert verdict.severity == "low"
 
-    def test_classify_severity_sends_thinking_disabled(self):
-        """The forced tool_choice must ship with thinking off.
+    def test_classify_severity_forces_its_tool_and_sends_no_anthropic_field(self):
+        """The classifier forces `submit_severity` and sends nothing OpenAI rejects.
 
-        Observed 2026-08-16: DeepSeek's Anthropic-format endpoint, which was the
-        default provider then via ANTHROPIC_BASE_URL, rejects a forced tool_choice with
-        HTTP 400 "Thinking mode does not support this tool_choice" unless
-        thinking is explicitly disabled. The parameter is inert on the real
-        Anthropic API, so the flag is provider-neutral.
+        `thinking={"type": "disabled"}` cleared an HTTP 400 observed 2026-08-16 on
+        DeepSeek's Anthropic-format endpoint. Issue #76 moved this call to OpenAI,
+        which rejects a body field it does not declare, so the parameter that used
+        to be required now breaks the call it used to fix.
         """
-        mock_client = MagicMock()
-        mock_response = MagicMock()
+        captured: dict = {}
 
-        mock_tool_block = MagicMock()
-        mock_tool_block.type = "tool_use"
-        mock_tool_block.name = "submit_severity"
-        mock_tool_block.input = {
-            "severity": "low",
-            "confidence": 0.8,
-            "reason": "Agent resisted.",
-        }
-        mock_response.content = [mock_tool_block]
-        mock_client.messages.create.return_value = mock_response
+        def _create(**kwargs):
+            captured.update(kwargs)
+            return _severity(
+                {"severity": "low", "confidence": 0.8, "reason": "Agent resisted."}
+            )
 
-        with factory(mock_client):
+        with factory(openai_client(create=_create)):
             classify_severity(
                 attack_vector="prompt_injection",
                 probe_message="probe",
@@ -187,22 +170,24 @@ class TestClassifySeverity:
                 ledger=ledger(),
             )
 
-        call_kwargs = mock_client.messages.create.call_args[1]
-        # Precondition: with no forced tool_choice there is nothing to disable
-        # thinking for, and the assertion below would pin an unrelated call.
-        assert call_kwargs.get("tool_choice", {}).get("type") == "tool"
-        assert call_kwargs.get("thinking") == {"type": "disabled"}, (
-            f"the severity classifier sent thinking={call_kwargs.get('thinking')!r}; the "
-            "default provider returns HTTP 400 on a forced tool_choice without it, so "
-            "every red-team finding would fail to be classified in production"
+        assert captured.get("tool_choice") == {
+            "type": "function",
+            "function": {"name": "submit_severity"},
+        }, (
+            "the classifier no longer forces submit_severity, so it can answer in "
+            f"prose. tool_choice={captured.get('tool_choice')!r}"
+        )
+        leftovers = [f for f in ("thinking", "system", "max_tokens") if f in captured]
+        assert leftovers == [], (
+            f"the severity classifier sent {leftovers!r}, which OpenAI rejects as "
+            "unrecognised body fields, so every red-team finding would go unclassified"
         )
 
-    def test_classify_severity_raises_on_no_tool_use(self):
-        """ValueError raised when no tool_use block is present in the response."""
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = []  # No tool_use block
-        mock_client.messages.create.return_value = mock_response
+    def test_classify_severity_raises_on_no_tool_call(self):
+        """ValueError raised when the model talked instead of calling the tool."""
+        mock_client = openai_client(
+            create=lambda **kw: completion(content="It looks fairly serious.")
+        )
 
         with factory(mock_client):
             with pytest.raises(ValueError):
@@ -2360,3 +2345,105 @@ class TestReadingAStoredRunBack:
 
         with pytest.raises(InvalidRedTeamResult):
             RedTeamResult.from_payload(payload)
+# ---------------------------------------------------------------------------
+# Issue #89 — what the attacker ASKED FOR reaches the run, beside what ran
+# ---------------------------------------------------------------------------
+
+
+class TestTheObservationCarriesTheToolUseCount:
+    """`ProbeSession.tool_uses` incremented on a live path and nothing read it.
+
+    The counter measures something the other six do not. `probes_attempted` is
+    what the send_probe handler RAN; this is what the model requested before
+    dispatch. The difference is tool calls that never reached a handler, and a
+    run that reports only the first reads an attacker that could not connect as
+    an attacker that barely tried.
+    """
+
+    def test_a_probe_with_two_tool_uses_reports_two_in_its_observation(self):
+        """Through the production runner, not by setting the field.
+
+        The harness plays one send_probe per sequence and the runner makes two,
+        so the count comes out of `run_tool_loop`'s on_tool_use callback, the
+        real handler and `to_observation` in one pass.
+        """
+        observations: list[VectorObservation] = []
+        harness = _AttackerHarness([("send_probe", {"message": "p"})])
+
+        with harness.install():
+            run_data_leakage_agent(
+                MagicMock(return_value="I cannot share that."),
+                max_turns=2,
+                attack_sequences=2,
+                observations=observations,
+                ledger=ledger(),
+            )
+
+        assert harness.sequences_started == 2
+        assert observations[0].tool_uses == 2, (
+            "the observation must carry the count the session made"
+        )
+
+    def test_the_count_is_what_was_asked_for_and_not_what_ran(self):
+        """The gap is the whole reason the number is worth carrying.
+
+        A session that asked four times and ran one probe is what an attacker
+        naming tools that do not exist looks like from the ledger. Driven on the
+        session directly, because the loop cannot produce the gap without a
+        provider that names a tool no handler carries.
+        """
+        session = ProbeSession(attack_vector="data_leakage", sequences_requested=1)
+        for _ in range(4):
+            session.observe_tool_use("send_probe")
+        session.probes_attempted = 1
+        session.record_answer("p", "r", MagicMock())
+
+        obs = session.to_observation()
+        assert obs.tool_uses == 4
+        assert obs.probes_attempted == 1, (
+            "three of the four asks never reached a handler, and the pair is "
+            "what says so"
+        )
+
+    def test_the_k_attempt_fold_sums_the_count(self):
+        """One row per vector, so attempt 2's asks may not overwrite attempt 1's.
+
+        Every other counter on the observation sums across attempts. A count
+        that did not would report the last attempt's asks as the vector's.
+        """
+        merged = red_team_service._merge_attempt_observations(
+            "data_leakage",
+            3,
+            [
+                _obs("data_leakage", requested=1, completed=1, answered=1),
+                _obs("data_leakage", requested=1, completed=1, answered=1),
+            ],
+        )
+        assert merged.tool_uses == 0, "the helper defaults, so nothing invents one"
+
+        merged = red_team_service._merge_attempt_observations(
+            "data_leakage",
+            2,
+            [
+                VectorObservation(vector="data_leakage", observed=True, tool_uses=3),
+                VectorObservation(vector="data_leakage", observed=True, tool_uses=5),
+            ],
+        )
+        assert merged.tool_uses == 8
+
+    def test_run_coverage_reports_the_count_per_vector(self):
+        """The end of the road: `red_team_runs.coverage` is where a person reads it.
+
+        `VectorObservation` never reaches storage itself. `run_coverage` folds the
+        ledger into the payload the completion write stores and both red-team
+        routes read, so a field that stopped at the observation would still be
+        read by nothing.
+        """
+        quiet = _obs("data_leakage")
+        quiet.tool_uses = 4
+        coverage = run_coverage([quiet, _obs("hallucination")])
+
+        assert coverage["tool_uses"] == {"data_leakage": 4}, (
+            "a vector that asked for nothing is left out rather than stored as "
+            "a zero, which is how pii_deflections already reads"
+        )

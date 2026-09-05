@@ -1,5 +1,5 @@
 """
-generate_metadata — Celery task: Haiku metadata + entity extraction per chunk.
+generate_metadata — Celery task: metadata + entity extraction per chunk.
 
 Position in M2 chain (3rd of 4):
     parse_documents → chunk_documents → generate_metadata → embed_and_migrate
@@ -39,8 +39,8 @@ THE WHOLLY-FAILED RULE (issue #23):
     or rejected ANTHROPIC_API_KEY, for instance) that a fourth attempt only bills.
 
 Layer 3 idempotency (SELECT COUNT(*) pre-check):
-    Before calling Haiku for a chunk, the task checks whether a chunk_metadata row
-    already exists for that chunk_id. If it does, the chunk is skipped — no Haiku
+    Before calling the model for a chunk, the task checks whether a chunk_metadata
+    row already exists for that chunk_id. If it does, the chunk is skipped — no
     call, no re-billing. This is Layer 3 of the 4-layer idempotency contract.
 
     Design rationale: chunk_metadata is populated per-chunk. On Celery retry (e.g.
@@ -64,9 +64,9 @@ Connection string security (CLAUDE.md non-negotiable rule):
     The connection string is fetched from the control DB by agent_id and decrypted
     with fernet_decrypt() at runtime.
 
-Cost design (batched Haiku calls):
-    Haiku metadata extraction is the pipeline's slowest and most billed step.
-    enrich_chunks_batch() packs BATCH_SIZE (10) chunks into a single Haiku call,
+Cost design (batched model calls):
+    Metadata extraction is the pipeline's slowest and most billed step.
+    enrich_chunks_batch() packs BATCH_SIZE (10) chunks into a single call,
     cutting 50 chunks from 50 calls (~$0.08/doc) to 5 calls (~$0.008/doc) — a
     ~10x cost reduction. Chunks are numbered by position in the batch and the
     model returns per-chunk results in submission order; the task zips results
@@ -102,16 +102,16 @@ Return value (chain contract):
 Threat mitigations (T-02-04):
     T-02-04-01: Task signature is (self, job: IngestionJob); the provider key is
                 resolved from Settings by the client factory, never a task arg.
-    T-02-04-02: Haiku response validated by Pydantic via client.messages.parse();
-                malformed responses raise ValidationError and the chunk is skipped.
+    T-02-04-02: The response is validated by Pydantic via
+                client.chat.completions.parse(); malformed responses raise
+                ValidationError and the chunk is skipped.
                 Literal entity types prevent arbitrary type injection.
     T-02-04-03: Layer 3 idempotency guard (SELECT COUNT(*) FROM chunk_metadata)
                 prevents re-billing on retry.
     T-02-04-06: structlog calls log chunk_id and document_id ONLY — never chunk
-                content or Haiku response bodies.
+                content or response bodies.
 """
 
-import ssl
 
 import psycopg2
 import redis as redis_lib
@@ -120,6 +120,7 @@ import structlog
 from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.model_client import LedgerContext, ledger_recorder
+from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.domain.chunk_metadata import ChunkMetadata
 from app.domain.ingestion_job import IngestionJob
@@ -132,9 +133,9 @@ from app.worker.tasks.pipeline.chain_edge import job_in_job_out
 
 log = structlog.get_logger(__name__)
 
-# Module-level sync Redis client — strip query params; pass ssl_cert_reqs as constant.
+# Module-level sync Redis client. Strip the query string, then redis_ssl_kwargs decides TLS.
 _url_clean = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
-_ssl_opts: dict = {"ssl_cert_reqs": ssl.CERT_NONE} if _url_clean.startswith("rediss://") else {}
+_ssl_opts: dict = redis_ssl_kwargs(_url_clean)
 _redis = redis_lib.from_url(_url_clean, **_ssl_opts)
 
 
@@ -201,7 +202,7 @@ def _persist_enrichment(tenant_conn, enrichment: ChunkMetadata) -> None:
 def _pending_chunks(tenant_conn, chunk_rows) -> list[tuple]:
     """The (chunk_id, content) pairs that have no chunk_metadata row yet.
 
-    Layer 3 idempotency: an already-enriched chunk costs no Haiku call and no
+    Layer 3 idempotency: an already-enriched chunk costs no model call and no
     re-billing (T-02-04-03). Stays on the main thread because psycopg2 is not
     thread-safe.
     """
@@ -224,7 +225,7 @@ def _enrich_pending(
 ) -> int:
     """Enrich and persist the pending chunks; return how many records landed.
 
-    One Haiku call per BATCH_SIZE chunks. The model returns per-chunk results in
+    One model call per BATCH_SIZE chunks. The model returns per-chunk results in
     submission order, and this function zips them back to chunk_ids by index,
     never by id. The model never sees an id. A ChunkMetadata exists only for a
     chunk that came back, so the return value counts real records, not attempts.

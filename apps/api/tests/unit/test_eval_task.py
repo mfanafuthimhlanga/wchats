@@ -13,10 +13,10 @@ the same SQL, to the same table names, and both "succeed". A test that mocked
 eval_service wholesale and asserted "write_eval_results was called" would have
 passed against the defect.
 
-No live PostgreSQL exists on this machine, so every DB boundary is a double:
-psycopg2.connect, the control-DB session and eval_service's writers. Nothing
-here proves a live database accepts the SQL. That is integration territory, and
-it SKIPS, which is unobserved, never a pass.
+Every DB boundary here is a double: psycopg2.connect, the control-DB session and
+eval_service's writers. So these tests prove which DSN each write opens and what
+SQL it carries, and they prove nothing about a live database accepting that SQL.
+That is integration territory, and it SKIPS, which is unobserved, never a pass.
 """
 
 from __future__ import annotations
@@ -1356,12 +1356,13 @@ class TestATimeoutReachesTheRecordWithItsMessage:
 
 
 class TestRunEvalSuiteBeat:
-    """The nightly fan-out selects DEPLOYED agents only (#32, decision #6.5).
+    """The nightly fan-out selects agents that are deployed AND ready (#134).
 
-    Schedules arm per agent at deploy: is_deployed has one writer,
-    POST /approve-deployment. The beat selected status='ready' until #32, so
-    the first beat worker would have evaluated every ready agent nightly,
-    deployed or not, spending eval money on agents no customer can reach.
+    Both halves cost money when they are missing. Dropping `is_deployed` fans the
+    nightly eval out to every ready agent no customer can reach (#32). Dropping
+    `status == 'ready'` keeps spending on an agent whose own chat route now answers
+    409, because `is_deployed` has one writer, POST /approve-deployment, and nothing
+    clears it when status moves off 'ready' afterwards.
     """
 
     def _fan_out(self):
@@ -1394,22 +1395,76 @@ class TestRunEvalSuiteBeat:
             "agent_id": "11111111-1111-1111-1111-111111111111"
         }, "agent_id only crosses the task boundary (CTL-08)"
 
-    def test_the_selection_is_deployed_only_never_ready(self):
-        """The WHERE clause is the behaviour here, so the compiled SQL is the
-        pin. Control: remove the filter and 'is_deployed' leaves the SQL."""
+    def test_the_selection_is_deployed_and_ready(self):
+        """The WHERE clause is the behaviour here, so the compiled SQL is the pin.
+
+        The column list names every Agent column, `status` included, so the full
+        statement cannot tell these selections apart. Only the predicate can. It is
+        rendered with literal binds because `status` alone would also pass for
+        `status = 'pending'`, and a bare `is_deployed` would pass for `= false`.
+        """
         _, mock_db, _ = self._fan_out()
 
         stmt = mock_db.execute.call_args.args[0]
-        # The WHERE clause alone: the column list names every Agent column,
-        # `status` included, so the full statement cannot distinguish the
-        # selections this test exists to tell apart. The PREDICATE is the
-        # behaviour: `is_deployed` merely appearing would also pass for
-        # == False or IS NULL, so the rendered comparison is what is pinned.
-        where = str(stmt.whereclause).lower()
+        where = str(
+            stmt.whereclause.compile(compile_kwargs={"literal_binds": True})
+        ).lower()
         assert "is_deployed = true" in where, (
             f"the beat must select DEPLOYED agents, positively (#32): {where}"
         )
-        assert "status" not in where, (
-            "the pre-#32 selection (status='ready') is back, which fans the "
-            f"nightly eval out to undeployed agents: {where}"
+        assert "status = 'ready'" in where, (
+            "a deployed agent whose status left 'ready' refuses its own customers "
+            f"while the nightly eval keeps spending on it (#134): {where}"
+        )
+        assert " and " in where, (
+            f"the two filters must both hold, not either one (#134): {where}"
+        )
+
+
+class TestTheEvalRunBound:
+    """`eval_run_bound_s` is read by two modules and written down in neither.
+
+    Its product sets the idempotency window a redelivered message is judged
+    against, and in the deployment checklist it sets how long a silent chain may
+    go before the guard stops trusting the clock. Both callers imported it and
+    no test ever called it, so a wrong product would have been read as right in
+    two places at once.
+    """
+
+    def test_it_is_the_invocation_ceiling_times_the_per_turn_bound(self):
+        """P2 made a run invoke the customer agent once per scenario, so the
+        worst case is every scenario the ceiling admits taking a whole turn."""
+        from app.services.eval_service import AGENT_INVOCATION_MAX_CALLS_PER_RUN
+        from app.worker.tasks.runtime.agent import AGENT_TURN_TIMEOUT_S
+
+        assert (
+            mod.eval_run_bound_s()
+            == AGENT_INVOCATION_MAX_CALLS_PER_RUN * AGENT_TURN_TIMEOUT_S
+        ), (
+            "anything smaller under-reports how long one run can hold the "
+            "runtime queue, and the checklist guard reaps live chains on it"
+        )
+
+    def test_a_longer_turn_budget_moves_the_bound(self):
+        """ONE copy of the number, imported (audit D3). A literal would not move."""
+        before = mod.eval_run_bound_s()
+
+        with patch("app.worker.tasks.runtime.agent.AGENT_TURN_TIMEOUT_S", 180):
+            after = mod.eval_run_bound_s()
+
+        assert after == before * 2, (
+            "doubling agent.py's per-turn bound doubles how long a run can "
+            f"take, and this bound did not follow it: {before} then {after}"
+        )
+
+    def test_a_wider_invocation_ceiling_moves_the_bound(self):
+        """The other term. More scenarios invoked is more wall clock spent."""
+        before = mod.eval_run_bound_s()
+
+        with patch.object(mod, "AGENT_INVOCATION_MAX_CALLS_PER_RUN", 120):
+            after = mod.eval_run_bound_s()
+
+        assert after == before * 2, (
+            "the ceiling on invocations is one of the two factors, and raising "
+            f"it left the bound where it was: {before} then {after}"
         )

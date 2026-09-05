@@ -46,10 +46,9 @@ from app.services.tool_loop import run_tool_loop
 from app.services.transactional.enforcement import _parse_rate_limit
 
 #: The routing-table key every model call this orchestrator makes bills under,
-#: and the row a rollup groups its spend by. The model comes from that row, not
-#: from this module: `SONNET_MODEL = "claude-sonnet-4-6"` lived here until #49,
-#: and the Anthropic credential it needed was revoked on 2026-08-26, so nothing
-#: has served that alias since. ADR 0008 routes this purpose to OpenAI.
+#: and the row a rollup groups its spend by. The model comes from that row rather
+#: than from a literal here, so the wire and a spend report cannot name two
+#: different models. ADR 0008 routes this purpose to OpenAI.
 ORCHESTRATOR_PURPOSE = "deployment_orchestrator"
 
 log = structlog.get_logger(__name__)
@@ -166,6 +165,17 @@ RED_TEAM_SIGNAL_RUN_FAILED = "run_failed"
 # not see finish, closes the other half.
 RED_TEAM_SIGNAL_DID_NOT_FINISH = "did_not_finish"
 
+#: Whether the verified-QA figures were read at all (#121, #131). The two
+#: knowledge collectors carry the same signal vocabulary the two gated ones
+#: already carry, for the same reason: a collector that never executed must
+#: not answer in the vocabulary of one that did.
+VERIFIED_QA_SIGNAL_MEASURED = "measured"
+VERIFIED_QA_SIGNAL_UNAVAILABLE = "unavailable"
+
+#: The same pair for the corpus counts.
+CORPUS_SIGNAL_MEASURED = "measured"
+CORPUS_SIGNAL_UNAVAILABLE = "unavailable"
+
 # The only state either signal may be in for `ship` to survive the gate.
 SHIPPABLE_SIGNAL = "measured"
 
@@ -280,7 +290,13 @@ whether the coverage figures came from the run itself ('run') or describe what
 today's code can test ('current_build'), which may not be what that run tested.
 
 verified_qa_stats and corpus_stats are how much verified knowledge the agent has
-to answer from.
+to answer from. Each carries a `signal`, and every count and average beside it
+is null when that signal is not 'measured'. The platform could not reach the
+tenant's own database, so say that rather than describing an empty knowledge
+base.
+`row_count` is a count and is real at nought, but `avg_faithfulness` and
+`avg_relevance` are null whenever there were no pairs to average, and a null
+average is unknown rather than a low score.
 
 blast_radius is what the agent is authorized to spend and what it has actually
 spent. Keep the configured ceiling and the observed maximum as two separate
@@ -942,19 +958,32 @@ TERMINAL_RUN_STATUSES = frozenset({"complete", "failed"})
 #: `started_at >= %s` is the whole point of the query. Without it the wait would
 #: be satisfied by last night's terminal run and the checklist would go straight
 #: back to grading a row it did not cause.
+#:
+#: `status <> 'running'` IS THE OTHER HALF OF THAT BOUNDARY (#128). The newest
+#: row since the mark is not the question; the question is whether the run this
+#: checklist started has finished. Without the predicate the checklist's own run
+#: completes, the nightly beat starts a second one before the next poll, and
+#: every poll from then on reads the newer 'running' row: the wait burns the
+#: whole ceiling for a run that finished in minutes, and the id
+#: `latest_eval_run_id_since` re-queries at collect time names a run still going,
+#: so `read_eval_result` returns None and the report blocks with nothing in the
+#: log naming why. Same predicate and same reasoning as `_LATEST_RUN_SQL` above:
+#: a status this query has not heard of is still finished, so the one
+#: non-terminal name is excluded rather than the terminal ones listed.
+#:
 #: `id::text` because the id is a uuid column and every consumer of it is a
 #: string: `read_eval_result` and `read_red_team_result` both cast it back with
 #: `%(id)s::uuid`, and a UUID object would have to be stringified somewhere in
 #: between anyway.
 _EVAL_RUN_SINCE_SQL = (
     "SELECT id::text, status FROM eval_runs "
-    "WHERE kind = %s AND started_at >= %s "
+    "WHERE kind = %s AND started_at >= %s AND status <> 'running' "
     "ORDER BY started_at DESC LIMIT 1"
 )
 
 _RED_TEAM_RUN_SINCE_SQL = (
     "SELECT id::text, status FROM red_team_runs "
-    "WHERE kind = %s AND started_at >= %s "
+    "WHERE kind = %s AND started_at >= %s AND status <> 'running' "
     "ORDER BY started_at DESC LIMIT 1"
 )
 
@@ -989,12 +1018,15 @@ def _dispatch_moment(conn_str: str) -> datetime:
 def _latest_run_since(
     sql: str, kind: str, conn_str: str, since: datetime
 ) -> tuple[str, str] | None:
-    """(id, status) for the newest run of this kind started at or after `since`.
+    """(id, status) for the newest FINISHED run of this kind started since `since`.
 
-    None means there is no such row yet, or the read failed. Both keep the wait
-    waiting and both end at the ceiling as an absent measurement, which is the
+    None means no such row yet, or the read failed. Both keep the wait waiting
+    and both end at the ceiling as an absent measurement, which is the
     fail-closed direction: a tenant DB we cannot reach must not resolve into a
     finished run.
+
+    A run that is merely in flight is not a row this returns (#128), so a second
+    run started after the awaited one cannot answer for it.
     """
     try:
         conn = psycopg2.connect(conn_str, connect_timeout=10)
@@ -1015,7 +1047,7 @@ def _latest_run_since(
 def latest_eval_run_status_since(
     agent_id: str, conn_str: str, since: datetime
 ) -> str | None:
-    """The newest eval run this checklist could have started, by status."""
+    """The newest finished eval run this checklist could have started, by status."""
     row = _latest_run_since(_EVAL_RUN_SINCE_SQL, f"m6:{agent_id}", conn_str, since)
     return None if row is None else row[1]
 
@@ -1023,7 +1055,7 @@ def latest_eval_run_status_since(
 def latest_red_team_run_status_since(
     agent_id: str, conn_str: str, since: datetime
 ) -> str | None:
-    """The newest red-team run this checklist could have started, by status."""
+    """The newest finished red-team run this checklist could have started."""
     row = _latest_run_since(_RED_TEAM_RUN_SINCE_SQL, f"m7:{agent_id}", conn_str, since)
     return None if row is None else row[1]
 
@@ -1046,9 +1078,77 @@ def latest_eval_run_id_since(
 def latest_red_team_run_id_since(
     agent_id: str, conn_str: str, since: datetime
 ) -> str | None:
-    """The id of the newest red-team run started at or after `since`."""
+    """The id of the newest finished red-team run started at or after `since`."""
     row = _latest_run_since(_RED_TEAM_RUN_SINCE_SQL, f"m7:{agent_id}", conn_str, since)
     return None if row is None else row[0]
+
+
+#: The same two tables and the same boundary as the since-readers above, asking
+#: the one thing they exclude: whether a run is still going. The checklist's
+#: idempotency guard reads this before it reaps a chain that has gone quiet,
+#: because a clock alone cannot tell a dead chain from a queued one.
+#:
+#: `ORDER BY started_at ASC` rather than DESC, which is the other readers' order.
+#: They want the newest FINISHED run because that is the one this checklist
+#: caused; this wants the OLDEST still going, because that is the run a fresh
+#: dispatch is refused in favour of and therefore the one a replacement checklist
+#: has to wait on.
+_EVAL_RUN_RUNNING_SINCE_SQL = (
+    "SELECT id::text, started_at FROM eval_runs "
+    "WHERE kind = %s AND started_at >= %s AND status = 'running' "
+    "ORDER BY started_at ASC LIMIT 1"
+)
+
+_RED_TEAM_RUN_RUNNING_SINCE_SQL = (
+    "SELECT id::text, started_at FROM red_team_runs "
+    "WHERE kind = %s AND started_at >= %s AND status = 'running' "
+    "ORDER BY started_at ASC LIMIT 1"
+)
+
+
+def running_runs_since(
+    agent_id: str, conn_str: str, since: datetime
+) -> dict[str, tuple[str, datetime]] | None:
+    """This agent's jobs still running, of those started at or after `since`.
+
+    Keyed "eval" and "red_team", each carrying (run id, started_at). A kind with
+    nothing in flight is absent from the dict, so `{}` says the tenant DB was
+    read and holds nothing of this agent's still going.
+
+    NONE IS A DIFFERENT ANSWER FROM `{}`, AND A CALLER THAT MERGES THEM BREAKS
+    THE POINT. None means the tenant DB could not be read. An outage is exactly
+    what makes a chain go quiet, so reading an unread database as "nothing is
+    running" would supply the evidence for reaping a live chain out of the same
+    failure that silenced it.
+
+    Both statements go over ONE connection. Two would double the connect cost of
+    a read the guard takes on every first pass, and a tenant DB reachable for the
+    first query but not the second is a distinction with no consequence here:
+    either way the answer is None.
+    """
+    found: dict[str, tuple[str, datetime]] = {}
+    try:
+        conn = psycopg2.connect(conn_str, connect_timeout=10)
+        try:
+            with conn.cursor() as cur:
+                for name, sql, kind in (
+                    ("eval", _EVAL_RUN_RUNNING_SINCE_SQL, f"m6:{agent_id}"),
+                    ("red_team", _RED_TEAM_RUN_RUNNING_SINCE_SQL, f"m7:{agent_id}"),
+                ):
+                    cur.execute(sql, (kind, since))
+                    row = cur.fetchone()
+                    if row is not None:
+                        found[name] = (row[0], row[1])
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning(
+            "deployment_service.running_runs.unread",
+            agent_id=agent_id,
+            error=str(exc) or repr(exc),
+        )
+        return None
+    return found
 
 
 def poll_terminal_statuses(
@@ -1311,26 +1411,40 @@ COVERAGE_SOURCE_CURRENT_BUILD = "current_build"
 #: needs it.
 RED_TEAM_RUN_STATUS_COMPLETE = "complete"
 
-#: The newest run that FINISHED, and its status. `status <> 'running'` is the
-#: whole correction (#54 review): without it the 'running' row `run_red_team`
-#: INSERTs before it attacks anything satisfied "a run exists", and the collector
-#: answered MEASURED with zero open findings for an agent nothing had ever
-#: probed. Same STATUS predicate and reasoning as `_LATEST_RUN_SQL` on the eval
-#: half, minus its kind filter: this read is not agent-scoped, so on a tenant DB
-#: carrying two agents it returns the other one's newest finished run (#127).
-#: A status this query has not heard of is still terminal, so it is
-#: excluded by naming the one non-terminal status rather than by listing the
-#: terminal ones.
+#: The newest run of THIS AGENT'S that finished, and its status. Two predicates,
+#: each closing a way the security half used to answer about a run it was not
+#: asked about.
+#:
+#: `status <> 'running'` is the #54 review's correction: without it the 'running'
+#: row `run_red_team` INSERTs before it attacks anything satisfied "a run
+#: exists", and the collector answered MEASURED with zero open findings for an
+#: agent nothing had ever probed. A status this query has not heard of is still
+#: terminal, so the one non-terminal name is excluded rather than the terminal
+#: ones listed.
+#:
+#: `kind = %s` is #127's, and it is the eval half's filter arriving on the
+#: security half. `red_team_runs` has no agent_id column, so 'm7:{agent_id}' is
+#: the scope, matching what `run_red_team` INSERTs and what its own idempotency
+#: guard reads. Without it, two agents on one tenant DB share this read: A's own
+#: wait sees its run fail, because the since-readers ARE kind-scoped, and then
+#: this query hands back B's completed run so A's report carries B's coverage as
+#: measured. decide() reads the right record by id, so the verdict was safe; the
+#: gate's coverage checks and the owner-facing summary were not.
 _RED_TEAM_LATEST_SQL = (
     "SELECT started_at, status, coverage FROM red_team_runs "
-    "WHERE status <> 'running' ORDER BY started_at DESC LIMIT 1"
+    "WHERE kind = %s AND status <> 'running' "
+    "ORDER BY started_at DESC LIMIT 1"
 )
 
 #: The same row on a tenant DB provisioned before alembic_tenant 0015 gave
-#: `red_team_runs` its `coverage` column.
+#: `red_team_runs` its `coverage` column. Kind-scoped too: a degraded read must
+#: lose the run's own coverage and nothing else. `kind` needs no rung of its own
+#: at either width, because `red_team_runs` has carried it NOT NULL since
+#: alembic_tenant 0001 created the table.
 _RED_TEAM_LATEST_PRE_0015_SQL = (
     "SELECT started_at, status FROM red_team_runs "
-    "WHERE status <> 'running' ORDER BY started_at DESC LIMIT 1"
+    "WHERE kind = %s AND status <> 'running' "
+    "ORDER BY started_at DESC LIMIT 1"
 )
 
 
@@ -1409,18 +1523,28 @@ def _coverage_from_run(stored: object) -> dict | None:
 
 
 def _latest_red_team_run(cur, conn, agent_id: str) -> tuple[tuple | None, object]:
-    """The newest FINISHED red-team run, and whatever coverage it recorded.
+    """This agent's newest FINISHED red-team run, and whatever coverage it recorded.
 
-    `coverage` arrived with migration 0015 and a tenant provisioned before it
-    does not have the column (tenant DBs are migrated at PROVISION time only).
-    Same narrow-except degradation shape as the eval collector's pre-0013
-    fallback: UndefinedColumn drops the run's own coverage and nothing else.
+    Two rungs, and each says which tenant DBs it serves. The wide query serves a
+    tenant migrated to alembic_tenant 0015 or later, where `red_team_runs` has
+    its `coverage` column. The narrow one serves a tenant provisioned before it,
+    since tenant DBs are migrated at PROVISION time only. Same narrow-except
+    degradation as the eval collector's pre-0022 and pre-0013 fallbacks:
+    UndefinedColumn costs the run's own coverage and nothing else, and a broad
+    except would hide a real read failure behind a payload that looks like a
+    successful degraded read.
+
+    BOTH RUNGS ARE KIND-SCOPED (#127). A degradation that drops a column must not
+    also drop the agent, or a pre-0015 tenant answers with the run belonging to
+    whichever agent finished last.
 
     Returns (row, stored_coverage) where row is (started_at, status) or
-    (started_at, status, coverage). A None row means no run has finished.
+    (started_at, status, coverage). A None row means no run of this agent's has
+    finished.
     """
+    kind = (f"m7:{agent_id}",)
     try:
-        cur.execute(_RED_TEAM_LATEST_SQL)
+        cur.execute(_RED_TEAM_LATEST_SQL, kind)
         run_row = cur.fetchone()
         return run_row, (run_row[2] if run_row is not None else None)
     except psycopg2.errors.UndefinedColumn:
@@ -1431,11 +1555,11 @@ def _latest_red_team_run(cur, conn, agent_id: str) -> tuple[tuple | None, object
             "deployment_service.red_team_summary.coverage_column_absent",
             agent_id=agent_id,
             detail=(
-                "tenant DB predates alembic_tenant 0015 — the run's own "
+                "tenant DB predates alembic_tenant 0015, so the run's own "
                 "coverage cannot be read"
             ),
         )
-        cur.execute(_RED_TEAM_LATEST_PRE_0015_SQL)
+        cur.execute(_RED_TEAM_LATEST_PRE_0015_SQL, kind)
         return cur.fetchone(), None
 
 
@@ -1555,39 +1679,105 @@ def _fetch_red_team_summary_sync(agent_id: str, conn_str: str) -> dict:
         conn.close()
 
 
+def _verified_qa_stats(
+    signal: str,
+    *,
+    row_count: int | None = None,
+    avg_faithfulness: float | None = None,
+    avg_relevance: float | None = None,
+    detail: str | None = None,
+) -> dict:
+    """Build the verified-QA payload, in which a count and an average differ.
+
+    A COUNT over an empty table is a reading. Nought verified pairs is a fact
+    about the tenant, and derive_quality_warnings is right to warn on it. An
+    AVERAGE over those nought rows is not a reading at all, and the shipped
+    `COALESCE(AVG(faithfulness), 0.0)` published it as a score of nought (#121),
+    which is the one thing a faithfulness of 0.0 can never mean.
+
+    So the count travels whenever the query executed, and the averages travel
+    only when there were rows to average. Outside VERIFIED_QA_SIGNAL_MEASURED
+    nothing travels: the read did not happen, and a metric over zero valid
+    observations is unknown rather than a number.
+    """
+    measured = signal == VERIFIED_QA_SIGNAL_MEASURED
+    averaged = measured and bool(row_count)
+    return {
+        "signal": signal,
+        "signal_detail": detail,
+        "row_count": row_count if measured else None,
+        "avg_faithfulness": avg_faithfulness if averaged else None,
+        "avg_relevance": avg_relevance if averaged else None,
+    }
+
+
+def _corpus_stats(
+    signal: str,
+    *,
+    document_count: int | None = None,
+    chunk_count: int | None = None,
+    last_ingested_at: str | None = None,
+    detail: str | None = None,
+) -> dict:
+    """Build the corpus payload. Every figure is a count, so measured decides.
+
+    A count is a reading at nought, which is why this collector's own body has
+    no honest-absence branch. The dishonest state was the Celery task's outage
+    fallback (#131): it claimed nought documents about a tenant DB nobody
+    reached, and the deploy page rendered that as an empty knowledge base.
+    """
+    measured = signal == CORPUS_SIGNAL_MEASURED
+    return {
+        "signal": signal,
+        "signal_detail": detail,
+        "document_count": document_count if measured else None,
+        "chunk_count": chunk_count if measured else None,
+        "last_ingested_at": last_ingested_at if measured else None,
+    }
+
+
 def _fetch_verified_qa_stats_sync(agent_id: str, conn_str: str) -> dict:
-    """Fetch row count and average scores from the tenant DB verified_qa table.
+    """Row count and average scores from the tenant DB verified_qa table.
 
-    Columns are 'faithfulness' and 'relevance' (see alembic_tenant migration 0005).
-    Falls back gracefully if the table doesn't exist or has no rows.
+    Columns are 'faithfulness' and 'relevance' (see alembic_tenant migration
+    0005). AVG is read raw: a NULL, whether from an empty table or from rows
+    nobody scored, arrives as None and stays None all the way to the report.
 
-    Returns dict with keys: row_count, avg_faithfulness, avg_relevance.
+    A read that never executed answers VERIFIED_QA_SIGNAL_UNAVAILABLE and counts
+    nothing. It used to answer with the same zeros an empty table produced, so a
+    missing verified_qa table and a tenant who has written no pairs were one
+    value to every reader downstream.
     """
     conn = psycopg2.connect(conn_str, connect_timeout=10)
     try:
         with conn.cursor() as cur:
             try:
                 cur.execute(
-                    "SELECT COUNT(*), "
-                    "COALESCE(AVG(faithfulness), 0.0), "
-                    "COALESCE(AVG(relevance), 0.0) "
+                    "SELECT COUNT(*), AVG(faithfulness), AVG(relevance) "
                     "FROM verified_qa"
                 )
                 row = cur.fetchone()
-                if row is None or row[0] == 0:
-                    return {"row_count": 0, "avg_faithfulness": 0.0, "avg_relevance": 0.0}
-                return {
-                    "row_count": int(row[0]),
-                    "avg_faithfulness": float(row[1]),
-                    "avg_relevance": float(row[2]),
-                }
+                if row is None:
+                    return _verified_qa_stats(
+                        VERIFIED_QA_SIGNAL_UNAVAILABLE,
+                        detail="the verified_qa aggregate returned no row",
+                    )
+                return _verified_qa_stats(
+                    VERIFIED_QA_SIGNAL_MEASURED,
+                    row_count=int(row[0]),
+                    avg_faithfulness=None if row[1] is None else float(row[1]),
+                    avg_relevance=None if row[2] is None else float(row[2]),
+                )
             except Exception as exc:
                 log.warning(
                     "deployment_service.verified_qa_stats.query_failed",
                     agent_id=agent_id,
                     error=str(exc),
                 )
-                return {"row_count": 0, "avg_faithfulness": 0.0, "avg_relevance": 0.0}
+                return _verified_qa_stats(
+                    VERIFIED_QA_SIGNAL_UNAVAILABLE,
+                    detail=f"the verified_qa read failed: {type(exc).__name__}",
+                )
     finally:
         conn.close()
 
@@ -1595,7 +1785,9 @@ def _fetch_verified_qa_stats_sync(agent_id: str, conn_str: str) -> dict:
 def _fetch_corpus_stats_sync(agent_id: str, conn_str: str) -> dict:
     """Fetch document and chunk counts from the tenant DB.
 
-    Returns dict with keys: document_count, chunk_count, last_ingested_at.
+    Three counts, all of them readings at nought, so this body has one outcome.
+    The signal is on the payload for the Celery task's outage fallback to answer
+    with, and for a reader that must tell nought documents from no read at all.
     """
     conn = psycopg2.connect(conn_str, connect_timeout=10)
     try:
@@ -1614,11 +1806,12 @@ def _fetch_corpus_stats_sync(agent_id: str, conn_str: str) -> dict:
                 ts_row[0].isoformat() if ts_row and ts_row[0] else None
             )
 
-            return {
-                "document_count": document_count,
-                "chunk_count": chunk_count,
-                "last_ingested_at": last_ingested_at,
-            }
+            return _corpus_stats(
+                CORPUS_SIGNAL_MEASURED,
+                document_count=document_count,
+                chunk_count=chunk_count,
+                last_ingested_at=last_ingested_at,
+            )
     finally:
         conn.close()
 
@@ -1917,6 +2110,21 @@ RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL: dict = _red_team_summary(
     detail="the red-team signal collector raised",
 )
 
+# The last two plausible zeros in the substitution set (#131). These two gate
+# nothing, which is why they outlived the gated pair, but they are read by the
+# owner's report and by derive_quality_warnings, and
+# `{"row_count": 0, "avg_faithfulness": 0.0, "avg_relevance": 0.0}` told both
+# that a tenant DB nobody reached holds no reviewed answers scoring nought.
+VERIFIED_QA_STATS_UNAVAILABLE_SIGNAL: dict = _verified_qa_stats(
+    VERIFIED_QA_SIGNAL_UNAVAILABLE,
+    detail="the verified-QA collector raised",
+)
+
+CORPUS_STATS_UNAVAILABLE_SIGNAL: dict = _corpus_stats(
+    CORPUS_SIGNAL_UNAVAILABLE,
+    detail="the corpus collector raised",
+)
+
 
 # ---------------------------------------------------------------------------
 # The two payloads the checklist substitutes for a job that never finished
@@ -1938,8 +2146,24 @@ RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL: dict = _red_team_summary(
 # a tenant DB the poller could not reach both end here with None.
 
 
-def eval_summary_did_not_finish(waited_s: float) -> dict:
-    """The eval half of a ceiling expiry. Every number null, and it says why."""
+def eval_summary_did_not_finish(waited_s: float, *, dispatched: bool = True) -> dict:
+    """The eval half of a wait that ended with nothing to read. Every number null.
+
+    TWO WAYS IN, AND THEY ARE DIFFERENT FACTS (#130). The run was started and had
+    not finished when the ceiling expired, or the broker refused the dispatch and
+    no run of this check's ever existed. Both are absent measurements and both
+    block, so only the detail separates them, and it has to: since the wait stops
+    on the first poll for a refusal, "had not finished after 0s" would read as a
+    platform that gave up instantly rather than one that never reached a queue.
+    """
+    if not dispatched:
+        return _eval_summary(
+            EVAL_SIGNAL_DID_NOT_FINISH,
+            detail=(
+                "the eval run for this readiness check could not be started, so "
+                "there is nothing it measured to read"
+            ),
+        )
     return _eval_summary(
         EVAL_SIGNAL_DID_NOT_FINISH,
         detail=(
@@ -1949,8 +2173,18 @@ def eval_summary_did_not_finish(waited_s: float) -> dict:
     )
 
 
-def red_team_summary_did_not_finish(waited_s: float) -> dict:
-    """The security half of the same expiry."""
+def red_team_summary_did_not_finish(
+    waited_s: float, *, dispatched: bool = True
+) -> dict:
+    """The security half of the same two ways in."""
+    if not dispatched:
+        return _red_team_summary(
+            RED_TEAM_SIGNAL_DID_NOT_FINISH,
+            detail=(
+                "the red-team run for this readiness check could not be started, "
+                "so its security surface is unmeasured"
+            ),
+        )
     return _red_team_summary(
         RED_TEAM_SIGNAL_DID_NOT_FINISH,
         detail=(
@@ -2142,8 +2376,8 @@ def _never_evaluated_warning(eval_summary: dict) -> DeploymentWarning:
     )
 
 
-def _eval_did_not_finish_warning() -> DeploymentWarning:
-    """The eval half of a ceiling expiry, told as a wait rather than an outage.
+def _eval_did_not_finish_warning(eval_summary: dict) -> DeploymentWarning:
+    """The eval half of a wait that ended with nothing to read.
 
     Distinct from `eval_signal_unavailable` because the remedy is distinct.
     "Your quality results could not be read" sends the owner looking for a
@@ -2151,6 +2385,12 @@ def _eval_did_not_finish_warning() -> DeploymentWarning:
     from `eval_never_run` too: that one says the platform has just started the
     first measurement, and this one says a measurement it started is still
     going.
+
+    AND THE SIGNAL HAS TWO WAYS IN (#130). `eval_summary_did_not_finish` already
+    told the two apart in `signal_detail`, and this message did not: a broker
+    that refused the dispatch was described to the owner as a check that "was
+    still running", so waiting a little while would never produce one. The state
+    field the collector rides carries which one happened.
     """
     return DeploymentWarning(
         warning_id="eval_did_not_finish",
@@ -2160,6 +2400,10 @@ def _eval_did_not_finish_warning() -> DeploymentWarning:
             "readiness check gave up waiting, so there are no results to "
             "approve on yet. The check keeps running on its own; run the "
             "readiness check again in a little while."
+            if eval_summary.get("eval_dispatched") is not False
+            else "The quality check for this agent was never started, so there "
+            "are no results to approve on yet. Run the readiness check again to "
+            "start one."
         ),
         severity_level="warning",
     )
@@ -2198,7 +2442,7 @@ def _eval_evidence_warnings(eval_summary: dict) -> list[DeploymentWarning]:
         elif eval_signal == EVAL_SIGNAL_NO_RUNS:
             warnings.append(_never_evaluated_warning(eval_summary))
         elif eval_signal == EVAL_SIGNAL_DID_NOT_FINISH:
-            warnings.append(_eval_did_not_finish_warning())
+            warnings.append(_eval_did_not_finish_warning(eval_summary))
         else:
             warnings.append(_signal_unavailable_warning(detail))
     elif eval_summary.get("agent_invoked") is not True:
@@ -2219,29 +2463,21 @@ def _eval_evidence_warnings(eval_summary: dict) -> list[DeploymentWarning]:
     return warnings
 
 
-#: The security half's absent states, one warning each, keyed by the signal.
+#: The security half's absent states whose remedy the signal alone decides.
 #:
-#: FOUR ABSENCES WITH FOUR REMEDIES, and telling them apart is the whole table.
-#: "Never security-tested" sends the owner to start a run; "still going when we
-#: gave up waiting" sends them back in half an hour; "stopped before it
-#: finished" says run it again; "could not be read" describes an outage. Every
-#: one of them was reported as a clean measurement at some point in this
-#: module's history, and every one of them blocks.
+#: FIVE ABSENCES WITH FIVE REMEDIES, and telling them apart is the whole point.
+#: "Never security-tested" sends the owner to start a run; "stopped before it
+#: finished" says run it again; "could not be read" describes an outage; and the
+#: did_not_finish signal splits in two on whether the run was ever dispatched,
+#: which is why `_red_team_did_not_finish_warning` composes that pair instead of
+#: this table. Every one of them was reported as a clean measurement at some
+#: point in this module's history, and every one of them blocks.
 _RED_TEAM_ABSENCE_WARNINGS: dict[str, tuple[str, str]] = {
     RED_TEAM_SIGNAL_NO_RUNS: (
         "red_team_never_run",
         "This agent has never been security-tested, so it cannot be approved "
         "for launch yet. Run a red-team check from the Security page and try "
         "again.",
-    ),
-    # The k=3 red-team bound is roughly forty-five minutes, so this is the state
-    # a slow run lands in rather than an exotic one.
-    RED_TEAM_SIGNAL_DID_NOT_FINISH: (
-        "red_team_did_not_finish",
-        "The security check for this agent was still running when this "
-        "readiness check gave up waiting, so its safety cannot be confirmed "
-        "yet. The check keeps running on its own; run the readiness check "
-        "again in a little while.",
     ),
     RED_TEAM_SIGNAL_RUN_FAILED: (
         "red_team_run_failed",
@@ -2261,13 +2497,52 @@ _RED_TEAM_UNREADABLE_WARNING: tuple[str, str] = (
 )
 
 
-def _red_team_evidence_warnings(red_team_signal: object) -> list[DeploymentWarning]:
+def _red_team_did_not_finish_warning(red_team_summary: dict) -> tuple[str, str]:
+    """The security half of a wait that ended with nothing to read, both ways in.
+
+    The k=3 red-team bound is roughly forty-five minutes, so a run this checklist
+    started and did not see finish is the ordinary case rather than an exotic
+    one, and "come back in a little while" is the right instruction for it. A
+    dispatch the broker refused is the other way into the same signal (#130), and
+    it never became a run at all, so telling that owner to wait describes a job
+    nothing is working on.
+    """
+    if red_team_summary.get("red_team_dispatched") is False:
+        return (
+            "red_team_did_not_finish",
+            "The security check for this agent was never started, so its safety "
+            "cannot be confirmed yet. Run the readiness check again to start "
+            "one.",
+        )
+    return (
+        "red_team_did_not_finish",
+        "The security check for this agent was still running when this "
+        "readiness check gave up waiting, so its safety cannot be confirmed "
+        "yet. The check keeps running on its own; run the readiness check "
+        "again in a little while.",
+    )
+
+
+def _red_team_evidence_warnings(red_team_summary: dict) -> list[DeploymentWarning]:
     """The security half's absent states, one warning each. Empty means measured."""
+    red_team_signal = red_team_summary.get("signal")
     if red_team_signal == SHIPPABLE_SIGNAL:
         return []
-    warning_id, message = _RED_TEAM_ABSENCE_WARNINGS.get(
-        red_team_signal, _RED_TEAM_UNREADABLE_WARNING  # type: ignore[call-overload]  # a non-str signal is unhashable-safe here: every produced signal is a str or None
-    )
+    if red_team_signal == RED_TEAM_SIGNAL_DID_NOT_FINISH:
+        warning_id, message = _red_team_did_not_finish_warning(red_team_summary)
+    elif isinstance(red_team_signal, str):
+        warning_id, message = _RED_TEAM_ABSENCE_WARNINGS.get(
+            red_team_signal, _RED_TEAM_UNREADABLE_WARNING
+        )
+    else:
+        # An absent or non-string signal is the unreadable case, which is where
+        # a table miss already landed it, so the narrowing decides nothing new.
+        # It replaces a `type: ignore[call-overload]` that stopped covering its
+        # own error the moment this function started reading the signal off the
+        # summary dict: `.get("signal")` is `Any | None` where the parameter had
+        # been bare `Any`, so mypy resolved an overload and reported `arg-type`
+        # instead. A narrower type is the honest fix; a wider ignore is not.
+        warning_id, message = _RED_TEAM_UNREADABLE_WARNING
     return [
         DeploymentWarning(
             warning_id=warning_id,
@@ -2501,7 +2776,7 @@ def apply_signal_evidence_gate(
         warnings.extend(eval_warnings)
 
     red_team_signal = red_team_summary.get("signal")
-    red_team_warnings = _red_team_evidence_warnings(red_team_signal)
+    red_team_warnings = _red_team_evidence_warnings(red_team_summary)
     if red_team_warnings:
         blocked = True
         warnings.extend(red_team_warnings)
@@ -2577,7 +2852,7 @@ def stored_run_records_agent_invocation(report: object) -> bool:
 #: What kind of concern each rule slug is, so a console can group the warnings a
 #: Verdict produces beside the ones the evidence gate and the blast-radius
 #: deriver produce. The slugs come from `app.domain.verdict._RULES` and this
-#: table names every one of them at RULE_VERSION 2.
+#: table names every one of them at DECISION_RULE_VERSION 2.
 _VERDICT_WARNING_CATEGORIES: dict[str, str] = {
     "absent_eval_measurement": "eval_quality",
     "golden_failure": "eval_quality",
@@ -2746,59 +3021,109 @@ VERIFIED_QA_DEPTH_FLOOR = 50
 RED_TEAM_MEDIUM_WARN_ABOVE = 2
 
 
-def derive_quality_warnings(
-    verified_qa_stats: dict, red_team_summary: dict
-) -> list[DeploymentWarning]:
-    """The two prompt-era warn conditions `decide()` cannot see. Never blocking.
+def _verified_qa_unavailable_warning() -> DeploymentWarning:
+    """The knowledge collector could not read the tenant DB (#131).
 
-    Pure. Neither condition is about the run's own result, so neither belongs in
-    the rule table: `decide()` reads an EvalResult, a RedTeamResult and a
-    calibration status, and knowledge depth is a property of the tenant's corpus
-    while an open medium finding is a property of the findings table rather than
-    of one run. They warn, they are merged by warning_id like every other derived
-    warning, and they change no outcome.
-
-    MEASUREMENT HONESTY GOVERNS BOTH. A medium count is only read when the
-    security signal says 'measured', because the counts are null in every other
-    state and `None > 2` is not a comparison anyone meant to make. A row count is
-    only read when it is an int, because the collector's own failure substitutes
-    a zero and a zero nobody measured is not a small corpus.
+    A DISTINCT warning_id because it is a distinct remedy, which is the split
+    this module already makes between eval_never_run and eval_signal_unavailable:
+    "write more verified pairs" and "try again in a few minutes" are different
+    instructions, and the outage used to arrive under the first one.
     """
-    warnings: list[DeploymentWarning] = []
+    return DeploymentWarning(
+        warning_id="verified_qa_unavailable",
+        category="knowledge_depth",
+        message=(
+            "We could not read how many reviewed question-and-answer pairs "
+            "this agent has to draw on, so this launch is going ahead without "
+            "knowing that. Nothing here says the number is low, only that "
+            "nobody could count it."
+        ),
+        severity_level="warning",
+    )
+
+
+def _verified_qa_low_count_warning(row_count: int) -> DeploymentWarning:
+    """A corpus that WAS counted and came in under the floor."""
+    return DeploymentWarning(
+        warning_id="verified_qa_low_count",
+        category="knowledge_depth",
+        message=(
+            f"This agent has {row_count} reviewed question-and-answer "
+            f"pair(s) to draw on, fewer than the "
+            f"{VERIFIED_QA_DEPTH_FLOOR} we look for, so it will be "
+            "working things out from your documents more often than "
+            "repeating an answer you have already approved."
+        ),
+        severity_level="warning",
+    )
+
+
+def _red_team_medium_warning(medium_count: int) -> DeploymentWarning:
+    """Open moderate findings from a run that measured something."""
+    return DeploymentWarning(
+        warning_id="red_team_medium_findings",
+        category="security",
+        message=(
+            f"The security check left {medium_count} moderate "
+            "finding(s) open. None of them stops the launch, and "
+            "each is worth reading on the Security page before you "
+            "approve it."
+        ),
+        severity_level="warning",
+    )
+
+
+def _knowledge_depth_warnings(verified_qa_stats: dict) -> list[DeploymentWarning]:
+    """At most one warning about the verified corpus, because at most one holds.
+
+    An unread signal ENDS the question, which is why this returns rather than
+    falling through. A payload the collector built carries None in `row_count`
+    beside an unread signal, so the depth check below is unreachable there, but
+    a payload a caller builds by hand can carry a zero, and a zero IS an int.
+    The owner then read "nobody could count your pairs" and "you have too few
+    pairs" one under the other: two remedies, and only one of them applies to a
+    tenant database nobody reached.
+
+    A payload with no `signal` at all is read as a measurement. That is every
+    report stored before #131, and the one this function is handed by any caller
+    that predates the two knowledge signals.
+    """
+    signal = verified_qa_stats.get("signal")
+    if signal is not None and signal != VERIFIED_QA_SIGNAL_MEASURED:
+        return [_verified_qa_unavailable_warning()]
 
     row_count = verified_qa_stats.get("row_count")
     if isinstance(row_count, int) and row_count < VERIFIED_QA_DEPTH_FLOOR:
-        warnings.append(
-            DeploymentWarning(
-                warning_id="verified_qa_low_count",
-                category="knowledge_depth",
-                message=(
-                    f"This agent has {row_count} reviewed question-and-answer "
-                    f"pair(s) to draw on, fewer than the "
-                    f"{VERIFIED_QA_DEPTH_FLOOR} we look for, so it will be "
-                    "working things out from your documents more often than "
-                    "repeating an answer you have already approved."
-                ),
-                severity_level="warning",
-            )
-        )
+        return [_verified_qa_low_count_warning(row_count)]
+
+    return []
+
+
+def derive_quality_warnings(
+    verified_qa_stats: dict, red_team_summary: dict
+) -> list[DeploymentWarning]:
+    """The prompt-era warn conditions `decide()` cannot see. Never blocking.
+
+    Pure. None of these is about the run's own result, so none belongs in the
+    rule table: `decide()` reads an EvalResult, a RedTeamResult and a
+    calibration status, and knowledge depth is a property of the tenant's corpus
+    while an open medium finding is a property of the findings table rather than
+    of one run. They warn, they are merged by warning_id like every other
+    derived warning, and they change no outcome.
+
+    Measurement honesty governs both conditions. A medium count is only read
+    when the security signal says 'measured', because the counts are null in
+    every other state and `None > 2` is not a comparison anyone meant to make.
+    The two knowledge-depth warnings (unread, then thin) live in
+    `_knowledge_depth_warnings`, which reads the row count only when the signal
+    beside it says somebody counted one.
+    """
+    warnings: list[DeploymentWarning] = _knowledge_depth_warnings(verified_qa_stats)
 
     if red_team_summary.get("signal") == SHIPPABLE_SIGNAL:
         medium_count = red_team_summary.get("medium_count") or 0
         if medium_count > RED_TEAM_MEDIUM_WARN_ABOVE:
-            warnings.append(
-                DeploymentWarning(
-                    warning_id="red_team_medium_findings",
-                    category="security",
-                    message=(
-                        f"The security check left {medium_count} moderate "
-                        "finding(s) open. None of them stops the launch, and "
-                        "each is worth reading on the Security page before you "
-                        "approve it."
-                    ),
-                    severity_level="warning",
-                )
-            )
+            warnings.append(_red_team_medium_warning(medium_count))
 
     return warnings
 

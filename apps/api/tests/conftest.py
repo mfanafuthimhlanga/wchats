@@ -58,11 +58,16 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test_anthropic_key")
 # the client.
 os.environ.setdefault("OPENAI_API_KEY", "test_openai_key")
 
-# M5: Langfuse — set before any import so module-level Langfuse() init in
-# validation_service.py does not raise on missing keys during test discovery.
-os.environ.setdefault("LANGFUSE_PUBLIC_KEY", "test-pk")
-os.environ.setdefault("LANGFUSE_SECRET_KEY", "test-sk")
-os.environ.setdefault("LANGFUSE_HOST", "http://localhost:3000")
+# Issue #80: a test process reaches Langfuse only when LANGFUSE_PUBLIC_KEY is set.
+# validation_service.py, actor_seam.py and worker/tasks/runtime/agent.py each build
+# their module-level client behind that one check, so clearing the key leaves every
+# client None and puts every call site on the documented no-op path. The suite pops
+# the keys instead of skipping a setdefault because a developer shell that exports a
+# real key otherwise sends unit tests to the live ingest endpoint, and every untraced
+# turn then waits out an HTTP timeout. A test that wants the traced branch patches the
+# module-level client itself. tests/unit/test_langfuse_disabled_in_tests.py pins this.
+for _langfuse_var in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST"):
+    os.environ.pop(_langfuse_var, None)
 os.environ.setdefault("VOYAGE_API_KEY", "test_voyage_key")
 os.environ.setdefault("MAX_UPLOAD_SIZE_MB", "50")
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret-for-tests-only")
@@ -80,6 +85,13 @@ os.environ.setdefault("CLERK_JWKS_URL", "https://test.clerk.accounts.dev/.well-k
 # Celery eager mode — tasks run synchronously in the test process,
 # no running worker required (unit tests only; integration tests override this).
 os.environ.setdefault("CELERY_TASK_ALWAYS_EAGER", "True")
+
+# #24: the pipeline worker parses a bundled PDF at boot so docling's 3m43s model
+# load lands where nobody is waiting. False here, because a test process that
+# reached that path would load two gigabytes of model weights to assert on a log
+# line. tests/unit/test_docling_warmup.py patches the setting on and the warm-up
+# out, which is what lets it assert the boot path without ever running it.
+os.environ.setdefault("DOCLING_WARMUP_ON_BOOT", "false")
 
 
 # ---------------------------------------------------------------------------

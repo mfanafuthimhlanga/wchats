@@ -198,6 +198,39 @@ ignore_imports = [
     "app.core.model_client -> instructor",
 ]
 
+[[tool.importlinter.contracts]]
+# Issue #144. Fourteen modules built Redis connection arguments and thirteen of them
+# named ssl.CERT_NONE outright, so REDIS_TLS_INSECURE decided nothing and a rediss://
+# broker verified no certificate. app.core.redis_tls is the one module that chooses a
+# verification mode now, and the only use `ssl` ever had in this tree was choosing one.
+# The gate is this contract rather than a grep for CERT_NONE, for the same reason the
+# provider-SDK contract is: a grep bans one spelling and the author picks the spelling,
+# while an author who cannot import ssl cannot write ssl.CERT_NONE at all.
+# It bans the import spellings, not every spelling. redis-py 6.4.0 accepts the string
+# ssl_cert_reqs="none" and RedisSSLContext maps it to ssl.CERT_NONE, so a hand-written
+# {"ssl_cert_reqs": "none"} imports nothing and passes this contract.
+# TestModuleLevelSitesTakeTheSeamDict in tests/unit/test_redis_tls_seam.py is what bans
+# the dict spelling: every module-level site's _ssl_opts has to equal redis_ssl_kwargs of
+# that site's own cleaned URL, under a rediss:// REDIS_URL with the flag false.
+# Observed 2026-09-03: BROKEN on the unfixed tree at 3 kept 1 broken, naming all
+# fourteen edges, app.api.deps -> ssl through app.worker.tasks.runtime.validators -> ssl.
+# KEPT at 4 kept 0 broken once every call site moved onto the seam. Mutation
+# `import ssl` added back to app/worker/celery_app.py turned it BROKEN, naming:
+#   app is not allowed to import ssl:
+#   -   app.worker.celery_app -> ssl (l.48)
+# Restored, KEPT again at 4 kept 0 broken.
+# Observed 2026-09-03, the string route: {"ssl_cert_reqs": "none"} written by hand into
+# app/worker/tasks/pipeline/parse.py with its redis_ssl_kwargs import removed passed
+# `scripts/gates.py static` in 10.3s, contract included, and the seam test failed on it.
+name = "ssl has one home"
+type = "forbidden"
+source_modules = ["app"]
+forbidden_modules = ["ssl"]
+allow_indirect_imports = true
+ignore_imports = [
+    "app.core.redis_tls -> ssl",
+]
+
 [tool.mutmut]
 # Configured so a mutation run is reproducible elsewhere; it is NOT a gate here.
 # mutmut 3.7.0 refuses to start on native Windows (it exits 1 on any argument,

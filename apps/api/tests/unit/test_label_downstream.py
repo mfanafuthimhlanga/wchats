@@ -47,13 +47,12 @@ The decision lives in mutable module state, which is why `eval_service` holds it
 as a `MappingProxyType` and why `TestTheLocksAreNotOneAssignmentAway` scans for
 the rebinds a proxy cannot stop.
 
-WHAT IS NOT PROVEN HERE, PLAINLY. There is no PostgreSQL server on this machine.
-Migration 0016 has not been applied and cannot be; no `eval_scenarios` row has
-ever carried a real `label_trust_tier`; every `-m integration` harness skips and
-a skip is unobserved, never a pass. The database boundary is a double in every
-test below, the SQL is asserted at the string level, and the task is driven
-in-process. What is proven is the arithmetic, the SQL's shape and the gates —
-not that Postgres accepts any of it.
+WHAT IS NOT PROVEN HERE, PLAINLY. No `eval_scenarios` row has ever carried a real
+`label_trust_tier`, because every `-m integration` harness skips and a skip is
+unobserved, never a pass. The database boundary is a double in every test below,
+the SQL is asserted at the string level, and the task is driven in-process. What
+is proven is the arithmetic, the SQL's shape and the gates, not that Postgres
+accepts any of it.
 """
 
 from __future__ import annotations
@@ -859,9 +858,9 @@ class TestALabelChangesWhatTheDeployGateReads:
         collector averages them.
 
         The aggregate is computed HERE, in Python, over the rows the real run
-        actually handed to `write_eval_results` — there is no PostgreSQL on this
-        machine, so `AVG(score) GROUP BY metric` cannot be executed and is not
-        claimed to have been. What the previous test pins is that the collector's
+        actually handed to `write_eval_results`. This test never opens a database,
+        so `AVG(score) GROUP BY metric` did not execute and is not claimed to have.
+        What the previous test pins is that the collector's
         aggregation has no other input and no provenance filter; what this one
         shows is the arithmetic consequence.
 

@@ -1,5 +1,9 @@
 # The provider routing has two seams, and only one obeys the route table
 
+**RESOLVED 2026-09-02 by issue #88.** `make_client` reads the route's provider now,
+and `provider_for_base_url` is deleted. Everything below is the measurement that
+found the defect; read it as history, not as a description of the code.
+
 `PURPOSE_ROUTES` in `app/core/model_client.py` looks like the single place a model call's
 provider and model are decided. It is not. Two seams read it differently, and the split
 decides which calls actually reach OpenAI.

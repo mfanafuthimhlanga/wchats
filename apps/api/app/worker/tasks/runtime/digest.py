@@ -1,7 +1,7 @@
 """
 run_weekly_digest_beat + run_weekly_digest — M10 OPS-02 weekly owner digest.
 
-Beat dispatcher: fans out per deployed agent (is_deployed=True).
+Beat dispatcher: fans out per agent select_beat_fanout_agents() returns.
 Per-agent task: idempotency via digest_runs 7-day window. acks_late=True on both.
 conn_str NEVER in task args (CTL-08).
 """
@@ -11,12 +11,12 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import structlog
-from sqlalchemy import select, text
+from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt
-from app.models.agent import Agent
+from app.models.agent import Agent, select_beat_fanout_agents
 from app.services.digest_service import _collect_digest_stats, send_digest_email
 from app.worker.celery_app import celery_app
 
@@ -32,12 +32,12 @@ log = structlog.get_logger(__name__)
     name="app.worker.tasks.runtime.digest.run_weekly_digest_beat",
 )
 def run_weekly_digest_beat(self) -> dict:
-    """Beat-triggered: fan out run_weekly_digest per deployed agent."""
+    """Beat-triggered: fan out run_weekly_digest per deployed, ready agent."""
     if not settings.DIGEST_ENABLED:
         return {"dispatched": 0}
     with get_sync_db() as db:
         agents = db.execute(
-            select(Agent).where(Agent.is_deployed == True)  # noqa: E712
+            select_beat_fanout_agents()
         ).scalars().all()
     dispatched = 0
     for agent in agents:

@@ -61,7 +61,6 @@ IN-02 (falsy-zero amount):
 from __future__ import annotations
 
 import asyncio
-import ssl
 import time
 from datetime import date, datetime
 from typing import Any
@@ -73,6 +72,7 @@ from sqlalchemy import text as sa_text
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.redis_tls import redis_ssl_kwargs
 
 log = structlog.get_logger(__name__)
 
@@ -89,11 +89,10 @@ def _get_redis() -> redis_lib.Redis:
     WR-04: For rediss:// URLs, certificate verification is ON by default
     (ssl_cert_reqs=ssl.CERT_REQUIRED, ssl_check_hostname=True). Disabling
     verification requires REDIS_TLS_INSECURE=True in settings AND emits a
-    warning log on every factory call so the exposure is visible in logs.
+    warning log, once per process per URL, so the exposure is visible in logs.
 
-    Note: agent_tools._get_qembed_redis and agent.py use ssl.CERT_NONE for their
-    own Redis clients (a separate pre-existing issue). This factory hardens only the
-    rate-limit client; those are out of this plan's scope.
+    Issue #144: this factory was the only one of fourteen that read the setting,
+    and app.core.redis_tls now holds that decision for all of them.
     """
     global _rate_limit_redis
     if _rate_limit_redis is None:
@@ -102,25 +101,7 @@ def _get_redis() -> redis_lib.Redis:
             if "?" in settings.REDIS_URL
             else settings.REDIS_URL
         )
-        ssl_opts: dict = {}
-        if url_clean.startswith("rediss://"):
-            if settings.REDIS_TLS_INSECURE:
-                # Deliberate relaxation — log a warning so the exposure is visible
-                log.warning(
-                    "redis.tls_verification_disabled",
-                    url_prefix=url_clean[:40],
-                    note=(
-                        "REDIS_TLS_INSECURE=True disables TLS certificate verification "
-                        "on the rate-limit Redis connection (MITM exposure). "
-                        "Only acceptable for documented local/dev exceptions."
-                    ),
-                )
-                ssl_opts = {"ssl_cert_reqs": ssl.CERT_NONE}
-            else:
-                ssl_opts = {
-                    "ssl_cert_reqs": ssl.CERT_REQUIRED,
-                    "ssl_check_hostname": True,
-                }
+        ssl_opts: dict = redis_ssl_kwargs(url_clean)
         _rate_limit_redis = redis_lib.from_url(url_clean, **ssl_opts)
     return _rate_limit_redis
 

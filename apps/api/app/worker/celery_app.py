@@ -45,7 +45,6 @@ worker_pool — ENVIRONMENT-conditional (PROD-15 / Landmine 3):
 """
 
 import socket
-import ssl
 
 import structlog
 from celery import Celery, signals
@@ -53,6 +52,9 @@ from celery.schedules import crontab
 from kombu import Exchange, Queue
 
 from app.core.config import settings
+from app.core.redis_tls import redis_ssl_kwargs
+
+log = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # How long the broker waits before deciding a delivered message was lost
@@ -81,18 +83,26 @@ BROKER_VISIBILITY_TIMEOUT_S = 7200
 celery_app = Celery("wchats")
 
 _redis_url = settings.REDIS_URL
-# Strip ssl_cert_reqs from URL — configured explicitly via broker_use_ssl /
-# redis_backend_use_ssl so Celery 5.x receives the Python ssl constant, not a string.
+# Strip the query string before either connection is built. Neither of Celery's two
+# Redis paths reaches redis-py's from_url, and both read ssl_cert_reqs out of the URL
+# and let it win. On the broker side kombu.utils.url.parse_url turns ?ssl_cert_reqs=none
+# into an ssl dict, and Connection.__init__ updates its params with it, replacing
+# broker_use_ssl whole, so ssl_check_hostname is dropped along with the mode. On the
+# result backend celery.backends.redis.RedisBackend applies _params_from_url after
+# connparams.update(ssl), and that pops the same query key over redis_backend_use_ssl.
+# Measured on celery 5.6.3 and kombu 5.6.2.
 _redis_url_clean = _redis_url.split("?")[0] if "?" in _redis_url else _redis_url
-_ssl_opts = (
-    {"ssl_cert_reqs": ssl.CERT_NONE} if _redis_url_clean.startswith("rediss://") else None
-)
+_ssl_opts = redis_ssl_kwargs(_redis_url_clean)
 
 celery_app.conf.update(
-    # Broker and result backend — both point to Redis
+    # Broker and result backend, both pointing at Redis.
     broker_url=_redis_url_clean,
     result_backend=_redis_url_clean,
-    **({"broker_use_ssl": _ssl_opts, "redis_backend_use_ssl": _ssl_opts} if _ssl_opts else {}),
+    # kombu reads these under `if conninfo.ssl:` (kombu/transport/redis.py,
+    # Channel._connparams), so the seam's empty dict for a plain redis:// URL is
+    # skipped rather than rejected, and no guard is needed here.
+    broker_use_ssl=_ssl_opts,
+    redis_backend_use_ssl=_ssl_opts,
 
     # --- Task autodiscovery -----------------------------------------------
     # Worker discovers tasks by importing these modules on startup.
@@ -266,6 +276,89 @@ celery_app.conf.update(
 # ---------------------------------------------------------------------------
 # structlog context isolation between tasks (RESEARCH.md Pitfall 6)
 # ---------------------------------------------------------------------------
+
+
+def _consumes_pipeline_queue(sender) -> bool:
+    """Does the worker that just became ready serve the `pipeline` queue?
+
+    `app.amqp.queues` holds every queue `task_queues` DECLARED, on every worker,
+    so reading it answers "does this deployment have a pipeline queue?" and not
+    the question asked. `-Q runtime` reaches Celery as
+    `Queues.select(["runtime"])`, which records the selection in `consume_from`
+    and leaves the registry untouched (celery/app/amqp.py, `select` and the
+    `consume_from` property). `consume_from` is therefore the attribute that
+    names what this process consumes; with no `-Q` at all it returns the whole
+    registry, which is the right answer for a worker that consumes everything.
+
+    A sender shaped differently (an older Celery, an embedded worker) is read as
+    "not the pipeline worker": skipping an optimisation costs one slow parse,
+    and guessing wrong costs the runtime service two gigabytes of model weights
+    it has no docling to load them with.
+    """
+    try:
+        return "pipeline" in set(sender.app.amqp.queues.consume_from)
+    except AttributeError:
+        return False
+
+
+@signals.worker_ready.connect
+def on_worker_ready(sender=None, **_):
+    """Pay docling's model load at boot, on the pipeline worker only (#24).
+
+    WHERE THIS RUNS IN THE BOOT, EXACTLY
+        `worker_ready` fires from `Consumer.on_ready()`, which both loops call
+        immediately AFTER `consumer.consume()` and BEFORE the event loop starts
+        (celery/worker/loops.py, `asynloop` and `synloop`). `consume()` may have
+        already prefetched messages by then, so a task that arrived during the
+        boot sits in the worker's buffer for the whole warm-up and is only
+        handled once this handler returns. The first upload after a deploy can
+        therefore still wait on the model load, once, if it beat the boot; every
+        upload after that does not. That is the trade #24 asked for, and it is
+        the reason nothing here does more work than the one parse.
+
+    WHY NOT `worker_init`
+        `worker_init` fires in `WorkController.setup_instance`
+        (celery/worker/worker.py:127), after `setup_queues` at line 105, so the
+        `-Q` selection this handler's guard reads is already recorded there. It
+        also fires before the bootstep blueprint is built, and therefore before
+        the Pool step forks anything. Under prefork, which is the production
+        default and what `railway.worker-pipeline.toml` gets by passing
+        `--concurrency=1` and no `--pool`, that difference decides which process
+        ends up warm: the pool forks its children before the Consumer step runs,
+        so a warm-up at `worker_ready` loads the models into the parent, which
+        never executes a task, while a warm-up at `worker_init` would load them
+        before the fork and every child would inherit them copy-on-write.
+
+        The hook is NOT moved here, and this is a reasoned position rather than
+        a measured one. Nothing on this branch has run docling on Linux under
+        prefork; whether torch state survives a fork intact is the kind of claim
+        that needs a measurement, and swapping the process the 2 GB load happens
+        in is a larger change than the queue guard this branch came to fix.
+        What is measurable and unmeasured is #172, which names the one
+        observation on Railway staging that settles it.
+
+    Nothing here raises. The warm-up is a performance measure, and a worker that
+    could not preload the models still parses documents at the old speed. A
+    raise would turn a slow first upload into a crash-looping service.
+    """
+    if not settings.DOCLING_WARMUP_ON_BOOT:
+        return
+    if not _consumes_pipeline_queue(sender):
+        return
+
+    from app.domain import docling_service  # noqa: PLC0415
+
+    log.info("worker.docling_warmup_starting")
+    try:
+        duration = docling_service.warm_up()
+    except Exception as exc:
+        log.warning(
+            "worker.docling_warmup_failed",
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return
+    log.info("worker.docling_warmup_complete", duration_s=duration)
 
 
 @signals.task_prerun.connect

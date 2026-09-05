@@ -115,8 +115,11 @@ interface DeploymentReport {
     high_count?: number
   }
   corpus_stats?: {
-    document_count?: number
-    chunk_count?: number
+    // 'measured' when the collector read the tenant DB, 'unavailable' when it
+    // could not. Absent on every report written before #131.
+    signal?: string
+    document_count?: number | null
+    chunk_count?: number | null
   }
   blast_radius?: BlastRadiusSignal
 }
@@ -2493,6 +2496,10 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
   const criticalFindings = report?.red_team_summary?.critical_count ?? 0
   const highFindings = report?.red_team_summary?.high_count ?? 0
   const redTeamBlockedSignal = report?.red_team_summary?.deployment_blocked === true
+  // A checklist whose corpus collector could not reach the tenant DB persists
+  // document_count null (#131). `?? 0` on its own rendered that as an empty
+  // knowledge base with a Fail beside it, which is a reading nobody took.
+  const corpusCounted = typeof report?.corpus_stats?.document_count === 'number'
   const docCount = report?.corpus_stats?.document_count ?? 0
   const chunkCount = report?.corpus_stats?.chunk_count ?? 0
   const soulConfigured = !!(agent?.soul_role && agent?.soul_voice)
@@ -2817,13 +2824,21 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                         <span className="why">Everything the agent is allowed to cite</span>
                       </LedgerRowHead>
                       <td className="val mono">
-                        {report?.corpus_stats
-                          ? `${docCount} document${docCount === 1 ? '' : 's'} · ${chunkCount} chunk${chunkCount === 1 ? '' : 's'}`
-                          : 'not yet run'}
+                        {!report?.corpus_stats
+                          ? 'not yet run'
+                          : corpusCounted
+                            ? `${docCount} document${docCount === 1 ? '' : 's'} · ${chunkCount} chunk${chunkCount === 1 ? '' : 's'}`
+                            : 'could not be read'}
                       </td>
                       <td>
-                        <Chip verdict={!report?.corpus_stats ? 'mute' : docCount > 0 ? 'pass' : 'fail'}>
-                          {!report?.corpus_stats ? 'No data' : docCount > 0 ? 'Pass' : 'Fail'}
+                        <Chip verdict={!corpusCounted ? 'mute' : docCount > 0 ? 'pass' : 'fail'}>
+                          {!report?.corpus_stats
+                            ? 'No data'
+                            : !corpusCounted
+                              ? 'Not read'
+                              : docCount > 0
+                                ? 'Pass'
+                                : 'Fail'}
                         </Chip>
                       </td>
                     </tr>
