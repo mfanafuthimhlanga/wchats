@@ -5,6 +5,6 @@
   "_comment_what_moved": "Collection did not disappear, it moved. `gates.py fast` is static plus whole-suite collection; `gates.py full` is that plus the unit suite. Both are run deliberately and DETACHED (Start-Process -RedirectStandardOutput), never from the hook. The unit suite was 735.5s over 2376 tests on 2026-08-18.",
   "static": "cd apps/api && .venv\\Scripts\\python.exe scripts\\gates.py static",
   "fast": "cd apps/api && .venv\\Scripts\\python.exe scripts\\gates.py static",
-  "full": "cd apps/api && .venv\\Scripts\\python.exe scripts\\gates.py full && cd ../admin && npx tsc --noEmit && npm run check:no-dusk-tokens && npm run check:ops-room-wiring && npm run test:unit && cd ../widget && npm run build && node scripts/check-size.mjs",
+  "full": "cd apps/api && .venv\\Scripts\\python.exe scripts\\gates.py full && cd ../admin && npx tsc --noEmit && npm run check:no-dusk-tokens && npm run check:ops-room-wiring && npm run check:chart-render && npm run test:unit && cd ../widget && npm run build && node scripts/check-size.mjs",
   "timeoutSec": 170
 }

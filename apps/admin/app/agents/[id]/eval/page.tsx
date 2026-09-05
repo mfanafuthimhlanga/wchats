@@ -1,10 +1,12 @@
 'use client'
-import { use, useState, useEffect, useRef } from 'react'
+import { use, useState, useEffect, useMemo, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '@clerk/nextjs'
 import Chip from '../../../components/gotham/Chip'
 import Ledger, { LedgerColHead, LedgerRowHead } from '../../../components/gotham/Ledger'
 import EmptyState from '../../../components/gotham/EmptyState'
+import { TELEMETRY_CSS, TelemetryChart } from './TelemetryChart'
+import type { EvalRun } from './evalSeries'
 
 /**
  * Eval — `/agents/[id]/eval` (UI-SPEC S6.7, UI2-05, ported from
@@ -36,22 +38,10 @@ import EmptyState from '../../../components/gotham/EmptyState'
 // Types
 // ---------------------------------------------------------------------------
 
-interface EvalRun {
-  id: string
-  started_at: string
-  finished_at: string | null
-  status: 'running' | 'complete' | 'failed'
-  // Null when the run has no EvalResult record: a tenant DB predating tenant
-  // migration 0022, or a run that died before it wrote one. The API reports
-  // null rather than 0, because 0 reads as "this run attempted nothing".
-  scenario_count: number | null
-  aggregate_scores: {
-    faithfulness: number
-    answer_relevancy: number
-    context_precision: number
-    context_recall: number
-  }
-}
+// `EvalRun` and everything the chart reads off it live in ./evalSeries, which
+// owns the one rule this page must not get wrong: a metric with no observations
+// is a gap, and `aggregate_scores` — where an unmeasured metric reads 0.0 — is
+// never a source of a plotted point (#119).
 
 interface EvalRunsResponse {
   eval_runs: EvalRun[]
@@ -74,8 +64,6 @@ interface EvalResultsResponse {
   results: ScenarioResult[]
 }
 
-type ChannelKey = keyof EvalRun['aggregate_scores']
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -86,11 +74,6 @@ function formatStamp(iso: string): string {
   const d = new Date(iso)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`
-}
-
-// Short axis-tick date — "2026-07-06" (UTC).
-function formatShortDate(iso: string): string {
-  return new Date(iso).toISOString().slice(0, 10)
 }
 
 // The judge's verdict sentence — built from real aggregate + scenario data,
@@ -138,271 +121,6 @@ function useChannelColors(): string[] {
     )
   }, [])
   return colors
-}
-
-// ---------------------------------------------------------------------------
-// Telemetry chart — VITALS leader-line pattern, ported from eval.html's
-// layout() script. Numerals are pinned to the head of their own trace via a
-// pixel-space leader line; collision-avoidance (MIN_GAP) keeps them apart.
-// Collapses to a static 2-col .pin grid under 900px (leaders hidden).
-// ---------------------------------------------------------------------------
-
-const CHANNELS: { key: ChannelKey; label: string }[] = [
-  { key: 'faithfulness', label: 'Faithfulness' },
-  { key: 'answer_relevancy', label: 'Answer relevancy' },
-  { key: 'context_recall', label: 'Context recall' },
-  { key: 'context_precision', label: 'Context precision' },
-]
-
-const CHART_VB_W = 640
-const CHART_VB_H = 200
-const CHART_X0 = 40
-const CHART_X1 = 600
-const CHART_Y_TOP = 24
-const CHART_Y_BOTTOM = 176
-const GATE_VALUE = 0.9
-const PIN_MIN_GAP = 44
-const PIN_GUTTER = 148
-
-function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: string[] }) {
-  const wrapRef = useRef<HTMLDivElement | null>(null)
-  const traceRef = useRef<SVGSVGElement | null>(null)
-  const leadersRef = useRef<SVGSVGElement | null>(null)
-  const pinRefs = useRef<(HTMLDivElement | null)[]>([])
-
-  const n = runs.length
-
-  const allValues = runs.flatMap((r) => CHANNELS.map((c) => r.aggregate_scores[c.key]))
-  const dataMin = allValues.length ? Math.min(...allValues) : 0.82
-  const dataMax = allValues.length ? Math.max(...allValues) : 0.98
-  const yMin = Math.max(0, Math.min(dataMin - 0.04, 0.86))
-  const yMax = Math.min(1, Math.max(dataMax + 0.03, 0.92))
-  const yRange = yMax - yMin || 1
-
-  const yFor = (v: number) => CHART_Y_BOTTOM - ((v - yMin) / yRange) * (CHART_Y_BOTTOM - CHART_Y_TOP)
-  const xFor = (i: number) =>
-    n <= 1 ? (CHART_X0 + CHART_X1) / 2 : CHART_X0 + (i / (n - 1)) * (CHART_X1 - CHART_X0)
-
-  const channelPoints = CHANNELS.map((c) =>
-    runs.map((r, i) => ({ x: xFor(i), y: yFor(r.aggregate_scores[c.key]) })),
-  )
-
-  const TICK_COUNT = 4
-  const ticks = Array.from({ length: TICK_COUNT }, (_, i) => yMax - (i * yRange) / (TICK_COUNT - 1))
-  const gateY = yFor(GATE_VALUE)
-  const gateVisible = GATE_VALUE >= yMin && GATE_VALUE <= yMax
-
-  const firstRun = runs[0] ?? null
-  const lastRun = runs[n - 1] ?? null
-
-  // ── leader-line layout (VITALS pattern), ported from eval.html's layout() ──
-  useEffect(() => {
-    const wrap = wrapRef.current
-    const trace = traceRef.current
-    const leaders = leadersRef.current
-    if (!wrap || !trace || !leaders || n === 0) return
-
-    const NS = 'http://www.w3.org/2000/svg'
-    const narrow = window.matchMedia('(max-width: 900px)')
-
-    function layout() {
-      if (narrow.matches) {
-        while (leaders!.firstChild) leaders!.removeChild(leaders!.firstChild)
-        pinRefs.current.forEach((p) => {
-          if (p) p.style.top = ''
-        })
-        return
-      }
-
-      const w = trace!.clientWidth
-      if (!w) return
-      const scale = w / CHART_VB_W
-
-      const wrapBox = wrap!.getBoundingClientRect()
-      const traceBox = trace!.getBoundingClientRect()
-      const top = traceBox.top - wrapBox.top
-      const left = traceBox.left - wrapBox.left
-
-      const rows = CHANNELS.map((c, i) => {
-        const points = channelPoints[i]
-        const lastPoint = points[points.length - 1]
-        const y = (lastPoint?.y ?? CHART_Y_BOTTOM) * scale + top
-        return { index: i, lineY: y, slotY: y, colour: colors[i], lineX: CHART_X1 * scale + left }
-      })
-
-      rows.sort((a, b) => a.slotY - b.slotY)
-      for (let i = 1; i < rows.length; i++) {
-        if (rows[i].slotY - rows[i - 1].slotY < PIN_MIN_GAP) {
-          rows[i].slotY = rows[i - 1].slotY + PIN_MIN_GAP
-        }
-      }
-
-      const gutterX = wrap!.clientWidth - PIN_GUTTER
-      while (leaders!.firstChild) leaders!.removeChild(leaders!.firstChild)
-
-      rows.forEach((r) => {
-        const pinEl = pinRefs.current[r.index]
-        if (pinEl) pinEl.style.top = `${r.slotY}px`
-
-        const dot = document.createElementNS(NS, 'circle')
-        dot.setAttribute('cx', r.lineX.toFixed(1))
-        dot.setAttribute('cy', r.lineY.toFixed(1))
-        dot.setAttribute('r', '2.6')
-        dot.setAttribute('fill', r.colour)
-        leaders!.appendChild(dot)
-
-        const pl = document.createElementNS(NS, 'polyline')
-        pl.setAttribute(
-          'points',
-          [
-            `${r.lineX.toFixed(1)},${r.lineY.toFixed(1)}`,
-            `${(r.lineX + 14).toFixed(1)},${r.lineY.toFixed(1)}`,
-            `${(gutterX - 12).toFixed(1)},${r.slotY.toFixed(1)}`,
-            `${(gutterX - 1).toFixed(1)},${r.slotY.toFixed(1)}`,
-          ].join(' '),
-        )
-        pl.setAttribute('fill', 'none')
-        pl.setAttribute('stroke', r.colour)
-        pl.setAttribute('stroke-width', '1')
-        pl.setAttribute('stroke-opacity', '0.7')
-        leaders!.appendChild(pl)
-      })
-    }
-
-    const ro = 'ResizeObserver' in window ? new ResizeObserver(layout) : null
-    if (ro) {
-      ro.observe(wrap)
-    } else {
-      window.addEventListener('resize', layout)
-    }
-    if (document.fonts && document.fonts.ready) document.fonts.ready.then(layout)
-    layout()
-
-    return () => {
-      if (ro) ro.disconnect()
-      else window.removeEventListener('resize', layout)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runs, colors, n])
-
-  const chartLabel =
-    n > 0
-      ? `${n} run${n === 1 ? '' : 's'} on four channels. ` +
-        CHANNELS.map((c, i) => {
-          const last = runs[n - 1].aggregate_scores[c.key]
-          return n > 1
-            ? `${c.label} moves from ${runs[0].aggregate_scores[c.key].toFixed(2)} to ${last.toFixed(2)}`
-            : `${c.label} at ${last.toFixed(2)}`
-        }).join(', ') +
-        `. The gate is set at ${GATE_VALUE.toFixed(2)}.`
-      : 'No eval runs yet.'
-
-  return (
-    <div className="telemetry" id="telemetry" ref={wrapRef}>
-      <svg
-        className="trace"
-        ref={traceRef}
-        viewBox={`0 0 ${CHART_VB_W} ${CHART_VB_H}`}
-        role="img"
-        aria-label={chartLabel}
-      >
-        <g className="grid">
-          {ticks.map((t, i) => (
-            <line key={i} x1={CHART_X0} y1={yFor(t)} x2={CHART_X1} y2={yFor(t)} />
-          ))}
-        </g>
-        <g className="axis">
-          <line x1={CHART_X0} y1={CHART_Y_TOP} x2={CHART_X0} y2={CHART_Y_BOTTOM} />
-          <line x1={CHART_X0} y1={CHART_Y_BOTTOM} x2={CHART_X1} y2={CHART_Y_BOTTOM} />
-        </g>
-        <g className="tickt">
-          {ticks.map((t, i) => (
-            <text key={i} x={CHART_X0 - 6} y={yFor(t) + 3} textAnchor="end">
-              {t.toFixed(2)}
-            </text>
-          ))}
-          {firstRun && (
-            <text x={CHART_X0} y="191">
-              {formatShortDate(firstRun.started_at)}
-            </text>
-          )}
-          {lastRun && n > 1 && (
-            <text x={CHART_X1} y="191" textAnchor="end">
-              {formatShortDate(lastRun.started_at)}
-            </text>
-          )}
-        </g>
-
-        {/* the gate: the line the suite has to clear. Neutral, because a
-            threshold is not an accent — not one of the four channels. */}
-        {gateVisible && (
-          <>
-            <line
-              x1={CHART_X0}
-              y1={gateY}
-              x2={CHART_X1}
-              y2={gateY}
-              stroke="#74837F"
-              strokeOpacity={0.6}
-              strokeWidth={1}
-              strokeDasharray="5 5"
-            />
-            <text
-              x={CHART_X0 + 6}
-              y={gateY - 4}
-              fontFamily="'JetBrains Mono', monospace"
-              fontSize={8.5}
-              letterSpacing={1.6}
-              fill="#74837F"
-            >
-              GATE {GATE_VALUE.toFixed(2)}
-            </text>
-          </>
-        )}
-
-        {/* the four traces — --ch-1..4 bone luminance, resolved above.
-            NOT the prototype's retired gold/blue/green/purple brand hues. */}
-        {n > 1 &&
-          CHANNELS.map((c, i) => (
-            <polyline
-              key={c.key}
-              fill="none"
-              stroke={colors[i]}
-              strokeWidth={1.7}
-              strokeLinejoin="round"
-              strokeLinecap="round"
-              points={channelPoints[i].map((p) => `${p.x},${p.y}`).join(' ')}
-            />
-          ))}
-        {n === 1 &&
-          CHANNELS.map((c, i) => (
-            <circle key={c.key} cx={channelPoints[i][0].x} cy={channelPoints[i][0].y} r={2.6} fill={colors[i]} />
-          ))}
-      </svg>
-
-      {/* the leaders, laid in pixel space by the layout effect above */}
-      <svg className="leaders" ref={leadersRef} aria-hidden="true" />
-
-      <div className="pins">
-        {CHANNELS.map((c, i) => {
-          const last = runs[n - 1]?.aggregate_scores[c.key]
-          return (
-            <div
-              key={c.key}
-              className="pin"
-              ref={(el) => {
-                pinRefs.current[i] = el
-              }}
-              style={{ '--c': colors[i] } as React.CSSProperties}
-            >
-              <span className="pin-val num">{last !== undefined ? last.toFixed(2) : '—'}</span>
-              <span className="pin-name label">{c.label}</span>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
 }
 
 // ---------------------------------------------------------------------------
@@ -460,8 +178,23 @@ export default function EvalPage({
     staleTime: 30_000,
   })
 
-  // Chronological (oldest-first) run list for the chart.
-  const chronologicalRuns: EvalRun[] = [...(evalRunsQuery.data?.eval_runs ?? [])].reverse()
+  // Chronological (oldest-first) run list for the chart, without the run that is
+  // still going. A running run has no record yet, so every metric on it reads
+  // unmeasured, and including it turned every pin on the page into a dash the
+  // moment the owner pressed Run evals, for as long as the run took. It joins
+  // the chart when it finishes. A failed run stays: it really did measure
+  // nothing, and the gap it leaves says so.
+  //
+  // Memoised because the judge's sentence types out one word every 30ms, and
+  // this array is the chart effect's first dependency; a new one per render
+  // rebuilt every leader line 33 times a second.
+  const chronologicalRuns: EvalRun[] = useMemo(
+    () =>
+      [...(evalRunsQuery.data?.eval_runs ?? [])]
+        .filter((run) => run.status !== 'running')
+        .reverse(),
+    [evalRunsQuery.data?.eval_runs],
+  )
 
   const latestRun = evalRunsQuery.data?.eval_runs?.[0] ?? null
   const hasRuns = (evalRunsQuery.data?.eval_runs?.length ?? 0) > 0
@@ -748,36 +481,7 @@ export default function EvalPage({
 // and are not repeated here.
 // ---------------------------------------------------------------------------
 const PAGE_CSS = `
-  .telemetry { position: relative; padding: 10px 0 22px; }
-
-  .trace { display: block; width: calc(100% - 168px); height: auto; }
-  @media (max-width: 900px) { .trace { width: 100%; } }
-
-  .trace .grid  { stroke: var(--hairline-soft); stroke-width: 1; }
-  .trace .axis  { stroke: var(--hairline); stroke-width: 1; }
-  .trace .tickt { font-family: var(--mono); font-size: 8px; fill: var(--ink-3); }
-
-  .leaders { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-
-  .pins { position: absolute; inset: 0; pointer-events: none; }
-  .pin {
-    position: absolute; right: 0; width: 148px;
-    transform: translateY(-50%);
-    display: flex; flex-direction: column; gap: 1px;
-  }
-  .pin-val { font-size: 26px; line-height: 1.04; font-weight: 500; color: var(--c); }
-  .pin-name { color: var(--ink-3); }
-
-  @media (max-width: 900px) {
-    .leaders { display: none; }
-    .pins {
-      position: static; display: grid; gap: 14px;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      margin-top: 18px;
-    }
-    .pin { position: static; transform: none; width: auto; padding-left: 11px; border-left: 2px solid var(--c); }
-  }
-
+  ${TELEMETRY_CSS}
   .judge { margin-top: 8px; padding-top: 22px; border-top: 1px solid var(--hairline-strong); }
   .judge .label { display: block; margin-bottom: 10px; }
   .verdict { font-size: 17.5px; max-width: 74ch; min-height: 3.3em; }
