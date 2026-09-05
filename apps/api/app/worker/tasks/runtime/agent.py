@@ -47,7 +47,6 @@ import asyncio
 import json
 import os
 import re
-import ssl
 import time
 import uuid
 from datetime import datetime, timezone
@@ -62,6 +61,7 @@ from sqlalchemy import text as sa_text
 from app.core.config import AGENT_TURN_MODEL, settings
 from app.core.database import get_sync_db
 from app.core.model_client import ledger_recorder
+from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.domain.pricing import UnknownPrice, cost_usd
 from app.models.agent import Agent
@@ -86,11 +86,10 @@ from app.worker.tasks.runtime.validators import run_auditor, run_gatekeeper, run
 log = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Module-level sync Redis client (copied verbatim from retrieve.py lines 59-62)
-# Strip query params; pass ssl_cert_reqs as Python constant.
+# Module-level sync Redis client. Strip the query string, then redis_ssl_kwargs decides TLS.
 # ---------------------------------------------------------------------------
 _url_clean = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
-_ssl_opts: dict = {"ssl_cert_reqs": ssl.CERT_NONE} if _url_clean.startswith("rediss://") else {}
+_ssl_opts: dict = redis_ssl_kwargs(_url_clean)
 _redis = redis_lib.from_url(_url_clean, **_ssl_opts)
 
 # ---------------------------------------------------------------------------

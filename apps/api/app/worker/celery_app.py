@@ -45,7 +45,6 @@ worker_pool — ENVIRONMENT-conditional (PROD-15 / Landmine 3):
 """
 
 import socket
-import ssl
 
 import structlog
 from celery import Celery, signals
@@ -53,6 +52,7 @@ from celery.schedules import crontab
 from kombu import Exchange, Queue
 
 from app.core.config import settings
+from app.core.redis_tls import redis_ssl_kwargs
 
 # ---------------------------------------------------------------------------
 # How long the broker waits before deciding a delivered message was lost
@@ -81,18 +81,26 @@ BROKER_VISIBILITY_TIMEOUT_S = 7200
 celery_app = Celery("wchats")
 
 _redis_url = settings.REDIS_URL
-# Strip ssl_cert_reqs from URL — configured explicitly via broker_use_ssl /
-# redis_backend_use_ssl so Celery 5.x receives the Python ssl constant, not a string.
+# Strip the query string before either connection is built. Neither of Celery's two
+# Redis paths reaches redis-py's from_url, and both read ssl_cert_reqs out of the URL
+# and let it win. On the broker side kombu.utils.url.parse_url turns ?ssl_cert_reqs=none
+# into an ssl dict, and Connection.__init__ updates its params with it, replacing
+# broker_use_ssl whole, so ssl_check_hostname is dropped along with the mode. On the
+# result backend celery.backends.redis.RedisBackend applies _params_from_url after
+# connparams.update(ssl), and that pops the same query key over redis_backend_use_ssl.
+# Measured on celery 5.6.3 and kombu 5.6.2.
 _redis_url_clean = _redis_url.split("?")[0] if "?" in _redis_url else _redis_url
-_ssl_opts = (
-    {"ssl_cert_reqs": ssl.CERT_NONE} if _redis_url_clean.startswith("rediss://") else None
-)
+_ssl_opts = redis_ssl_kwargs(_redis_url_clean)
 
 celery_app.conf.update(
-    # Broker and result backend — both point to Redis
+    # Broker and result backend, both pointing at Redis.
     broker_url=_redis_url_clean,
     result_backend=_redis_url_clean,
-    **({"broker_use_ssl": _ssl_opts, "redis_backend_use_ssl": _ssl_opts} if _ssl_opts else {}),
+    # kombu reads these under `if conninfo.ssl:` (kombu/transport/redis.py,
+    # Channel._connparams), so the seam's empty dict for a plain redis:// URL is
+    # skipped rather than rejected, and no guard is needed here.
+    broker_use_ssl=_ssl_opts,
+    redis_backend_use_ssl=_ssl_opts,
 
     # --- Task autodiscovery -----------------------------------------------
     # Worker discovers tasks by importing these modules on startup.
