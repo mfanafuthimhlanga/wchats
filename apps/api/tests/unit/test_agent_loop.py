@@ -1352,15 +1352,38 @@ class TestTheCeilings:
         assert out["num_turns"] == 1
         assert out["stop_reason"] == "stop"
 
-    async def test_an_unpriced_call_degrades_the_guard_and_the_turn_runs_on(self):
-        """The guard is telemetry shaped. A served turn never dies for it."""
+    async def test_an_unpriced_call_counts_against_the_ceiling_and_stops_the_turn(self):
+        """Fail closed (#178). The guard used to switch off for the rest of the turn.
+
+        1000 in and 500 out at the book's dearest rate is $0.00198, over a
+        $0.0005 ceiling. `model_client` takes served_model from the response body
+        verbatim and the book matches exactly, so a dated snapshot in place of the
+        alias was all it took to reach the old `return False`.
+        """
         client = self._always_calls_a_tool()
         calls = [_luna_call(1000, 500, model="gpt-5.6-nobody-priced")]
         turn = _turn(
             client,
             tools=[_tool("retrieve", _echo_handler)],
             max_model_calls=2,
-            max_budget_usd=0.0000001,
+            max_budget_usd=0.0005,
+            calls=calls,
+        )
+
+        out, _ = await _drive(turn)
+
+        assert out["stop_reason"] == "budget_exceeded"
+        assert out["num_turns"] == 1
+
+    async def test_an_unpriced_call_under_the_ceiling_still_runs_the_turn_out(self):
+        """The other direction. A substituted charge is a charge, not a refusal."""
+        client = self._always_calls_a_tool()
+        calls = [_luna_call(1000, 500, model="gpt-5.6-nobody-priced")]
+        turn = _turn(
+            client,
+            tools=[_tool("retrieve", _echo_handler)],
+            max_model_calls=2,
+            max_budget_usd=5.0,
             calls=calls,
         )
 
@@ -1368,6 +1391,29 @@ class TestTheCeilings:
 
         assert out["stop_reason"] == "max_model_calls"
         assert out["num_turns"] == 2
+
+    async def test_the_log_line_says_the_charge_was_substituted(self):
+        """A turn stopped on a substituted figure is a different event from a real one."""
+        from structlog.testing import capture_logs
+
+        client = self._always_calls_a_tool()
+        calls = [_luna_call(1000, 500, model="gpt-5.6-nobody-priced")]
+        turn = _turn(
+            client,
+            tools=[_tool("retrieve", _echo_handler)],
+            max_model_calls=2,
+            max_budget_usd=0.0005,
+            calls=calls,
+        )
+
+        with capture_logs() as logs:
+            await _drive(turn)
+
+        unpriced = [entry for entry in logs if entry["event"] == "agent_loop.budget_unpriced"]
+        assert unpriced, f"the substitution has to be visible: {logs}"
+        assert unpriced[0]["served_model"] == "gpt-5.6-nobody-priced"
+        assert unpriced[0]["charged_usd"] == "0.00198"
+        assert "dearest rate" in unpriced[0]["charged_at"]
 
 
 # ---------------------------------------------------------------------------

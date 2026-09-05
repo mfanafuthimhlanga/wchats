@@ -1,8 +1,8 @@
 """Structural gates for apps/api. Standard library only, no dependencies.
 
     python scripts/gates.py static  ruff, import contracts, complexity, source
-                                    assertions, log bounds. None of them imports
-                                    app code
+                                    assertions, log bounds, process-wide keys.
+                                    None of them imports app code
     python scripts/gates.py mypy    the type baseline on its own, which is what CI runs
     python scripts/gates.py fast    static, plus mypy, plus whole-suite test collection
     python scripts/gates.py full    the above, plus the unit suite
@@ -13,13 +13,14 @@ disappears silently, which reads exactly like a gate that was never declared.
 Test collection imports the whole app: docling pulls transformers and torch, and
 it was measured at 142.5s on 2026-08-18 against 78.8s on 2026-08-15, growing with
 the dependency tree rather than with the suite. It crossed the clamp and the hook
-gate was killed mid-run. `static` runs the five steps that never import app code:
+gate was killed mid-run. `static` runs the six steps that never import app code:
 
     ruff                1.8s   measured 2026-08-18
     import contracts    1.4s   measured 2026-08-18
     complexity          2.6s   measured 2026-08-24, lizard parses, it does not import
     source assertions   3.6s   measured 2026-08-24, one text pass over tests/
     log bounds          1.1s   measured 2026-09-05, one AST pass over app/
+    process-wide keys   0.2s   measured 2026-09-05, one AST pass over tests/integration
 
 That is the hook's gate now. mypy, collection and the suite belong to `fast` and
 `full`, which are run deliberately and detached, not at the end of every session.
@@ -1128,6 +1129,217 @@ def run_log_bounds():
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Process-wide keys (#101, #178): one source decides them, and it is
+# tests/integration/conftest.py.
+#
+# `settings` freezes on the environment at the first `import app` in a process.
+# pytest then IMPORTS every module under tests/integration, and a module-scope
+# write after that freeze changes what a SPAWNED WORKER inherits while this
+# process keeps the frozen value. The observed failure was every CI Integration
+# run from 33150052552 onward: the worker encrypted with K2 and pytest decrypted
+# with K1, and the error was InvalidToken, which names neither process.
+#
+# conftest.py is exempt, and it is the only exemption. pytest loads a directory's
+# conftest before any test module in it, so it is the one place that can decide a
+# value the rest of the directory inherits. Its own writes are unconditional on
+# purpose: the root conftest already set CONTROL_DB_URL with setdefault, so an
+# integration run pointing at the local cluster has to overwrite it.
+#
+# THE SCAN IS STRUCTURAL. The guard this replaces matched
+# `^os.environ["KEY"] =` at column 0, and a probe file carrying five module-scope
+# rebinds passed it: an assignment indented under `if True:`, one inside `try:`,
+# `os.environ.update({...})`, `os.putenv`, and a helper called at import. Every
+# one of those is module scope in Python, and column 0 is not what module scope
+# means. This walks the tree instead: every statement outside a `def` or `class`,
+# including the bodies of `if`, `try`, `with`, `for` and `while`, plus any
+# module-level helper such a statement calls.
+#
+# `os.environ.setdefault` is the remedy and reads as no write at all: it takes the
+# value already in the environment when there is one, which is the whole point.
+#
+# THE PIN IS ZERO, and an empty scan FAILS. A renamed tests/integration would
+# otherwise leave this reporting a clean tree over nothing, which is the shape
+# FM-013 already cost.
+PROCESS_WIDE_KEYS = (
+    "NEON_ENCRYPTION_KEY",
+    "PLATFORM_CREDENTIAL_KEY",
+    "CONTROL_DB_URL",
+    "CONTROL_DB_SYNC_URL",
+)
+
+#: A write whose key is not a literal. Nothing can say which key it sets, so it
+#: counts against every one of them rather than none.
+UNKNOWN_KEY = "<not a literal>"
+
+#: os.environ methods that change the environment. `setdefault` is absent
+#: deliberately: it is what a module is told to use instead.
+ENV_MUTATORS = ("update", "pop", "clear", "__setitem__", "__delitem__")
+
+
+def _is_the_environment(node):
+    """True for `os.environ` and for a bare `environ` taken by from-import."""
+    if isinstance(node, ast.Attribute) and node.attr == "environ":
+        return isinstance(node.value, ast.Name) and node.value.id == "os"
+    return isinstance(node, ast.Name) and node.id == "environ"
+
+
+def _literal_or_unknown(node):
+    """One key name, or UNKNOWN_KEY when the expression is not a plain string."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return UNKNOWN_KEY
+
+
+def _keys_written_by(node):
+    """Keys one statement or expression writes into the environment, any spelling."""
+    keys = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            targets = sub.targets if isinstance(sub, ast.Assign) else [sub.target]
+            for target in targets:
+                if isinstance(target, ast.Subscript) and _is_the_environment(target.value):
+                    keys.add(_literal_or_unknown(target.slice))
+        if isinstance(sub, ast.Delete):
+            for target in sub.targets:
+                if isinstance(target, ast.Subscript) and _is_the_environment(target.value):
+                    keys.add(_literal_or_unknown(target.slice))
+        if not isinstance(sub, ast.Call):
+            continue
+        func = sub.func
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            if func.value.id == "os" and func.attr in ("putenv", "unsetenv"):
+                keys.add(_literal_or_unknown(sub.args[0]) if sub.args else UNKNOWN_KEY)
+        if isinstance(func, ast.Attribute) and _is_the_environment(func.value):
+            if func.attr not in ENV_MUTATORS:
+                continue
+            if func.attr == "update":
+                keys.update(_keys_of_the_mapping(sub))
+            elif sub.args:
+                keys.add(_literal_or_unknown(sub.args[0]))
+            else:
+                keys.add(UNKNOWN_KEY)
+    return keys
+
+
+def _keys_of_the_mapping(call):
+    """The keys an `os.environ.update(...)` sets, from a dict literal or keywords."""
+    keys = set()
+    for keyword in call.keywords:
+        keys.add(keyword.arg if keyword.arg else UNKNOWN_KEY)
+    for arg in call.args:
+        if isinstance(arg, ast.Dict):
+            for key in arg.keys:
+                keys.add(_literal_or_unknown(key) if key is not None else UNKNOWN_KEY)
+        else:
+            keys.add(UNKNOWN_KEY)
+    return keys
+
+
+def module_scope_statements(body):
+    """Every statement at module scope, walking into blocks but never into a def."""
+    for node in body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        yield node
+        for field in ("body", "orelse", "finalbody"):
+            for child in getattr(node, field, []) or []:
+                yield from module_scope_statements([child])
+        for handler in getattr(node, "handlers", []) or []:
+            yield from module_scope_statements(handler.body)
+
+
+def helpers_that_write(tree):
+    """name -> the keys that module-level function writes, for the ones that write."""
+    writers = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            keys = set()
+            for statement in node.body:
+                keys |= _keys_written_by(statement)
+            if keys:
+                writers[node.name] = keys
+    return writers
+
+
+def process_wide_env_writes(text):
+    """Process-wide keys one module rebinds at import time, by any spelling."""
+    tree = ast.parse(text)
+    writers = helpers_that_write(tree)
+    keys = set()
+    for statement in module_scope_statements(tree.body):
+        keys |= _keys_written_by(statement)
+        for sub in ast.walk(statement):
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
+                keys |= writers.get(sub.func.id, set())
+    guarded = set(PROCESS_WIDE_KEYS)
+    if UNKNOWN_KEY in keys:
+        return sorted(guarded | {UNKNOWN_KEY})
+    return sorted(keys & guarded)
+
+
+def walk_integration_files():
+    """(path relative to apps/api, absolute path) for every .py under tests/integration.
+
+    RECURSIVE. The glob this replaces was not, so a future tests/integration/<dir>/
+    was unscanned. conftest.py is the directory's single source and is skipped.
+    """
+    root = os.path.join(API_DIR, "tests", "integration")
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(name for name in dirnames if name != "__pycache__")
+        for name in sorted(filenames):
+            if not name.endswith(".py") or name == "conftest.py":
+                continue
+            full = os.path.join(dirpath, name)
+            yield os.path.relpath(full, API_DIR).replace("\\", "/"), full
+
+
+def process_wide_key_failures(found, scanned):
+    """Failure lines for one scan of tests/integration. Empty means pass."""
+    if not scanned:
+        return [
+            "process-wide keys: the scan read 0 files, so it proved nothing.",
+            "walk_integration_files found no tests/integration tree under " + API_DIR + ".",
+        ]
+    if not found:
+        return []
+    failures = [
+        "process-wide keys: %d module(s) rebind a process-wide key at import time."
+        % len(found),
+        "Every worker spawned after collection inherits a value this process has",
+        "already frozen past (#101). Use os.environ.setdefault, or put the value in",
+        "tests/integration/conftest.py, which is the one source that decides these:",
+    ]
+    for path in sorted(found):
+        failures.append("  %s  %s" % (path, ", ".join(found[path])))
+    return failures
+
+
+def run_process_wide_keys():
+    """Fail on any module under tests/integration that rebinds a process-wide key."""
+    print("\n$ process-wide keys over tests/integration", flush=True)
+
+    found = {}
+    scanned = 0
+    for relative, full in walk_integration_files():
+        with open(full, encoding="utf-8", errors="replace") as handle:
+            keys = process_wide_env_writes(handle.read())
+        scanned += 1
+        if keys:
+            found[relative] = keys
+    print("scanned %d file(s), %d with writes." % (scanned, len(found)), flush=True)
+
+    failures = process_wide_key_failures(found, scanned)
+    if failures:
+        print("")
+        for line in failures:
+            print(line)
+        return 1
+
+    print("process-wide keys: clean, conftest.py is the only source.")
+    return 0
+
+
 def steps(mode):
     """Ordered (label, callable) pairs for the requested mode.
 
@@ -1145,6 +1357,7 @@ def steps(mode):
         ("complexity", run_complexity),
         ("source assertions", run_source_assertions),
         ("log bounds", run_log_bounds),
+        ("process-wide keys", run_process_wide_keys),
     ]
     if mode == "static":
         return static

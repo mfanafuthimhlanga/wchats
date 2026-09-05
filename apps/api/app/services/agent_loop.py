@@ -55,9 +55,9 @@ WHAT THE LOOP COUNTS, AND WHAT IT REFUSES TO INVENT
 
     Two ceilings bound a turn. `MAX_MODEL_CALLS_PER_TURN` bounds how many times
     the model is asked, and `max_budget_usd` stops a turn whose recorded spend
-    has reached the ceiling. The budget guard is telemetry shaped. A price the
-    book cannot read degrades it to a warning and the turn runs on, because a
-    customer's turn may not die over a missing tariff row.
+    has reached the ceiling. A call the price book cannot read is charged at the
+    dearest rate the book knows and counts against that ceiling (#178); it used
+    to switch the ceiling off for the rest of the turn.
 
     A tool that raises, a tool nobody registered, and arguments that are not JSON
     all come back to the model as an error tool result. The model reads the text
@@ -86,7 +86,7 @@ from app.core.log_bounds import log_failure
 from app.core.model_client import ModelRoute, Recorder, make_async_client, route_for
 from app.domain.model_call import ModelCall
 from app.domain.pii_firewall import detect_pii, scan_response
-from app.domain.pricing import UnknownPrice, cost_usd
+from app.domain.pricing import UnknownPrice, ceiling_cost_usd, cost_usd
 from app.domain.tool_result import wire_text
 from app.services.agent_prompt import build_system_prompt
 from app.services.agent_tools import (
@@ -538,17 +538,35 @@ def _over_budget(turn: AgentTurn) -> bool:
     """True when this turn's recorded spend has reached its ceiling.
 
     Derived from the `ModelCall` rows the recorder teed in, priced through the
-    versioned book. A price the book cannot read degrades the guard to a warning
-    and the turn runs on, because a customer's turn may not die over a missing
-    tariff row.
+    versioned book.
+
+    A CALL THE BOOK CANNOT PRICE COUNTS AT THE DEAREST RATE THE BOOK KNOWS, and
+    the turn carries on with that charge against it. This used to return False on
+    `UnknownPrice`, which switched the ceiling off entirely for the rest of the
+    turn, for exactly the call nothing knows the price of (#178). Nothing exotic
+    is needed to reach it: `model_client` takes `served_model` from
+    `response_body["model"]` verbatim and the book matches exactly, so a dated
+    snapshot the provider returns in place of the alias silently removed the
+    ceiling. One observation that the alias comes back is not a contract.
+
+    The charge is a ceiling and not an estimate, so it reads high and the turn
+    stops early rather than late. The log line says the substitution happened and
+    what it cost, because a turn stopped on a substituted figure is a different
+    event from a turn stopped on a real one.
     """
     total = Decimal(0)
     for call in turn.calls:
         try:
             total += cost_usd(call)[0]
         except UnknownPrice as exc:
-            log_failure(log, "agent_loop.budget_unpriced", exc)
-            return False
+            charged = ceiling_cost_usd(call)
+            total += charged
+            log_failure(
+                log, "agent_loop.budget_unpriced", exc,
+                served_model=call.served_model,
+                charged_usd=str(charged),
+                charged_at="the dearest rate in the price book, so the ceiling still applies",
+            )
     return float(total) >= turn.max_budget_usd
 
 

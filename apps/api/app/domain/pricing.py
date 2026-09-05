@@ -307,6 +307,36 @@ def _rate(book: PriceBook, call: ModelCall, kind: TokenKind, window: Window) -> 
         ) from None
 
 
+def dearest_rate_per_million(book: PriceBook = PRICE_BOOK) -> Decimal:
+    """The highest figure the book publishes, across both tables and every window.
+
+    What a call the book cannot price is charged at. It is a ceiling and not an
+    estimate: the book has no row for the model, so nothing is known about what
+    it costs, and the only honest reading that a spend guard can act on is the
+    dearest thing the book does know about.
+    """
+    return max([*book.rates_per_million.values(), *book.flat_rates_per_million.values()])
+
+
+def ceiling_cost_usd(call: ModelCall, book: PriceBook = PRICE_BOOK) -> Decimal:
+    """What an UNPRICEABLE call counts as, for a guard that has to decide anyway.
+
+    `cost_usd` raises on a model the book does not name, and it is right to: a
+    report may not print a figure the book cannot support, and a silent zero is
+    the failure ticket #46 exists to end. A spend CEILING is the one reader that
+    cannot take the refusal and stop, because the alternative is switching the
+    ceiling off for exactly the call nothing knows the price of (#178).
+
+    So this prices every token the call reports at `dearest_rate_per_million`,
+    ignoring the kind and the window. The error runs one way only: the figure
+    reads high, never low, and a ceiling trips early rather than late. It is
+    never stored, never reported, and carries no price_version, because it is not
+    a reading of the tariff. It is what the guard charges in the tariff's absence.
+    """
+    tokens = sum(getattr(call, count_field) for _, count_field in _KIND_FIELDS)
+    return dearest_rate_per_million(book) * tokens / PER_MILLION
+
+
 def cost_usd(call: ModelCall, book: PriceBook = PRICE_BOOK) -> tuple[Decimal, str]:
     """What one call cost in USD, and the version of the book that says so.
 

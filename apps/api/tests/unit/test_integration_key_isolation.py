@@ -1,4 +1,4 @@
-"""No integration module may rebind NEON_ENCRYPTION_KEY after `settings` froze (#101).
+"""Importing an integration module leaves the process-wide keys agreed (#101, #178).
 
 WHAT WENT WRONG WITHOUT IT
     `test_provision_neon_stores_encrypted_connection_string` failed on
@@ -25,92 +25,125 @@ WHAT WENT WRONG WITHOUT IT
     `subprocess.Popen`, was measured and is dead: it survives. What differs
     between the two processes is WHEN each read the variable.
 
-WHAT THIS FILE ASSERTS
-    The invariant that makes step 4 impossible: the value a subprocess would
-    inherit is still the value this process decrypts with. One source check over
-    every module, so the next unconditional assignment is caught where it is
-    written, and one behavioural check that imports the module the CI failure came
-    from and compares the two readers.
+WHERE THE TWO HALVES LIVE NOW (#178)
+    The SOURCE half is `scripts/gates.py`, as the `process-wide keys` step of
+    `gates.py static`. It walks every module under `tests/integration/`
+    recursively for a module-scope environment write by any spelling, exempting
+    `conftest.py`, which pytest loads first and which is the one source these
+    values come from. It replaced a column-0 regex that a probe file carrying
+    five module-scope rebinds walked straight past. `tests/unit/test_gates.py`
+    holds its cases.
 
-    The behavioural half imports one module rather than sweeping all thirty. The
-    sweep cost 66 seconds, most of it importing app packages the source check
-    reads without loading.
+    The BEHAVIOURAL half is here, and it is the half that has to survive
+    collection order. It used to call `importlib.import_module`, which is a
+    `sys.modules` cache hit when anything imported that module first. Under
+    `pytest tests/integration/... tests/unit/test_integration_key_isolation.py`
+    it passed with the unconditional assignment restored, which is the exact
+    order the original defect came from. It runs the import in a FRESH
+    SUBPROCESS now, so no cache in this process can answer for it, and the
+    subprocess is also what the defect is about: a child that inherits this
+    process's environment.
 """
 
 from __future__ import annotations
 
-import importlib
-import os
-import re
+import json
+import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 from app.core.config import settings
 
-INTEGRATION_DIR = Path(__file__).resolve().parents[1] / "integration"
+API_DIR = Path(__file__).resolve().parents[2]
 
 #: Every setting whose value must be identical in the pytest process and in a
 #: worker it spawns. Both are read once, at the first `import app` in each process.
-PROCESS_WIDE_KEYS = ("NEON_ENCRYPTION_KEY", "PLATFORM_CREDENTIAL_KEY")
+PROCESS_WIDE_KEYS = (
+    "NEON_ENCRYPTION_KEY",
+    "PLATFORM_CREDENTIAL_KEY",
+    "CONTROL_DB_URL",
+    "CONTROL_DB_SYNC_URL",
+)
 
 #: The module the CI failure came from. It is the one that assigned the key, and
 #: it is cheap to import: psycopg2 and pytest at module scope, nothing from app.
 THE_MODULE_THAT_DID_IT = "test_usage_rollup_e2e"
 
-
-def integration_modules() -> list[Path]:
-    return sorted(p for p in INTEGRATION_DIR.glob("*.py") if p.name != "__init__.py")
-
-
-#: An assignment into os.environ that starts in column 0. Column 0 is module scope
-#: in Python, so the pattern separates the two cases exactly:
-#: `tests/integration/conftest.py` guards its own write behind
-#: `if "NEON_ENCRYPTION_KEY" not in os.environ` and therefore indents it, and a
-#: commented-out line starts with a hash. A text scan rather than an ast.parse,
-#: because gates.py counts a parsed syntax tree in a test as a source assertion and
-#: its baseline never gains entries.
-UNCONDITIONAL_ENV_WRITE = re.compile(
-    r"""^os\.environ\[\s*["']([A-Z][A-Z0-9_]*)["']\s*\]\s*=""", re.MULTILINE
-)
+#: What the child runs. It reports the environment BEFORE and AFTER the import,
+#: so a rebind shows up as a changed value rather than as a missing one, and the
+#: parent can name the key that moved.
+_PROBE = """
+import json, os, sys
+sys.path.insert(0, {api_dir!r})
+KEYS = {keys!r}
+before = {{key: os.environ.get(key) for key in KEYS}}
+import importlib
+importlib.import_module("tests.integration." + {module!r})
+after = {{key: os.environ.get(key) for key in KEYS}}
+print(json.dumps({{"before": before, "after": after}}))
+"""
 
 
-def module_scope_env_writes(source: Path) -> set[str]:
-    """Names an unconditional module-level statement assigns into `os.environ`."""
-    return set(UNCONDITIONAL_ENV_WRITE.findall(source.read_text(encoding="utf-8")))
+def _import_in_a_fresh_process(module: str) -> dict:
+    """Import one integration module in a child, and report what the environment did.
+
+    The child inherits this process's environment, which is exactly the
+    inheritance the defect rides on, and it holds no `sys.modules` entry for the
+    module, so the import really runs.
+    """
+    source = _PROBE.format(api_dir=str(API_DIR), keys=PROCESS_WIDE_KEYS, module=module)
+    finished = subprocess.run(
+        [sys.executable, "-c", source],
+        cwd=str(API_DIR),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if finished.returncode != 0:
+        pytest.fail(
+            "the child could not import tests/integration/%s.py, so this test "
+            "proved nothing:\n%s" % (module, finished.stderr[-2000:])
+        )
+    return json.loads(finished.stdout.strip().splitlines()[-1])
 
 
-def test_no_integration_module_rebinds_a_process_wide_key() -> None:
-    offenders = {
-        path.name: sorted(module_scope_env_writes(path) & set(PROCESS_WIDE_KEYS))
-        for path in integration_modules()
+def test_importing_the_rollup_module_rebinds_no_process_wide_key() -> None:
+    """The module the CI failure came from leaves every guarded key where it was.
+
+    Run in a child so the result does not depend on whether this process has
+    already imported it. The old spelling of this test read `sys.modules` and
+    passed with the bug live in any run that collected tests/integration first.
+    """
+    seen = _import_in_a_fresh_process(THE_MODULE_THAT_DID_IT)
+
+    changed = {
+        key: (seen["before"][key], seen["after"][key])
+        for key in PROCESS_WIDE_KEYS
+        if seen["before"][key] != seen["after"][key]
     }
-    offenders = {name: keys for name, keys in offenders.items() if keys}
-    assert not offenders, (
-        f"these modules assign a process-wide key at import time, so every worker "
-        f"spawned after collection inherits a value this process already froze past: "
-        f"{offenders}. Use os.environ.setdefault so one source decides the key (#101)."
+    assert not changed, (
+        f"importing tests/integration/{THE_MODULE_THAT_DID_IT}.py changed {sorted(changed)}, "
+        f"so a worker spawned after it encrypts with one value while this process "
+        f"decrypts with another (#101): {changed}"
     )
 
 
-def test_importing_the_rollup_module_leaves_the_key_agreed() -> None:
-    """Import it the way collection does, then compare the two readers.
+def test_the_child_reports_the_same_keys_this_process_froze() -> None:
+    """What the child inherits is what `settings` here was built from.
 
-    `settings` is what this process decrypts with. `os.environ` is what a Celery
-    worker spawned by `_spawn_pipeline_worker` inherits. They agree or a decrypt
-    across that boundary fails, and it fails as InvalidToken, which names neither
-    process.
+    The subprocess above is the same inheritance `_spawn_pipeline_worker` uses.
+    A key this process holds only in `settings`, and not in the environment, is
+    a key the worker never receives at all.
     """
-    before = {key: os.environ.get(key) for key in PROCESS_WIDE_KEYS}
-    try:
-        importlib.import_module(f"tests.integration.{THE_MODULE_THAT_DID_IT}")
-        for key in PROCESS_WIDE_KEYS:
-            assert os.environ.get(key) == getattr(settings, key), (
-                f"importing tests/integration/{THE_MODULE_THAT_DID_IT}.py changed "
-                f"{key}, so a worker spawned after it encrypts with one value while "
-                f"this process decrypts with another (#101)"
-            )
-    finally:
-        for key, value in before.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+    seen = _import_in_a_fresh_process(THE_MODULE_THAT_DID_IT)
+
+    for key in PROCESS_WIDE_KEYS:
+        expected = getattr(settings, key, None)
+        if expected is None:
+            continue
+        assert seen["after"][key] == str(expected), (
+            f"{key} is {seen['after'][key]!r} in a spawned child and {expected!r} in "
+            f"this process's settings (#101)"
+        )

@@ -567,3 +567,111 @@ def test_a_scan_that_read_nothing_is_not_a_pass():
 def test_log_bounds_runs_in_the_static_mode():
     """The gate the Stop hook runs is the one that carries this check."""
     assert "log bounds" in [label for label, _ in gates.steps("static")]
+
+
+# ---------------------------------------------------------------------------
+# Process-wide keys (#101, #178). The five spellings below are the ones a probe
+# file carried straight past the column-0 regex this replaced. Each snippet is a
+# whole module, because module scope is what the scan is about.
+
+KEY = "NEON_ENCRYPTION_KEY"
+
+ENV_WRITE_CASES = [
+    ("the plain assignment, column 0", 'import os\nos.environ["%s"] = "k"\n' % KEY, [KEY]),
+    (
+        "indented under a module-scope if",
+        'import os\nif True:\n    os.environ["%s"] = "k"\n' % KEY,
+        [KEY],
+    ),
+    (
+        "inside a try block",
+        'import os\ntry:\n    os.environ["%s"] = "k"\nexcept Exception:\n    pass\n' % KEY,
+        [KEY],
+    ),
+    (
+        "inside the except block",
+        'import os\ntry:\n    pass\nexcept Exception:\n    os.environ["%s"] = "k"\n' % KEY,
+        [KEY],
+    ),
+    ("update with a dict literal", 'import os\nos.environ.update({"%s": "k"})\n' % KEY, [KEY]),
+    ("update with a keyword", "import os\nos.environ.update(%s='k')\n" % KEY, [KEY]),
+    ("putenv", 'import os\nos.putenv("%s", "k")\n' % KEY, [KEY]),
+    ("pop", 'import os\nos.environ.pop("%s", None)\n' % KEY, [KEY]),
+    (
+        "a helper called at import time",
+        'import os\ndef _bind():\n    os.environ["%s"] = "k"\n_bind()\n' % KEY,
+        [KEY],
+    ),
+    (
+        "environ taken by from-import",
+        'from os import environ\nenviron["%s"] = "k"\n' % KEY,
+        [KEY],
+    ),
+    (
+        "the remedy, which is not a write",
+        'import os\nos.environ.setdefault("%s", "k")\n' % KEY,
+        [],
+    ),
+    (
+        "a helper that is defined and never called",
+        'import os\ndef _bind():\n    os.environ["%s"] = "k"\n' % KEY,
+        [],
+    ),
+    (
+        "a write inside a test function, which runs after collection",
+        'import os\ndef test_it():\n    os.environ["%s"] = "k"\n' % KEY,
+        [],
+    ),
+    ("a key nothing guards", 'import os\nos.environ["PATH"] = "k"\n', []),
+    ("a read, not a write", 'import os\nvalue = os.environ["%s"]\n' % KEY, []),
+]
+
+
+@pytest.mark.parametrize("label, module, expected", ENV_WRITE_CASES)
+def test_process_wide_env_writes(label, module, expected):
+    """Module scope by any spelling, and nothing that runs later."""
+    assert gates.process_wide_env_writes(module) == expected
+
+
+def test_a_key_that_is_not_a_literal_counts_against_every_guarded_key():
+    """Nothing can say which key it sets, so the scan fails closed rather than open."""
+    found = gates.process_wide_env_writes("import os\nos.environ[name] = value\n")
+    assert gates.UNKNOWN_KEY in found
+    for key in gates.PROCESS_WIDE_KEYS:
+        assert key in found
+
+
+def test_control_db_url_is_guarded_too():
+    """It is the same class of key, and it was outside the old guard's set."""
+    assert "CONTROL_DB_URL" in gates.PROCESS_WIDE_KEYS
+    assert gates.process_wide_env_writes(
+        'import os\nos.environ["CONTROL_DB_URL"] = "x"\n'
+    ) == ["CONTROL_DB_URL"]
+
+
+def test_the_process_wide_key_pin_is_zero():
+    """One rebind anywhere fails the gate. There is no baseline to add a file to."""
+    assert gates.process_wide_key_failures({}, 32) == []
+    report = "\n".join(
+        gates.process_wide_key_failures({"tests/integration/test_x.py": [KEY]}, 32)
+    )
+    assert "tests/integration/test_x.py" in report
+    assert "setdefault" in report
+
+
+def test_a_key_scan_that_read_nothing_is_not_a_pass():
+    """A renamed tests/integration would leave the old glob asserting over []."""
+    assert gates.process_wide_key_failures({}, 0) != []
+
+
+def test_the_scan_walks_the_integration_tree_recursively_and_skips_conftest():
+    """conftest is the one source; a subdirectory was unscanned by the old glob."""
+    scanned = [relative for relative, _ in gates.walk_integration_files()]
+    assert scanned, "the walk found no integration modules at all"
+    assert not [path for path in scanned if path.endswith("conftest.py")]
+    assert "tests/integration/test_usage_rollup_e2e.py" in scanned
+
+
+def test_process_wide_keys_runs_in_the_static_mode():
+    """The gate the Stop hook runs is the one that carries this check."""
+    assert "process-wide keys" in [label for label, _ in gates.steps("static")]
