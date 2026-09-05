@@ -34,13 +34,26 @@
 // finding and exit 1. When the bar never appears it says so, names the file to
 // check, and exits 1.
 //
-// It opens five viewports, because the frame is not one size. embed/widget.js:72
+// It opens eight viewports, because the frame is not one size. embed/widget.js:72
 // makes the frame 100vw below a 480px screen, so the frame is as wide as the
 // phone: 360, 390, 412, 430, up to 480. Anything the widget draws past that
 // edge is outside the frame, where no measurement taken at 380 can see it
 // (#114), and anything it stops short of leaves the iframe's own white ground
 // showing beside it. Both are measured here, on the horizontal axis, against
 // the frame edge.
+//
+// The same argument runs vertically (#176). embed/widget.js:67 caps the frame
+// at `calc(100vh - 120px)` and :72 makes it 100vh on a phone, so a short window
+// hands the widget a short frame. The widget root pinned itself to 600px with
+// `overflow:hidden` above it, so on any frame under 600 the input bar and the
+// send button rendered below the frame's bottom edge with no scroll to reach
+// them: the customer could read the transcript and could not type. The five
+// frames this gate opened before were all at least 600 tall, so none of them
+// could see it. Three short frames are open now, and the input bar and the send
+// button are measured against the frame's bottom edge in each of them, twice:
+// once on the empty transcript and once with 2000px of content pushed into it,
+// which is where a transcript that grows the page instead of scrolling itself
+// shows up.
 
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, join, relative } from 'node:path'
@@ -68,6 +81,15 @@ const VIEWPORTS = [
   { width: 390, height: 844, label: 'a 390px iPhone 14 frame' },
   { width: 412, height: 800, label: 'a 412px Pixel 7 frame' },
   { width: 480, height: 800, label: 'a 480px frame, the widest the loader makes 100vw' },
+  // The short half of the same arithmetic (#176). Each height is what
+  // embed/widget.js computes for a real browser window:
+  //   a 360x560 phone window     -> 360x560, the :72 branch, 100vw by 100vh
+  //   a 640x360 landscape window -> 380x240, the :67 branch, 360 - 120
+  //   a 1280x660 desktop window  -> 380x540, the :67 branch, 660 - 120
+  // All three are shorter than the 600px the widget root used to pin itself to.
+  { width: 360, height: 560, label: 'a 360x560 frame, from a 360x560 phone window' },
+  { width: 380, height: 240, label: 'a 380x240 frame, from a 640x360 landscape window' },
+  { width: 380, height: 540, label: 'a 380x540 frame, from a 1280x660 desktop window' },
 ]
 
 // Port 9 is discard. Nothing listens, and page.route aborts the request before
@@ -169,10 +191,45 @@ async function measure(browser, viewport) {
     const boxOf = (el) => {
       if (!el) return null
       const r = el.getBoundingClientRect()
-      return { left: r.left, right: r.right, width: r.width }
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height }
     }
 
+    // The controls the customer needs to reach, and where the transcript's
+    // overflow goes. Read after each layout, so the same function serves the
+    // empty transcript and the filled one.
+    const readControls = () => ({
+      inputBar: boxOf(document.querySelector('.input-bar')),
+      sendButton: boxOf(document.querySelector('.input-bar button.send')),
+      scrollArea: boxOf(document.querySelector('.scroll-area')),
+      scrollAreaScrollHeight: document.querySelector('.scroll-area')?.scrollHeight ?? null,
+      scrollAreaClientHeight: document.querySelector('.scroll-area')?.clientHeight ?? null,
+      docScrollHeight: document.documentElement.scrollHeight,
+      bodyScrollHeight: document.body.scrollHeight,
+    })
+
+    const empty = readControls()
+
+    // A transcript long enough to overflow any frame this gate opens. The
+    // widget has to absorb it inside .scroll-area; a root that grows with its
+    // content instead pushes the input bar out of a frame whose body is
+    // `overflow:hidden`, and the customer has no scroll to bring it back.
+    const filler = document.createElement('div')
+    filler.setAttribute('data-gate-filler', '')
+    filler.style.height = '2000px'
+    filler.style.flexShrink = '0'
+    document.querySelector('.scroll-area')?.appendChild(filler)
+    document.documentElement.getBoundingClientRect() // force layout
+    const filled = readControls()
+    filler.remove()
+
     return {
+      empty,
+      filled,
+      viewportHeight: window.innerHeight,
+      scrollAreaOverflowY: (() => {
+        const el = document.querySelector('.scroll-area')
+        return el ? getComputedStyle(el).overflowY : null
+      })(),
       children: Array.from(bar.children, readChild),
       barHeight: barBox.height,
       // Where the bar sits in the frame, not just how wide it is. A bar that
@@ -346,6 +403,115 @@ if (m.docScrollWidth > m.viewportWidth) {
   )
 }
 
+// ── the vertical axis (#176) ───────────────────────────────────────────────
+// The frame is the height as well as the width. A widget root pinned at 600px
+// put the input bar at 536-600 inside a 560px frame and at 536-600 inside a
+// 240px one, with `overflow:hidden` on the body above it, so the only control
+// the widget has was off the bottom edge and no scroll reached it. The frame
+// edge is the reference here too, and the two controls are measured on the
+// empty transcript and again with 2000px pushed into it, because a transcript
+// that grows the page rather than scrolling itself moves the input bar out at
+// exactly the moment a conversation gets going.
+for (const [phase, c] of [['on an empty transcript', m.empty], ['with 2000px of transcript', m.filled]]) {
+  for (const [name, box] of [['.input-bar', c.inputBar], ['button.send', c.sendButton]]) {
+    if (box === null) {
+      note(
+        `${name} never rendered, so ${phase} the control the customer types into was ` +
+        'measured against nothing. Check that the bundle mounts src/components/InputBar.jsx'
+      )
+      continue
+    }
+
+    if (box.height <= 0 || box.width <= 0) {
+      note(
+        `${name} renders ${round(box.width)}x${round(box.height)}px ${phase}, so there is no ` +
+        'box to reach'
+      )
+    }
+
+    if (box.bottom > m.viewportHeight + 0.5) {
+      note(
+        `${name} is below the frame's bottom edge ${phase}, bottom ${round(box.bottom)}px in a ` +
+        `${m.viewportHeight}px frame, so its last ${round(box.bottom - m.viewportHeight)}px is ` +
+        'outside the iframe and the body above it is overflow:hidden, so nothing scrolls to it'
+      )
+    }
+
+    if (box.top < -0.5) {
+      note(
+        `${name} is above the frame's top edge ${phase}, top ${round(box.top)}px, so its first ` +
+        'pixels are outside the iframe'
+      )
+    }
+  }
+
+  if (c.docScrollHeight > m.viewportHeight + 0.5) {
+    note(
+      `the widget is taller than its frame ${phase}, document scrollHeight ` +
+      `${c.docScrollHeight}px over a ${m.viewportHeight}px frame. The overflow belongs in ` +
+      '.scroll-area, which scrolls; the document does not, so anything past the edge is lost'
+    )
+  }
+}
+
+// The transcript is the one box that scrolls. If 2000px of content did not
+// leave .scroll-area with more scroll height than client height, the overflow
+// went somewhere else, and the assertions above only caught it if that
+// somewhere else pushed a control out of this particular frame.
+if (m.filled.scrollAreaClientHeight === null) {
+  note('.scroll-area never rendered, so the transcript was not measured at all')
+} else {
+  if (m.scrollAreaOverflowY !== 'auto' && m.scrollAreaOverflowY !== 'scroll') {
+    note(
+      `.scroll-area computes overflow-y '${m.scrollAreaOverflowY}', so the transcript does not ` +
+      'scroll and its overflow lands on the page instead'
+    )
+  }
+
+  if (m.filled.scrollAreaClientHeight <= 0) {
+    note(
+      `.scroll-area has ${m.filled.scrollAreaClientHeight}px of client height with 2000px of ` +
+      'transcript in it, so there is nowhere to read the conversation'
+    )
+  } else if (m.filled.scrollAreaScrollHeight <= m.filled.scrollAreaClientHeight) {
+    note(
+      `.scroll-area did not absorb the 2000px filler, scrollHeight ` +
+      `${m.filled.scrollAreaScrollHeight}px against clientHeight ` +
+      `${m.filled.scrollAreaClientHeight}px, so the overflow went to some other box`
+    )
+  }
+}
+
+// The widget fills the frame vertically, the same claim the loop above makes
+// horizontally. A 600px root in an 844px iPhone frame leaves 244px of the
+// iframe's own white ground under the input bar.
+for (const [name, box] of [['#root', m.root], ['.widget-root', m.widgetRoot]]) {
+  if (box === null) continue
+
+  if (box.bottom < m.viewportHeight - 0.5) {
+    note(
+      `${name} stops ${round(m.viewportHeight - box.bottom)}px short of the frame's bottom edge, ` +
+      `bottom ${round(box.bottom)}px in a ${m.viewportHeight}px frame, so that strip is the ` +
+      'iframe\'s own white ground under the widget'
+    )
+  }
+
+  if (box.bottom > m.viewportHeight + 0.5) {
+    note(
+      `${name} reaches ${round(box.bottom - m.viewportHeight)}px past the frame's bottom edge, ` +
+      `bottom ${round(box.bottom)}px in a ${m.viewportHeight}px frame, so that much of the ` +
+      'widget is outside the iframe'
+    )
+  }
+
+  if (Math.abs(box.top) > 0.5) {
+    note(
+      `${name} starts at ${round(box.top)}px rather than the frame's top edge, so the widget is ` +
+      'offset inside its own frame'
+    )
+  }
+}
+
 // Every number on the gated lines is read by an assertion above. The
 // "measured, not gated" lines are diagnostics for the reader of a red run;
 // they can change without the exit code changing, and the label says so.
@@ -361,6 +527,27 @@ for (const [name, box] of [['#root', m.root], ['.widget-root', m.widgetRoot]]) {
   const edges =
     box === null ? 'never rendered' : `left ${round(box.left)}px and right ${round(box.right)}px`
   console.log(`  ${name.padEnd(14)}  ${edges} within a ${m.viewportWidth}px frame`)
+  if (box !== null) {
+    console.log(
+      `${gutter}top ${round(box.top)}px and bottom ${round(box.bottom)}px within a ` +
+      `${m.viewportHeight}px frame`
+    )
+  }
+}
+for (const [phase, c] of [['empty', m.empty], ['filled', m.filled]]) {
+  for (const [name, box] of [['.input-bar', c.inputBar], ['button.send', c.sendButton]]) {
+    const edges =
+      box === null
+        ? 'never rendered'
+        : `top ${round(box.top)}px and bottom ${round(box.bottom)}px, ${round(box.width)}x` +
+          `${round(box.height)}px`
+    console.log(`  ${name.padEnd(14)}  ${phase.padEnd(6)} ${edges} within a ${m.viewportHeight}px frame`)
+  }
+  console.log(
+    `  ${'.scroll-area'.padEnd(14)}  ${phase.padEnd(6)} scrollHeight ${c.scrollAreaScrollHeight}px ` +
+    `against clientHeight ${c.scrollAreaClientHeight}px, overflow-y ${m.scrollAreaOverflowY}, ` +
+    `document scrollHeight ${c.docScrollHeight}px`
+  )
 }
 for (const child of m.children) {
   console.log(`  ${child.name.padEnd(14)}  "${child.text}"`)
@@ -385,6 +572,35 @@ console.log(
 // that rendered with no children clears all of them by having nothing in it.
 const framesMeasured = measurements.length
 const childrenMeasured = measurements.reduce((t, [, m]) => t + m.children.length, 0)
+const controlsMeasured = measurements.reduce(
+  (t, [, m]) =>
+    t +
+    [m.empty.inputBar, m.empty.sendButton, m.filled.inputBar, m.filled.sendButton].filter(
+      (b) => b !== null
+    ).length,
+  0
+)
+// The short frames are the subject of the vertical assertions. #176 lived
+// behind five frames that were all at least 600 tall: every vertical claim
+// below passed because no frame could ever have contradicted it.
+const SHORT_FRAME_FLOOR = 3
+const shortFrames = VIEWPORTS.filter((v) => v.height < 600)
+
+if (shortFrames.length < SHORT_FRAME_FLOOR) {
+  findings.push(
+    `${shortFrames.length} frame(s) shorter than 600px where ${SHORT_FRAME_FLOOR} are required, ` +
+    'so the input bar is only ever measured in a frame tall enough to hold the old fixed height ' +
+    'and the vertical assertions have no subject that could fail'
+  )
+}
+
+if (controlsMeasured !== framesMeasured * 4) {
+  findings.push(
+    `${controlsMeasured} control box(es) were measured where ${framesMeasured} frame(s) x 2 ` +
+    'controls x 2 transcript states is ' + framesMeasured * 4 + ', so a control never rendered ' +
+    'and its frame-edge assertions passed by having no box'
+  )
+}
 
 if (framesMeasured !== VIEWPORTS.length) {
   findings.push(
@@ -408,7 +624,9 @@ if (findings.length > 0) {
 
 console.log(
   `check:rendered-notice: PASS -- across ${framesMeasured} frame(s) at ` +
-  `${VIEWPORTS.map((v) => `${v.width}px`).join(', ')}, ${childrenMeasured} measured child(ren) of the bar ` +
-  'render on one row, none is clipped, the bar overflows in neither axis, and nothing reaches ' +
-  'past the frame edge.'
+  `${VIEWPORTS.map((v) => `${v.width}x${v.height}`).join(', ')}, ${childrenMeasured} measured child(ren) ` +
+  'of the bar render on one row, none is clipped, the bar overflows in neither axis, and nothing ' +
+  `reaches past the frame edge. In ${shortFrames.length} frame(s) shorter than 600px, and in every ` +
+  `other, ${controlsMeasured} measured control box(es) sit inside the frame's bottom edge on an ` +
+  'empty transcript and with 2000px pushed into it, which .scroll-area absorbs.'
 )

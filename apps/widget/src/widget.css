@@ -41,10 +41,20 @@
    embed/index.html paints a transparent body over it. 390 and 430 are the two
    iPhone widths, so this is the common case rather than an edge.
    check-rendered-notice.mjs opens the 380px and 360px frames and measures the
-   disclosure bar against the frame's edge. */
+   disclosure bar against the frame's edge.
+
+   The frame is the height too (#176). This block used to say `height: 600px`,
+   which never applied: embed/index.html sets `html, body { height: 100% }` and
+   `#root { height: 100% }` in a <style> after the <link>, at equal specificity,
+   so the frame's height won here and 600px was dead. The chain is stated below
+   instead, so the stylesheet is right on its own and agrees with the page that
+   loads it rather than contradicting it. */
+html, body, #root {
+  height: 100%;
+}
+
 body, #root {
   width: 100%;
-  height: 600px;
   margin: 0;
   padding: 0;
   background: var(--bg);
@@ -55,11 +65,20 @@ body, #root {
   overflow: hidden;
 }
 
+/* The widget is as tall as its frame, whatever that is, for the same reason it
+   is as wide as it (#176). embed/widget.js:67 caps the desktop iframe at
+   `calc(100vh - 120px)` and :72 makes it 100vh on a phone, so a 660px browser
+   window builds a 540px frame and a 360px landscape one builds a 240px frame.
+   A 600px root inside those put .input-bar at 536-600, past the bottom edge,
+   with `overflow: hidden` above it and no scroll to recover it: the customer
+   could read the transcript and could not type. On the other side, a 600px root
+   in an 844px iPhone frame left 244px of the iframe's own white ground under
+   the input bar. The transcript takes the slack in both directions. */
 .widget-root {
   display: flex;
   flex-direction: column;
   width: 100%;
-  height: 600px;
+  height: 100%;
   background: var(--bg);
   overflow: hidden;
 }
@@ -91,8 +110,14 @@ body, #root {
   color: var(--text-4);
 }
 
+/* `min-height: 0` is what makes the transcript the box that scrolls. A flex
+   item's min-height defaults to auto, which is its content height, so a growing
+   conversation grew this box rather than scrolling it and pushed .input-bar
+   down and out of the frame. With the floor at 0 the transcript shrinks to the
+   space the header and the input bar leave and takes its overflow itself. */
 .scroll-area {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 12px;
   display: flex;

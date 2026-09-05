@@ -55,6 +55,25 @@ jobs:
     # Redis is required: test_agent_task.py exercises the Celery result backend
     # against a real client. Without it the job dies on ConnectionRefusedError.
     services:
+      # PostgreSQL is required too: the unit suite reads a tenant database.
+      # test_migration_tenant_0016.py's "The probe cluster" reads 0016's three
+      # columns and both arms of its CHECK off one, and with no server here those
+      # tests skipped on every CI run, which is unobserved rather than passing.
+      # pgvector's image, not plain postgres:17-alpine, for the same reason the
+      # integration job gives: 0001_tenant_v1_schema runs CREATE EXTENSION vector.
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: wchats
+          POSTGRES_PASSWORD: wchats
+          POSTGRES_DB: wchats_tenant_probe
+        options: >-
+          --health-cmd "pg_isready -U wchats -d wchats_tenant_probe"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
       redis:
         image: redis:7-alpine
         options: >-
@@ -86,13 +105,23 @@ jobs:
         run: |
           echo "NEON_ENCRYPTION_KEY=$(python -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")" >> $GITHUB_ENV
 
+      - name: Apply the tenant migrations to the probe database
+        working-directory: apps/api
+        # The production path, the same call app/worker/tasks/pipeline/migrations.py
+        # makes for a real tenant. Observed against an empty local database: it
+        # reaches head 0024 and 0016's three columns are there afterwards.
+        run: |
+          python -c "from app.services.migrations import run_tenant_migrations; run_tenant_migrations('postgresql://wchats:wchats@localhost:5432/wchats_tenant_probe')"
+
       - name: Run unit tests
         working-directory: apps/api
         # No -x: halting at the first failure reports one defect and hides the rest,
         # which is the opposite of what a gate is for. The two ignored modules need
         # docling, which is not in the [dev] extra and cannot be collected here.
+        # -rs prints every skip with its reason, so a test that stopped running
+        # names itself in the log instead of showing up as one more `s`.
         run: >-
-          python -m pytest tests/unit --tb=short
+          python -m pytest tests/unit --tb=short -rs
           --cov=app --cov-fail-under=80
           --ignore=tests/unit/test_chunking_service.py
           --ignore=tests/unit/test_docling_service.py
@@ -218,3 +247,120 @@ jobs:
         run: |
           python -m pytest tests/evals/run_evals.py -k deterministic -v -rs --tb=short --junitxml=eval-deterministic.xml
           python scripts/assert_tests_ran.py eval-deterministic.xml
+
+  # ── the front ends ─────────────────────────────────────────────────────────
+  # Until #181 every job above this line was Python, so a green tick on a branch
+  # that changed only TypeScript and CSS meant the backend suite passed and the
+  # widget compiled. PR #174 changed exactly that and carried two BLOCKs a
+  # rendering review found by hand, with every check green. These two jobs run
+  # the gates the repo already has and CLAUDE.md already lists.
+  #
+  # `test:e2e` is deliberately absent: 135 tests at about 36 minutes with seven
+  # known networkidle timeouts is its own decision, not this one.
+  #
+  # apps/api/tests/unit/test_ci_frontend_jobs.py parses this file and derives the
+  # gate list from each workspace's package.json, so a `check:` script added
+  # later and not run here goes red there.
+
+  admin:
+    name: Admin (tsc, token/wiring/render gates, unit tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/admin
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        # pnpm, not npm (CLAUDE.md conventions). Must precede setup-node.
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          # 22 for the same reason the eval job gives: pnpm 11 refuses to start
+          # on Node 20.
+          node-version: "22"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium headless shell
+        # check:chart-render mounts the real TelemetryChart and measures pins in
+        # a browser. ubuntu-latest ships no Playwright browser, and this is the
+        # same install the eval job already does for the widget.
+        run: pnpm exec playwright install --with-deps chromium-headless-shell
+
+      - name: Type-check
+        run: pnpm exec tsc --noEmit
+
+      - name: Retired design tokens are absent
+        run: pnpm run check:no-dusk-tokens
+
+      - name: Every ops-room region calls its own endpoint
+        run: pnpm run check:ops-room-wiring
+
+      - name: The eval chart renders inside its box
+        run: pnpm run check:chart-render
+
+      - name: Unit tests (browserless)
+        run: pnpm run test:unit
+
+  widget:
+    name: Widget (build, size ceiling, rendered gates, unit tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/widget
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium headless shell
+        # check:rendered-notice opens embed/index.html in a real browser and
+        # measures the disclosure bar and the input bar against eight frame
+        # sizes.
+        run: pnpm exec playwright-core install --with-deps chromium-headless-shell
+
+      - name: Build the widget bundle
+        # `vite build` rather than `pnpm run build`. The build script's postbuild
+        # ends in sync-embed.mjs in WRITE mode, which would rewrite the committed
+        # copies in this checkout and turn the embed-sync gate below into a
+        # tautology. This is the same hazard the eval-deterministic job answers
+        # with `git diff --exit-code`; here the compile and the gates are run
+        # separately instead, so each gate is a real check against a fresh dist/
+        # and nothing in this job writes to the tree.
+        run: pnpm exec vite build
+
+      - name: Embed targets match the fresh build
+        # Runs FIRST, while the committed embed/, apps/admin/public/wchats/ and
+        # apps/api/static/wchats/ copies are still the committed ones.
+        run: pnpm run check:embed-sync
+
+      - name: Bundle is under the 20480-byte gzipped ceiling
+        run: node scripts/check-size.mjs
+
+      - name: Every theming key is read by a rule
+        run: pnpm run check:theming-contract
+
+      - name: The widget fits every frame the loader builds
+        run: pnpm run check:rendered-notice
+
+      - name: Unit tests
+        run: pnpm run test:unit

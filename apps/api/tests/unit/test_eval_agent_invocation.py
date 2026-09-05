@@ -38,11 +38,12 @@ invisible:
      never saw is D1 in a different costume, and it would leave every number
      looking healthy.
 
-No live PostgreSQL and no provider endpoint exist here, so the turn is a double
-at exactly one boundary - `_run_one_eval_turn` for the loop tests, and
-`agent_loop.build_agent_turn` / `agent_loop.run_agent_loop` for the turn test.
-Nothing in this file observes a real eval end to end; that is integration
-territory and it SKIPS on this machine, which is unobserved, never a pass.
+The turn is a double at exactly one boundary, so each test names the seam it is
+about and no test pays for a provider call: `_run_one_eval_turn` for the loop
+tests, and `agent_loop.build_agent_turn` / `agent_loop.run_agent_loop` for the
+turn test. Nothing here observes a real eval end to end. That is integration
+territory, behind INTEGRATION_TESTS_ENABLED, and a skip is unobserved rather
+than passing.
 """
 
 from __future__ import annotations

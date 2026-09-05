@@ -13,13 +13,21 @@ WHERE "LATEST FAITHFULNESS" COMES FROM (#51 slice 4). It used to be
 in this module's own SQL. That was a fourth derivation of a number the run had
 already computed, and it pooled the golden and exploratory halves into a single
 mean. It is now lifted off `eval_runs.result`, the record `run_eval_suite`
-writes once at the end of its own body, through the same
-`run_level_metrics` rule the console route and the deploy gate read. Nothing
-here averages anything.
+writes once at the end of its own body. Nothing here averages anything.
+
+AND IT IS READ PER DATASET (#175). `run_level_metrics` reports a run-level
+faithfulness only when exactly one dataset scored, so a tenant who designated a
+golden set has two measurements, no run-level number, and until this change no
+eval_regression alert at all. Refusing to pool was right and dropping the alert
+was not: `latest_faithfulness_by_dataset` returns each half under its own name,
+the threshold is compared against each, and the message says which half fell and
+by how much. A golden regression now fires whether or not the exploratory draw
+moved with it.
 """
 from __future__ import annotations
 
 import smtplib
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
 
@@ -30,22 +38,20 @@ from sqlalchemy import text
 from app.core.config import settings
 from app.core.log_bounds import log_failure
 from app.models.alert import Alert
-from app.services.eval_service import latest_faithfulness
+from app.services.eval_service import latest_faithfulness_by_dataset
 
 log = structlog.get_logger(__name__)
 
 
-def latest_faithfulness_reading(
-    agent_id: str, conn_str: str
-) -> tuple[float | None, str | None]:
-    """The latest complete run's faithfulness and the dataset it belongs to.
+def latest_faithfulness_readings(agent_id: str, conn_str: str) -> dict[str, float]:
+    """The latest finished run's faithfulness on each dataset that measured it.
 
-    `eval_service.latest_faithfulness` is the rule and carries the reasoning: the
-    number is lifted off `eval_runs.result` through `run_level_metrics`, never
-    averaged here, and a run whose two datasets both scored has no run-level
-    number to quote. This function only owns the connection.
+    `eval_service.latest_faithfulness_by_dataset` is the rule and carries the
+    reasoning: every number is lifted off `eval_runs.result`, never averaged here,
+    and the two halves are never pooled into one. This function only owns the
+    connection.
 
-    (None, None) on any failure, because an alert that cannot read a measurement
+    An empty dict on any failure, because an alert that cannot read a measurement
     must not invent one. Must query the tenant DB, not the control DB, because
     `eval_runs` only exists in per-tenant Neon DBs. conn_str must NOT be logged (CTL-08).
     """
@@ -53,17 +59,12 @@ def latest_faithfulness_reading(
         conn = psycopg2.connect(conn_str, connect_timeout=10)
         try:
             with conn.cursor() as cur:
-                return latest_faithfulness(cur, agent_id)
+                return latest_faithfulness_by_dataset(cur, agent_id)
         finally:
             conn.close()
     except Exception as exc:
         log_failure(log, "alert_service.faithfulness_fetch_failed", exc, agent_id=agent_id)
-        return (None, None)
-
-
-def _get_latest_faithfulness(agent_id: str, conn_str: str) -> float | None:
-    """The number alone, for the caller that only compares it to a threshold."""
-    return latest_faithfulness_reading(agent_id, conn_str)[0]
+        return {}
 
 
 def _get_latest_critical_count(agent_id: str, conn_str: str) -> int:
@@ -155,16 +156,81 @@ def send_alert_email(agent_name: str, agent_id: str, alert_type: str, message: s
         log_failure(log, "alert_service.email_failed", exc, agent_id=agent_id)
 
 
+#: The words the message uses for each dataset key, so an owner reading an email
+#: is not handed the API's vocabulary.
+_DATASET_WORDS = {"golden": "golden set", "exploratory": "exploratory sample"}
+
+
+def eval_regression_message(faithfulness_by_dataset: Mapping[str, float]) -> str | None:
+    """The message for every dataset below the threshold, or None when none is.
+
+    EACH HALF IS ITS OWN COMPARISON (#175). A run with a golden set at 0.42 and an
+    exploratory sample at 0.88 is a regression, and pooling the two to 0.65 would
+    have hidden it just as surely as the old code's silence did. Every dataset
+    that fell is named with its own number, so the reader can see which half
+    moved.
+
+    None over an empty mapping, which is what every absence reads as. An alert
+    that cannot read a measurement must not fire and must not report a pass.
+    """
+    threshold = settings.ALERT_FAITHFULNESS_THRESHOLD
+    below = {
+        name: value
+        for name, value in faithfulness_by_dataset.items()
+        if value < threshold
+    }
+    if not below:
+        return None
+    named = ", ".join(
+        f"{value:.2f} on the {_DATASET_WORDS.get(name, name)}"
+        for name, value in sorted(below.items())
+    )
+    return f"Faithfulness is below threshold {threshold}: {named}."
+
+
+def _raise_alert(
+    agent_id: str,
+    alert_type: str,
+    severity: str,
+    message: str,
+    *,
+    agent_name: str,
+    tenant_id: str | None,
+    db,
+    new_alerts: list[Alert],
+) -> None:
+    """Write the row when no alert of this type is open, then email it.
+
+    The email fires only after the row is committed (CR-02), which `_write_alert`
+    does on the way out. The no-DB path is the test path: it skips the
+    already-open check it cannot run and sends the email.
+    """
+    if db is None:
+        send_alert_email(agent_name, agent_id, alert_type, message)
+        return
+    if _active_alert_exists(agent_id, alert_type, db):
+        return
+    new_alerts.append(
+        _write_alert(agent_id, alert_type, severity, message, db, tenant_id=tenant_id)
+    )
+    send_alert_email(agent_name, agent_id, alert_type, message)
+
+
 def check_and_write_alerts(
     agent_id: str,
     conn_str: str | None = None,
-    faithfulness: float | None = None,
+    faithfulness_by_dataset: Mapping[str, float] | None = None,
     critical_red_team_count: int | None = None,
     agent_name: str = "",
     tenant_id: str | None = None,
     db=None,
 ) -> list[Alert]:
     """Evaluate thresholds and write new alerts. Returns list of newly created alerts.
+
+    faithfulness_by_dataset: dataset name to that dataset's faithfulness. A
+    mapping rather than one float because a run whose two datasets both scored has
+    two readings and no honest way to combine them (#175); an unnamed number was
+    the shape that made the old signature refuse such a run outright.
 
     conn_str: decrypted tenant DB connection string; required for DB-path (when db is not None
     and pre-computed values are not supplied). Must NOT be logged (CTL-08).
@@ -173,35 +239,37 @@ def check_and_write_alerts(
 
     # Resolve values from tenant DB if not passed directly.
     # conn_str is required when db is not None and values are not pre-supplied.
-    if db is not None and faithfulness is None and conn_str:
-        faithfulness = _get_latest_faithfulness(agent_id, conn_str)
+    if db is not None and faithfulness_by_dataset is None and conn_str:
+        faithfulness_by_dataset = latest_faithfulness_readings(agent_id, conn_str)
     if db is not None and critical_red_team_count is None and conn_str:
         critical_red_team_count = _get_latest_critical_count(agent_id, conn_str)
 
-    # Check eval regression — email fires only after successful DB commit (CR-02)
-    if faithfulness is not None and faithfulness < settings.ALERT_FAITHFULNESS_THRESHOLD:
-        if db is None or not _active_alert_exists(agent_id, "eval_regression", db):
-            msg = f"Faithfulness {faithfulness:.2f} is below threshold {settings.ALERT_FAITHFULNESS_THRESHOLD}."
-            if db is not None:
-                alert = _write_alert(agent_id, "eval_regression", "warning", msg, db, tenant_id=tenant_id)
-                new_alerts.append(alert)
-                # Email only after row is committed (inside _write_alert above)
-                send_alert_email(agent_name, agent_id, "eval_regression", msg)
-            else:
-                # Test path: no DB, send email directly
-                send_alert_email(agent_name, agent_id, "eval_regression", msg)
+    eval_message = eval_regression_message(faithfulness_by_dataset or {})
+    if eval_message is not None:
+        _raise_alert(
+            agent_id,
+            "eval_regression",
+            "warning",
+            eval_message,
+            agent_name=agent_name,
+            tenant_id=tenant_id,
+            db=db,
+            new_alerts=new_alerts,
+        )
 
-    # Check red team critical — email fires only after successful DB commit (CR-02)
-    if critical_red_team_count is not None and critical_red_team_count >= settings.ALERT_RED_TEAM_CRITICAL_COUNT:
-        if db is None or not _active_alert_exists(agent_id, "red_team_critical", db):
-            msg = f"{critical_red_team_count} critical red team finding(s) detected."
-            if db is not None:
-                alert = _write_alert(agent_id, "red_team_critical", "critical", msg, db, tenant_id=tenant_id)
-                new_alerts.append(alert)
-                # Email only after row is committed (inside _write_alert above)
-                send_alert_email(agent_name, agent_id, "red_team_critical", msg)
-            else:
-                # Test path: no DB, send email directly
-                send_alert_email(agent_name, agent_id, "red_team_critical", msg)
+    if (
+        critical_red_team_count is not None
+        and critical_red_team_count >= settings.ALERT_RED_TEAM_CRITICAL_COUNT
+    ):
+        _raise_alert(
+            agent_id,
+            "red_team_critical",
+            "critical",
+            f"{critical_red_team_count} critical red team finding(s) detected.",
+            agent_name=agent_name,
+            tenant_id=tenant_id,
+            db=db,
+            new_alerts=new_alerts,
+        )
 
     return new_alerts

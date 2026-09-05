@@ -7,6 +7,7 @@ import Ledger, { LedgerColHead, LedgerRowHead } from '../../../components/gotham
 import EmptyState from '../../../components/gotham/EmptyState'
 import { TELEMETRY_CSS, TelemetryChart } from './TelemetryChart'
 import type { EvalRun } from './evalSeries'
+import { buildVerdict, formatStamp, readCurrentRun, stampLabel } from './currentRun'
 
 /**
  * Eval — `/agents/[id]/eval` (UI-SPEC S6.7, UI2-05, ported from
@@ -68,30 +69,10 @@ interface EvalResultsResponse {
 // Helpers
 // ---------------------------------------------------------------------------
 
-// Compact mono timestamp — "2026-07-13 09:14" (UTC), matching eval.html's
-// `.stamp` readouts.
-function formatStamp(iso: string): string {
-  const d = new Date(iso)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`
-}
-
-// The judge's verdict sentence — built from real aggregate + scenario data,
-// never hardcoded (UI-SPEC S6.7: "generated from real run data, or omitted
-// if there's no LLM-judge summary endpoint" — no such endpoint exists).
-function buildVerdict(latestRun: EvalRun | null, scenarios: ScenarioResult[]): string {
-  if (!latestRun || scenarios.length === 0) return ''
-  const total = scenarios.length
-  const failed = scenarios.filter((s) => !s.passed)
-  const passedCount = total - failed.length
-  if (failed.length === 0) {
-    return `All ${total} scenario${total === 1 ? '' : 's'} held on this run. The gate stays open.`
-  }
-  return (
-    `${total} scenario${total === 1 ? '' : 's'} ran on this run. ${passedCount} held, ` +
-    `${failed.length} failed. Review the ledger below before the gate can close.`
-  )
-}
+// `formatStamp`, `buildVerdict`, `readCurrentRun` and `stampLabel` moved to
+// ./currentRun (#177). They decide which run this page is about, and that
+// decision had two answers while it lived here: the chart's filtered list and
+// `eval_runs[0]`. It is one answer now, under a unit test.
 
 function useReducedMotion(): boolean {
   const [reduced, setReduced] = useState(false)
@@ -159,9 +140,20 @@ export default function EvalPage({
     staleTime: 30_000,
   })
 
-  const latestRunId = evalRunsQuery.data?.eval_runs?.[0]?.id ?? null
+  // The one reading of "which run is this page about" (#177). Every reader
+  // below takes `settled`; the run in flight is `running` and is never the
+  // subject of a number.
+  const currentRun = useMemo(
+    () => readCurrentRun(evalRunsQuery.data?.eval_runs),
+    [evalRunsQuery.data?.eval_runs],
+  )
 
-  // Fetch results for the latest run — PRESERVED VERBATIM.
+  // The settled run's id, not `eval_runs[0]`'s. Fetching the in-flight run's
+  // results emptied the ledger to "No scenario results" for the length of the
+  // run, over a completed run that had plenty.
+  const latestRunId = currentRun.settled?.id ?? null
+
+  // Fetch results for the current run — PRESERVED VERBATIM apart from the id.
   const resultsQuery = useQuery<EvalResultsResponse>({
     queryKey: ['eval-results', id, latestRunId],
     queryFn: async () => {
@@ -185,19 +177,13 @@ export default function EvalPage({
   // the chart when it finishes. A failed run stays: it really did measure
   // nothing, and the gap it leaves says so.
   //
-  // Memoised because the judge's sentence types out one word every 30ms, and
-  // this array is the chart effect's first dependency; a new one per render
-  // rebuilt every leader line 33 times a second.
-  const chronologicalRuns: EvalRun[] = useMemo(
-    () =>
-      [...(evalRunsQuery.data?.eval_runs ?? [])]
-        .filter((run) => run.status !== 'running')
-        .reverse(),
-    [evalRunsQuery.data?.eval_runs],
-  )
+  // `currentRun` is memoised because the judge's sentence types out one word
+  // every 30ms, and this array is the chart effect's first dependency; a new one
+  // per render rebuilt every leader line 33 times a second.
+  const chronologicalRuns: EvalRun[] = currentRun.chronological
 
-  const latestRun = evalRunsQuery.data?.eval_runs?.[0] ?? null
-  const hasRuns = (evalRunsQuery.data?.eval_runs?.length ?? 0) > 0
+  const latestRun = currentRun.settled
+  const hasRuns = currentRun.runCount > 0
   const scenarios = resultsQuery.data?.results ?? []
 
   // Poll while a run is in progress — PRESERVED VERBATIM.
@@ -247,7 +233,7 @@ export default function EvalPage({
   const isLoading = evalRunsQuery.isPending || !isLoaded
 
   // ── the judge: word-by-word typeset, generated from real data ───────────
-  const verdictText = buildVerdict(latestRun, scenarios)
+  const verdictText = buildVerdict(currentRun, scenarios)
   const verdictWords = verdictText ? verdictText.split(' ') : []
   const [revealed, setRevealed] = useState(0)
 
@@ -384,14 +370,18 @@ export default function EvalPage({
             <p className="vh" role="status" aria-live="polite">
               {verdictText}
             </p>
-            {latestRun && (
+            {/* The pass rate belongs to the settled run's scenarios, and the
+                stamp says whether a newer run is going. Reading `eval_runs[0]`
+                here put the in-flight run's start time under a chart that was
+                already ignoring it (#177). */}
+            {hasRuns && (
               <p className="run-note">
                 {passRate !== null && (
                   <span className="mono stamp">
                     pass rate {passRate.toFixed(2)} · {passedCount} of {scenarios.length} held
                   </span>
                 )}
-                <span className="mono stamp">last run {formatStamp(latestRun.started_at)}</span>
+                <span className="mono stamp">{stampLabel(currentRun)}</span>
               </p>
             )}
           </section>

@@ -10,6 +10,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 - **Comment on an issue**: `gh issue comment <number> --body "..."`
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --comment "..."`
+- **Close in the commit that fixes it**: a task that closes an issue closes it in the same commit that lands the fix, with `Closes #<number>` in the message. A task that discovers work opens an issue the same day.
 
 Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
 

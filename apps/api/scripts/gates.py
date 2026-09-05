@@ -209,7 +209,6 @@ LIZARD_BASELINE = {
     ("app/services/agent_tools.py", "escalate_to_human_tool"): (4, 101),
     ("app/services/agent_tools.py", "lookup_structured_tool"): (5, 67),
     ("app/services/agent_tools.py", "retrieve_tool"): (28, 244),
-    ("app/services/alert_service.py", "check_and_write_alerts"): (17, 50),
     ("app/services/bench_service.py", "grade_trace"): (5, 66),
     ("app/services/bench_service.py", "list_failing_traces"): (8, 87),
     ("app/services/capability_service.py", "validate_tighten_only"): (31, 154),
@@ -1339,6 +1338,13 @@ def run_process_wide_keys():
     print("process-wide keys: clean, conftest.py is the only source.")
     return 0
 
+#: The unit suite's argv, named so a test can read what `steps("full")` runs.
+#: `-rs` prints every skip with its reason. Under `-q` alone a test that stopped
+#: running because its database or its marker went missing is one more dot, and a
+#: skip is unobserved rather than passing. The lambda in `steps` builds its command
+#: from this list, so dropping a flag here is a change a test can see.
+UNIT_PYTEST_ARGS = ["-m", "pytest", "tests/unit", "-q", "-rs"]
+
 
 def steps(mode):
     """Ordered (label, callable) pairs for the requested mode.
@@ -1362,7 +1368,7 @@ def steps(mode):
     if mode == "static":
         return static
     # mypy stays out of `static`. It builds a type graph over the whole tree, and warm
-    # runs here took 26s to 80s on 2026-09-02 against 11s to 16s for the four static
+    # runs here took 26s to 80s on 2026-09-02 against 11s to 16s for the six static
     # steps together. `static` is what the Stop hook runs. CI's Type-check job runs this
     # mode on its own.
     if mode == "mypy":
@@ -1374,7 +1380,7 @@ def steps(mode):
     if mode == "fast":
         return fast
     return fast + [
-        ("unit tests", lambda: run([PYTHON, "-m", "pytest", "tests/unit", "-q"])),
+        ("unit tests", lambda: run([PYTHON] + UNIT_PYTEST_ARGS)),
     ]
 
 
