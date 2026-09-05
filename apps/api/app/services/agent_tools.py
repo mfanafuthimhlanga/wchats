@@ -47,6 +47,7 @@ import redis as redis_lib
 import structlog
 
 from app.core.config import settings
+from app.core.log_bounds import log_failure
 from app.core.redis_tls import redis_ssl_kwargs
 from app.domain.context_frame import (
     RETRIEVED_CONTEXT_FOOTER as _RETRIEVED_CONTEXT_FOOTER,
@@ -496,7 +497,7 @@ def release_tool_context(bound: BoundToolContext) -> None:
         try:
             var.reset(token)
         except (ValueError, RuntimeError) as exc:
-            log.warning("tool_context.not_released", var=var.name, error=str(exc))
+            log_failure(log, "tool_context.not_released", exc, var=var.name)
 
 
 def reset_side_effect_context() -> None:
@@ -729,11 +730,7 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
             rc.setex(cache_key, 3600, json.dumps(vector))
             return vector
         except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "retrieve_tool.cache_error",
-                exc=str(exc),
-                note="falling back to direct embed_query",
-            )
+            log_failure(log, "retrieve_tool.cache_error", exc, note="falling back to direct embed_query")
             return embed_query(q)
 
     query_vector: list[float] = await loop.run_in_executor(

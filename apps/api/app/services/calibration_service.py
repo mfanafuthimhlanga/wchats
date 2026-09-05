@@ -61,6 +61,7 @@ from pathlib import Path
 
 import structlog
 
+from app.core.log_bounds import log_failure
 from app.domain.calibration_status import (
     ARTIFACT_VERSION,
     CalibrationStatus,
@@ -106,24 +107,17 @@ def load_calibration_status(
     except FileNotFoundError:
         return CalibrationStatus.absent(_absent_artifact(artifact))
     except (MemoryError, OSError, UnicodeDecodeError, ValueError) as exc:
-        log.warning(
-            "calibration_artifact_unreadable",
-            path=str(artifact),
-            error=f"{type(exc).__name__}: {exc}",
-        )
+        log_failure(log, "calibration_artifact_unreadable", exc, path=str(artifact))
         return CalibrationStatus.absent("unreadable")
 
     try:
         record = CalibrationStatus.from_payload(payload)
     except InvalidCalibrationStatus as exc:
-        log.warning(
-            "calibration_artifact_invalid",
+        log_failure(
+            log, "calibration_artifact_invalid", exc,
             path=str(artifact),
-            error=str(exc),
             reader_artifact_version=ARTIFACT_VERSION,
-            artifact_version=(
-                payload.get("artifact_version") if isinstance(payload, Mapping) else None
-            ),
+            artifact_version=payload.get("artifact_version") if isinstance(payload, Mapping) else None,
         )
         return CalibrationStatus.absent("invalid")
 
@@ -169,11 +163,7 @@ def _refused_before_reading(artifact: Path) -> str | None:
     except FileNotFoundError:
         return _absent_artifact(artifact)
     except OSError as exc:
-        log.warning(
-            "calibration_artifact_unreadable",
-            path=str(artifact),
-            error=f"{type(exc).__name__}: {exc}",
-        )
+        log_failure(log, "calibration_artifact_unreadable", exc, path=str(artifact))
         return "unreadable"
 
     if size > MAX_ARTIFACT_BYTES:

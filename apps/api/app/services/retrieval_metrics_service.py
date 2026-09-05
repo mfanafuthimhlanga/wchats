@@ -26,6 +26,7 @@ import uuid
 import psycopg2
 import structlog
 
+from app.core.log_bounds import log_failure
 from app.domain.eval_result import CONTEXT_PROXY_VERSION
 
 log = structlog.get_logger(__name__)
@@ -93,11 +94,7 @@ def write_retrieval_metrics(conn_str: str, row: dict) -> None:
         finally:
             conn.close()
     except Exception as exc:  # noqa: BLE001 — metrics write must never fail the caller
-        log.warning(
-            "write_retrieval_metrics.failed",
-            job_id=row.get("job_id"),
-            error=str(exc),
-        )
+        log_failure(log, "write_retrieval_metrics.failed", exc, job_id=row.get("job_id"))
         return
 
     log.debug(

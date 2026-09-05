@@ -40,6 +40,7 @@ Security (T-13-06-01..04):
 import structlog
 
 from app.core.config import settings
+from app.core.log_bounds import log_failure
 
 log = structlog.get_logger(__name__)
 
@@ -335,8 +336,4 @@ def delete_object(key: str) -> None:
         )
         log.debug("storage_service.delete_object", key=key)
     except Exception as exc:
-        log.warning(
-            "storage_service.delete_object_failed",
-            key=key,
-            error=str(exc),
-        )
+        log_failure(log, "storage_service.delete_object_failed", exc, key=key)

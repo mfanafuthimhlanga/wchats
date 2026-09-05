@@ -70,6 +70,7 @@ from sqlalchemy import select, update
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.security import fernet_decrypt
 from app.domain.verdict import Outcome, Verdict, decide
@@ -174,11 +175,7 @@ def _dispatch_eval_run(agent_id: str) -> bool:
         log.info("run_deployment_checklist.eval_dispatched", agent_id=agent_id)
         return True
     except Exception as exc:
-        log.warning(
-            "run_deployment_checklist.eval_dispatch_failed",
-            agent_id=agent_id,
-            error=str(exc),
-        )
+        log_failure(log, "run_deployment_checklist.eval_dispatch_failed", exc, agent_id=agent_id)
         return False
 
 
@@ -208,11 +205,7 @@ def _dispatch_red_team_run(agent_id: str) -> bool:
         log.info("run_deployment_checklist.red_team_dispatched", agent_id=agent_id)
         return True
     except Exception as exc:
-        log.warning(
-            "run_deployment_checklist.red_team_dispatch_failed",
-            agent_id=agent_id,
-            error=str(exc),
-        )
+        log_failure(log, "run_deployment_checklist.red_team_dispatch_failed", exc, agent_id=agent_id)
         return False
 
 
@@ -228,12 +221,10 @@ def _continue_wait(agent_id: str, wait_state: object) -> dict | None:
         return _require_wait_state(wait_state)
     except Exception as exc:
         salvaged = wait_state.get("run_id") if isinstance(wait_state, dict) else None
-        log.error(
-            "run_deployment_checklist.continuation_unreadable",
+        log_failure(
+            log, "run_deployment_checklist.continuation_unreadable", exc, level="error",
             agent_id=agent_id,
             run_id=salvaged,
-            error_type=type(exc).__name__,
-            error=str(exc) or repr(exc),
         )
         if salvaged:
             _persist_failed(agent_id, str(salvaged), exc)
@@ -793,12 +784,7 @@ def _beat(agent_id: str, run_id: str, pass_no: int) -> int | None:
                 pass_no=pass_no + 1,
             )
     except Exception as exc:
-        log.warning(
-            "run_deployment_checklist.heartbeat_failed",
-            agent_id=agent_id,
-            run_id=run_id,
-            error=str(exc) or repr(exc),
-        )
+        log_failure(log, "run_deployment_checklist.heartbeat_failed", exc, agent_id=agent_id, run_id=run_id)
         return pass_no
     if not still_ours:
         _log_superseded(agent_id, run_id, pass_no)
@@ -915,13 +901,7 @@ def _adopted_since(agent_id: str, conn_str: str, state: dict) -> dict:
         since = datetime.fromisoformat(state["since"])
         orphans = _orphaned_runs(agent_id, conn_str, since)
     except Exception as exc:
-        log.warning(
-            "run_deployment_checklist.adoption_unread",
-            agent_id=agent_id,
-            run_id=state["run_id"],
-            error_type=type(exc).__name__,
-            error=str(exc) or repr(exc),
-        )
+        log_failure(log, "run_deployment_checklist.adoption_unread", exc, agent_id=agent_id, run_id=state["run_id"])
         return state
     if not orphans:
         return state
@@ -964,12 +944,10 @@ def _open_first_wait(agent_id: str, run_id: str, conn_str: str) -> dict | None:
     try:
         state = _open_wait(run_id, agent_id, conn_str)
     except Exception as exc:
-        log.error(
-            "run_deployment_checklist.wait_unopened",
+        log_failure(
+            log, "run_deployment_checklist.wait_unopened", exc, level="error",
             agent_id=agent_id,
             run_id=run_id,
-            error_type=type(exc).__name__,
-            error=str(exc) or repr(exc),
         )
         _persist_failed(agent_id, run_id, exc)
         return None
@@ -1012,12 +990,10 @@ def _polled(agent_id: str, conn_str: str, state: dict | None) -> dict | None:
     try:
         polled = _poll_wait(agent_id, conn_str, state)
     except Exception as exc:
-        log.error(
-            "run_deployment_checklist.poll_failed",
+        log_failure(
+            log, "run_deployment_checklist.poll_failed", exc, level="error",
             agent_id=agent_id,
             run_id=state["run_id"],
-            error_type=type(exc).__name__,
-            error=str(exc) or repr(exc),
         )
         _persist_failed(agent_id, state["run_id"], exc)
         return None
@@ -1053,12 +1029,10 @@ def _requeue_wait(agent_id: str, state: dict) -> bool:
         # expires honestly. A lost RE-QUEUE kills the whole chain, so the
         # caller marks the run failed rather than leaving a 'running' row
         # nothing will ever finish.
-        log.error(
-            "run_deployment_checklist.requeue_failed",
+        log_failure(
+            log, "run_deployment_checklist.requeue_failed", exc, level="error",
             agent_id=agent_id,
             run_id=state["run_id"],
-            error_type=type(exc).__name__,
-            error=str(exc) or repr(exc),
         )
         return False
 
@@ -1085,7 +1059,7 @@ def _collected(agent_id: str, event: str, fetch, fallback):
     try:
         return fetch()
     except Exception as exc:
-        log.warning(event, agent_id=agent_id, error=str(exc))
+        log_failure(log, event, exc, agent_id=agent_id)
         return fallback()
 
 
@@ -1389,22 +1363,15 @@ def _persist_failed(agent_id: str, run_id: str, exc: Exception) -> None:
     reaped is not this chain's to close, and the reap wrote 'failed' onto it
     anyway.
     """
-    log.error(
-        "run_deployment_checklist.failed",
-        agent_id=agent_id,
-        run_id=run_id,
-        error_type=type(exc).__name__,
-        error=str(exc) or repr(exc),
-    )
+    log_failure(log, "run_deployment_checklist.failed", exc, level="error", agent_id=agent_id, run_id=run_id)
     try:
         with get_sync_db() as db:
             still_ours = _claimed(db, run_id, status="failed")
     except Exception as update_exc:
-        log.warning(
-            "run_deployment_checklist.update_failed_status_error",
+        log_failure(
+            log, "run_deployment_checklist.update_failed_status_error", update_exc,
             agent_id=agent_id,
             run_id=run_id,
-            error=str(update_exc),
         )
         return
     if not still_ours:
@@ -1481,14 +1448,12 @@ def _failed_and_handed_back(task, agent_id: str, state: dict, exc: Exception) ->
     """
     run_id = state["run_id"]
     if task.request.retries < task.max_retries:
-        log.warning(
-            "run_deployment_checklist.pass_handed_back",
+        log_failure(
+            log, "run_deployment_checklist.pass_handed_back", exc,
             agent_id=agent_id,
             run_id=run_id,
             pass_no=state["pass_no"],
             attempts_spent=task.request.retries + 1,
-            error_type=type(exc).__name__,
-            error=str(exc) or repr(exc),
         )
         raise task.retry(
             exc=exc,
@@ -1656,12 +1621,10 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
         # real checklist run ever executed (E2E-4, 2026-08-13) reported
         # `orchestrator_failed error=` followed by "Orchestrator did not produce
         # a report" — two lines that name no cause between them.
-        log.error(
-            "run_deployment_checklist.orchestrator_failed",
+        log_failure(
+            log, "run_deployment_checklist.orchestrator_failed", exc, level="error",
             agent_id=agent_id,
             run_id=run_id,
-            error_type=type(exc).__name__,
-            error=str(exc) or repr(exc),
             timeout_s=ORCHESTRATOR_TIMEOUT_S,
             detail="the verdict was computed before this turn and still stands",
         )

@@ -1,8 +1,9 @@
 """
 parse_documents — Celery task: parse uploaded documents via Docling.
 
-Position in M2 chain (1st of 4):
+Position in the ingestion chain (1st of 6):
     parse_documents → chunk_documents → generate_metadata → embed_and_migrate
+    → synthesize_retrieval_strategy → finish_ingestion
 
 Idempotency contract (Layer 1 of 4 — source_hash guard):
     Each document is checked for parse_status == 'parsed'. If the document already
@@ -46,6 +47,7 @@ import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import fernet_decrypt, require_ciphertext
 
@@ -279,11 +281,7 @@ def parse_documents(
                 except RuntimeError as exc:
                     # Fatal Docling parse error — mark failed, do NOT retry
                     # (RuntimeError from docling_service = 4xx-equivalent)
-                    log.error(
-                        "parse_documents.docling_fatal_error",
-                        document_id=doc_id,
-                        error=str(exc),
-                    )
+                    log_failure(log, "parse_documents.docling_fatal_error", exc, level="error", document_id=doc_id)
                     tenant_conn = psycopg2.connect(tenant_conn_str)
                     cursor = tenant_conn.cursor()
                     cursor.execute(

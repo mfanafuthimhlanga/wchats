@@ -22,6 +22,7 @@ import structlog
 from langfuse import Langfuse
 from pydantic import BaseModel, field_validator
 
+from app.core.log_bounds import log_failure
 from app.core.model_client import LedgerContext, route_for
 from app.domain.context_frame import frame_retrieved_context
 from app.services.tool_loop import ForcedToolCallTruncated, forced_tool_arguments
@@ -516,4 +517,4 @@ def _log_verdict(
         )
         _langfuse.flush()
     except Exception as exc:
-        log.warning("langfuse.log_failed", judge=judge_name, error=str(exc))
+        log_failure(log, "langfuse.log_failed", exc, judge=judge_name)

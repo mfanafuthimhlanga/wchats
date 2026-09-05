@@ -15,6 +15,7 @@ from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent, select_beat_fanout_agents
 from app.services.digest_service import _collect_digest_stats, send_digest_email
@@ -99,7 +100,7 @@ def run_weekly_digest(self, agent_id: str) -> dict:
             db.commit()
             send_digest_email(agent.name, agent_id, stats)
     except Exception as exc:
-        log.error("run_weekly_digest.failed", agent_id=agent_id, error=str(exc))
+        log_failure(log, "run_weekly_digest.failed", exc, level="error", agent_id=agent_id)
         if self.request.retries >= self.max_retries:
             raise
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)

@@ -34,6 +34,7 @@ from sqlalchemy import text as sa_text
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import fernet_decrypt, require_ciphertext
@@ -75,7 +76,7 @@ def _tenant_dsn_for_ledger(agent: Agent, job_id: str) -> str:
     try:
         return fernet_decrypt(ciphertext)
     except Exception as exc:  # noqa: BLE001 - any decrypt failure is the same gap
-        log.warning("judge_ledger.dsn_unavailable", job_id=job_id, error=str(exc))
+        log_failure(log, "judge_ledger.dsn_unavailable", exc, job_id=job_id)
         return ""
 
 
@@ -261,12 +262,7 @@ def run_gatekeeper(
             )
 
         except Exception as exc:
-            log.error(
-                "run_gatekeeper.failed",
-                job_id=job_id,
-                agent_id=agent_id,
-                error=str(exc),
-            )
+            log_failure(log, "run_gatekeeper.failed", exc, level="error", job_id=job_id, agent_id=agent_id)
             # Validators never disrupt the user-facing turn: log and return {} on exhaustion.
             if self.request.retries >= self.max_retries:
                 return {}
@@ -464,12 +460,7 @@ def run_auditor(
             )
 
         except Exception as exc:
-            log.error(
-                "run_auditor.failed",
-                job_id=job_id,
-                agent_id=agent_id,
-                error=str(exc),
-            )
+            log_failure(log, "run_auditor.failed", exc, level="error", job_id=job_id, agent_id=agent_id)
             # Validators never disrupt the user-facing turn: log and return {} on exhaustion.
             if self.request.retries >= self.max_retries:
                 return {}
@@ -594,12 +585,7 @@ def run_strategist(
             )
 
         except Exception as exc:
-            log.error(
-                "run_strategist.failed",
-                job_id=job_id,
-                agent_id=agent_id,
-                error=str(exc),
-            )
+            log_failure(log, "run_strategist.failed", exc, level="error", job_id=job_id, agent_id=agent_id)
             # Validators never disrupt the user-facing turn: log and return {} on exhaustion.
             if self.request.retries >= self.max_retries:
                 return {}

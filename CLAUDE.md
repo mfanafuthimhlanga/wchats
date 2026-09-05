@@ -34,8 +34,9 @@ paragraph naming what the plan failed to anticipate.
 # backend (apps/api)
 uv sync --extra dev --extra pipeline    # BOTH extras. `--extra dev` alone uninstalls docling
 .venv/Scripts/python.exe scripts/gates.py full
-#   static  ruff (count-pinned), import contracts, lizard, source assertions: the four steps that
-#           never import app code, and what the Stop hook runs
+#   static  ruff (count-pinned), import contracts, lizard, source assertions, log bounds,
+#           process-wide keys: the six steps that never import app code, and what the Stop
+#           hook runs
 #   mypy    the type baseline alone, which is what CI's Type-check job runs
 #   fast    static + mypy + whole-suite collection
 #   full    fast + the unit suite. mutmut is dead config on native Windows

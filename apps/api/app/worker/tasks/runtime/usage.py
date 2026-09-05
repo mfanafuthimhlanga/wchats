@@ -56,6 +56,7 @@ from sqlalchemy import select, text
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.security import fernet_decrypt
 from app.domain.model_call import ModelCall
 from app.domain.pricing import CAT
@@ -271,11 +272,10 @@ def rollup_model_calls_beat(self, day: str | None = None) -> dict:
             try:
                 calls = tenant_calls(ciphertexts, start, end)
             except Exception as exc:
-                log.error(
-                    "rollup_model_calls.tenant_skipped",
+                log_failure(
+                    log, "rollup_model_calls.tenant_skipped", exc, level="error",
                     tenant_id=tenant_id,
                     day=on.isoformat(),
-                    error=str(exc),
                 )
                 skipped += 1
                 continue

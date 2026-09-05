@@ -122,6 +122,7 @@ import psycopg2
 import structlog
 
 from app.core.config import AGENT_TURN_MODEL, settings
+from app.core.log_bounds import log_failure
 from app.domain.model_call import ModelCall, ModelSource
 
 log = structlog.get_logger(__name__)
@@ -701,13 +702,12 @@ def _record_exchange(
 
 def _log_record_failure(context: CallContext, exc: Exception) -> None:
     """Fail open. The caller's turn already succeeded and telemetry may not undo it."""
-    log.error(
-        "model_ledger.record_failed",
+    log_failure(
+        log, "model_ledger.record_failed", exc, level="error",
         purpose=context.purpose,
         tenant_id=context.tenant_id,
         agent_id=context.agent_id,
         job_id=context.job_id,
-        error=str(exc),
     )
 
 

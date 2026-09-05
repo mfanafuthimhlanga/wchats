@@ -66,6 +66,7 @@ from sqlalchemy import text as sa_text
 
 from app.core.config import AGENT_TURN_MODEL, settings
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.model_client import ledger_recorder
 from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import fernet_decrypt, require_ciphertext
@@ -499,11 +500,10 @@ def _resolve_turn_prompt_version(
 
         return resolved_id, soul_override, True
     except Exception as exc:
-        log.warning(
-            "run_agent_turn.prompt_version_resolve_failed",
+        log_failure(
+            log, "run_agent_turn.prompt_version_resolve_failed", exc,
             agent_id=agent_id,
             conversation_id=local_conversation_id,
-            error=str(exc),
         )
         return None, None, False
 
@@ -653,12 +653,7 @@ def _turn_cost_usd(calls: list, *, job_id: str, agent_id: str) -> float | None:
     try:
         return float(sum(cost_usd(call)[0] for call in calls))
     except UnknownPrice as exc:
-        log.warning(
-            "run_agent_turn.turn_cost_unpriced",
-            job_id=job_id,
-            agent_id=agent_id,
-            error=str(exc),
-        )
+        log_failure(log, "run_agent_turn.turn_cost_unpriced", exc, job_id=job_id, agent_id=agent_id)
         return None
 
 
@@ -788,7 +783,7 @@ def _emit_langfuse_turn_trace(
         )
         _langfuse.flush()  # once per turn — never per-generation (Pitfall 3)
     except Exception as exc:
-        log.warning("langfuse.agent_turn_trace_failed", job_id=job_id, error=str(exc))
+        log_failure(log, "langfuse.agent_turn_trace_failed", exc, job_id=job_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1002,13 +997,7 @@ def _released(what: str, job_id: str, release) -> None:
     try:
         release()
     except Exception as exc:
-        log.warning(
-            "run_agent_turn.release_failed",
-            job_id=job_id,
-            resource=what,
-            error_type=type(exc).__name__,
-            error=(str(exc) or repr(exc)).splitlines()[0],
-        )
+        log_failure(log, "run_agent_turn.release_failed", exc, job_id=job_id, resource=what)
 
 
 def _release_turn(turn, tenant_conn, claim, job_id: str) -> None:
@@ -1257,12 +1246,11 @@ def run_agent_turn(
                         tenant_conn, str(local_conversation_id), prompt_version_id
                     )
                 except Exception as canary_exc:
-                    log.warning(
-                        "run_agent_turn.prompt_version_persist_failed",
+                    log_failure(
+                        log, "run_agent_turn.prompt_version_persist_failed", canary_exc,
                         job_id=job_id,
                         agent_id=agent_id,
                         conversation_id=str(local_conversation_id),
-                        error=str(canary_exc),
                     )
 
             # --------------------------------------------------------------
@@ -1420,11 +1408,7 @@ def run_agent_turn(
                     prompt_version_id=prompt_version_id,
                 )
             except Exception as metrics_exc:
-                log.warning(
-                    "run_agent_turn.turn_metrics_write_failed",
-                    job_id=job_id,
-                    error=str(metrics_exc),
-                )
+                log_failure(log, "run_agent_turn.turn_metrics_write_failed", metrics_exc, job_id=job_id)
             _emit_langfuse_turn_trace(
                 job_id=job_id,
                 agent_id=agent_id,
@@ -1455,13 +1439,7 @@ def run_agent_turn(
             )
 
         except Exception as exc:
-            log.error(
-                "run_agent_turn.failed",
-                job_id=job_id,
-                agent_id=agent_id,
-                error_type=type(exc).__name__,
-                error=str(exc) or repr(exc),
-            )
+            log_failure(log, "run_agent_turn.failed", exc, level="error", job_id=job_id, agent_id=agent_id)
 
             # On final retry exhaustion: emit the failure event, then mark the
             # job failed. TWO separate sessions and two separate try blocks,
@@ -1495,11 +1473,9 @@ def run_agent_turn(
                     # Nothing left to tell the customer with. Logged rather than
                     # passed, because a silent failure here is the defect this
                     # whole branch exists to close.
-                    log.error(
-                        "run_agent_turn.failed_event_not_emitted",
+                    log_failure(
+                        log, "run_agent_turn.failed_event_not_emitted", emit_exc, level="error",
                         job_id=job_id,
-                        error_type=type(emit_exc).__name__,
-                        error=str(emit_exc) or repr(emit_exc),
                     )
 
                 try:

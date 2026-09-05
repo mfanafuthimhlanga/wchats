@@ -53,6 +53,7 @@ from structlog.contextvars import get_contextvars
 from app.api.deps import get_current_tenant
 from app.core.config import settings
 from app.core.database import get_async_db
+from app.core.log_bounds import log_failure
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.models.job import Job
@@ -69,11 +70,40 @@ from app.schemas.document import (
 from app.services import storage_service
 from app.worker.tasks.pipeline.chunk import chunk_documents
 from app.worker.tasks.pipeline.embed import embed_and_migrate
+from app.worker.tasks.pipeline.finish import finish_ingestion
 from app.worker.tasks.pipeline.metadata import generate_metadata
 from app.worker.tasks.pipeline.parse import parse_documents
 from app.worker.tasks.pipeline.strategy import synthesize_retrieval_strategy
 
 log = structlog.get_logger(__name__)
+
+#: The ingestion chain, in order. The head takes the four arguments the upload
+#: knows; every later hop takes the IngestionJob the one before it returned.
+#:
+#: finish_ingestion is LAST and owns the run's terminal event (#168). It was
+#: appended because the previous owner, embed_and_migrate, stopped being last
+#: when synthesize_retrieval_strategy joined, and nothing noticed. A new hop goes
+#: BEFORE finish_ingestion, and tests/unit/test_ingestion_terminal_event.py holds
+#: that rule.
+INGESTION_CHAIN = (
+    parse_documents,
+    chunk_documents,
+    generate_metadata,
+    embed_and_migrate,
+    synthesize_retrieval_strategy,
+    finish_ingestion,
+)
+
+
+def ingestion_signatures(tenant_id: str, agent_id: str, job_id: str, document_ids: list[str]) -> list:
+    """One Celery signature per hop, in chain order.
+
+    The head takes the four ids the upload knows. Every later hop takes the
+    IngestionJob the one before it returned, so its signature takes nothing.
+    Connection strings are never among them (CLAUDE.md rule 1).
+    """
+    head, *rest = INGESTION_CHAIN
+    return [head.s(tenant_id, agent_id, job_id, document_ids), *(hop.s() for hop in rest)]
 
 router = APIRouter(tags=["documents"])
 
@@ -256,13 +286,7 @@ async def upload_documents(
     # ------------------------------------------------------------------
     ctx = get_contextvars()
     chain(
-        parse_documents.s(
-            str(tenant.id), str(agent.id), str(job.id), document_ids
-        ),
-        chunk_documents.s(),
-        generate_metadata.s(),
-        embed_and_migrate.s(),
-        synthesize_retrieval_strategy.s(),
+        *ingestion_signatures(str(tenant.id), str(agent.id), str(job.id), document_ids)
     ).apply_async(
         queue="pipeline",
         headers={"request_id": ctx.get("request_id", "")},
@@ -715,11 +739,10 @@ async def delete_document(
         raise
     except Exception as exc:
         tenant_conn.rollback()
-        log.error(
-            "delete_document.tenant_db_failed",
+        log_failure(
+            log, "delete_document.tenant_db_failed", exc, level="error",
             agent_id=str(agent.id),
             document_id=str(document_id),
-            error=str(exc),
         )
         raise HTTPException(
             status_code=500, detail="Failed to delete document"
