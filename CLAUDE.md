@@ -198,7 +198,9 @@ threat registers.
 - **Ingestion needs S3, and Phase A's "no cloud" premise did not survive contact** (`1.24`). Document
   bytes go to S3 on upload and are read back from S3 by `parse` and `chunk`. For local work set
   `S3_ENDPOINT_URL` (a local-dev seam, **refused when `ENVIRONMENT=production`**) plus
-  `S3_UPLOADS_BUCKET` and AWS credential env vars, and run MinIO's standalone Windows binary as a
+  `S3_UPLOADS_BUCKET`, `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` (named for the protocol, not
+  the vendor: boto3's default credential chain is not read), and run MinIO's standalone Windows
+  binary as a
   plain process — no Docker, so rule 6 holds. Also set `EMBEDDING_PROVIDER=voyage`; the default is
   `bedrock`, which needs real AWS.
 - **No model key needs exporting any more, and `1.28` is why that sentence stayed here for weeks
