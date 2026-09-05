@@ -29,12 +29,16 @@ Warm runs on this box on 2026-09-02 took between 26s and 80s, against 11s to 16s
 `static`, and a run with no .mypy_cache did not finish inside ten minutes. `mypy` is
 its own mode so CI's Type-check job runs that one step and nothing else.
 
-Four of the steps are baselines rather than ceilings. RUFF_BASELINE, MYPY_BASELINE,
+Three of the steps are baselines rather than ceilings. RUFF_BASELINE,
 LIZARD_BASELINE and SOURCE_ASSERTION_BASELINE each hold what the tree contains
 today, and each fails three ways: on something new, on something that grew, and on
 an entry that has gone stale. Entries come out as the code improves. Entries never
-go in. tests/unit/test_gates.py holds a snapshot of all four baselines and fails on
+go in. tests/unit/test_gates.py holds a snapshot of all three baselines and fails on
 an addition.
+
+mypy is the fourth, and it has none: it held a baseline while #92's 153 errors came
+down and holds the tree to zero now that they are gone. A baseline is what a number
+on its way down needs; a number that has arrived needs nothing.
 
 Tightening a threshold is a deliberate act: move it down, watch the gate go red,
 fix the code, move it down again. Never raise one to make a red gate green.
@@ -125,35 +129,22 @@ MYPY_ERROR = re.compile(r"^(?P<file>.+?\.py):\d+(?::\d+)?: error:")
 MYPY_SUMMARY = re.compile(r"^Found (?P<errors>\d+) errors? in \d+ files? \(checked \d+ source files?\)")
 MYPY_CLEAN = re.compile(r"^Success: no issues found in \d+ source files?")
 
-# Every file mypy reports an error in today, pinned at how many it reports there.
-# Measured 2026-09-02, 153 error lines in 13 files, exit 1:
+# THERE IS NO MYPY BASELINE. The standard is zero errors, and #92 closed on the
+# measurement that made it affordable:
 #
 #   .venv/Scripts/python.exe -m mypy app/ --ignore-missing-imports --strict-optional
-#   Found 153 errors in 13 files (checked 159 source files)
+#   Success: no issues found in 161 source files
 #
-# file -> error count. The gate fails three ways.
+# MYPY_BASELINE held 153 errors in 13 files on 2026-09-02 and 22 in 6 by the time the
+# last of them was fixed. A count-pinned baseline is the right shape while a number is
+# coming down, and the wrong shape once it reaches zero: a file the pin does not name
+# can gain errors freely, so the pin has to name every file that has any, and the only
+# list with no such hole is the empty one. Nothing to add to, nothing to lower, nothing
+# to go stale. The other three gates keep their baselines because their numbers are not
+# zero yet.
 #
-#   - mypy errors in a file this list does not name, which is a new file, or a file that
-#     was clean and stopped being clean
-#   - a pinned file reports MORE errors than its count, which is growth wearing an
-#     already-red name. That is the case #116 and #118 walked through with no gate
-#   - a pinned file reports FEWER, which makes the line stale. Lower the count, or
-#     delete the line, and the gate holds the tree to the smaller number
-#
-# These 153 are a FLOOR TO BURN DOWN, not a licence. #92 stays open until they are gone,
-# and every one that is fixed is a count that comes down here. The pin does not make the
-# tree type-clean; it makes the next error visible on the branch that adds it.
-#
-# ENTRIES MAY BE DELETED. ENTRIES MAY NEVER BE ADDED.
-# tests/unit/test_gates.py snapshots this dict and goes red on an addition.
-MYPY_BASELINE = {
-    "app/core/model_client.py": 3,
-    "app/domain/ingestion_job.py": 2,
-    "app/services/agent_tools.py": 5,
-    "app/services/deployment_service.py": 3,
-    "app/services/red_team_service.py": 7,
-    "app/worker/tasks/runtime/agent.py": 2,
-}
+# A new type error fails this gate on the branch that writes it. Fix it; do not
+# reintroduce a pin here to carry it.
 
 # The complexity standard the repo holds itself to from now on. CCN 15 and 60 lines are
 # the numbers a function has to meet. `-a 11` sits on the worst parameter count in the
@@ -496,65 +487,26 @@ def parse_mypy_output(output):
     return found, parsed, reported
 
 
-def mypy_unpinned_lines(unpinned, found):
-    """Failure lines for files with type errors that the baseline does not name."""
-    if not unpinned:
+def mypy_failures(found):
+    """Failure lines for one mypy reading. Empty means the tree is type-clean.
+
+    One rule, because the standard is zero: a file with any type error fails the gate.
+    Every file is named with its count, so the reader sees the whole of what to fix
+    rather than the first one mypy printed.
+    """
+    if not found:
         return []
     lines = [
-        "mypy: %d file(s) have type errors and nothing pins them." % len(unpinned),
-        "Fix them. Never add a file to MYPY_BASELINE:",
+        "mypy: %d file(s) have type errors, and the standard is zero." % len(found),
+        "Fix them. There is no MYPY_BASELINE to add them to:",
     ]
-    for path in unpinned:
+    for path in sorted(found):
         lines.append("  %s  x%d" % (path, found[path]))
     return lines
 
 
-def mypy_grown_lines(grown, found, baseline):
-    """Failure lines for pinned files reporting more errors than their pin allows."""
-    if not grown:
-        return []
-    lines = ["mypy: %d pinned file(s) gained type errors:" % len(grown)]
-    for path in grown:
-        lines.append("  %s  pinned %d, found %d" % (path, baseline[path], found.get(path, 0)))
-    return lines
-
-
-def mypy_stale_lines(stale, found, baseline):
-    """Failure lines for pinned files reporting fewer errors than their pin."""
-    if not stale:
-        return []
-    lines = [
-        "mypy: %d baseline line(s) are stale. Lower the count, or delete the" % len(stale),
-        "line, in MYPY_BASELINE in scripts/gates.py so it cannot come back:",
-    ]
-    for path in stale:
-        lines.append("  %s  pinned %d, found %d" % (path, baseline[path], found.get(path, 0)))
-    return lines
-
-
-def mypy_failures(found, baseline):
-    """Failure lines for one mypy reading against a baseline. Empty means pass."""
-    unpinned = sorted(path for path in found if path not in baseline)
-    grown = sorted(path for path in baseline if found.get(path, 0) > baseline[path])
-    stale = sorted(path for path in baseline if found.get(path, 0) < baseline[path])
-
-    # Growth reported on its own, the way the complexity gate reports a mixed reading.
-    # mypy resolves types across modules, so an annotation added in one file removes and
-    # adds errors in others; while any file is over its pin, every other count is a
-    # reading of a tree that is about to move. Sending the reader to lower a pin in the
-    # same breath is asking for an edit the fix invalidates. The stale lines come back on
-    # the next run, once nothing has grown.
-    if grown:
-        return mypy_unpinned_lines(unpinned, found) + mypy_grown_lines(grown, found, baseline)
-
-    return (
-        mypy_unpinned_lines(unpinned, found)
-        + mypy_stale_lines(stale, found, baseline)
-    )
-
-
 def run_mypy():
-    """Fail on any type error beyond the counts pinned in MYPY_BASELINE."""
+    """Fail on any type error anywhere in `app/`."""
     print("\n$ " + " ".join(MYPY_COMMAND), flush=True)
     result = subprocess.run(MYPY_COMMAND, cwd=API_DIR, capture_output=True, text=True)
     output = result.stdout + result.stderr
@@ -585,17 +537,14 @@ def run_mypy():
         print("The output format changed. Fix the parser in scripts/gates.py.")
         return 1
 
-    failures = mypy_failures(found, MYPY_BASELINE)
+    failures = mypy_failures(found)
     if failures:
         print("")
         for line in failures:
             print(line)
         return 1
 
-    print(
-        "mypy: clean against the %d pinned error(s) in %d file(s)."
-        % (sum(MYPY_BASELINE.values()), len(MYPY_BASELINE))
-    )
+    print("mypy: clean. %d error(s) reported across the tree." % reported)
     return 0
 
 
