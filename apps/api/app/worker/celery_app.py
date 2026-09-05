@@ -77,6 +77,31 @@ log = structlog.get_logger(__name__)
 BROKER_VISIBILITY_TIMEOUT_S = 7200
 
 # ---------------------------------------------------------------------------
+# How long a forked pool child may take before the pool gives up on it
+# ---------------------------------------------------------------------------
+# Celery's default is 4.0 seconds (celery/app/defaults.py, proc_alive_timeout),
+# and the pool enforces it with SIGKILL: `verify_process_alive` in
+# celery/concurrency/asynpool.py runs `os.kill(proc.pid, 9)` on any child still
+# in `waiting_to_start` when the deadline passes.
+#
+# A child leaves that set by sending WORKER_UP, and billiard sends it AFTER the
+# pool initializer returns: `Worker.__call__` in billiard/pool.py runs
+# `after_fork()`, which calls the initializer, and only then `on_loop_start()`,
+# which is where celery's asynpool Worker puts WORKER_UP on the out queue.
+#
+# The docling warm-up runs inside that initializer now (`worker_process_init`,
+# below), and it was measured at 3m43s on 2026-08-22. At four seconds the
+# pipeline worker's only child would be killed and respawned for as long as the
+# service ran. This window is wider than the measured load with room for a cold
+# HuggingFace cache on the first boot after a deploy.
+#
+# The cost is paid by every worker service, not just the pipeline one: a child
+# that starts and then goes silent is noticed here instead of after four
+# seconds. That case is a slow boot in a log nobody is watching yet, against a
+# crash loop in the service that does the parsing.
+WORKER_PROC_ALIVE_TIMEOUT_S = 600.0
+
+# ---------------------------------------------------------------------------
 # Celery application instance
 # ---------------------------------------------------------------------------
 
@@ -270,6 +295,12 @@ celery_app.conf.update(
     #             --pool=prefork --concurrency=2 which takes authoritative precedence;
     #             this default makes the config self-consistent with that CMD.
     worker_pool="solo" if settings.ENVIRONMENT in ("development", "test") else "prefork",
+
+    # --- How long a forked child may take to report for work ------------
+    # See WORKER_PROC_ALIVE_TIMEOUT_S below. Celery's 4.0 second default is
+    # shorter than the docling warm-up that now runs inside the child's
+    # initializer, and a child that misses this deadline is SIGKILLed.
+    worker_proc_alive_timeout=WORKER_PROC_ALIVE_TIMEOUT_S,
 )
 
 
@@ -278,8 +309,8 @@ celery_app.conf.update(
 # ---------------------------------------------------------------------------
 
 
-def _consumes_pipeline_queue(sender) -> bool:
-    """Does the worker that just became ready serve the `pipeline` queue?
+def _consumes_pipeline_queue(app) -> bool:
+    """Does this worker serve the `pipeline` queue?
 
     `app.amqp.queues` holds every queue `task_queues` DECLARED, on every worker,
     so reading it answers "does this deployment have a pipeline queue?" and not
@@ -290,60 +321,67 @@ def _consumes_pipeline_queue(sender) -> bool:
     names what this process consumes; with no `-Q` at all it returns the whole
     registry, which is the right answer for a worker that consumes everything.
 
-    A sender shaped differently (an older Celery, an embedded worker) is read as
-    "not the pipeline worker": skipping an optimisation costs one slow parse,
-    and guessing wrong costs the runtime service two gigabytes of model weights
-    it has no docling to load them with.
+    The app is read rather than the signal's sender because `worker_process_init`
+    sends `sender=None` (celery/concurrency/prefork.py, `process_initializer`,
+    and celery/concurrency/solo.py, `TaskPool.__init__`). `setup_queues` runs in
+    `WorkController.setup_instance` before the blueprint is built and therefore
+    before the pool forks, so a forked child inherits the narrowed selection.
+
+    An app shaped differently is read as "not the pipeline worker": skipping an
+    optimisation costs one slow parse, and guessing wrong costs the runtime
+    service two gigabytes of model weights it has no docling to load them with.
     """
     try:
-        return "pipeline" in set(sender.app.amqp.queues.consume_from)
+        return "pipeline" in set(app.amqp.queues.consume_from)
     except AttributeError:
         return False
 
 
-@signals.worker_ready.connect
-def on_worker_ready(sender=None, **_):
-    """Pay docling's model load at boot, on the pipeline worker only (#24).
+@signals.worker_process_init.connect
+def on_worker_process_init(**_):
+    """Pay docling's model load at boot, in the process that parses (#24, #172).
 
-    WHERE THIS RUNS IN THE BOOT, EXACTLY
-        `worker_ready` fires from `Consumer.on_ready()`, which both loops call
-        immediately AFTER `consumer.consume()` and BEFORE the event loop starts
-        (celery/worker/loops.py, `asynloop` and `synloop`). `consume()` may have
-        already prefetched messages by then, so a task that arrived during the
-        boot sits in the worker's buffer for the whole warm-up and is only
-        handled once this handler returns. The first upload after a deploy can
-        therefore still wait on the model load, once, if it beat the boot; every
-        upload after that does not. That is the trade #24 asked for, and it is
-        the reason nothing here does more work than the one parse.
+    WHICH PROCESS THIS RUNS IN
+        `worker_process_init` is sent from `process_initializer`
+        (celery/concurrency/prefork.py), which billiard runs INSIDE each forked
+        pool child, and from `TaskPool.__init__` (celery/concurrency/solo.py),
+        which is the main process under the solo pool. Either way it is the
+        process that goes on to execute tasks.
 
-    WHY NOT `worker_init`
-        `worker_init` fires in `WorkController.setup_instance`
-        (celery/worker/worker.py:127), after `setup_queues` at line 105, so the
-        `-Q` selection this handler's guard reads is already recorded there. It
-        also fires before the bootstep blueprint is built, and therefore before
-        the Pool step forks anything. Under prefork, which is the production
-        default and what `railway.worker-pipeline.toml` gets by passing
-        `--concurrency=1` and no `--pool`, that difference decides which process
-        ends up warm: the pool forks its children before the Consumer step runs,
-        so a warm-up at `worker_ready` loads the models into the parent, which
-        never executes a task, while a warm-up at `worker_init` would load them
-        before the fork and every child would inherit them copy-on-write.
+    WHY IT MOVED OFF `worker_ready` (#172)
+        `worker_ready` fires from `Consumer.on_ready()` (celery/worker/loops.py),
+        and the Consumer bootstep starts after the Pool bootstep, so every child
+        already exists by then. Under prefork the handler therefore ran in the
+        PARENT, which never executes a task: the two gigabytes landed in the one
+        process that had no use for them and the child that parses the first
+        upload still paid the whole cold start. `railway.worker-pipeline.toml`
+        starts with `--concurrency=1` and no `--pool`, so it takes the
+        application default, which is prefork outside development and test.
 
-        The hook is NOT moved here, and this is a reasoned position rather than
-        a measured one. Nothing on this branch has run docling on Linux under
-        prefork; whether torch state survives a fork intact is the kind of claim
-        that needs a measurement, and swapping the process the 2 GB load happens
-        in is a larger change than the queue guard this branch came to fix.
-        What is measurable and unmeasured is #172, which names the one
-        observation on Railway staging that settles it.
+    WHY NOT `worker_init`, THE OTHER CANDIDATE
+        `worker_init` fires once in the parent BEFORE the pool forks, so the
+        children would inherit the loaded models copy-on-write. That trades one
+        unmeasured claim for another: whether torch state is usable in a child
+        forked after the model load. Warming inside the child asks nothing of
+        fork at all.
+
+    WHAT THIS COSTS, AND THE SETTING THAT PAYS IT
+        The child sends its WORKER_UP message only after this initializer
+        returns, and the pool SIGKILLs a child that has not sent it within
+        `worker_proc_alive_timeout`. Celery's default is 4.0 seconds against a
+        3m43s load, so this placement REQUIRES `WORKER_PROC_ALIVE_TIMEOUT_S`
+        above; without it the pipeline worker's only child is killed and
+        respawned forever. The warm-up also now finishes before the Consumer
+        starts, so the "a task prefetched during boot waits through the warm-up"
+        trade that `worker_ready` carried is gone.
 
     Nothing here raises. The warm-up is a performance measure, and a worker that
     could not preload the models still parses documents at the old speed. A
-    raise would turn a slow first upload into a crash-looping service.
+    raise inside a pool initializer would crash the child on every fork.
     """
     if not settings.DOCLING_WARMUP_ON_BOOT:
         return
-    if not _consumes_pipeline_queue(sender):
+    if not _consumes_pipeline_queue(celery_app):
         return
 
     from app.domain import docling_service  # noqa: PLC0415

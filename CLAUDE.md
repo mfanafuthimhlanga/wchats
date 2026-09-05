@@ -105,8 +105,9 @@ column that is not there (#64).
   removed before. Restore with the `uv sync` above and `pnpm install` in each front end; check a
   gate can run before reporting it green.
 - **Ingestion needs S3.** Uploads go to S3 and `parse` and `chunk` read them back. Locally, set
-  `S3_ENDPOINT_URL` (a dev seam, refused when `ENVIRONMENT=production`), `S3_UPLOADS_BUCKET` and
-  AWS credentials, and run MinIO's Windows binary as a plain process. Set
+  `S3_ENDPOINT_URL` (a dev seam, refused when `ENVIRONMENT=production`), `S3_UPLOADS_BUCKET`,
+  `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` (named for the protocol, not the vendor: boto3's
+  default credential chain is not read), and run MinIO's Windows binary as a plain process. Set
   `EMBEDDING_PROVIDER=voyage`; the `bedrock` default reaches real AWS.
 - `scripts/probe_environment.py` reports what this shell actually reaches.
 

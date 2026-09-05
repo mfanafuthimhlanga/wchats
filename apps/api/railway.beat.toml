@@ -8,7 +8,13 @@
 #
 # UI fields, once per service:
 #   Settings > Source > Root Directory        apps/api
-#   Settings > Config-as-code > file path     railway.beat.toml
+#
+# WHETHER RAILWAY READS THIS FILE AT ALL IS NOT GUARANTEED (#139). Config as
+# Code is deprecated; existing files keep working until 2026-12-01, and a
+# service that has never used it cannot opt in since 2026-08-28. Where the
+# section is closed, this file is the record the operator types from, field by
+# field, and `scripts/railway_staging_wizard.sh` reads the values out of it so
+# the two cannot disagree. A change here then does NOT reach Railway on its own.
 # No public networking; no health check.
 
 [build]
