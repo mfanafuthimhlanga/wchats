@@ -43,7 +43,7 @@ npm run check:chart-render        # exit 0, ~26s. Compiles TelemetryChart and me
                                   # eval-chart pin, mark and leader head against the chart box in
                                   # Chromium, 9 fixtures x 4 viewports. The only gate that reads
                                   # rendered geometry.
-npm run test:unit                 # 64, browserless
+npm run test:unit                 # 108, browserless
 npm run test:e2e                  # 135 tests (NOT 113 — corrected 2026-08-12 by running it).
                                   # First observed result: 7 failed / 128 passed / 35.9 min.
                                   # All 7 are 90s TIMEOUTS on networkidle, not assertion failures,
