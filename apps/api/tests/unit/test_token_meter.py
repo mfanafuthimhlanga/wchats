@@ -27,9 +27,11 @@ this tokeniser, which is the comparison that can be made honestly.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from app.services.agent_tools import CHUNK_CONTENT_CHAR_LIMIT
+from app.services.agent_tools import CHUNK_CONTENT_CHAR_LIMIT, MAX_CHUNKS
 from tests.token_meter import (
     CONTENT_TYPES,
     ENCODING_NAME,
@@ -101,3 +103,61 @@ def test_the_worst_undercount_is_close_to_a_factor_of_three():
         "tenants off mid-answer."
     )
 
+# ---------------------------------------------------------------------------
+# What a tool's own JSON escaping costs, which is a bigger number than any above
+# ---------------------------------------------------------------------------
+
+
+def _retrieve_wire(content: str, *, ensure_ascii: bool) -> str:
+    """One retrieve result at the configured maximum, as `retrieve_tool` builds it."""
+    chunks = [
+        {
+            "chunk_id": f"c{index}",
+            "document_id": f"d{index}",
+            "content": content,
+            "score": 0.8123,
+            "rank": index,
+        }
+        for index in range(MAX_CHUNKS)
+    ]
+    return json.dumps(chunks, ensure_ascii=ensure_ascii)
+
+
+def test_escaping_non_ascii_into_uXXXX_multiplies_what_the_model_is_billed():
+    """`json.dumps` defaults to ensure_ascii=True, and the model pays for it.
+
+    Transport escaping costs nothing: the model reads message content, not the
+    JSON frame the request travels in. But `retrieve_tool` escapes its own
+    payload BEFORE handing it over as text, so every Chinese character reaches
+    the model as the six literal characters `\\u9000` and is tokenised as such.
+
+    This is the largest single term in a non-English turn's bill, larger than the
+    tokeniser difference this file's table measures, and it buys nothing: both
+    forms are valid JSON and nothing calls `json.loads` on either.
+    """
+    content = sample("CJK", CHUNK_CONTENT_CHAR_LIMIT)
+
+    escaped = count_tokens(_retrieve_wire(content, ensure_ascii=True))
+    plain = count_tokens(_retrieve_wire(content, ensure_ascii=False))
+
+    assert escaped / plain >= 4.0, (
+        f"escaping cost {escaped} tokens against {plain} unescaped, a factor of "
+        f"{escaped / plain:.2f}. The claim behind agent_tools.retrieve_tool's "
+        "ensure_ascii=False is that this factor is large, so if it has shrunk "
+        "the reasoning there needs re-reading."
+    )
+
+
+def test_escaping_costs_an_ascii_corpus_nothing():
+    """The control. `ensure_ascii` changes no byte of a corpus that is already ASCII.
+
+    Without this, the test above is satisfied by anything that makes the escaped
+    form bigger, and the change it justifies could be quietly costing the English
+    tenants who are most of the product.
+    """
+    for content_type in ("english prose", "digits table", "base64"):
+        content = sample(content_type, CHUNK_CONTENT_CHAR_LIMIT)
+
+        assert count_tokens(_retrieve_wire(content, ensure_ascii=True)) == count_tokens(
+            _retrieve_wire(content, ensure_ascii=False)
+        ), f"{content_type} is not ASCII-clean, so it is the wrong control"

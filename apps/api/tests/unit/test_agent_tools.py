@@ -35,6 +35,7 @@ Test coverage:
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import MagicMock, patch
 
 import app.services.agent_tools as agent_tools
@@ -317,6 +318,55 @@ def test_retrieve_tool_model_string_is_byte_for_byte_the_pinned_json():
 
     assert body.strip() == PINNED_MODEL_FACING_CHUNKS
     assert text == agent_tools._frame_retrieved_context(PINNED_MODEL_FACING_CHUNKS)
+
+
+def test_a_non_ascii_chunk_reaches_the_model_as_characters_not_escape_sequences():
+    """#182. `json.dumps` defaults to ensure_ascii=True and the tenant pays for it.
+
+    Escaping here is not the transport's. It happens inside the tool, before the
+    text becomes a `tool` message, so what the model reads is the six literal
+    characters of a backslash-u escape per Chinese character, and what the
+    provider bills is those six. Measured through o200k_base over one retrieve
+    result at the configured maximum, escaped is 34,506 tokens against 7,481
+    unescaped: a factor of 4.61 on the largest term in a non-English turn.
+
+    Both forms are valid JSON and either parses, so this costs nothing to give
+    up. tests/unit/test_token_meter.py holds the token measurement and the
+    ASCII control; this holds the wire.
+    """
+    from app.domain.retrieved_context import RetrievedChunk, RetrievedContext
+
+    agent_tools._retrieve_call_count_var.set(0)
+    query = "退货政策是什么？"
+    content = "未开封的商品可以在十四天内退货并获得全额退款。"
+    chunks = (
+        RetrievedChunk(chunk_id="c1", document_id="d1", content=content, score=0.95, rank=1),
+    )
+    fused = RetrievedContext(query=query, chunks=chunks, strategy="rrf")
+    reranked = RetrievedContext(query=query, chunks=chunks, strategy="rerank")
+
+    with (
+        patch("app.services.agent_tools.embed_query", return_value=[0.1] * 8),
+        patch("app.services.agent_tools.rrf_fuse", return_value=_rrf_result(fused)),
+        patch("app.services.agent_tools.rerank", return_value=reranked),
+        patch("app.services.agent_tools.write_retrieval_metrics"),
+    ):
+        result = _run(_fn(agent_tools.retrieve_tool)({"query": query}))
+
+    text = result["content"][0]["text"]
+
+    assert content in text, (
+        "the chunk reached the model escaped rather than as its own characters. "
+        f"The model-facing text is {text!r}."
+    )
+    assert "\\u" not in text, (
+        "a backslash-u escape survived into the model-facing text, which is six "
+        "billed characters where one was meant"
+    )
+    assert json.loads(_framed_body(text))[0]["content"] == content, (
+        "unescaped output has to stay valid JSON; a reader on the other side "
+        "must still parse it"
+    )
 
 
 def _framed_body(text: str) -> str:
