@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import structlog
-from sqlalchemy import select
 
 from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt
-from app.models.agent import Agent
+from app.models.agent import Agent, select_beat_fanout_agents
 from app.services.alert_service import check_and_write_alerts
 from app.worker.celery_app import celery_app
 
@@ -22,10 +21,10 @@ log = structlog.get_logger(__name__)
     name="app.worker.tasks.runtime.alert.run_alert_check_beat",
 )
 def run_alert_check_beat(self) -> dict:
-    """Beat-triggered: fan out run_alert_check per deployed agent."""
+    """Beat-triggered: fan out run_alert_check per deployed, ready agent."""
     with get_sync_db() as db:
         agents = db.execute(
-            select(Agent).where(Agent.is_deployed == True)  # noqa: E712
+            select_beat_fanout_agents()
         ).scalars().all()
     dispatched = 0
     for agent in agents:

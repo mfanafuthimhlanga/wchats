@@ -36,7 +36,6 @@ Threat mitigations:
 """
 
 import hashlib
-import ssl
 import time
 from pathlib import Path
 
@@ -47,6 +46,7 @@ import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import fernet_decrypt, require_ciphertext
 
 # noqa: F401 on `parse_document` — this module only calls `parse_document_from_bytes`,
@@ -61,13 +61,14 @@ from app.domain.ingestion_job import IngestionJob
 from app.models.agent import Agent
 from app.services import storage_service
 from app.services.events import emit
+from app.services.job_failure import retry_or_fail_the_job
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
 
-# Module-level sync Redis client — strip query params; pass ssl_cert_reqs as constant.
+# Module-level sync Redis client. Strip the query string, then redis_ssl_kwargs decides TLS.
 _url_clean = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
-_ssl_opts: dict = {"ssl_cert_reqs": ssl.CERT_NONE} if _url_clean.startswith("rediss://") else {}
+_ssl_opts: dict = redis_ssl_kwargs(_url_clean)
 _redis = redis_lib.from_url(_url_clean, **_ssl_opts)
 
 
@@ -149,7 +150,7 @@ def parse_documents(
         try:
             tenant_conn = psycopg2.connect(tenant_conn_str)
         except psycopg2.OperationalError as exc:
-            raise self.retry(exc=exc, countdown=30 * (2 ** self.request.retries))
+            retry_or_fail_the_job(self, exc, job_id, db, _redis, 30 * (2 ** self.request.retries))
         try:
             cursor = tenant_conn.cursor()
 
@@ -297,14 +298,14 @@ def parse_documents(
                     # Keeping parse_status='parsing' ensures the retry idempotency
                     # guard (is_retry_attempt = parse_status == 'parsing') correctly
                     # skips re-emitting parsing.started on subsequent attempts.
-                    # parse_status is set to 'failed' only if all retries are exhausted
-                    # (MaxRetriesExceededError propagates past this handler naturally).
+                    # On the last attempt retry_or_fail_the_job writes the jobs
+                    # row and job.failed and re-raises, so the run ends visibly (#63).
                     log.error(
                         "parse_documents.error",
                         document_id=doc_id,
                         error_type=type(exc).__name__,
                     )
-                    raise self.retry(exc=exc, countdown=2**self.request.retries)
+                    retry_or_fail_the_job(self, exc, job_id, db, _redis, 2**self.request.retries)
 
                 # Reopen connection for post-parse writes (released before parse call)
                 tenant_conn = psycopg2.connect(tenant_conn_str)

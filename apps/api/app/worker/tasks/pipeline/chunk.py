@@ -47,7 +47,6 @@ Threat mitigations:
     T-02-03-06: httpx.get(timeout=30) for URL re-fetch — same DoS mitigation as parse_documents.
 """
 
-import ssl
 from pathlib import Path
 
 import httpx
@@ -57,6 +56,7 @@ import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.domain.docling_service import parse_document_from_bytes
 from app.domain.ingestion_job import IngestionJob
@@ -64,14 +64,15 @@ from app.models.agent import Agent
 from app.services import storage_service
 from app.services.chunking_service import chunk_document
 from app.services.events import emit
+from app.services.job_failure import retry_or_fail_the_job
 from app.worker.celery_app import celery_app
 from app.worker.tasks.pipeline.chain_edge import job_in_job_out
 
 log = structlog.get_logger(__name__)
 
-# Module-level sync Redis client — strip query params; pass ssl_cert_reqs as constant.
+# Module-level sync Redis client. Strip the query string, then redis_ssl_kwargs decides TLS.
 _url_clean = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
-_ssl_opts: dict = {"ssl_cert_reqs": ssl.CERT_NONE} if _url_clean.startswith("rediss://") else {}
+_ssl_opts: dict = redis_ssl_kwargs(_url_clean)
 _redis = redis_lib.from_url(_url_clean, **_ssl_opts)
 
 
@@ -233,7 +234,7 @@ def chunk_documents(self, job: IngestionJob) -> IngestionJob:
                         document_id=doc_id,
                         error_type=type(exc).__name__,
                     )
-                    raise self.retry(exc=exc, countdown=2**self.request.retries)
+                    retry_or_fail_the_job(self, exc, job_id, db, _redis, 2**self.request.retries)
 
                 # Reopen connection for post-parse writes (released before re-parse)
                 tenant_conn = psycopg2.connect(conn_str)
@@ -302,7 +303,7 @@ def chunk_documents(self, job: IngestionJob) -> IngestionJob:
                 error_type=type(exc).__name__,
                 error=str(exc),
             )
-            raise self.retry(exc=exc, countdown=2**self.request.retries)
+            retry_or_fail_the_job(self, exc, job_id, db, _redis, 2**self.request.retries)
         finally:
             if tenant_conn is not None:
                 tenant_conn.close()

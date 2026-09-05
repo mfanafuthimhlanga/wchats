@@ -9,7 +9,7 @@ non-empty `retrieved_context` (`5.11`: it received `"[]"` on every turn from
       citation_spans  Field required  [input_value={'verdict': 'partial', 'confidence': 0.65}]
       reason          Field required"
 
-Three attempts, all identical. `max_tokens` was **512**, and the Auditor's
+Three attempts, all identical. The ceiling was **512**, and the Auditor's
 verdict is the one judge output that must ECHO EVIDENCE: one
 `{claim, source_chunk, supported}` object per audited claim. An empty
 `citation_spans` costs nothing, which is why 512 sufficed for three months of
@@ -26,8 +26,6 @@ before validating.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 from app.services import validation_service
@@ -37,20 +35,18 @@ from app.services.validation_service import (
     AuditorVerdictTruncated,
     call_auditor,
 )
-from tests.model_doubles import factory, ledger
+from tests.model_doubles import completion, factory, ledger, openai_client, tool_call
 
 
-def _response(*, stop_reason: str, content: list):
-    return SimpleNamespace(stop_reason=stop_reason, content=content)
+def _verdict(payload: dict, *, finish_reason: str = "tool_calls"):
+    """One forced `submit_verdict` call. `finish_reason="length"` is truncation.
 
-
-def _client(create):
-    """The double the factory hands the Auditor (ticket #47)."""
-    return SimpleNamespace(messages=SimpleNamespace(create=create))
-
-
-def _tool_use(payload: dict):
-    return SimpleNamespace(type="tool_use", name="submit_verdict", input=payload)
+    Issue #76 moved this judge onto `chat.completions`, where the ceiling signal
+    is the choice's `finish_reason` rather than the response's `stop_reason`.
+    """
+    return completion(
+        tool_calls=[tool_call("submit_verdict", payload)], finish_reason=finish_reason
+    )
 
 
 _GOOD_VERDICT = {
@@ -85,12 +81,12 @@ def test_the_span_cap_reaches_the_model():
 
     def _create(**kwargs):
         captured.update(kwargs)
-        return _response(stop_reason="tool_use", content=[_tool_use(_GOOD_VERDICT)])
+        return _verdict(_GOOD_VERDICT)
 
-    with factory(_client(_create)):
+    with factory(openai_client(create=_create)):
         call_auditor("q", "r", "ctx", ledger())
 
-    assert captured["max_tokens"] == AUDITOR_MAX_TOKENS
+    assert captured["max_completion_tokens"] == AUDITOR_MAX_TOKENS
 
     # BACKLOG 1.33. This was `str(AUDITOR_MAX_CITATION_SPANS) in system` -- a
     # single-digit substring search over a paragraph of prose. An adversarial
@@ -103,10 +99,11 @@ def test_the_span_cap_reaches_the_model():
     # Pinned as the whole phrase, so the number must appear in the sentence that
     # actually instructs the model.
     expected_phrase = f"at most {AUDITOR_MAX_CITATION_SPANS} citation spans"
-    assert expected_phrase in captured["system"], (
+    system = captured["messages"][0]["content"]
+    assert expected_phrase in system, (
         f"the system prompt does not contain {expected_phrase!r}, so the span "
         "cap is a decorative constant the model is never told about. "
-        f"system={captured['system']!r}"
+        f"system={system!r}"
     )
 
 
@@ -116,16 +113,14 @@ def test_a_truncated_tool_call_raises_truncated_not_a_validation_error():
     Before the fix this path raised pydantic's "citation_spans Field required",
     which is indistinguishable from a model that ignored its schema.
     """
-    with factory(_client(
-    lambda **kw: _response(
-        stop_reason="max_tokens", content=[_tool_use(_TRUNCATED_PAYLOAD)]
-    )
+    with factory(openai_client(
+        create=lambda **kw: _verdict(_TRUNCATED_PAYLOAD, finish_reason="length")
     )):
         with pytest.raises(AuditorVerdictTruncated) as exc_info:
             call_auditor("q", "r", "ctx", ledger())
 
     message = str(exc_info.value)
-    assert "max_tokens" in message, message
+    assert "max_completion_tokens" in message, message
     # The distinction that keeps the measurement layer honest.
     assert "ungrounded" in message.lower(), (
         "the error must say a truncated verdict is not an ungrounded verdict; "
@@ -139,10 +134,8 @@ def test_truncation_is_checked_before_validation():
     If validation ran first, the specific error would never be reachable and
     this module would be pinning a branch that cannot execute.
     """
-    with factory(_client(
-    lambda **kw: _response(
-        stop_reason="max_tokens", content=[_tool_use(_TRUNCATED_PAYLOAD)]
-    )
+    with factory(openai_client(
+        create=lambda **kw: _verdict(_TRUNCATED_PAYLOAD, finish_reason="length")
     )):
         with pytest.raises(AuditorVerdictTruncated):
             call_auditor("q", "r", "ctx", ledger())
@@ -150,9 +143,7 @@ def test_truncation_is_checked_before_validation():
 
 def test_a_complete_verdict_still_validates_normally():
     """The guard must not cost the happy path."""
-    with factory(_client(
-    lambda **kw: _response(stop_reason="tool_use", content=[_tool_use(_GOOD_VERDICT)])
-    )):
+    with factory(openai_client(create=lambda **kw: _verdict(_GOOD_VERDICT))):
         verdict = call_auditor("q", "r", "ctx", ledger())
 
     assert verdict.verdict == "partial"
@@ -165,11 +156,7 @@ def test_a_schema_violation_that_is_NOT_truncation_still_raises_validation_error
     """The two failures stay distinguishable in both directions."""
     from pydantic import ValidationError
 
-    with factory(_client(
-    lambda **kw: _response(
-        stop_reason="tool_use", content=[_tool_use({"verdict": "partial"})]
-    )
-    )):
+    with factory(openai_client(create=lambda **kw: _verdict({"verdict": "partial"}))):
         with pytest.raises(ValidationError):
             call_auditor("q", "r", "ctx", ledger())
 
@@ -200,13 +187,14 @@ def test_the_retrieved_context_reaches_the_judge_framed():
 
     def _capture(**kw):
         seen.update(kw)
-        return _response(stop_reason="tool_use", content=[_tool_use(_GOOD_VERDICT)])
+        return _verdict(_GOOD_VERDICT)
 
     context = '["Tier A costs R450."]'
-    with factory(_client(_capture)):
+    with factory(openai_client(create=_capture)):
         call_auditor("q", "r", context, ledger())
 
-    sent = seen["messages"][0]["content"]
+    # [0] is the system prompt now; the framed evidence rides the user turn.
+    sent = seen["messages"][1]["content"]
     assert RETRIEVED_CONTEXT_HEADER in sent, (
         "the judge's retrieved context carries no data-not-instructions "
         "boundary, so a directive inside a tenant's own document is presented "

@@ -261,6 +261,54 @@ def test_fourteen_models_importable():
     assert len(_ALL_MODELS) == 14
 
 
+# --------------- the 14 models are frozen (#72) ----------------------------
+#
+# Decision #7 on map #4 puts these models in app.domain frozen. A tool argument
+# object that can be rewritten after validation is a validated object in name
+# only: whatever the capability envelope checked, the enforcement path checked,
+# or the audit row recorded may not be what the adapter finally sends. Freezing
+# makes a caller that wants a different value say so, with model_copy(update=...),
+# which produces a new object the next check sees.
+
+
+def _sample(model_cls):
+    """Construct `model_cls` with a type-appropriate value in every field."""
+    return model_cls(
+        **{
+            name: (1 if field.annotation is int else f"sample-{name}")
+            for name, field in model_cls.model_fields.items()
+        }
+    )
+
+
+@pytest.mark.parametrize("model_cls", _ALL_MODELS, ids=lambda m: m.__name__)
+def test_every_field_refuses_assignment_after_construction(model_cls):
+    instance = _sample(model_cls)
+
+    assert model_cls.model_fields, f"{model_cls.__name__} declares no fields"
+
+    for name in model_cls.model_fields:
+        before = getattr(instance, name)
+        with pytest.raises(ValidationError) as exc:
+            setattr(instance, name, "rewritten")
+        assert exc.value.errors()[0]["type"] == "frozen_instance"
+        assert getattr(instance, name) == before
+
+
+@pytest.mark.parametrize("model_cls", _ALL_MODELS, ids=lambda m: m.__name__)
+def test_model_copy_is_the_way_to_get_a_changed_value(model_cls):
+    """The replacement for assignment: a new object the next check can see."""
+    instance = _sample(model_cls)
+    name = next(iter(model_cls.model_fields))
+    replacement = 99 if isinstance(getattr(instance, name), int) else "replaced"
+
+    changed = instance.model_copy(update={name: replacement})
+
+    assert getattr(changed, name) == replacement
+    assert getattr(instance, name) != replacement
+    assert changed is not instance
+
+
 # ---------------------------------------------------------------------------
 # Task 2: Registry tests
 # ---------------------------------------------------------------------------

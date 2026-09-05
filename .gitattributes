@@ -1,1 +1,7 @@
 * text=auto eol=lf
+
+# A PDF is bytes, and this repo bundles one whose xref table stores byte
+# offsets (apps/api/app/domain/assets/docling_warmup.pdf, #24). Left under
+# `text=auto` git reads it as text, because it happens to carry no NUL byte,
+# and any future eol normalisation would move every offset it names.
+*.pdf binary

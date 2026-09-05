@@ -13,10 +13,15 @@ the loop resumes from, the persisted messages, the telemetry and the validation
 chain. The PII firewall was on that list until #50 moved it into the seam, where
 the eval path cannot skip it; what is left here is the two log lines it writes.
 
-Idempotency mechanism:
+Idempotency mechanism (two guards, and they answer different questions):
     READ guard on job_events: if an "agent.response" row already exists for this
     job_id, the task returns immediately, so a retry costs no duplicate model
-    calls and no duplicate SSE events.
+    calls and no duplicate SSE events. It is SEQUENTIAL-ONLY, which is #85: a
+    redelivery that arrives while the first attempt is still running reads no
+    response row, because the first attempt has not written one yet.
+    CLAIM on a control-DB advisory lock keyed on the job id, held for the whole
+    turn: a second attempt is refused the key and returns without calling a
+    model. `_claimed_turn` takes both, in that order.
 
 Security constraints (CLAUDE.md non-negotiable rules):
     - Task args: (job_id, agent_id, message, conversation_id) ONLY.
@@ -44,10 +49,10 @@ Queue: runtime (CLAUDE.md non-negotiable: both Celery queues always present)
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import re
-import ssl
 import time
 import uuid
 from datetime import datetime, timezone
@@ -62,6 +67,7 @@ from sqlalchemy import text as sa_text
 from app.core.config import AGENT_TURN_MODEL, settings
 from app.core.database import get_sync_db
 from app.core.model_client import ledger_recorder
+from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.domain.pricing import UnknownPrice, cost_usd
 from app.models.agent import Agent
@@ -86,11 +92,10 @@ from app.worker.tasks.runtime.validators import run_auditor, run_gatekeeper, run
 log = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Module-level sync Redis client (copied verbatim from retrieve.py lines 59-62)
-# Strip query params; pass ssl_cert_reqs as Python constant.
+# Module-level sync Redis client. Strip the query string, then redis_ssl_kwargs decides TLS.
 # ---------------------------------------------------------------------------
 _url_clean = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
-_ssl_opts: dict = {"ssl_cert_reqs": ssl.CERT_NONE} if _url_clean.startswith("rediss://") else {}
+_ssl_opts: dict = redis_ssl_kwargs(_url_clean)
 _redis = redis_lib.from_url(_url_clean, **_ssl_opts)
 
 # ---------------------------------------------------------------------------
@@ -368,21 +373,25 @@ def _read_turn_history(conn, conv_id: str) -> list[dict]:
         SELECT role, content
         FROM messages
         WHERE conversation_id = %s AND role IN ('user', 'assistant')
-        ORDER BY created_at DESC,
-                 CASE role WHEN 'assistant' THEN 0 ELSE 1 END
+        ORDER BY seq DESC
         LIMIT %s
     """
     with conn.cursor() as cur:
         cur.execute(sql, (conv_id, TURN_HISTORY_MAX_MESSAGES))
         rows = list(cur.fetchall())
 
-    # THE CASE IS LOAD-BEARING (issue #79). `_persist_messages` writes a turn's
-    # user row and assistant row in ONE transaction, so both carry the same
-    # `transaction_timestamp()` and `created_at` alone leaves their order to the
-    # plan. Within one timestamp the user row precedes the assistant row, so a
-    # DESC scan has to take the assistant row FIRST, which is what the CASE
-    # says. Without it a turn's own answer can come back before its question and
-    # the model reads the conversation inside out.
+    # `seq` (tenant 0025, issue #79), because `created_at` cannot order a turn.
+    # `_persist_messages` writes a turn's user row and assistant row in ONE
+    # transaction, so both carry the same `transaction_timestamp()` and a sort
+    # on that column alone leaves the pair to the plan. This read carried a
+    # `CASE role` tiebreak instead, which put the pair right and ordered two
+    # rows of the SAME role at one timestamp by nothing at all. `seq` is
+    # monotonic in INSERT order, so a DESC scan of it takes the newest row
+    # first with no ties left to break, and the LIMIT above now takes the
+    # newest 40 rather than the newest 40 of an order the plan chose.
+    #
+    # DESC then reverse, rather than ASC, because the LIMIT has to keep the END
+    # of a long conversation.
     rows.reverse()
     # An assistant row with no text is what a turn that exhausted
     # `max_model_calls` persists. The loop ran out of calls while the model was
@@ -889,6 +898,145 @@ def _retry_countdown(exc: Exception, retries: int) -> int:
     return 2 ** retries
 
 
+def _turn_lock_key(job_id: str) -> int:
+    """The one 64-bit number every delivery of this turn asks Postgres for.
+
+    Derived from the job id rather than drawn from a sequence, so two deliveries
+    of one message compute the same key without sharing any state. Sixty-four
+    bits over a namespaced digest keeps two unrelated turns off one key at any
+    volume this platform will see; the two-int form of the same call halves that
+    and would refuse a turn nothing is running.
+    """
+    digest = hashlib.blake2b(
+        f"run_agent_turn:{job_id}".encode(), digest_size=8
+    ).digest()
+    return int.from_bytes(digest, "big", signed=True)
+
+
+def _answered_already(db, job_id: str) -> bool:
+    """Whether this turn has already written the terminal event a customer saw."""
+    return (
+        db.execute(
+            sa_text(
+                "SELECT 1 FROM job_events"
+                " WHERE job_id = :jid AND event_type = 'agent.response' LIMIT 1"
+            ),
+            {"jid": job_id},
+        ).fetchone()
+        is not None
+    )
+
+
+def _claimed_turn(db, job_id: str) -> tuple:
+    """This attempt's exclusive hold on the turn, or the answer that replaces it.
+
+    Hands back `(connection, None)` when this attempt owns the turn, and
+    `(None, answer)` when it does not. The caller returns the answer.
+
+    WHY A LOCK AND NOT A COLUMN (#85). `acks_late=True` hands a dying worker's
+    message back, so the redelivery has to be able to claim a turn whose holder
+    is gone. Postgres releases an advisory lock when the holding connection
+    drops, which is exactly that; a `status` column would keep saying 'running'
+    until something beat on it, and a turn is one long await with nothing to beat
+    from.
+
+    WHY THE TRANSACTION-SCOPED CALL AND NOT THE SESSION-SCOPED ONE. A session
+    lock taken through a PgBouncer pooler in transaction mode is left on whatever
+    server connection served the statement, where the next client inherits it. An
+    open transaction pins that server connection for as long as it is open, so
+    the lock is this attempt's alone whether the control DSN is pooled or direct.
+    The connection is its own, never the task's session: `db` commits several
+    times during a turn and each commit would drop the lock.
+
+    THE READ GUARD IS ASKED TWICE, EITHER SIDE OF THE LOCK. Once before, so a
+    redelivery arriving after the turn finished answers without taking a lock at
+    all. Once after, because the first attempt can finish and release between
+    this attempt's read and its claim, and running the turn again is what the
+    whole guard exists to stop.
+
+    THE SERVER'S IDLE CLOCK IS TURNED OFF FOR THIS TRANSACTION. Between the lock
+    and the release, this connection is idle in transaction for the turn's whole
+    life, which is the state `idle_in_transaction_session_timeout` exists to
+    kill. Neon ships that parameter at five minutes. A turn slower than the
+    server's limit has its claim connection terminated, the transaction rolls
+    back, the advisory lock goes with it, and a redelivery claims a turn that is
+    still running, and it fails silently: nothing touches the connection again
+    until release. `SET LOCAL` is a per-transaction override of a plain Postgres
+    parameter, so it survives a pooler in SESSION mode and ends with the
+    transaction, which is why release resets nothing. Under a pooler in
+    TRANSACTION mode the whole claim is one transaction on one pinned server
+    connection anyway, so the override covers exactly the transaction it needs
+    to and is discarded with it.
+    """
+    if _answered_already(db, job_id):
+        log.info("run_agent_turn.idempotent_skip", job_id=job_id)
+        return None, {"status": "already_complete", "job_id": job_id}
+    claim = db.get_bind().connect()
+    claim.execute(sa_text("SET LOCAL idle_in_transaction_session_timeout = 0"))
+    held = claim.execute(
+        sa_text("SELECT pg_try_advisory_xact_lock(:key)"),
+        {"key": _turn_lock_key(job_id)},
+    ).scalar()
+    if not held:
+        claim.close()
+        log.info("run_agent_turn.claim_held", job_id=job_id)
+        return None, {"status": "already_running", "job_id": job_id}
+    if _answered_already(db, job_id):
+        claim.close()
+        log.info("run_agent_turn.idempotent_skip", job_id=job_id)
+        return None, {"status": "already_complete", "job_id": job_id}
+    return claim, None
+
+
+def _released(what: str, job_id: str, release) -> None:
+    """One debt, discharged without ever becoming the turn's own failure.
+
+    This runs from a `finally`, and an exception raised in a `finally` REPLACES
+    whatever was already in flight. The exception in flight is the turn's
+    `Retry`, so a close that raises here is a retry Celery is never asked for and
+    a widget waiting on a job that will never complete. The log line is the whole
+    record of a failed close: the exception's type and its first line, because a
+    dropped-connection message from psycopg2 runs to several lines of advice
+    about the server.
+    """
+    try:
+        release()
+    except Exception as exc:
+        log.warning(
+            "run_agent_turn.release_failed",
+            job_id=job_id,
+            resource=what,
+            error_type=type(exc).__name__,
+            error=(str(exc) or repr(exc)).splitlines()[0],
+        )
+
+
+def _release_turn(turn, tenant_conn, claim, job_id: str) -> None:
+    """Every debt one attempt owes, on the served path, the timeout path and the
+    retry path alike.
+
+    THE LEDGER ROWS GO FIRST: writing one opens, commits and closes a tenant
+    connection, which is why the loop only appended them and why they are not
+    written on the event loop a customer waits on. Then the tool ContextVars go
+    back, so an eval's "recorded" cannot reach the next customer (#98). Then
+    PROD-05's connection, None only if the connect failed. The claim goes LAST,
+    after the response row is committed, so the next delivery's READ guard finds
+    the answer rather than an open turn.
+
+    THE THREE ARE INDEPENDENT DEBTS, not a sequence. Each closes under its own
+    guard, so the one that fails costs only itself: the claim is the resource
+    with the longest reach, it is last, and a turn that would not close used to
+    strand it until the pool noticed. The claim is also the one most likely to
+    fail, because it sits idle in transaction for the turn's whole life, which
+    is what a server-side idle timeout kills.
+    """
+    if turn is not None:
+        _released("turn", job_id, lambda: close_turn(turn))
+    if tenant_conn is not None:
+        _released("tenant_conn", job_id, tenant_conn.close)
+    _released("claim", job_id, claim.close)
+
+
 @celery_app.task(
     bind=True,
     acks_late=True,
@@ -907,9 +1055,11 @@ def run_agent_turn(
 ) -> dict:
     """Orchestrate one agent conversational turn with full SSE event emission.
 
-    Idempotent: returns {"status": "already_complete", "job_id": job_id}
-    immediately if an "agent.response" event row already exists for this
-    job_id (duplicate delivery / retry safety).
+    Idempotent twice over. Returns {"status": "already_complete", "job_id": job_id}
+    immediately if an "agent.response" event row already exists for this job_id,
+    and {"status": "already_running", "job_id": job_id} if another worker holds
+    this turn's claim, which is the redelivery the response row cannot yet
+    answer (#85).
 
     Args:
         job_id:                  UUID string of the runtime chat job.
@@ -924,7 +1074,8 @@ def run_agent_turn(
                                  dispatches remain valid via the empty default.
 
     Returns:
-        {"status": "already_complete", "job_id": job_id}  — idempotent path
+        {"status": "already_complete", "job_id": job_id}  this turn already answered
+        {"status": "already_running", "job_id": job_id}   another worker holds it
         {}                                                  — all other paths
 
     Security:
@@ -933,64 +1084,57 @@ def run_agent_turn(
     """
     with get_sync_db() as db:
         # ------------------------------------------------------------------
-        # Idempotency guard — exit immediately if agent.response already exists
-        # for this job_id. Prevents duplicate model calls and duplicate events
-        # on Celery retry or at-least-once redelivery from Redis.
+        # Both idempotency guards, before anything is read or spent: the READ on
+        # job_events for a turn that already answered, and the advisory-lock
+        # claim for one that is answering right now on another worker (#85).
+        # `answered` is what to hand back instead of running; the claim is held
+        # until `_release_turn`.
         # ------------------------------------------------------------------
-        existing = db.execute(
-            sa_text(
-                "SELECT 1 FROM job_events"
-                " WHERE job_id = :jid AND event_type = 'agent.response' LIMIT 1"
-            ),
-            {"jid": job_id},
-        ).fetchone()
-        if existing:
-            log.info("run_agent_turn.idempotent_skip", job_id=job_id)
-            return {"status": "already_complete", "job_id": job_id}
+        claim, answered = _claimed_turn(db, job_id)
+        if answered is not None:
+            return answered
 
-        # ------------------------------------------------------------------
-        # Fetch agent from control DB — required for soul fields, retrieval
-        # strategy, and the encrypted neon_connection_string.
-        # ------------------------------------------------------------------
-        agent = db.get(Agent, agent_id)
-        if agent is None:
-            log.error(
-                "run_agent_turn.agent_not_found",
-                job_id=job_id,
-                agent_id=agent_id,
-            )
-            return {}
-
-        # ------------------------------------------------------------------
-        # Fetch job from control DB — required to update status on completion.
-        # ------------------------------------------------------------------
-        job = db.get(Job, job_id)
-        if job is None:
-            log.error("run_agent_turn.job_not_found", job_id=job_id)
-            return {}
-
-        # ------------------------------------------------------------------
-        # Decrypt connection string at runtime — NEVER in task args (CTL-08).
-        # conn_str is intentionally not logged.
-        # ------------------------------------------------------------------
-        conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
-
-        # PROD-05: open ONE pooled tenant-DB connection for all per-turn read and
-        # write helpers (_create_conversation_row, _validate_conversation_owner,
-        # _read_turn_history, _persist_messages).  Reduces connection churn
-        # from 4 opens/closes per turn to 1.  Uses the pooled endpoint
-        # (agent.neon_connection_string) — PgBouncer transaction-mode
-        # compatible: no named prepared statements, no SET session vars.
-        #
-        # The connect is INSIDE the try. It used to sit outside it, and a
-        # suspended endpoint is the NORMAL state of a tenant DB idle for ~5
-        # minutes — so the first message of every conversation landed on a
-        # psycopg2.OperationalError that escaped this task's own except entirely:
-        # no retry, no agent.failed, zero job_events, and a widget waiting on a
-        # job that had already died. Observed on three live jobs, 2026-08-16.
-        # Both are read in the `finally`, which runs even when the connect failed.
+        # Every exit from here on releases the claim, and every failure reaches
+        # the customer, because the `try` starts here rather than three
+        # statements down. See `_release_turn` for what that stretch used to
+        # leak.
         tenant_conn, turn = None, None
         try:
+            # --------------------------------------------------------------
+            # Fetch agent from control DB — required for soul fields, retrieval
+            # strategy, and the encrypted neon_connection_string.
+            # --------------------------------------------------------------
+            agent = db.get(Agent, agent_id)
+            if agent is None:
+                log.error(
+                    "run_agent_turn.agent_not_found",
+                    job_id=job_id,
+                    agent_id=agent_id,
+                )
+                return {}
+
+            # --------------------------------------------------------------
+            # Fetch job from control DB — required to update status on completion.
+            # --------------------------------------------------------------
+            job = db.get(Job, job_id)
+            if job is None:
+                log.error("run_agent_turn.job_not_found", job_id=job_id)
+                return {}
+
+            # --------------------------------------------------------------
+            # Decrypt connection string at runtime — NEVER in task args (CTL-08).
+            # conn_str is intentionally not logged.
+            # --------------------------------------------------------------
+            conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
+
+            # PROD-05: ONE pooled tenant-DB connection for every per-turn read
+            # and write helper, down from four opens and closes. PgBouncer
+            # transaction-mode compatible: no named prepared statements, no SET
+            # session vars. A suspended endpoint is the NORMAL state of a tenant
+            # DB idle for ~5 minutes, so the first message of every conversation
+            # landed here on a psycopg2.OperationalError; it is inside the try
+            # because outside it that escaped the task's own except entirely and
+            # a widget waited on a job that had died. Three live jobs, 2026-08-16.
             tenant_conn = psycopg2.connect(
                 conn_str, connect_timeout=settings.TENANT_DB_CONNECT_TIMEOUT_S
             )
@@ -1372,15 +1516,6 @@ def run_agent_turn(
                     exc=exc, countdown=_retry_countdown(exc, self.request.retries)
                 )
         finally:
-            # Three debts this attempt owes, on the served path, the timeout path and
-            # the retry path alike. THE LEDGER ROWS GO FIRST: writing one opens, commits
-            # and closes a tenant connection, which is why the loop only appended them
-            # and why they are not written on the event loop a customer waits on. Then
-            # the tool ContextVars go back, so an eval's "recorded" cannot reach the next
-            # customer (#98). Then PROD-05's connection, None only if connect failed.
-            if turn is not None:
-                close_turn(turn)
-            if tenant_conn is not None:
-                tenant_conn.close()
+            _release_turn(turn, tenant_conn, claim, job_id)
 
     return {}

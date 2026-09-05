@@ -39,7 +39,11 @@ uv sync --extra dev --extra pipeline                    # restores .venv if it w
 npx tsc --noEmit          # exit 0, zero errors (the reduced-motion known error was fixed 2026-08-16)
 npm run check:no-dusk-tokens      # exit 0
 npm run check:ops-room-wiring     # exit 0  (11/11)
-npm run test:unit                 # 45, browserless
+npm run check:chart-render        # exit 0, ~26s. Compiles TelemetryChart and measures every
+                                  # eval-chart pin, mark and leader head against the chart box in
+                                  # Chromium, 9 fixtures x 4 viewports. The only gate that reads
+                                  # rendered geometry.
+npm run test:unit                 # 64, browserless
 npm run test:e2e                  # 135 tests (NOT 113 — corrected 2026-08-12 by running it).
                                   # First observed result: 7 failed / 128 passed / 35.9 min.
                                   # All 7 are 90s TIMEOUTS on networkidle, not assertion failures,
@@ -215,7 +219,6 @@ Agents:      app/services/tool_loop.py  the owned bounded loop. No agent framewo
              openai SDK direct         judges, the Actor gate, Ragas' LLM, scenario generation
 Models:      gpt-5.6-luna              every row in PURPOSE_ROUTES. One provider, one price book.
                                        A call site never names a model; app/core/model_client routes it.
-                                       Twelve raw purposes still BUILD an Anthropic client: issue #88.
 Ingestion:   Docling (layout-aware), Chonkie ≥1.6.5 (structure-aware)
 Embeddings:  voyageai (embed + rerank), bedrock (default provider), cohere fallback
 Evals:       ragas 0.4.x + custom harness

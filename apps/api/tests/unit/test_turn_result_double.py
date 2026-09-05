@@ -58,6 +58,11 @@ from tests.agent_loop_doubles import STOP_REASONS, canned_turn_result
 JOB_ID = "33333333-3333-3333-3333-333333333333"
 QUESTION = "Did my refund go through?"
 
+
+async def _no_emit(*args, **kwargs) -> None:
+    """The loop's event sink, silenced. A coroutine since #86 made it awaited."""
+    return None
+
 #: Answers the model gives. One the firewall passes through, one it deflects.
 CLEAN_ANSWER = "Yes, it was returned to your original payment method."
 CUSTOMER_ADDRESS = "jane.smith@gmail.example"
@@ -97,7 +102,7 @@ def _real_turn_result(answer: str) -> dict:
         calls=[],
         ledger=lambda call: None,
     )
-    with patch("app.services.agent_loop.emit", lambda *a, **k: None):
+    with patch("app.services.agent_loop.emit_async", new=_no_emit):
         return asyncio.run(
             run_agent_loop(
                 QUESTION,

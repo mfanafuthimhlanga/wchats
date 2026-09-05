@@ -46,10 +46,24 @@ from decimal import Decimal
 import psycopg2
 import pytest
 
-# A key of this test's own, set before any app module is imported. It is what
-# makes the pre-existing agent rows in the local control DB undecryptable here,
-# and it never touches the encrypted columns those rows already hold.
-os.environ["NEON_ENCRYPTION_KEY"] = base64.urlsafe_b64encode(os.urandom(32)).decode()
+# A fresh key when this module is the first thing to ask for one, and otherwise
+# the key the harness already agreed on. setdefault, never assignment (#101).
+#
+# The assignment this replaces ran at COLLECTION time, before any test, and it
+# overwrote a key `settings` had already frozen in this process. Its own process
+# therefore kept the old value and never noticed, while every Celery worker
+# spawned afterwards got the new one through `os.environ.copy()`. The worker then
+# encrypted a connection string the pytest process could not decrypt, and
+# `test_provision_neon_stores_encrypted_connection_string` failed on
+# `InvalidToken` on five CI runs while passing locally whenever it ran alone.
+#
+# Undecryptable pre-existing rows survive the change: the key the harness hands
+# out is 32 random bytes minted per session by tests/integration/conftest.py, and
+# no row in the local control DB was ever written with it. What changes is that
+# one source decides it.
+os.environ.setdefault(
+    "NEON_ENCRYPTION_KEY", base64.urlsafe_b64encode(os.urandom(32)).decode()
+)
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("INTEGRATION_TESTS_ENABLED", "") != "1",

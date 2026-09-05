@@ -9,6 +9,11 @@ jobs:
   e2e-neon:
     name: E2E — real Neon provisioning
     runs-on: ubuntu-latest
+    # The three spend-bearing secrets live on the `wchats / staging` environment,
+    # never at repository level, and GitHub hands an environment's secrets only to
+    # a job that names it. Without this key both jobs read empty strings and the
+    # E2E run dies at Neon with "not authenticated" (#147).
+    environment: "wchats / staging"
     services:
       postgres:
         # pgvector's image, not plain postgres:17-alpine. The tenant migration
@@ -103,6 +108,11 @@ jobs:
   eval-full:
     name: Eval Full — LLM-judged D1/D2/D3/D4/D8
     runs-on: ubuntu-latest
+    # The three spend-bearing secrets live on the `wchats / staging` environment,
+    # never at repository level, and GitHub hands an environment's secrets only to
+    # a job that names it. Without this key both jobs read empty strings and the
+    # E2E run dies at Neon with "not authenticated" (#147).
+    environment: "wchats / staging"
     services:
       postgres:
         # pgvector's image, not plain postgres:17-alpine. The tenant migration
@@ -147,7 +157,13 @@ jobs:
       AGENT_E2E_ENABLED: "1"
       AGENT_ID: ${{ secrets.EVAL_DEMO_AGENT_ID }}
       API_KEY: ${{ secrets.EVAL_DEMO_API_KEY }}
-      AGENT_BASE_URL: http://localhost:8000
+      # Staging, not this job's own container. `capture_responses.py` drives a
+      # provisioned, ingested agent, and the Postgres beside this job was migrated
+      # one minute ago and holds no tenant and no agent, so EVAL_DEMO_AGENT_ID can
+      # never name a row in it. #147 recorded that gap and its comment chose
+      # staging over provisioning an agent inline. Set STAGING_AGENT_BASE_URL on
+      # the `wchats / staging` environment once #57 lands.
+      AGENT_BASE_URL: ${{ vars.STAGING_AGENT_BASE_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -201,31 +217,89 @@ jobs:
         working-directory: apps/api
         run: alembic -c alembic.ini upgrade head
 
-      - name: Start API server
-        working-directory: apps/api
-        run: uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+      # LAST OF THE UNGATED STEPS, immediately before the three that need a
+      # target. Moving it to position two is the obvious optimisation and it is
+      # wrong: every step above it is a check that needs no staging target, and
+      # while staging does not exist they are the only signal a scheduled nightly
+      # still produces. Python, pnpm, Node 22, the Chromium headless shell, two
+      # `pnpm install --frozen-lockfile` runs, the widget build with its
+      # `scripts/check-rendered-notice.mjs` postbuild, and `alembic upgrade head`
+      # against pgvector all run on every nightly today. A resolve step at
+      # position two exits 1 ahead of all of them, so a widget size regression or
+      # a broken migration would stop being visible anywhere until #57 lands.
+      # Failing early saves runner minutes on a job that already fails; it costs
+      # the only checks that job still performs.
+      - name: Resolve the eval target
+        # The three names this job needs to drive an agent. This job's own Postgres
+        # is migrated at job start and holds no tenant and no agent, so there is no
+        # local fallback: absent any of the three the run measures nothing (#147).
+        #
+        # IT FAILS, rather than publishing `ready=0` and letting every downstream
+        # step skip itself. A draft of this step earlier in this same branch did
+        # that, and review caught it before it merged, so no run ever behaved that
+        # way: `main` has no resolve step at all and the last eight scheduled runs
+        # each concluded `failure`, the most recent at "Wait for API to be ready".
+        # A skipped step reports as a success, so the draft would have made the job
+        # conclusion `success` over zero evals, which is the false reading
+        # `scripts/assert_tests_ran.py` forbids one step down and is no better one
+        # job up: a gate over zero observations is unknown, never pass. A red
+        # scheduled nightly is the honest state until STAGING_AGENT_BASE_URL,
+        # EVAL_DEMO_AGENT_ID and EVAL_DEMO_API_KEY exist on the
+        # `wchats / staging` environment.
+        #
+        # BLANK COUNTS AS MISSING, AND THE TRIMMED VALUE IS WHAT TRAVELS ON.
+        # `[ -z "$VAR" ]` is false for "   ", so a variable holding only spaces
+        # reads as present here. A secret pasted with a trailing newline is the
+        # ordinary way that happens. Validating a stripped value and then handing
+        # the raw one onward keeps the whole defect: the wait step curls
+        # "${AGENT_BASE_URL}/health", curl exits 3 on the malformed URL, and the
+        # job dies sixty seconds later on the symptom this step exists to name. So
+        # the value the emptiness test already computed is the value written to
+        # $GITHUB_ENV, and every later step reads that one. All three are written,
+        # because a newline on the API key breaks the capture the same way. A
+        # $GITHUB_ENV write beats the job-level `env:` for every later step, and
+        # `tr -d '[:space:]'` leaves no newline in any value, so none of them can
+        # smuggle a second line into the environment file.
+        run: |
+          trim() { printf '%s' "$1" | tr -d '[:space:]'; }
+          missing=""
+          require() {
+            if [ -z "$(trim "$2")" ]; then
+              missing="$missing $1"
+            fi
+          }
+          require "STAGING_AGENT_BASE_URL(variable)" "$AGENT_BASE_URL"
+          require "EVAL_DEMO_AGENT_ID(secret)" "$AGENT_ID"
+          require "EVAL_DEMO_API_KEY(secret)" "$API_KEY"
+          if [ -n "$missing" ]; then
+            echo "The 'wchats / staging' environment is missing:$missing"
+            echo "This job drives a provisioned, ingested agent on staging (#147). It has no agent of its own to fall back to, so it fails here rather than reporting a green check over zero evals."
+            exit 1
+          fi
+          {
+            echo "AGENT_BASE_URL=$(trim "$AGENT_BASE_URL")"
+            echo "AGENT_ID=$(trim "$AGENT_ID")"
+            echo "API_KEY=$(trim "$API_KEY")"
+          } >> "$GITHUB_ENV"
+          echo "Driving $(trim "$AGENT_BASE_URL")"
 
-      - name: Start Celery worker
-        working-directory: apps/api
-        run: celery -A app.worker.celery_app worker -Q pipeline,runtime --pool=solo --loglevel=warning &
-
-      - name: Wait for API to be ready
+      - name: Wait for the eval target to be ready
         # A loop that runs out and moves on lets the next step fail on a symptom
-        # ("Capture eval responses" against nothing) while the cause, the API
-        # never booting, scrolled past. The step that can name the cause fails.
+        # ("Capture eval responses" against nothing) while the cause, an
+        # unreachable target, scrolled past. The step that can name the cause fails.
         run: |
           ready=0
           for i in $(seq 1 20); do
-            if curl -sf http://localhost:8000/health; then
-              echo "API ready after ${i} attempts"
+            if curl -sf "${AGENT_BASE_URL}/health"; then
+              echo "Target ready after ${i} attempts"
               ready=1
               break
             fi
-            echo "Waiting for API... ($i/20)"
+            echo "Waiting for the eval target... ($i/20)"
             sleep 3
           done
           if [ "$ready" != "1" ]; then
-            echo "The API never answered /health in 60s. Read the 'Start API server' step's output for the boot error."
+            echo "${AGENT_BASE_URL}/health did not answer in 60s, so there is no agent to capture against."
             exit 1
           fi
 
@@ -235,4 +309,10 @@ jobs:
 
       - name: Run full eval suite (LLM-judged D1/D2/D3/D4/D8 + deterministic)
         working-directory: apps/api
-        run: pytest tests/evals/run_evals.py -v --tb=short
+        # -rs so a skip states its reason, and the junit assertion so a run that
+        # asserted nothing cannot report a pass. Run 33150722736 reported success
+        # over "1 skipped, 1 deselected in 0.08s" under a job name claiming five
+        # checks (#102). A gate over zero observations is unknown, never pass.
+        run: |
+          python -m pytest tests/evals/run_evals.py -v -rs --tb=short --junitxml=eval-full.xml
+          python scripts/assert_tests_ran.py eval-full.xml

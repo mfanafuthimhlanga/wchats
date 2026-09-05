@@ -1,9 +1,9 @@
 """
 Scenario services for W Chats M6 eval system.
 
-Generates eval scenarios from tenant knowledge chunks via Claude Haiku (EVL-02)
-and mines production conversations with Gatekeeper/Auditor failures into new
-scenarios (EVL-03). Both write to the tenant DB eval_scenarios table.
+Generates eval scenarios from tenant knowledge chunks through the routed model
+(EVL-02) and mines production conversations with Gatekeeper/Auditor failures into
+new scenarios (EVL-03). Both write to the tenant DB eval_scenarios table.
 """
 
 import json
@@ -13,16 +13,15 @@ import psycopg2
 import structlog
 from sqlalchemy import text
 
-from app.core.model_client import LedgerContext, ledger_recorder
+from app.core.model_client import LedgerContext, ledger_recorder, route_for
 from app.domain.eval_result import DATASET_EXPLORATORY, DATASET_GOLDEN, EVAL_DATASETS
+from app.services.tool_loop import forced_tool_arguments
 
 log = structlog.get_logger(__name__)
 
-HAIKU_MODEL = "claude-haiku-4-5"
-
 
 # WHY ALL FOUR WRITERS BELOW WRITE `exploratory` AND NONE WRITES `golden`.
-# A model chose the question on every path in this module: Haiku generates them,
+# A model chose the question on every path in this module: the generator writes them,
 # the miner lifts them off flagged production traffic, and the provenance path
 # files them from a promoted trace or a contained red-team finding. The golden
 # set is the owner's own assertion, which #19 sizes at ten authored pairs before
@@ -80,44 +79,47 @@ def _scenario_dataset(scenario: dict) -> str:
 # ---------------------------------------------------------------------------
 
 SCENARIO_TOOL = {
-    "name": "submit_scenarios",
-    "description": "Submit generated eval scenarios as structured JSON.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "scenarios": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "question": {"type": "string"},
-                        "reference_answer": {"type": "string"},
-                        "scenario_category": {
-                            "type": "string",
-                            "enum": ["factual", "edge_case", "out_of_scope", "multi_step"],
+    "type": "function",
+    "function": {
+        "name": "submit_scenarios",
+        "description": "Submit generated eval scenarios as structured JSON.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "scenarios": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question": {"type": "string"},
+                            "reference_answer": {"type": "string"},
+                            "scenario_category": {
+                                "type": "string",
+                                "enum": ["factual", "edge_case", "out_of_scope", "multi_step"],
+                            },
                         },
+                        "required": ["question", "reference_answer", "scenario_category"],
                     },
-                    "required": ["question", "reference_answer", "scenario_category"],
-                },
-                "minItems": 3,
-                "maxItems": 10,
-            }
+                    "minItems": 3,
+                    "maxItems": 10,
+                }
+            },
+            "required": ["scenarios"],
         },
-        "required": ["scenarios"],
     },
 }
 
 
 # ---------------------------------------------------------------------------
-# Task 1: Scenario generator (EVL-02) — Claude API direct, Haiku, D-12/D-13
+# Task 1: Scenario generator (EVL-02) — direct API, D-12/D-13
 # ---------------------------------------------------------------------------
 
 
 def generate_scenarios_from_chunks(chunks: list[dict], ledger: LedgerContext, n: int = 5) -> list[dict]:
-    """Generate n eval scenarios from a batch of tenant knowledge chunks using Claude Haiku.
+    """Generate n eval scenarios from a batch of tenant knowledge chunks.
 
-    Uses the direct API (NOT Agent SDK, D-12 LOCKED) with forced tool_choice
-    structured output matching validation_service.py. Generated scenarios are
+    Uses the direct API (NOT Agent SDK, D-12 LOCKED) with a forced tool call for
+    structured output, matching validation_service.py. Generated scenarios are
     tagged source='generated' (D-13 LOCKED), and the client comes from
     `app.core.model_client` (#47) so each call leaves a `model_calls` row.
 
@@ -131,19 +133,22 @@ def generate_scenarios_from_chunks(chunks: list[dict], ledger: LedgerContext, n:
         retrieved_contexts, source='generated' and dataset='exploratory'.
 
     Raises:
-        ValueError: If no tool_use block is returned by the scenario generator.
+        ValueError: If the scenario generator returns no submit_scenarios tool call.
     """
     chunk_text = "\n\n---\n\n".join(f"CHUNK {i + 1}:\n{c['content']}" for i, c in enumerate(chunks[:5]))
-    response = ledger.client("scenario_generation").messages.create(
-        model=HAIKU_MODEL,
-        max_tokens=1024,
-        system=(
-            "You are an evaluation scenario generator. Given business knowledge base content, "
-            "generate realistic customer service questions a user might ask, along with reference "
-            "answers grounded in the provided content. Generate exactly the number requested. "
-            "Call submit_scenarios with your output."
-        ),
+    response = ledger.client("scenario_generation").chat.completions.create(  # type: ignore[call-overload]  # a dict tool schema, not the SDK's TypedDict
+        model=route_for("scenario_generation").model,
+        max_completion_tokens=1024,
         messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are an evaluation scenario generator. Given business knowledge base "
+                    "content, generate realistic customer service questions a user might ask, "
+                    "along with reference answers grounded in the provided content. Generate "
+                    "exactly the number requested. Call submit_scenarios with your output."
+                ),
+            },
             {
                 "role": "user",
                 "content": (
@@ -155,30 +160,26 @@ def generate_scenarios_from_chunks(chunks: list[dict], ledger: LedgerContext, n:
                 ),
             }
         ],
-        tools=[SCENARIO_TOOL],  # type: ignore[call-overload] # anthropic/agent-sdk stubs are narrower than the runtime contract
-        tool_choice={"type": "tool", "name": "submit_scenarios"},
-        # Forced tool_choice 400s on the DeepSeek endpoint unless thinking is off.
-        thinking={"type": "disabled"},
+        tools=[SCENARIO_TOOL],
+        tool_choice={"type": "function", "function": {"name": "submit_scenarios"}},
     )
 
     chunk_contents = [c["content"] for c in chunks[:5]]
 
-    for block in response.content:
-        if block.type == "tool_use" and block.name == "submit_scenarios":
-            raw_scenarios = block.input["scenarios"]
-            return [
-                {
-                    "question": s["question"],
-                    "reference_answer": s["reference_answer"],
-                    "scenario_category": s["scenario_category"],
-                    "retrieved_contexts": chunk_contents,
-                    "source": "generated",
-                    "dataset": DATASET_EXPLORATORY,
-                }
-                for s in raw_scenarios
-            ]
-
-    raise ValueError("No tool_use block returned by scenario generator")
+    arguments = forced_tool_arguments(response, "submit_scenarios")
+    if arguments is None:
+        raise ValueError("The scenario generator returned no submit_scenarios tool call")
+    return [
+        {
+            "question": s["question"],
+            "reference_answer": s["reference_answer"],
+            "scenario_category": s["scenario_category"],
+            "retrieved_contexts": chunk_contents,
+            "source": "generated",
+            "dataset": DATASET_EXPLORATORY,
+        }
+        for s in arguments["scenarios"]
+    ]
 
 
 def store_scenarios(scenarios: list[dict], tenant_conn_str: str) -> int:
@@ -396,7 +397,7 @@ def _fetch_messages_for_conversation(
                 """
                 SELECT role, content FROM messages
                 WHERE conversation_id = %(conv_id)s::uuid
-                ORDER BY created_at ASC
+                ORDER BY seq ASC
                 """,
                 {"conv_id": conversation_id},
             )

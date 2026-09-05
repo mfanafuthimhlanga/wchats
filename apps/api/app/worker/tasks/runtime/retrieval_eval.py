@@ -95,6 +95,7 @@ from app.core.model_client import (
     route_for,
 )
 from app.core.security import fernet_decrypt, require_ciphertext
+from app.domain.eval_result import CONTEXT_PROXY_VERSION
 from app.domain.judge_identity import JUDGE_PROMPT_VERSION, JudgeIdentity
 from app.models.agent import Agent
 from app.worker.celery_app import celery_app
@@ -192,7 +193,7 @@ def _fetch_last_user_message(conn_str: str, conversation_id: str) -> str | None:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT content FROM messages WHERE conversation_id = %s"
-                    " AND role = 'user' ORDER BY created_at DESC LIMIT 1",
+                    " AND role = 'user' ORDER BY seq DESC LIMIT 1",
                     (conversation_id,),
                 )
                 row = cur.fetchone()
@@ -231,17 +232,26 @@ def _update_retrieval_metrics(
     that one gets NULL here rather than the name of a Judge that did no work
     (tenant migration 0020). It is named `identity` rather than `judge_identity`
     so it cannot be read as the module function of that name.
+
+    `context_source` follows the same rule and answers the other half of the
+    question (issue #120, tenant migration 0026). `judge_identity` says which
+    model produced the verdict; this says what shape of text the model was shown,
+    and one column held three of those shapes with nothing to tell them apart.
+    The value is the constant the offline eval record stamps, so the live Judge
+    and the offline one name one shape with one string.
     """
+    context_source = CONTEXT_PROXY_VERSION if faithfulness is not None else None
     conn = psycopg2.connect(conn_str, connect_timeout=5)
     try:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE retrieval_metrics SET citation_coverage = %s, faithfulness = %s,"
-                " judge_identity = %s::jsonb WHERE job_id = %s",
+                " judge_identity = %s::jsonb, context_source = %s WHERE job_id = %s",
                 (
                     citation_coverage,
                     faithfulness,
                     json.dumps(identity) if identity else None,
+                    context_source,
                     job_id,
                 ),
             )

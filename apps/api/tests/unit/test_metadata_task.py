@@ -531,13 +531,22 @@ def _capture_emit(events):
 
 
 def _patch_task_seams(monkeypatch, mock_db, mock_conn, enrich, emit_fn):
-    """Point the task's four outside edges at fakes: control DB, tenant DB, Haiku, events."""
+    """Point the task's four outside edges at fakes: control DB, tenant DB, Haiku, events.
+
+    Two emit seams, not one. The task module holds its own imported `emit`, and
+    app/services/job_failure.py reaches the same function through the events
+    module, so the terminal job.failed arrives on the second seam (#63). Both are
+    pointed at the one capture, so the event lists read as one stream.
+    """
+    import app.services.events as events_module
+
     module = "app.worker.tasks.pipeline.metadata."
     monkeypatch.setattr(module + "get_sync_db", _make_sync_db_context(mock_db))
     monkeypatch.setattr(module + "fernet_decrypt", lambda _: "fake-conn")
     monkeypatch.setattr(module + "psycopg2.connect", lambda _: mock_conn)
     monkeypatch.setattr(module + "enrich_chunks_batch", enrich)
     monkeypatch.setattr(module + "emit", emit_fn)
+    monkeypatch.setattr(events_module, "emit", emit_fn)
 
 
 def _run_task(document_ids=("d1",)):

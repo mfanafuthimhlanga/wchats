@@ -94,7 +94,7 @@ from uuid import uuid4
 import structlog
 from pydantic import ValidationError
 
-from app.domain.tool_result import to_wire
+from app.domain.tool_result import Outcome, to_wire
 from app.domain.transactional_schemas import SKILL_INPUT_MODELS
 from app.services.transactional.audit import write_audit_row
 from app.services.transactional.enforcement import (
@@ -116,11 +116,30 @@ class ResolutionOutcome:
     """Result of execute_approved_confirmation.
 
     outcome:
-        One of "executed", "denied", "invalid", "replay", "in_progress".
+        One of "executed", "denied", "failed", "invalid", "replay",
+        "in_progress".
+
+        "denied" and "failed" are the two an owner has to tell apart. A gate
+        REFUSED the call: the capability envelope, the ceiling, the rate limit,
+        an idempotency mismatch. It ran and BROKE: the provider is unreachable,
+        unconfigured, or its credential will not decrypt. The first is a
+        decision the owner can change; the second is a fault someone has to fix.
+
+        The terminal step reads `result.outcome`, not `result.is_error`, and
+        that is the whole of #73. `is_error` is one bit and a refusal and an
+        outage both set it, so an approved refund that Stripe was down for was
+        reported as "denied" — a word that tells the owner the platform decided
+        against them. `_execute_adapter_and_audit` returns Outcome.ok or
+        Outcome.error and never Outcome.denied, so every "denied" that branch
+        ever produced was a fault wearing a refusal's name. The check is
+        `is not Outcome.ok`, so a widened helper lands on "failed" rather than
+        falling through to "executed".
     reason:
         The raw error string that was written to the tool_calls_audit row
-        (or, for the terminal adapter step, the helper's error text) — None
-        on a successful execution or on a no-op replay/in_progress return.
+        (or, for the terminal adapter step, the helper's error text under an
+        `adapter.error:` prefix, mirroring the `capability.denial:<code>` prefix
+        a refusal carries) — None on a successful execution or on a no-op
+        replay/in_progress return.
     response:
         The shared adapter-and-audit helper's SDK-shaped return dict on a
         successful execution; the stored result on a replay hit; None
@@ -404,16 +423,16 @@ async def execute_approved_confirmation(
         rationale=f"pending_confirmation:{confirmation_id}",
     )
 
-    # The helper returns a ToolResult now (ticket #45), so this reads a verdict
-    # instead of digging `content[0]["text"]` out of a wire dict.
-    if result.is_error:
-        log.warning(
-            "confirmation_resolution.adapter_denied",
+    # The verdict, not `is_error` — see ResolutionOutcome for what that bit cost.
+    if result.outcome is not Outcome.ok:
+        log.error(
+            "confirmation_resolution.adapter_failed",
             agent_id=agent_id,
             skill=skill,
-            outcome="denied",
+            adapter_outcome=result.outcome.value,
+            outcome="failed",
         )
-        return ResolutionOutcome(outcome="denied", reason=result.text)
+        return ResolutionOutcome(outcome="failed", reason=f"adapter.error:{result.text}")
 
     log.info(
         "confirmation_resolution.executed",

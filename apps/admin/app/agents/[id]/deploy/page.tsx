@@ -115,8 +115,11 @@ interface DeploymentReport {
     high_count?: number
   }
   corpus_stats?: {
-    document_count?: number
-    chunk_count?: number
+    // 'measured' when the collector read the tenant DB, 'unavailable' when it
+    // could not. Absent on every report written before #131.
+    signal?: string
+    document_count?: number | null
+    chunk_count?: number | null
   }
   blast_radius?: BlastRadiusSignal
 }
@@ -189,6 +192,9 @@ interface CapabilityEnvelopeList {
 // `executed_at` are a read-time lookup (OD-3) and stay null until a
 // resolved-and-approved row's dispatched task has actually run — the honest
 // "awaiting execution" state this queue is built around, never invented.
+// `execution_outcome` carries three states (#73): `not_executed` when a gate
+// refused the call, which the owner can change by changing a setting, and
+// `failed` when the adapter ran and broke, which someone has to fix.
 interface PendingConfirmationRowData {
   id: string
   skill: string
@@ -197,7 +203,7 @@ interface PendingConfirmationRowData {
   expires_at: string | null
   resolved_at: string | null
   resolution: 'approved' | 'rejected' | 'expired' | null
-  execution_outcome: 'executed' | 'not_executed' | null
+  execution_outcome: 'executed' | 'not_executed' | 'failed' | null
   execution_error: string | null
   executed_at: string | null
 }
@@ -422,6 +428,23 @@ const DENIAL_TRANSLATIONS: Record<string, string> = {
   rate_limit: 'This skill had already reached its rate limit when this request tried to run.',
 }
 
+// The other half of the same table, keyed off the prefix rather than the
+// suffix, because the adapter step's error text is the provider's own message
+// and there is nothing to enumerate. Each sentence says what is known and stops
+// there: a provider that was never connected did not run, and a provider that
+// raised mid-call may or may not have completed on its side, which is why the
+// platform does not retry it on its own (tools.py's in-flight reservation).
+const ADAPTER_FAULT_TRANSLATIONS: [string, string][] = [
+  [
+    'provider.not_configured:',
+    'No provider is connected for this action, so it never ran.',
+  ],
+  [
+    'adapter.error:',
+    'The provider failed. Whether it completed on the provider side is not known, so it was not retried automatically.',
+  ],
+]
+
 // CAP-03/D1: the only three windows the rate-limit unit select ever offers,
 // narrowest first — mirrors enforcement.py's _UNIT_TO_SECS domain exactly so
 // the UI's tightness comparison can never diverge from the server's.
@@ -603,10 +626,22 @@ function denialTranslation(rawCode: string | null): string {
   return DENIAL_TRANSLATIONS[suffix] ?? `This could not run. (${rawCode})`
 }
 
+// The adapter step's own error, in plain language, with the raw string kept
+// visible as evidence in every branch. Same shape as denialTranslation, and
+// separate from it because the two say different things to the owner.
+function faultTranslation(rawCode: string | null): string {
+  if (!rawCode) return 'The provider failed. (No reason was recorded.)'
+  const match = ADAPTER_FAULT_TRANSLATIONS.find(([prefix]) => rawCode.startsWith(prefix))
+  if (!match) return `The provider failed. (${rawCode})`
+  const [prefix, sentence] = match
+  return `${sentence} (${rawCode.slice(prefix.length)})`
+}
+
 // The verdict chip for a queue row, held to the "colour is a verdict" law:
 // `pass` only on a backend-reported executed outcome, `fail` only on a
-// not-executed outcome, every other state neutral. `clientExpired` is the
-// client-side deadline check, ahead of any server-side sweep (OD-2).
+// not-executed outcome, every other state neutral, a provider fault included,
+// because the platform passed no judgement on the action. `clientExpired` is
+// the client-side deadline check, ahead of any server-side sweep (OD-2).
 function confirmationChip(
   row: PendingConfirmationRowData,
   clientExpired: boolean,
@@ -619,6 +654,7 @@ function confirmationChip(
   // resolution === 'approved'
   if (row.execution_outcome === 'executed') return { verdict: 'pass', label: 'Executed', help: null }
   if (row.execution_outcome === 'not_executed') return { verdict: 'fail', label: 'Not executed', help: null }
+  if (row.execution_outcome === 'failed') return { verdict: 'mute', label: 'Provider failed', help: null }
   return { verdict: 'mute', label: 'Approved', help: 'Awaiting execution.' }
 }
 
@@ -1810,6 +1846,12 @@ function PendingConfirmationRow({
           <p className="help mono">{row.execution_error ?? '—'}</p>
         </>
       )}
+      {row.resolution === 'approved' && row.execution_outcome === 'failed' && (
+        <>
+          <p className="help">{faultTranslation(row.execution_error)}</p>
+          <p className="help mono">{row.execution_error ?? '—'}</p>
+        </>
+      )}
       <p className="help mono pcq-timing">
         {`Requested ${formatRelative(row.requested_at)} · ${formatDateTime(row.requested_at)}`}
       </p>
@@ -2454,6 +2496,10 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
   const criticalFindings = report?.red_team_summary?.critical_count ?? 0
   const highFindings = report?.red_team_summary?.high_count ?? 0
   const redTeamBlockedSignal = report?.red_team_summary?.deployment_blocked === true
+  // A checklist whose corpus collector could not reach the tenant DB persists
+  // document_count null (#131). `?? 0` on its own rendered that as an empty
+  // knowledge base with a Fail beside it, which is a reading nobody took.
+  const corpusCounted = typeof report?.corpus_stats?.document_count === 'number'
   const docCount = report?.corpus_stats?.document_count ?? 0
   const chunkCount = report?.corpus_stats?.chunk_count ?? 0
   const soulConfigured = !!(agent?.soul_role && agent?.soul_voice)
@@ -2778,13 +2824,21 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                         <span className="why">Everything the agent is allowed to cite</span>
                       </LedgerRowHead>
                       <td className="val mono">
-                        {report?.corpus_stats
-                          ? `${docCount} document${docCount === 1 ? '' : 's'} · ${chunkCount} chunk${chunkCount === 1 ? '' : 's'}`
-                          : 'not yet run'}
+                        {!report?.corpus_stats
+                          ? 'not yet run'
+                          : corpusCounted
+                            ? `${docCount} document${docCount === 1 ? '' : 's'} · ${chunkCount} chunk${chunkCount === 1 ? '' : 's'}`
+                            : 'could not be read'}
                       </td>
                       <td>
-                        <Chip verdict={!report?.corpus_stats ? 'mute' : docCount > 0 ? 'pass' : 'fail'}>
-                          {!report?.corpus_stats ? 'No data' : docCount > 0 ? 'Pass' : 'Fail'}
+                        <Chip verdict={!corpusCounted ? 'mute' : docCount > 0 ? 'pass' : 'fail'}>
+                          {!report?.corpus_stats
+                            ? 'No data'
+                            : !corpusCounted
+                              ? 'Not read'
+                              : docCount > 0
+                                ? 'Pass'
+                                : 'Fail'}
                         </Chip>
                       </td>
                     </tr>

@@ -14,6 +14,9 @@ Design decisions:
       rows exist in the window, or when citation_coverage/faithfulness are still
       entirely NULL (they are only populated by the sampled 21-04 faithfulness task) —
       never fabricates a metric (DOMAIN-NOTES §6, honest-empty-state discipline).
+    - The faithfulness average covers one instrument (issue #120): rows scored
+      against one of the two pre-280ff05 context proxies carry no
+      `context_source` and are left out, with a count saying how many.
 """
 
 from __future__ import annotations
@@ -22,6 +25,8 @@ import uuid
 
 import psycopg2
 import structlog
+
+from app.domain.eval_result import CONTEXT_PROXY_VERSION
 
 log = structlog.get_logger(__name__)
 
@@ -119,7 +124,9 @@ _HEALTH_SQL = """
         AVG(carried_never_cited_tokens) AS avg_carried_never_cited_tokens,
         AVG(compaction_ratio) AS avg_compaction_ratio,
         AVG(citation_coverage) AS avg_citation_coverage,
-        AVG(faithfulness) AS avg_faithfulness
+        AVG(faithfulness) FILTER (WHERE context_source = %(context_source)s) AS avg_faithfulness,
+        COUNT(faithfulness) FILTER (WHERE context_source = %(context_source)s) AS faithfulness_sample_count,
+        COUNT(faithfulness) FILTER (WHERE context_source IS DISTINCT FROM %(context_source)s) AS faithfulness_other_instrument_count
     FROM retrieval_metrics
     WHERE created_at >= NOW() - (%(window_days)s || ' days')::interval
 """
@@ -144,6 +151,22 @@ _HEALTH_AVG_KEYS = (
 
 _NOT_TRACKED = "not tracked yet"
 
+# WHY THE FAITHFULNESS AVERAGE IS FILTERED, AND WHY IT IS COUNTED TWICE (#120)
+#
+# The column holds scores from more than one instrument. Averaging a score taken
+# against a pre-280ff05 context proxy with one taken against the retrieved
+# chunks reports an instrument change as a quality change, which is the sentence
+# #84 exists to prevent. So the average covers rows whose context_source names
+# the CURRENT shape, and the two counts say what it covered and what it left
+# out, because a filtered average that does not name what it dropped is a
+# smaller lie than an unfiltered one and is still one.
+#
+# The second count is named for what it counts. `IS DISTINCT FROM` matches a
+# NULL context_source AND a context_source naming a different version, so
+# "unstamped" described one of its two members. A window whose rows were all
+# scored under the previous STAMPED instrument counts every one of them here,
+# and a reader who trusted the old name would have read that as zero.
+
 
 def read_retrieval_health(conn_str: str, window_days: int = 7) -> dict:
     """Aggregate retrieval_metrics over the trailing `window_days` (21-04 read endpoint).
@@ -154,30 +177,42 @@ def read_retrieval_health(conn_str: str, window_days: int = 7) -> dict:
 
     Returns:
         Dict with "sample_count" plus one "avg_*" key per retrieval_metrics
-        numeric column. When sample_count is 0, every "avg_*" value is the
-        string "not tracked yet" rather than a fabricated number. Even with
-        sample_count > 0, "avg_citation_coverage"/"avg_faithfulness" are
-        independently reported as "not tracked yet" until they hold at least
+        numeric column, plus "faithfulness_sample_count" and
+        "faithfulness_other_instrument_count". When sample_count is 0, every "avg_*"
+        value is the string "not tracked yet" rather than a fabricated number.
+        Even with sample_count > 0, "avg_citation_coverage"/"avg_faithfulness"
+        are independently reported as "not tracked yet" until they hold at least
         one non-NULL value (they are only populated by the sampled 21-04
         faithfulness task, not by this write path).
+
+        The faithfulness average covers ONE instrument (issue #120) and the two
+        counts say what it covered and what it left out. See the comment above
+        _NOT_TRACKED for why.
     """
     conn = psycopg2.connect(conn_str, connect_timeout=5)
     try:
         with conn.cursor() as cur:
-            cur.execute(_HEALTH_SQL, {"window_days": window_days})
+            cur.execute(
+                _HEALTH_SQL,
+                {"window_days": window_days, "context_source": CONTEXT_PROXY_VERSION},
+            )
             row = cur.fetchone()
     finally:
         conn.close()
 
     sample_count = row[0] or 0
+    averages = row[1 : 1 + len(_HEALTH_AVG_KEYS)]
+    faithfulness_counts = row[1 + len(_HEALTH_AVG_KEYS) :]
 
     result: dict = {"sample_count": sample_count}
+    result["faithfulness_sample_count"] = faithfulness_counts[0] or 0
+    result["faithfulness_other_instrument_count"] = faithfulness_counts[1] or 0
     if sample_count == 0:
         for key in _HEALTH_AVG_KEYS:
             result[key] = _NOT_TRACKED
         return result
 
-    for key, value in zip(_HEALTH_AVG_KEYS, row[1:]):
+    for key, value in zip(_HEALTH_AVG_KEYS, averages):
         result[key] = float(value) if value is not None else _NOT_TRACKED
 
     return result

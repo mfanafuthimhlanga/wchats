@@ -50,11 +50,10 @@ from __future__ import annotations
 
 import psycopg2
 import structlog
-from sqlalchemy import select
 
 from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt
-from app.models.agent import Agent
+from app.models.agent import Agent, select_beat_fanout_agents
 from app.services import alert_service, bedrock_embedding_service
 from app.worker.celery_app import celery_app
 
@@ -234,14 +233,14 @@ def check_index_staleness(self, agent_id: str) -> dict:  # noqa: ARG001
     name="app.worker.tasks.pipeline.staleness.check_index_staleness_beat",
 )
 def check_index_staleness_beat(self) -> dict:  # noqa: ARG001
-    """Beat-triggered: fan out check_index_staleness per deployed agent.
+    """Beat-triggered: fan out check_index_staleness per deployed, ready agent.
 
     Mirrors app.worker.tasks.runtime.alert.run_alert_check_beat's fan-out
-    pattern exactly (same Agent.is_deployed filter, same dispatch shape).
+    pattern exactly (same select_beat_fanout_agents() call, same dispatch shape).
     """
     with get_sync_db() as db:
         agents = db.execute(
-            select(Agent).where(Agent.is_deployed == True)  # noqa: E712
+            select_beat_fanout_agents()
         ).scalars().all()
     dispatched = 0
     for agent in agents:

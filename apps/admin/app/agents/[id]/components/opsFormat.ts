@@ -193,6 +193,60 @@ export function renderRetrievalAverageCell(
 }
 
 /**
+ * Faithfulness is the one reading whose average covers a SUBSET of the
+ * window (issue #120). `read_retrieval_health` averages only rows whose
+ * `context_source` names the current context shape, and counts the rest
+ * separately, because a score taken against an older proxy and a score taken
+ * against the retrieved chunks are two different measurements and averaging
+ * them reports an instrument change as a quality change.
+ *
+ * So the shared sentinel sentence is wrong for this row. "No queries in this
+ * window yet." is a claim about the window, and a window whose every query
+ * was scored under an earlier instrument has queries in it. This renderer
+ * says which of the two is true.
+ */
+export function renderFaithfulnessCell(
+  value: number | typeof RETRIEVAL_SENTINEL,
+  otherInstrumentCount: number
+): string {
+  if (!isRetrievalSentinel(value)) {
+    return formatRetrievalScore(value)
+  }
+  if (otherInstrumentCount > 0) {
+    return 'Not comparable yet.'
+  }
+  return 'No queries in this window yet.'
+}
+
+/**
+ * The sentence beside the Faithfulness reading, saying what the average
+ * covered and what it left out. Null when the window holds no faithfulness
+ * score at all, because the reading's own cell already says so and a second
+ * "0 and 0" line adds nothing.
+ */
+export function renderFaithfulnessCoverage(
+  sampleCount: number,
+  otherInstrumentCount: number
+): string | null {
+  if (sampleCount === 0 && otherInstrumentCount === 0) {
+    return null
+  }
+  if (sampleCount === 0) {
+    return (
+      `The instrument changed. All ${otherInstrumentCount} scored in this window ` +
+      'were scored under an earlier one, so there is nothing to compare them to yet.'
+    )
+  }
+  if (otherInstrumentCount === 0) {
+    return `${sampleCount} scored under the current instrument.`
+  }
+  return (
+    `${sampleCount} scored under the current instrument, ` +
+    `${otherInstrumentCount} under an earlier one.`
+  )
+}
+
+/**
  * The staleness-failure case: a numeric `index_staleness` field (today,
  * `stale_count`) that may carry METRICS_SENTINEL when the scan itself
  * failed (`staleness.py:123-126,141-144` — a query exception, not "zero

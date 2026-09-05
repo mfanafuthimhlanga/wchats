@@ -39,9 +39,10 @@ import structlog
 from pydantic import BaseModel, ConfigDict
 
 from app.core.config import settings
-from app.core.model_client import LedgerContext
+from app.core.model_client import LedgerContext, route_for
 from app.domain.retrieved_context import RetrievedChunk, RetrievedContext
 from app.services.embedding_service import _get_vo
+from app.services.tool_loop import first_choice
 
 log = structlog.get_logger(__name__)
 
@@ -455,12 +456,13 @@ def rrf_fuse(
 
 
 def _expand_query(query_text: str, ledger: LedgerContext) -> list[str]:
-    """Generate 2 alternative phrasings of the query using Claude Haiku.
+    """Generate 2 alternative phrasings of the query through the routed model.
 
     The lazy `import anthropic` this used to open with is gone. The client comes
     from `app.core.model_client` (ticket #47), which the module already imports,
     so an expansion leaves a `model_calls` row under the `query_expansion`
-    purpose instead of spending unrecorded.
+    purpose instead of spending unrecorded. The model comes off that purpose's
+    route, so this function names none (issue #76).
 
     Args:
         query_text: The raw user query string.
@@ -469,9 +471,9 @@ def _expand_query(query_text: str, ledger: LedgerContext) -> list[str]:
     Returns:
         List of up to 3 queries: [original] + up to 2 generated variants.
     """
-    msg = ledger.client("query_expansion").messages.create(
-        model="claude-haiku-4-5",
-        max_tokens=200,
+    completion = ledger.client("query_expansion").chat.completions.create(
+        model=route_for("query_expansion").model,
+        max_completion_tokens=200,
         messages=[
             {
                 "role": "user",
@@ -483,10 +485,10 @@ def _expand_query(query_text: str, ledger: LedgerContext) -> list[str]:
             }
         ],
     )
-    # msg.content[0] is a union of block types and only TextBlock carries .text.
-    # getattr keeps a non-text first block to zero variants instead of AttributeError.
-    first_block = msg.content[0]
-    raw_variants = getattr(first_block, "text", "") or ""
+    # A reply that carried no choices, or a choice whose content is null, expands
+    # to zero variants and the original query still runs.
+    choice = first_choice(completion)
+    raw_variants = "" if choice is None else (choice.message.content or "")
     variants = [line.strip() for line in raw_variants.strip().split("\n") if line.strip()]
     return [query_text] + variants[:2]
 

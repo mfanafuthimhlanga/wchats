@@ -340,9 +340,11 @@ class Settings(BaseSettings):
     # ceiling, so the report's security half was routinely decided on a job that
     # never finished.
     #
-    # It stays under the checklist's own 60-minute idempotency window. Past that
-    # a second trigger would find no 'running' row while the first was still
-    # waiting and put two checklists on one agent.
+    # It no longer has to stay under a 60-minute idempotency window, because
+    # there is not one: #129 keyed the checklist's guard on a live chain's
+    # heartbeat instead of a row's age, and deployment._stale_after_s derives how
+    # long a chain may go quiet from this ceiling and the two job bounds. Raising
+    # this raises that with it.
     #
     # A half that does not reach terminal inside this still reads as an ABSENT
     # record and blocks. The ceiling bounds how long the platform is willing to
@@ -362,6 +364,20 @@ class Settings(BaseSettings):
     DIGEST_ENABLED: bool = True
 
     MAX_UPLOAD_SIZE_MB: int = 50
+
+    # Parse a bundled one-page PDF once, when the pipeline worker reports ready
+    # (#24). Docling's DocLayNet and TableFormer models load on the FIRST
+    # conversion, not when the converter is built, and that load was measured at
+    # 3m43s before a 500-byte file produced its first detection. Somebody pays
+    # it either way; the choice is the worker at boot, where nobody is waiting
+    # and the deploy log records the number, or whichever upload happens to
+    # arrive first after a deploy, where the owner watches `parsing.started`
+    # with no way to tell a model load from a hung worker.
+    #
+    # True everywhere a pipeline worker runs for real. tests/conftest.py sets it
+    # false, because a test process that touched this would load two gigabytes
+    # of model weights to assert on a log line.
+    DOCLING_WARMUP_ON_BOOT: bool = True
 
     # P13-02: Bedrock embedding provider seam (D-14 env-selectable; "bedrock" | "voyage")
     # EMBEDDING_PROVIDER selects the embedding backend at startup:
@@ -402,6 +418,80 @@ class Settings(BaseSettings):
     # than serving it quietly. Everywhere else it is the local-dev seam
     # (MinIO) it always was.
     S3_ENDPOINT_URL: str | None = None
+
+    # The ONE object-store host a production process may write customer
+    # documents to (#133), as a bare hostname:
+    #   S3_EXPECTED_ENDPOINT_HOST=8f2c1d....r2.cloudflarestorage.com
+    #
+    # S3_ENDPOINT_URL above bounds the PROVIDER. Every R2 tenant on earth
+    # carries `.r2.cloudflarestorage.com` and every B2 tenant carries
+    # `.backblazeb2.com`, so the suffix list admits any other customer's
+    # account as readily as ours: a mistyped or hostile endpoint sends every
+    # uploaded document into a bucket somebody else holds the keys to, with
+    # the guard's blessing. This field is the account bound, and
+    # storage_service._require_production_endpoint compares the parsed
+    # hostname against it for equality.
+    #
+    # Empty is the local-development value, where S3_ENDPOINT_URL points at
+    # MinIO and no owner account exists. In production empty refuses to boot,
+    # because a process that was never told which account is ours must not
+    # reach the point where it can write a document to one.
+    #
+    # Under ENVIRONMENT=staging no host check applies at all, in this validator
+    # or in storage_service, and railway_staging_wizard.sh sets `production` on
+    # Railway's staging environment for exactly that reason: the staging deploy
+    # is where these guards are meant to be armed and observed.
+    S3_EXPECTED_ENDPOINT_HOST: str = ""
+
+    @field_validator("S3_EXPECTED_ENDPOINT_HOST")
+    @classmethod
+    def _expected_endpoint_host_is_a_bare_host(
+        cls, value: str, info: ValidationInfo
+    ) -> str:
+        """Normalise the host, and require one in production.
+
+        The operator reaches this variable with the endpoint URL already in the
+        clipboard, so a pasted URL is the shape to expect and the one to refuse
+        by name. A URL would never equal a parsed hostname, and the resulting
+        failure would name S3_ENDPOINT_URL on every upload while the fault sat
+        in this field.
+
+        A port and an embedded space are that same failure in shapes the scheme
+        and path checks let through: `_require_production_endpoint` compares
+        against `urlsplit(...).hostname`, which carries neither, so
+        `<id>.r2.cloudflarestorage.com:443` booted green and then refused every
+        upload. Boot is where the operator is still reading the deploy log.
+        """
+        host = value.strip().lower()
+        if "://" in host or "/" in host or "@" in host:
+            raise ValueError(
+                "S3_EXPECTED_ENDPOINT_HOST is a bare hostname, not a URL. Give "
+                "the host on its own, as in "
+                "'8f2c1d.r2.cloudflarestorage.com', with no scheme, no path "
+                "and no credentials."
+            )
+        if ":" in host:
+            raise ValueError(
+                "S3_EXPECTED_ENDPOINT_HOST carries a port. The endpoint check "
+                "compares it against the parsed hostname, which never has one, "
+                "so this value would refuse every upload. Give the host alone, "
+                "as in '8f2c1d.r2.cloudflarestorage.com'."
+            )
+        if any(character.isspace() for character in host):
+            raise ValueError(
+                "S3_EXPECTED_ENDPOINT_HOST contains whitespace inside the host. "
+                "A hostname has none, so this value would refuse every upload. "
+                "Give the host alone, as in '8f2c1d.r2.cloudflarestorage.com'."
+            )
+        if not host and info.data.get("ENVIRONMENT") == "production":
+            raise ValueError(
+                "S3_EXPECTED_ENDPOINT_HOST is unset while ENVIRONMENT=production. "
+                "It names the one object-store host this deployment may write "
+                "customer documents to. Without it the endpoint check bounds the "
+                "provider and not the account, so any R2 or B2 bucket would pass. "
+                "Set it to the host inside S3_ENDPOINT_URL."
+            )
+        return host
 
     # The owned loop's per-turn USD ceiling (#48). Between model calls
     # `agent_loop._over_budget` prices this turn's `model_calls` rows against the

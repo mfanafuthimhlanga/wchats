@@ -109,12 +109,11 @@ import uuid
 
 import psycopg2
 import structlog
-from sqlalchemy import select
 
 from app.core.database import get_sync_db
 from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.security import fernet_decrypt
-from app.models.agent import Agent
+from app.models.agent import Agent, select_beat_fanout_agents
 from app.services.eval_service import (
     AGENT_INVOCATION_CONCURRENCY,
     AGENT_INVOCATION_MAX_CALLS_PER_RUN,
@@ -219,6 +218,18 @@ def _agent_turn_timeout_s() -> int:
     return AGENT_TURN_TIMEOUT_S
 
 
+def eval_run_bound_s() -> float:
+    """The wall clock one eval run can spend: every scenario, one turn budget each.
+
+    P2 made a run invoke the customer agent once per scenario, so the worst case
+    is the invocation ceiling multiplied by agent.py's per-turn bound. Two callers
+    read it and both would drift if either wrote the product out: the idempotency
+    window below, and the deployment checklist's stale threshold, which has to
+    outlast the run it queues its own continuations behind.
+    """
+    return AGENT_INVOCATION_MAX_CALLS_PER_RUN * _agent_turn_timeout_s()
+
+
 def _failure_of(exc: BaseException) -> tuple[str, str]:
     """One failed turn's class and what this build says about it (#25). Pure.
 
@@ -268,8 +279,8 @@ def _failure_of(exc: BaseException) -> tuple[str, str]:
 class _EvalEventSink:
     """The db/redis double `run_agent_loop` emits SSE events through.
 
-    `run_agent_loop` calls `emit(job_id, "agent.tool_call", …, db, redis)` for
-    every tool use it observes. On the chat path those rows are the durable
+    `run_agent_loop` calls `emit_async(job_id, "agent.tool_call", …, db, redis)`
+    for every tool use it observes. On the chat path those rows are the durable
     replay log a late-joining widget reads. On the eval path there is no widget,
     no SSE subscriber and — this is the part that matters — NO `jobs` ROW: the
     job_id is synthesised per scenario. Writing sixty scenarios' worth of
@@ -279,8 +290,10 @@ class _EvalEventSink:
     table over.
 
     So the events are dropped, deliberately and visibly, rather than persisted
-    to a place nothing will ever read them from. `emit` is unchanged: it still
-    publishes and still commits, into this.
+    to a place nothing will ever read them from. `emit_async` is unchanged: it
+    still publishes and still commits, into this. Since #86 the `add`/`commit`
+    half runs on a worker thread, which costs this double nothing — both methods
+    return immediately and the loop's tool calls are sequential awaits.
 
     This is the SSE/persistence divergence the plan named as inherent to
     approach (b) — "Persistence and SSE differ by design" — and it is confined
@@ -685,14 +698,12 @@ def _invoke_agent_for_scenarios(
     name="app.worker.tasks.runtime.eval.run_eval_suite_beat",
 )
 def run_eval_suite_beat(self) -> dict:
-    """Beat-triggered dispatcher: one run_eval_suite per DEPLOYED agent.
+    """Beat-triggered dispatcher: one run_eval_suite per deployed, ready agent.
 
-    Queries the control DB for agents with is_deployed=True and fans out one
-    run_eval_suite task per agent, the same selection every other per-agent
-    fan-out makes (red team, digest, alerts, index staleness). It selected status='ready' until #32: a ready
-    agent nobody has deployed was evaluated nightly, spending eval-run money on
-    agents no customer can reach. Schedules arm per agent AT DEPLOY (decision
-    #6): is_deployed has exactly one writer, POST /approve-deployment.
+    select_beat_fanout_agents() carries the selection and why each half of it is
+    there; every other per-agent fan-out calls the same helper (red team, digest,
+    alerts, index staleness). Schedules arm per agent AT DEPLOY (decision #6):
+    is_deployed has exactly one writer, POST /approve-deployment.
     No conn_str is passed — the per-agent task fetches and decrypts at runtime
     (CTL-08).
 
@@ -704,7 +715,7 @@ def run_eval_suite_beat(self) -> dict:
     """
     with get_sync_db() as db:
         agents = db.execute(
-            select(Agent).where(Agent.is_deployed == True)  # noqa: E712
+            select_beat_fanout_agents()
         ).scalars().all()
 
     dispatched = 0
@@ -904,10 +915,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
     # running: two live agents, two sets of turns, two eval_runs rows. Derived
     # from the same two constants the run stamps on itself rather than guessed
     # beside them.
-    idempotency_window_s = (
-        AGENT_INVOCATION_MAX_CALLS_PER_RUN * _agent_turn_timeout_s()
-        + EVAL_RUN_IDEMPOTENCY_SLACK_S
-    )
+    idempotency_window_s = eval_run_bound_s() + EVAL_RUN_IDEMPOTENCY_SLACK_S
     try:
         _check_conn = psycopg2.connect(conn_str, connect_timeout=5)
         try:

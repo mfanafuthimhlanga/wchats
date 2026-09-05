@@ -30,10 +30,11 @@ None guard on job query:
 Connection probe (RESEARCH.md Pitfall 3):
     Neon reports operations "finished" before the compute endpoint is query-ready.
     wait_for_neon_ready() probes the direct URI with SELECT 1 before Alembic runs.
-    Probe exhaustion → retriable (self.retry with exponential backoff).
+    Probe exhaustion → retriable (retry_or_fail_the_job with exponential backoff).
 
 Failure modes (prd-M1.md §7.2):
-    Connection failure → retry 3x exponential backoff (via wait_for_neon_ready → RuntimeError)
+    Connection failure → retry 3x exponential backoff (via wait_for_neon_ready → RuntimeError),
+                         then the same ending as a migration error (#63)
     Migration error   → fatal: sets agent.status="failed", job.status="failed", emits job.failed
 
 Event emission order:
@@ -45,7 +46,6 @@ Threat mitigations:
     T-03-01/02: Connection string never appears in log calls, task args, or return values.
 """
 
-import ssl
 from datetime import datetime, timezone
 
 import redis as redis_lib
@@ -53,19 +53,21 @@ import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.models.job import Job
 from app.services.events import emit
+from app.services.job_failure import retry_or_fail_the_job
 from app.services.migrations import get_current_alembic_revision, run_tenant_migrations
 from app.services.neon import wait_for_neon_ready
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
 
-# Module-level sync Redis client — strip query params; pass ssl_cert_reqs as constant.
+# Module-level sync Redis client. Strip the query string, then redis_ssl_kwargs decides TLS.
 _url_clean = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
-_ssl_opts: dict = {"ssl_cert_reqs": ssl.CERT_NONE} if _url_clean.startswith("rediss://") else {}
+_ssl_opts: dict = redis_ssl_kwargs(_url_clean)
 _redis = redis_lib.from_url(_url_clean, **_ssl_opts)
 
 
@@ -143,7 +145,7 @@ def apply_migrations(self, result: dict) -> None:
                 agent_id=agent_id,
                 attempt=self.request.retries,
             )
-            raise self.retry(exc=exc, countdown=2**self.request.retries)
+            retry_or_fail_the_job(self, exc, job.id, db, _redis, 2**self.request.retries, agent)
 
         # ------------------------------------------------------------------
         # Run Alembic migrations

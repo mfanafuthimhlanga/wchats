@@ -171,7 +171,16 @@ MUTATING_SKILLS = {
 #: ContextVars the seam published for it (#98). It is in `agent_loop.py` beside
 #: the seam rather than in the task module, which is what keeps the teardown one
 #: object away from the assembly instead of spelled out in each caller.
-_TURN_SINKS = {"run_agent_turn": {"run_agent_loop", "close_turn"}}
+#: `_release_turn` is the third. It is the one place that pays every debt a
+#: claimed turn owes, on the served path, the timeout path and the retry path
+#: alike, and closing the turn is one of those debts. It lives in `agent.py`, so
+#: naming it here would be exactly the `_tighten_turn(turn)` hole above if it
+#: were taken on trust: the test below holds every sink DEFINED IN THIS MODULE to
+#: the same rule it holds the caller to, so a sink cannot launder what the caller
+#: may not.
+_TURN_SINKS = {
+    "run_agent_turn": {"run_agent_loop", "close_turn", "_release_turn"}
+}
 
 #: Dynamic dispatch defeats every syntax-tree guard in this file by construction:
 #: `getattr(agent_loop, "AgentTurn")(...)` is a Call whose func is itself a Call,
@@ -486,7 +495,30 @@ def test_the_turn_path_never_mutates_or_launders_the_seam_s_turn(fn_name):
         "way _turn_roots must be taught the new shape before this test means "
         "anything."
     )
-    offences = _turn_offences(fn, roots, _TURN_SINKS[fn_name], aliases)
+    sinks = _TURN_SINKS[fn_name]
+    offences = _turn_offences(fn, roots, sinks, aliases)
+
+    # A sink that lives in this module is checked with the same rule, because
+    # otherwise naming one is how the object gets laundered: `_release_turn` is
+    # a plain function in `agent.py` and nothing but this loop stops it growing
+    # a `turn.max_model_calls = 3`. A sink imported from elsewhere is out of
+    # this file's reach and is named here deliberately.
+    module_functions = _top_level_functions(_AGENT_PY)
+    for sink in sorted(sinks & set(module_functions)):
+        sink_roots = _turn_roots(module_functions[sink], aliases)
+        if not sink_roots:
+            offences.append(
+                f"{sink} is named a sink but binds no name to the turn object, "
+                "so checking it would be vacuous"
+            )
+            continue
+        offences += [
+            f"{sink}: {offence}"
+            for offence in _turn_offences(
+                module_functions[sink], sink_roots, sinks, aliases
+            )
+        ]
+
     assert offences == [], (
         f"{fn_name} changes or leaks the turn object the seam built: "
         f"{offences}. The turn the customer is served must be exactly what the "

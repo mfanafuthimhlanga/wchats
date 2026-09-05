@@ -37,17 +37,18 @@ acks_late=True + idempotency: both are always required (CLAUDE.md rule 5).
 from __future__ import annotations
 
 import json
-import ssl
 
 import redis as redis_lib
 import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import fernet_decrypt
 from app.domain.ingestion_job import IngestionJob
 from app.models.agent import Agent
 from app.services.events import emit
+from app.services.job_failure import retry_or_fail_the_job
 from app.services.retrieval_service import RetrievalStrategy
 from app.services.strategy_service import _fetch_corpus_signals_sync, run_strategist
 from app.worker.celery_app import celery_app
@@ -55,9 +56,9 @@ from app.worker.tasks.pipeline.chain_edge import job_in_job_out
 
 log = structlog.get_logger(__name__)
 
-# Module-level sync Redis client — strip query params; pass ssl_cert_reqs as constant.
+# Module-level sync Redis client. Strip the query string, then redis_ssl_kwargs decides TLS.
 _url_clean = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
-_ssl_opts: dict = {"ssl_cert_reqs": ssl.CERT_NONE} if _url_clean.startswith("rediss://") else {}
+_ssl_opts: dict = redis_ssl_kwargs(_url_clean)
 _redis = redis_lib.from_url(_url_clean, **_ssl_opts)
 
 
@@ -136,9 +137,8 @@ def synthesize_retrieval_strategy(self, job: IngestionJob) -> IngestionJob:
             agent_id=agent_id,
             error=str(exc),
         )
-        if self.request.retries >= self.max_retries:
-            raise
-        raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+        with get_sync_db() as failure_db:
+            retry_or_fail_the_job(self, exc, job_id, failure_db, _redis, 2 ** self.request.retries)
 
     # ------------------------------------------------------------------
     # Step 3 — Collect corpus signals from tenant DB (psycopg2 sync)
@@ -151,9 +151,8 @@ def synthesize_retrieval_strategy(self, job: IngestionJob) -> IngestionJob:
             agent_id=agent_id,
             error=str(exc),
         )
-        if self.request.retries >= self.max_retries:
-            raise
-        raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+        with get_sync_db() as failure_db:
+            retry_or_fail_the_job(self, exc, job_id, failure_db, _redis, 2 ** self.request.retries)
 
     signals_json = json.dumps(signals)
 
@@ -206,9 +205,8 @@ def synthesize_retrieval_strategy(self, job: IngestionJob) -> IngestionJob:
             agent_id=agent_id,
             error=str(exc),
         )
-        if self.request.retries >= self.max_retries:
-            raise
-        raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+        with get_sync_db() as failure_db:
+            retry_or_fail_the_job(self, exc, job_id, failure_db, _redis, 2 ** self.request.retries)
 
     # ------------------------------------------------------------------
     # Step 7 — Log completion and return chain pass-through

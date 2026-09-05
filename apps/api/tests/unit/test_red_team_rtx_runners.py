@@ -6,21 +6,18 @@ A new module, not an extension of tests/unit/test_red_team_service.py — that
 file is modified by plan 18-09 in a later wave, and two plans must not contend
 for one file.
 
-Every boundary mocked: no Postgres, no Redis, no live Anthropic API call, no
-SDK subprocess.
+Every boundary mocked: no Postgres, no Redis, no model call.
 
 Patch targets — note the ASYMMETRY versus the M7 runner tests:
     - app.services.red_team_probe.invoke_probe_tool / red_team_mode — the two
       deterministic RTX runners (value_bound_evasion, identity_bypass) import
-      these LAZILY (inside the function body, not at module level) to avoid a
-      circular import with red_team_probe.py's own module-level import of
-      SONNET_MODEL from red_team_service.py. A lazy `from X import Y` inside a
-      function re-resolves Y from module X's namespace at CALL time, so
-      patching the attribute on X (app.services.red_team_probe) — not on
-      red_team_service — is what actually intercepts the call.
-    - app.services.red_team_service.classify_severity / ClaudeSDKClient /
-      ClaudeAgentOptions — these ARE module-level names in red_team_service.py
-      itself, so they patch at the usual red_team_service.X location.
+      these LAZILY, inside the function body rather than at module level. A lazy
+      `from X import Y` inside a function re-resolves Y from module X's namespace
+      at CALL time, so patching the attribute on X (app.services.red_team_probe)
+      — not on red_team_service — is what actually intercepts the call.
+    - app.services.red_team_service.classify_severity and run_tool_loop — these
+      ARE module-level names in red_team_service.py itself, so they patch at the
+      usual red_team_service.X location.
     - app.worker.tasks.runtime.red_team.{_build_probe_fn,
       _build_transactional_probe_fn, build_tool_server, get_sync_db,
       fernet_decrypt, psycopg2.connect} plus all seven runner names — for the

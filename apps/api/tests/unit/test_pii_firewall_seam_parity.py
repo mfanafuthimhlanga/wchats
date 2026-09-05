@@ -59,6 +59,13 @@ from app.worker.tasks.runtime.agent import run_agent_turn
 
 RUN_ID = "55555555-5555-5555-5555-555555555555"
 JOB_ID = "33333333-3333-3333-3333-333333333333"
+
+
+async def _no_emit(*args, **kwargs) -> None:
+    """The loop's event sink, silenced. A coroutine since #86 made it awaited."""
+    return None
+
+
 PRODUCTION = "postgresql://production/tenant"
 QUESTION = "Did my refund go through?"
 
@@ -165,7 +172,7 @@ def _turn_saying(answer: str) -> AgentTurn:
 
 def _live_response(answer: str) -> dict:
     """`run_agent_loop` as `run_agent_turn` drives it. Its text is the served text."""
-    with patch("app.services.agent_loop.emit", lambda *a, **k: None):
+    with patch("app.services.agent_loop.emit_async", new=_no_emit):
         return asyncio.run(
             run_agent_loop(
                 QUESTION,
@@ -205,7 +212,7 @@ def _eval_invocation(answer: str) -> tuple[list[dict], dict, list[dict]]:
 
     with (
         patch.object(eval_mod, "get_sync_db", lambda: ctx),
-        patch("app.services.agent_loop.emit", lambda *a, **k: None),
+        patch("app.services.agent_loop.emit_async", new=_no_emit),
         patch(
             "app.services.agent_loop.build_agent_turn",
             return_value=_turn_saying(answer),
@@ -362,7 +369,7 @@ def _served_turn(answer: str) -> dict:
         patch(task + "_persist_messages", side_effect=_record_persist),
         patch(task + "build_agent_turn", side_effect=lambda **_kw: _turn_saying(answer)),
         patch(task + "emit", side_effect=_record_emit),
-        patch("app.services.agent_loop.emit", lambda *a, **k: None),
+        patch("app.services.agent_loop.emit_async", new=_no_emit),
         capture_logs() as logs,
     ):
         run_agent_turn.run(

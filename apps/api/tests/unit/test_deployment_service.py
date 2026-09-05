@@ -20,7 +20,12 @@ Mock strategy:
     - the orchestrator's client is a scripted stand-in, injected by patching
       app.services.deployment_service.make_async_client. The loop itself runs.
     - psycopg2.connect patched at app.services.deployment_service.psycopg2.connect
-    - No live provider or DB calls in any test
+    - No live provider call in any test.
+    - One class reaches a DATABASE on purpose:
+      TestVerifiedQaStatsAgainstTheProbeCluster runs the verified_qa aggregate
+      against the local wchats_tenant_probe cluster and skips when nothing is
+      listening. A mocked cursor never parses the SQL string, so with a mock
+      alone the collector's own statement is unreachable by any assertion here.
 """
 
 import base64
@@ -101,6 +106,7 @@ from app.services.deployment_service import (
     _fetch_blast_radius_sync,
     _fetch_eval_summary_sync,
     _fetch_red_team_summary_sync,
+    _fetch_verified_qa_stats_sync,
     _resolve_blast_radius_thresholds,
     apply_signal_evidence_gate,
     derive_blast_radius_warnings,
@@ -621,9 +627,8 @@ class TestRunOrchestrator:
     def test_the_model_and_the_persona_come_from_one_place_each(self):
         """The model is the routing table's, the prompt is the module's.
 
-        `SONNET_MODEL = "claude-sonnet-4-6"` was this module's own until #49, and
-        the credential it needed was revoked on 2026-08-26. A model named here
-        again would be a second answer to a question the table already answers.
+        A model named in `deployment_service` would be a second answer to a
+        question `PURPOSE_ROUTES` already answers, and the two would drift.
         """
         client = _FakeAsyncClient(_reply_calling(SUBMIT_REPORT_TOOL_NAME, _A_REPORT))
 
@@ -1768,6 +1773,26 @@ class TestEvidenceGate:
         )
         assert recommendation == "block"
         assert any(w.warning_id == "red_team_signal_unavailable" for w in warnings)
+
+    def test_a_summary_with_no_signal_at_all_reads_as_unreadable(self):
+        """The absent key, not the unavailable value.
+
+        `_red_team_evidence_warnings` reads the signal off the summary dict, so
+        a summary that carries no `signal` key hands the warning table None. It
+        must land on the unreadable warning and block, exactly as a signal the
+        table does not know does. Nothing pinned this branch, and it is the one
+        a type narrowing could quietly change.
+        """
+        summary = _measured_red_team()
+        del summary["signal"]
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", _measured_eval(), summary
+        )
+        assert recommendation == "block"
+        assert any(w.warning_id == "red_team_signal_unavailable" for w in warnings), (
+            f"a summary with no signal did not read as unreadable: "
+            f"{[w.warning_id for w in warnings]}"
+        )
 
     def test_a_run_that_recorded_incomplete_coverage_refuses_to_ship(self):
         """P4 review. This used to warn and ship, and the warning could not fire.
@@ -3148,6 +3173,50 @@ class TestTheCeilingExpirySubstitutes:
         for warning in warnings:
             assert "again" in warning.message.lower()
 
+    def test_a_refused_dispatch_is_not_described_as_a_check_still_running(self):
+        """#130's other half. The detail branched here and the warning did not.
+
+        The owner reads the warning, never `signal_detail`. Telling them a check
+        the broker refused "keeps running on its own" sends them away to wait for
+        a job nothing is working on.
+        """
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship",
+            {
+                **eval_summary_did_not_finish(0.0, dispatched=False),
+                "eval_dispatched": False,
+            },
+            {
+                **red_team_summary_did_not_finish(0.0, dispatched=False),
+                "red_team_dispatched": False,
+            },
+        )
+
+        assert recommendation == "block"
+        by_id = {w.warning_id: w.message for w in warnings}
+        assert sorted(by_id) == ["eval_did_not_finish", "red_team_did_not_finish"]
+        for warning_id, message in by_id.items():
+            assert "still running" not in message, (
+                f"{warning_id} describes a job that was never started as one "
+                f"that is working: {message!r}"
+            )
+            assert "never started" in message, (
+                f"{warning_id} has to name what actually happened: {message!r}"
+            )
+
+    def test_a_started_run_still_reads_as_one_to_come_back_to(self):
+        """The branch is scoped to a refusal, and the ordinary case is a slow run."""
+        _, warnings = apply_signal_evidence_gate(
+            "ship",
+            {**eval_summary_did_not_finish(2700.0), "eval_dispatched": True},
+            {**red_team_summary_did_not_finish(2700.0), "red_team_dispatched": True},
+        )
+
+        for warning in warnings:
+            assert "still running" in warning.message, (
+                f"{warning.warning_id}: {warning.message!r}"
+            )
+
 
 class TestPollTerminalStatuses:
     """One look, driven directly. The loop it replaces held the worker slot."""
@@ -3272,7 +3341,7 @@ class TestAVerdictReachesTheOwnerAsWarnings:
             _VERDICT_WARNING_CATEGORIES.values()
         )
         assert len(_VERDICT_WARNING_CATEGORIES) == 12, (
-            "RULE_VERSION 2 has twelve slugs across eleven rule functions"
+            "DECISION_RULE_VERSION 2 has twelve slugs across eleven rule functions"
         )
         assert slugs, "the rule table stopped being discoverable by name"
 
@@ -3689,3 +3758,576 @@ class TestTheCalibrationBlock:
         a token nothing explained."""
         for reason in ABSENT_REASONS:
             assert reason in _DEPLOYMENT_SYSTEM_PROMPT, reason
+
+
+# ---------------------------------------------------------------------------
+# TestVerifiedQaStatsSignal - a corpus nobody counted is not an empty one (#121)
+# ---------------------------------------------------------------------------
+
+
+class TestVerifiedQaStatsSignal:
+    """`_fetch_verified_qa_stats_sync`, where the averages were defaults.
+
+    `COALESCE(AVG(faithfulness), 0.0)` over an empty table returned 0.0 and the
+    except branch returned that same dict, so three different events reached
+    every downstream reader as one value: nobody has written a verified pair,
+    the read never happened, and every pair scored nought.
+    """
+
+    def _stats(self, fetchone_value=None, execute_error=None):
+        conn = _make_psycopg2_conn(fetchone_value=fetchone_value)
+        if execute_error is not None:
+            conn.cursor.return_value.execute.side_effect = execute_error
+        with patch(
+            "app.services.deployment_service.psycopg2.connect", return_value=conn
+        ):
+            return _fetch_verified_qa_stats_sync("agent-1", "postgresql://tenant")
+
+    def test_scored_rows_carry_the_averages_they_were_read_from(self):
+        stats = self._stats(fetchone_value=(12, 0.82, 0.91))
+
+        assert stats["signal"] == "measured"
+        assert stats["row_count"] == 12
+        assert stats["avg_faithfulness"] == pytest.approx(0.82)
+        assert stats["avg_relevance"] == pytest.approx(0.91)
+
+    def test_no_rows_is_a_counted_nought_with_nothing_averaged(self):
+        """The COUNT is a reading even at nought, so it travels. The averages
+        over nought rows are not, and 0.0 asserted a score no pair received."""
+        stats = self._stats(fetchone_value=(0, None, None))
+
+        assert stats["signal"] == "measured"
+        assert stats["row_count"] == 0
+        assert stats["avg_faithfulness"] is None
+        assert stats["avg_relevance"] is None
+
+    def test_rows_that_scored_nothing_average_to_nothing(self):
+        """Pairs exist and none carries a score. AVG is NULL, and the count
+        beside it is what keeps this apart from an empty table."""
+        stats = self._stats(fetchone_value=(7, None, None))
+
+        assert stats["row_count"] == 7
+        assert stats["avg_faithfulness"] is None
+        assert stats["avg_relevance"] is None
+
+    def test_a_read_that_failed_counted_nothing(self):
+        stats = self._stats(
+            execute_error=psycopg2.errors.UndefinedTable("no relation verified_qa")
+        )
+
+        assert stats["signal"] == "unavailable"
+        assert stats["row_count"] is None
+        assert stats["avg_faithfulness"] is None
+        assert stats["avg_relevance"] is None
+
+    def test_an_outage_and_an_empty_table_are_different_values(self):
+        """The defect in one test, named key by key rather than by inequality.
+
+        `outage != empty` is weaker than it looks. The two payloads carry a
+        `signal_detail` that differs whatever else is wrong with them, so the
+        comparison stays true while the outage claims a measurement of nought
+        pairs, which is #131 exactly. Every field a reader acts on is asserted
+        here instead.
+        """
+        outage = self._stats(
+            execute_error=psycopg2.errors.UndefinedTable("no relation verified_qa")
+        )
+        empty = self._stats(fetchone_value=(0, None, None))
+
+        assert outage["signal"] == "unavailable"
+        assert outage["row_count"] is None
+        assert outage["avg_faithfulness"] is None
+        assert outage["avg_relevance"] is None
+
+        assert empty["signal"] == "measured"
+        assert empty["row_count"] == 0
+
+
+class TestAnUnreadVerifiedCorpusIsReportedAsUnread:
+    """derive_quality_warnings is the only reader of these figures, and its
+    row-count guard was written for a None the collector could never hand it."""
+
+    _UNREAD = {"signal": "unavailable", "row_count": None}
+
+    def test_an_unavailable_signal_warns_that_it_was_not_read(self):
+        warnings = derive_quality_warnings(dict(self._UNREAD), _measured_red_team())
+
+        assert [w.warning_id for w in warnings] == ["verified_qa_unavailable"]
+        assert warnings[0].category == "knowledge_depth"
+        assert warnings[0].severity_level == "warning"
+
+    def test_an_unread_corpus_is_never_also_called_a_thin_one(self):
+        ids = [
+            w.warning_id
+            for w in derive_quality_warnings(dict(self._UNREAD), _measured_red_team())
+        ]
+
+        assert "verified_qa_low_count" not in ids
+
+    def test_a_zero_beside_an_unread_signal_is_still_not_a_thin_corpus(self):
+        """The payload built by hand rather than by the collector.
+
+        `_verified_qa_stats` never puts a count beside an unread signal, so the
+        test above passes on a None the constructor supplied. This one supplies
+        the zero a caller can write, and a zero IS an int, so the depth check
+        used to fire underneath the outage warning and tell the owner to write
+        more pairs about a database nobody reached. Two remedies, one of which
+        does not apply.
+        """
+        warnings = derive_quality_warnings(
+            {"signal": "unavailable", "row_count": 0}, _measured_red_team()
+        )
+
+        assert [w.warning_id for w in warnings] == ["verified_qa_unavailable"]
+
+    def test_a_measured_corpus_warns_on_its_depth_and_not_on_the_read(self):
+        warnings = derive_quality_warnings(
+            {"signal": "measured", "row_count": 12}, _measured_red_team()
+        )
+
+        assert [w.warning_id for w in warnings] == ["verified_qa_low_count"]
+
+
+# ---------------------------------------------------------------------------
+# TestVerifiedQaStatsAgainstTheProbeCluster - the SQL itself, executed
+# ---------------------------------------------------------------------------
+
+#: The disposable local tenant database CLAUDE.md names, read through the same
+#: env-var override `test_turn_history_order.py` uses, so a machine with
+#: non-default local credentials is configured from one place.
+PROBE_DB_URL = os.getenv(
+    "TEST_TENANT_PROBE_URL",
+    os.getenv("TEST_LOCAL_BASE", "postgresql://wchats:wchats@localhost:5432")
+    + "/wchats_tenant_probe",
+)
+
+#: verified_qa.question_vector is VECTOR(1024) NOT NULL (alembic_tenant 0005),
+#: so a row this test writes needs 1024 dimensions. The server builds them,
+#: which keeps a 1024-element literal out of this file.
+_ZERO_VECTOR = "array_fill(0::real, ARRAY[1024])::vector"
+
+
+class _LendConnection:
+    """Hands the collector a connection this test owns and refuses its close().
+
+    `_fetch_verified_qa_stats_sync` closes whatever `psycopg2.connect` gave it.
+    A real close would discard the transaction too, so the rollback does not
+    depend on this; the no-op keeps the fixture's own rollback from raising
+    `InterfaceError` on a connection the collector already closed. `cursor` is
+    the real one on the real socket, and only `close` is absent.
+    """
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def cursor(self):
+        return self._conn.cursor()
+
+    def close(self):
+        pass
+
+
+class TestVerifiedQaStatsAgainstTheProbeCluster:
+    """The COUNT and the two AVGs, run by PostgreSQL rather than by a mock.
+
+    Every other test of this collector scripts `fetchone`, so nothing parses the
+    SQL string: restoring `COALESCE(AVG(faithfulness), 0.0)` and leaving the
+    Python alone keeps all of them green while republishing the defect #121 is
+    about. These two execute the statement.
+
+    The table is left as it was found. Both cases run inside one transaction the
+    fixture rolls back, so a probe database holding rows is emptied for the
+    length of the test and never on disk.
+    """
+
+    @pytest.fixture
+    def probe_conn(self):
+        try:
+            conn = psycopg2.connect(PROBE_DB_URL, connect_timeout=5)
+        except psycopg2.OperationalError as exc:
+            pytest.skip(f"no local tenant probe cluster at {PROBE_DB_URL}: {exc}")
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('verified_qa')")
+                if cur.fetchone()[0] is None:
+                    pytest.skip(
+                        "the probe database has no verified_qa table: run "
+                        "run_tenant_migrations against it first"
+                    )
+                # Both cases below count up from nought. This DELETE is inside
+                # the transaction the teardown rolls back, so rows that were
+                # here before the test are here after it.
+                cur.execute("DELETE FROM verified_qa")
+            yield conn
+        finally:
+            conn.rollback()
+            conn.close()
+
+    def _insert(self, conn, faithfulness, relevance):
+        """One verified pair, scored or not. The scores go in as SQL literals
+        so a NULL is written as a NULL rather than as a bound None."""
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO verified_qa "
+                "(question, question_vector, answer, citations, source, "
+                "faithfulness, relevance) "
+                f"VALUES ('q', {_ZERO_VECTOR}, 'a', '[]'::jsonb, "
+                f"'human_authored', {faithfulness}, {relevance})"
+            )
+
+    def _stats(self, conn):
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=_LendConnection(conn),
+        ):
+            return _fetch_verified_qa_stats_sync("agent-1", PROBE_DB_URL)
+
+    def test_an_empty_table_averages_to_nothing(self, probe_conn):
+        """AVG over nought rows is SQL NULL, and the count beside it is a real
+        reading at nought. This is the state `COALESCE(AVG(faithfulness), 0.0)`
+        published as a faithfulness of nought (#121)."""
+        stats = self._stats(probe_conn)
+
+        assert stats["signal"] == "measured"
+        assert stats["row_count"] == 0
+        assert stats["avg_faithfulness"] is None
+        assert stats["avg_relevance"] is None
+
+    def test_a_row_nobody_scored_averages_to_nothing(self, probe_conn):
+        """The case that makes the SQL observable at all.
+
+        `_verified_qa_stats` nulls both averages whenever `row_count` is nought,
+        so the empty table above cannot tell `COALESCE(AVG(...), 0.0)` from
+        `AVG(...)`: the Python discards the 0.0 before any reader sees it. A row
+        that exists and carries no score is the shape where the two answers
+        differ, and where a restored COALESCE reaches the report as a
+        faithfulness of nought for a pair nobody has reviewed.
+        """
+        self._insert(probe_conn, faithfulness="NULL", relevance="NULL")
+
+        stats = self._stats(probe_conn)
+
+        assert stats["row_count"] == 1
+        assert stats["avg_faithfulness"] is None
+        assert stats["avg_relevance"] is None
+
+    def test_one_scored_row_averages_to_its_own_scores(self, probe_conn):
+        """The counterpart: a real average still arrives, and arrives as a float
+        rather than the Decimal psycopg2 returns for a NUMERIC column."""
+        self._insert(probe_conn, faithfulness="0.75", relevance="0.5")
+
+        stats = self._stats(probe_conn)
+
+        assert stats["signal"] == "measured"
+        assert stats["row_count"] == 1
+        assert isinstance(stats["avg_faithfulness"], float)
+        assert stats["avg_faithfulness"] == pytest.approx(0.75)
+        assert stats["avg_relevance"] == pytest.approx(0.5)
+
+
+# ---------------------------------------------------------------------------
+# TestTheSinceReadersAgainstTheProbeCluster - two rows, ordered by PostgreSQL
+# ---------------------------------------------------------------------------
+
+
+class TestTheSinceReadersAgainstTheProbeCluster:
+    """#128: a newer in-flight run masked the awaited run's completion.
+
+    `ORDER BY started_at DESC LIMIT 1` with no status predicate answers "the
+    newest run since the mark", and the wait is asking "has the run I started
+    finished". The checklist's own run completes, the nightly beat starts a
+    second one before the next poll, and every poll from then on reads the newer
+    'running' row: the wait burns the whole ceiling for a run that finished in
+    minutes, and the id the collector re-queries belongs to a run still going, so
+    read_eval_result hands back None and the report blocks while logging nothing
+    that names the reason.
+
+    A MOCK CANNOT SEE THIS. Every other test of these readers scripts `fetchone`,
+    so the predicate is never evaluated and two rows are never ordered against
+    each other. These execute the statement.
+
+    The rows are written under a kind unique to each test, so nothing existing is
+    deleted, and the transaction is rolled back either way.
+    """
+
+    @pytest.fixture
+    def probe_conn(self):
+        try:
+            conn = psycopg2.connect(PROBE_DB_URL, connect_timeout=5)
+        except psycopg2.OperationalError as exc:
+            pytest.skip(f"no local tenant probe cluster at {PROBE_DB_URL}: {exc}")
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('eval_runs'), to_regclass('red_team_runs')")
+                if None in cur.fetchone():
+                    pytest.skip(
+                        "the probe database has no eval_runs/red_team_runs table: "
+                        "run run_tenant_migrations against it first"
+                    )
+            yield conn
+        finally:
+            conn.rollback()
+            conn.close()
+
+    def _since(self):
+        from datetime import timezone
+
+        return datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+
+    def _at(self, seconds):
+        from datetime import timedelta
+
+        return self._since() + timedelta(seconds=seconds)
+
+    def _eval_run(self, conn, kind, status, seconds):
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO eval_runs (kind, started_at, status) "
+                "VALUES (%s, %s, %s) RETURNING id::text",
+                (kind, self._at(seconds), status),
+            )
+            return cur.fetchone()[0]
+
+    def _red_team_run(self, conn, kind, status, seconds):
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO red_team_runs (kind, started_at, status) "
+                "VALUES (%s, %s, %s) RETURNING id::text",
+                (kind, self._at(seconds), status),
+            )
+            return cur.fetchone()[0]
+
+    def _read(self, conn, reader, agent_id):
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=_LendConnection(conn),
+        ):
+            return reader(agent_id, PROBE_DB_URL, self._since())
+
+    def test_a_newer_running_eval_does_not_mask_the_completed_one(self, probe_conn):
+        from app.services.deployment_service import latest_eval_run_status_since
+
+        agent_id = str(uuid.uuid4())
+        finished = self._eval_run(probe_conn, f"m6:{agent_id}", "complete", 10)
+        self._eval_run(probe_conn, f"m6:{agent_id}", "running", 20)
+
+        status = self._read(probe_conn, latest_eval_run_status_since, agent_id)
+
+        assert status == "complete", (
+            "the run this checklist started finished; a second run somebody else "
+            f"began after it is not an answer to that question: {status!r}"
+        )
+        assert finished, "the fixture wrote no completed run to find"
+
+    def test_the_eval_id_is_the_completed_run_the_status_came_from(self, probe_conn):
+        """The record read at collect time has to belong to the run observed."""
+        from app.services.deployment_service import latest_eval_run_id_since
+
+        agent_id = str(uuid.uuid4())
+        finished = self._eval_run(probe_conn, f"m6:{agent_id}", "complete", 10)
+        self._eval_run(probe_conn, f"m6:{agent_id}", "running", 20)
+
+        run_id = self._read(probe_conn, latest_eval_run_id_since, agent_id)
+
+        assert run_id == finished, (
+            "read_eval_result against a run that is still going returns None and "
+            f"the report blocks on a run that had finished: {run_id!r}"
+        )
+
+    def test_a_newer_running_red_team_run_does_not_mask_the_completed_one(
+        self, probe_conn
+    ):
+        from app.services.deployment_service import latest_red_team_run_status_since
+
+        agent_id = str(uuid.uuid4())
+        self._red_team_run(probe_conn, f"m7:{agent_id}", "complete", 10)
+        self._red_team_run(probe_conn, f"m7:{agent_id}", "running", 20)
+
+        status = self._read(probe_conn, latest_red_team_run_status_since, agent_id)
+
+        assert status == "complete"
+
+    def test_the_red_team_id_is_the_completed_run_too(self, probe_conn):
+        from app.services.deployment_service import latest_red_team_run_id_since
+
+        agent_id = str(uuid.uuid4())
+        finished = self._red_team_run(probe_conn, f"m7:{agent_id}", "complete", 10)
+        self._red_team_run(probe_conn, f"m7:{agent_id}", "running", 20)
+
+        assert self._read(probe_conn, latest_red_team_run_id_since, agent_id) == finished
+
+    def test_a_run_that_is_only_running_reads_as_no_run_at_all(self, probe_conn):
+        """The wait's question is "has it finished", so 'running' is not an answer.
+
+        `poll_terminal_statuses` discarded a 'running' status anyway, so this
+        changes no verdict. It changes what the reader CLAIMS, and the id reader
+        beside it acted on that claim.
+        """
+        from app.services.deployment_service import (
+            latest_eval_run_id_since,
+            latest_eval_run_status_since,
+        )
+
+        agent_id = str(uuid.uuid4())
+        self._eval_run(probe_conn, f"m6:{agent_id}", "running", 10)
+
+        assert self._read(probe_conn, latest_eval_run_status_since, agent_id) is None
+        assert self._read(probe_conn, latest_eval_run_id_since, agent_id) is None
+
+    def test_a_failed_run_is_still_a_finished_one(self, probe_conn):
+        """'failed' is terminal. The wait stops on it and the gate blocks on it."""
+        from app.services.deployment_service import latest_eval_run_status_since
+
+        agent_id = str(uuid.uuid4())
+        self._eval_run(probe_conn, f"m6:{agent_id}", "failed", 10)
+
+        assert self._read(probe_conn, latest_eval_run_status_since, agent_id) == "failed"
+
+    def test_a_finished_run_before_the_mark_is_still_excluded(self, probe_conn):
+        """The status predicate is added BESIDE the boundary, never instead of it."""
+        from app.services.deployment_service import latest_eval_run_status_since
+
+        agent_id = str(uuid.uuid4())
+        self._eval_run(probe_conn, f"m6:{agent_id}", "complete", -600)
+
+        assert self._read(probe_conn, latest_eval_run_status_since, agent_id) is None, (
+            "last night's terminal run satisfying the wait is the staleness the "
+            "whole boundary exists to remove"
+        )
+
+    def test_another_agents_completed_run_is_not_read_as_this_ones(self, probe_conn):
+        from app.services.deployment_service import latest_eval_run_status_since
+
+        self._eval_run(probe_conn, f"m6:{uuid.uuid4()}", "complete", 10)
+
+        assert (
+            self._read(probe_conn, latest_eval_run_status_since, str(uuid.uuid4()))
+            is None
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestTheRedTeamCollectorAgainstTheProbeCluster - two agents, one tenant DB
+# ---------------------------------------------------------------------------
+
+
+class TestTheRedTeamCollectorAgainstTheProbeCluster:
+    """#127: the security half's latest-run read was not agent-scoped.
+
+    `_LATEST_RUN_SQL` on the eval half filters `kind = 'm6:{agent_id}'` precisely
+    so a second agent sharing a tenant DB is not read as this one.
+    `_RED_TEAM_LATEST_SQL` filtered `status <> 'running'` alone. Two agents A and
+    B on one tenant DB: A's own wait sees its run fail, because the since-readers
+    ARE kind-scoped, and then the collector's latest read returns B's completed
+    run and A's report carries B's coverage as measured. decide() reads the right
+    record, so the verdict is safe; the gate's coverage checks and the owner's
+    summary are not.
+
+    A MOCK CANNOT SEE THIS. A scripted `fetchone` hands back whichever row the
+    test chose and the predicate is never evaluated, so the query cannot be shown
+    to pick the wrong agent's run. These execute the statement against two agents'
+    rows in one database.
+
+    Every row is written under a kind unique to the test, so nothing existing is
+    deleted, and the transaction is rolled back.
+    """
+
+    @pytest.fixture
+    def probe_conn(self):
+        try:
+            conn = psycopg2.connect(PROBE_DB_URL, connect_timeout=5)
+        except psycopg2.OperationalError as exc:
+            pytest.skip(f"no local tenant probe cluster at {PROBE_DB_URL}: {exc}")
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT to_regclass('red_team_runs'), to_regclass('red_team_findings')"
+                )
+                if None in cur.fetchone():
+                    pytest.skip(
+                        "the probe database has no red_team tables: run "
+                        "run_tenant_migrations against it first"
+                    )
+                # The open-finding counts are read across the whole table and
+                # this DELETE is inside the transaction the teardown rolls back,
+                # so rows that were here before the test are here after it.
+                cur.execute("DELETE FROM red_team_findings")
+            yield conn
+        finally:
+            conn.rollback()
+            conn.close()
+
+    def _run(self, conn, agent_id, status, seconds):
+        """One red_team_runs row for this agent, at a fixed distance from a mark."""
+        from datetime import timedelta, timezone
+
+        started = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc) + timedelta(
+            seconds=seconds
+        )
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO red_team_runs (kind, started_at, status) "
+                "VALUES (%s, %s, %s) RETURNING id::text",
+                (f"m7:{agent_id}", started, status),
+            )
+            return cur.fetchone()[0]
+
+    def _summary(self, conn, agent_id):
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=_LendConnection(conn),
+        ):
+            return _fetch_red_team_summary_sync(agent_id, PROBE_DB_URL)
+
+    def test_another_agents_completed_run_is_not_this_agents_security_summary(
+        self, probe_conn
+    ):
+        """A has never been probed. B, on the same tenant DB, has."""
+        agent_a, agent_b = str(uuid.uuid4()), str(uuid.uuid4())
+        self._run(probe_conn, agent_b, "complete", 20)
+
+        summary = self._summary(probe_conn, agent_a)
+
+        assert summary["signal"] == "no_runs", (
+            "an agent nothing has ever attacked must read as unmeasured, not as "
+            f"whatever the agent beside it scored: {summary}"
+        )
+        assert summary["critical_count"] is None, (
+            "every count outside the measured state is None, because a zero "
+            f"nobody measured is not a zero: {summary}"
+        )
+
+    def test_this_agents_own_failed_run_is_what_its_report_carries(self, probe_conn):
+        """A's own newest run failed while B's completed. A's report says failed."""
+        agent_a, agent_b = str(uuid.uuid4()), str(uuid.uuid4())
+        self._run(probe_conn, agent_a, "failed", 10)
+        self._run(probe_conn, agent_b, "complete", 20)
+
+        summary = self._summary(probe_conn, agent_a)
+
+        assert summary["signal"] == "run_failed", (
+            f"A's own newest run is the one its report is about: {summary}"
+        )
+
+    def test_an_agents_own_completed_run_is_still_read(self, probe_conn):
+        """The scoping closes a read; it must not close the right one."""
+        agent_a, agent_b = str(uuid.uuid4()), str(uuid.uuid4())
+        self._run(probe_conn, agent_a, "complete", 10)
+        self._run(probe_conn, agent_b, "failed", 20)
+
+        summary = self._summary(probe_conn, agent_a)
+
+        assert summary["signal"] == "measured", (
+            f"A ran to completion, so A's numbers are readable: {summary}"
+        )
+        assert summary["critical_count"] == 0
+        assert summary["last_run_at"] is not None
+
+    def test_an_in_flight_run_of_this_agents_is_still_not_a_measurement(
+        self, probe_conn
+    ):
+        """The status predicate survives the kind predicate landing beside it."""
+        agent_a = str(uuid.uuid4())
+        self._run(probe_conn, agent_a, "running", 10)
+
+        assert self._summary(probe_conn, agent_a)["signal"] == "no_runs"

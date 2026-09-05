@@ -53,7 +53,7 @@ os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_secret")
 import json
 import uuid
 from contextlib import ExitStack, contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -77,6 +77,63 @@ def _make_sync_db_ctx(mock_db):
 def _deployment_patch(name, **kwargs):
     """patch() against a name in the task module's own namespace."""
     return patch("app.worker.tasks.runtime.deployment." + name, **kwargs)
+
+
+def _fenced_pass(statement):
+    """The pass number this UPDATE fences on, or None when it fences on none.
+
+    Read off the statement's own WHERE criteria rather than from the caller, so a
+    fence that stops being written disappears from here too and the tests that
+    depend on it go red (#124).
+    """
+    for criterion in statement._where_criteria:
+        if getattr(getattr(criterion, "left", None), "key", None) == "pass_no":
+            return getattr(getattr(criterion, "right", None), "value", None)
+    return None
+
+
+def _fence_updates(mock_db, mock_run):
+    """Make this mock_db honour the chain's own fence on its row.
+
+    A MagicMock answers every statement with a truthy result, so a fence written
+    against one can never be observed to hold and a test of it would be a
+    tautology. This applies an UPDATE's values to `mock_run` only while the row
+    still says 'running' AND still holds the pass number the statement names,
+    the way Postgres would, and hands back the run id or nothing accordingly.
+    Every other statement, the guard's SELECT among them, falls through to the
+    mock's own scripted answer.
+
+    THE PASS NUMBER IS THE SECOND HALF OF THE FENCE (#124). Status alone says the
+    run is live; it cannot tell one continuation of a live run from a redelivered
+    twin of it, and honouring only the status half here would let a forked chain
+    write in a test whose whole subject is that it cannot.
+    """
+    from sqlalchemy.sql.dml import Update
+
+    scripted = mock_db.execute.return_value
+    # The column is INTEGER DEFAULT 0, so a freshly inserted row holds 0. A
+    # MagicMock in its place equals no number at all, and every fenced write
+    # would be refused for a reason about the double rather than about the code.
+    if not isinstance(mock_run.pass_no, int):
+        mock_run.pass_no = 0
+
+    def _execute(statement, *_args, **_kwargs):
+        if not isinstance(statement, Update):
+            return scripted
+        result = MagicMock()
+        expected = _fenced_pass(statement)
+        if mock_run.status != "running" or (
+            expected is not None and mock_run.pass_no != expected
+        ):
+            result.first.return_value = None
+            return result
+        for column, bound in statement._values.items():
+            setattr(mock_run, column.key, getattr(bound, "value", bound))
+        result.first.return_value = (mock_run.id,)
+        return result
+
+    mock_db.execute.side_effect = _execute
+    return mock_db
 
 
 def _ship_verdict():
@@ -169,6 +226,10 @@ class TestRunDeploymentChecklistIdempotency:
         The task opens get_sync_db twice before the guard fires:
           - Step 1: db.get(Agent, agent_id) returns mock agent with neon_connection_string
           - Step 2: db.execute(...).scalar_one_or_none() returns mock existing ChecklistRun
+
+        The existing row carries a real beat because the guard reads one (#129).
+        TestTheIdempotencyGuardKeysOnTheRunNotTheClock runs the same guard against
+        PostgreSQL, where the WHERE clause is evaluated rather than scripted.
         """
         from app.worker.tasks.runtime.deployment import run_deployment_checklist
 
@@ -178,8 +239,10 @@ class TestRunDeploymentChecklistIdempotency:
         mock_agent = MagicMock()
         mock_agent.neon_connection_string = b"encrypted_conn"
 
-        # Mock existing ChecklistRun returned by idempotency query
+        # Mock existing ChecklistRun returned by idempotency query, beating now
         mock_existing_run = MagicMock()
+        mock_existing_run.created_at = datetime.now(timezone.utc)
+        mock_existing_run.heartbeat_at = datetime.now(timezone.utc)
 
         # Mock DB: get(Agent) returns mock_agent; execute().scalar_one_or_none() returns existing run
         mock_db = MagicMock()
@@ -247,14 +310,15 @@ class TestRunDeploymentChecklistHappyPath:
 
         mock_db.get.side_effect = _db_get
         mock_db.execute.return_value.scalar_one_or_none.return_value = None
+        _fence_updates(mock_db, mock_run)
         # Simulate db.refresh setting the run.id after INSERT
         mock_db.refresh.side_effect = lambda obj: setattr(obj, "id", mock_run_id)
 
         # Signal fetch return values (minimal valid dicts)
         empty_eval = _measured_eval_signal()
         empty_red_team = _measured_red_team_signal()
-        empty_verified_qa = {"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9}
-        empty_corpus = {"document_count": 5, "chunk_count": 100, "last_ingested_at": None}
+        empty_verified_qa = _measured_verified_qa_signal()
+        empty_corpus = _measured_corpus_signal()
         empty_blast_radius = {
             "configured_max_single_action_cents": None,
             "configured_max_hourly_aggregate_cents": None,
@@ -351,6 +415,7 @@ class TestRunDeploymentChecklistHappyPath:
 
         mock_db.get.side_effect = _db_get
         mock_db.execute.return_value.scalar_one_or_none.return_value = None
+        _fence_updates(mock_db, mock_run)
         mock_db.refresh.side_effect = lambda obj: setattr(obj, "id", mock_run_id)
 
         async def _capture(signals_json, result_container, *, ledger=None):
@@ -375,10 +440,10 @@ class TestRunDeploymentChecklistHappyPath:
             return_value=_measured_red_team_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_verified_qa_stats_sync",
-            return_value={"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+            return_value=_measured_verified_qa_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_corpus_stats_sync",
-            return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+            return_value=_measured_corpus_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
             return_value={
@@ -460,12 +525,16 @@ class TestRunDeploymentChecklistFailurePath:
 
         mock_db.get.side_effect = _db_get
         mock_db.execute.return_value.scalar_one_or_none.return_value = None
+        _fence_updates(mock_db, mock_run)
         mock_db.refresh.side_effect = lambda obj: setattr(obj, "id", mock_run_id)
 
         empty_eval = _measured_eval_signal()
         empty_red_team = _measured_red_team_signal()
-        empty_verified_qa = {"row_count": 0, "avg_faithfulness": 0.0, "avg_relevance": 0.0}
-        empty_corpus = {"document_count": 0, "chunk_count": 0, "last_ingested_at": None}
+        # A tenant whose corpus was READ and came back empty. The dict this
+        # replaces put 0.0 in both averages, which is the #121 payload itself:
+        # a faithfulness of nought asserted about pairs that do not exist.
+        empty_verified_qa = _measured_verified_qa_signal(row_count=0)
+        empty_corpus = _measured_corpus_signal(document_count=0, chunk_count=0)
         empty_blast_radius = {
             "configured_max_single_action_cents": None,
             "configured_max_hourly_aggregate_cents": None,
@@ -557,6 +626,7 @@ def _build_full_happy_path_mock_db(mock_run_id):
     mock_db.get.side_effect = _db_get
     mock_db.execute.return_value.scalar_one_or_none.return_value = None
     mock_db.refresh.side_effect = lambda obj: setattr(obj, "id", mock_run_id)
+    _fence_updates(mock_db, mock_run)
     return mock_db, mock_run
 
 
@@ -655,13 +725,56 @@ def _measured_red_team_signal():
     }
 
 
+def _measured_verified_qa_signal(row_count=60, average=0.9):
+    """The verified-QA payload the collector writes when it counted something.
+
+    Built through the collector's own constructor for the reason
+    `_measured_eval_signal` is: the hand-written dict this replaces carried no
+    `signal` key at all, which is the pre-#131 shape, so every wiring test that
+    used it sent `derive_quality_warnings` down the compatibility branch kept
+    for reports stored before that fix. The happy paths were therefore the one
+    place in this module NOT exercising what production stores today.
+
+    A `row_count` of nought comes back with both averages None, because that is
+    what the constructor does with an average over no rows.
+    """
+    from app.services.deployment_service import (
+        VERIFIED_QA_SIGNAL_MEASURED,
+        _verified_qa_stats,
+    )
+
+    return _verified_qa_stats(
+        VERIFIED_QA_SIGNAL_MEASURED,
+        row_count=row_count,
+        avg_faithfulness=average,
+        avg_relevance=average,
+    )
+
+
+def _measured_corpus_signal(document_count=5, chunk_count=100):
+    """The corpus payload the collector writes when it reached the tenant DB.
+
+    Same provenance and same reason as `_measured_verified_qa_signal`. Every
+    figure here is a count, so all three are real at nought and the signal is
+    the only thing that separates nought documents from no read at all.
+    """
+    from app.services.deployment_service import CORPUS_SIGNAL_MEASURED, _corpus_stats
+
+    return _corpus_stats(
+        CORPUS_SIGNAL_MEASURED,
+        document_count=document_count,
+        chunk_count=chunk_count,
+        last_ingested_at=None,
+    )
+
+
 def _empty_first_four_signals():
     """The four pre-existing safe-default signal dicts, reused across BLR-01 wiring tests."""
     return (
         _measured_eval_signal(),
         _measured_red_team_signal(),
-        {"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
-        {"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+        _measured_verified_qa_signal(),
+        _measured_corpus_signal(),
     )
 
 
@@ -971,10 +1084,10 @@ class TestEvidenceGateWiring:
             return_value=red_team_summary,
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_verified_qa_stats_sync",
-            return_value={"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+            return_value=_measured_verified_qa_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_corpus_stats_sync",
-            return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+            return_value=_measured_corpus_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
             return_value=blast_radius,
@@ -1094,10 +1207,10 @@ class TestEvidenceGateWiring:
             return_value=_measured_red_team_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_verified_qa_stats_sync",
-            return_value={"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+            return_value=_measured_verified_qa_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_corpus_stats_sync",
-            return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+            return_value=_measured_corpus_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
             return_value=dict(_BLAST_RADIUS_DEFAULT_SIGNAL),
@@ -1468,7 +1581,14 @@ def _sequenced_world(eval_polls, red_team_polls):
 
 
 def _drive_sequenced(
-    fetchers, collectors, *, ceiling_s=2700, mock_log=None, dispatch=None, verdict=None
+    fetchers,
+    collectors,
+    *,
+    ceiling_s=2700,
+    mock_log=None,
+    dispatch=None,
+    verdict=None,
+    on_orchestrate=None,
 ):
     """Run the real task to settlement, driving every continuation by hand.
 
@@ -1489,6 +1609,10 @@ def _drive_sequenced(
     queued: list[dict] = []
 
     async def _report(signals_json, result_container, *, ledger=None):
+        # `on_orchestrate` is the window between the last beat and the completing
+        # write, which is where the guard actually reaps a deciding pass.
+        if on_orchestrate is not None:
+            on_orchestrate(mock_run)
         result_container["report"] = {
             "recommendation": "ship",
             "summary": "All good.",
@@ -1518,11 +1642,11 @@ def _drive_sequenced(
         _target("_fetch_red_team_summary_sync", side_effect=collectors[1]),
         _target(
             "_fetch_verified_qa_stats_sync",
-            return_value={"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+            return_value=_measured_verified_qa_signal(),
         ),
         _target(
             "_fetch_corpus_stats_sync",
-            return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+            return_value=_measured_corpus_signal(),
         ),
         _target("_fetch_blast_radius_sync", return_value=dict(_BLAST_RADIUS_FIXTURE)),
         _target("_compute_envelope_hash_sync", return_value="test-envelope-hash"),
@@ -1688,6 +1812,141 @@ class TestTheChecklistSequencesBothJobs:
         assert "started" in matching[0]["message"].lower()
 
 
+class TestARefusedDispatchIsNotWaitedOn:
+    """#130: a half the broker refused burnt the whole ceiling before blocking.
+
+    `_open_wait` records the refusal, so that half's outcome is decided the
+    moment the wait opens: no run of this checklist's exists to reach terminal,
+    every poll until the ceiling asks a question already answered, and the answer
+    was always going to be an absent measurement. Fail-closed, and forty-five
+    minutes of it with the answer in hand.
+    """
+
+    def _refused(self):
+        return (lambda _agent_id: False, lambda _agent_id: True)
+
+    def test_a_half_the_broker_refused_is_not_polled_to_the_ceiling(self):
+        """The eval never reports terminal. Its dispatch never happened either."""
+        state, fetchers, collectors = _sequenced_world(
+            eval_polls=10**6, red_team_polls=0
+        )
+
+        result, mock_run, _ = _drive_sequenced(
+            fetchers, collectors, dispatch=self._refused()
+        )
+
+        eval_polls = [e for e in state["events"] if e[0] == "poll" and e[1] == "eval"]
+        assert len(eval_polls) == 1, (
+            "one look is all a refused dispatch is worth; the rest is the ceiling "
+            f"spent on a question already answered: {len(eval_polls)} polls"
+        )
+        assert result["status"] == "complete"
+        assert result["recommendation"] == "block", (
+            "a half that was never started is an absent measurement and the gate "
+            f"still refuses on it: {result}"
+        )
+        assert mock_run.report["eval_summary"]["eval_signal"] == "did_not_finish"
+
+    def test_both_dispatches_refused_settle_on_the_first_pass(self):
+        state, fetchers, collectors = _sequenced_world(
+            eval_polls=10**6, red_team_polls=10**6
+        )
+
+        result, _, _ = _drive_sequenced(
+            fetchers,
+            collectors,
+            dispatch=(lambda _a: False, lambda _a: False),
+        )
+
+        polls = [e for e in state["events"] if e[0] == "poll"]
+        assert len(polls) == 2, (
+            f"one look at each half and then the report: {state['events']}"
+        )
+        assert result["status"] == "complete"
+        assert result["recommendation"] == "block"
+
+    def test_a_dispatched_half_still_holds_the_wait_open(self):
+        """The change is scoped to a refusal. A job in flight is still waited on."""
+        state, fetchers, collectors = _sequenced_world(eval_polls=3, red_team_polls=0)
+
+        result, _, _ = _drive_sequenced(fetchers, collectors)
+
+        eval_polls = [e for e in state["events"] if e[0] == "poll" and e[1] == "eval"]
+        assert len(eval_polls) == 4, (
+            f"a dispatched run is polled until it reports terminal: {eval_polls}"
+        )
+        assert result["status"] == "complete"
+
+    def test_a_refused_dispatch_still_reads_a_run_the_poll_does_find(self):
+        """A refusal closes the WAIT, never the reading.
+
+        run_eval_suite's own guard absorbs a dispatch made while a run is already
+        in flight, and the nightly beat starts runs this checklist did not. A row
+        at or after `since` that reports terminal on the first look is this
+        checklist's evidence whatever the broker said about the dispatch.
+        """
+        _, fetchers, collectors = _sequenced_world(eval_polls=0, red_team_polls=0)
+
+        _, mock_run, _ = _drive_sequenced(
+            fetchers, collectors, dispatch=self._refused()
+        )
+
+        assert mock_run.report["eval_summary"]["eval_signal"] == "measured", (
+            "the poll found a terminal run at or after the dispatch moment, so "
+            f"its record is read: {mock_run.report['eval_summary']}"
+        )
+
+    def test_the_log_says_never_dispatched_rather_than_ran_out_of_ceiling(self):
+        """Two different incidents. One is a slow job, the other a dead broker."""
+        _, fetchers, collectors = _sequenced_world(
+            eval_polls=10**6, red_team_polls=0
+        )
+        mock_log = MagicMock()
+
+        _drive_sequenced(
+            fetchers, collectors, dispatch=self._refused(), mock_log=mock_log
+        )
+
+        closures = [
+            call
+            for call in mock_log.warning.call_args_list
+            if call.args
+            and call.args[0] == "run_deployment_checklist.wait_closed_undispatched"
+        ]
+        assert len(closures) == 1, (
+            f"expected one undispatched-closure warning: {mock_log.warning.call_args_list}"
+        )
+        assert closures[0].kwargs["never_dispatched"] == ["eval"]
+        expiries = [
+            call
+            for call in mock_log.warning.call_args_list
+            if call.args
+            and call.args[0] == "run_deployment_checklist.wait_ceiling_expired"
+        ]
+        assert expiries == [], (
+            "nothing ran out of ceiling here, and saying so sends the reader to "
+            f"look for a slow job: {expiries}"
+        )
+
+    def test_the_owner_facing_detail_says_it_never_started(self):
+        """"had not finished after 0s" reads as a platform that gave up instantly."""
+        _, fetchers, collectors = _sequenced_world(
+            eval_polls=10**6, red_team_polls=0
+        )
+
+        _, mock_run, _ = _drive_sequenced(
+            fetchers, collectors, dispatch=self._refused()
+        )
+
+        detail = mock_run.report["eval_summary"]["signal_detail"]
+        assert "had not finished" not in detail, (
+            f"no run of this checklist's was ever started: {detail!r}"
+        )
+        assert "start" in detail, (
+            f"the detail has to name what actually went wrong: {detail!r}"
+        )
+
+
 class TestTheWaitIsAChainOfMessages:
     """The worker slot is free between polls (#54 review).
 
@@ -1744,19 +2003,11 @@ class TestTheWaitIsAChainOfMessages:
             _deployment_patch("_fetch_red_team_summary_sync", new=_collect("red_team")),
             _deployment_patch(
                 "_fetch_verified_qa_stats_sync",
-                return_value={
-                    "row_count": 60,
-                    "avg_faithfulness": 0.9,
-                    "avg_relevance": 0.9,
-                },
+                return_value=_measured_verified_qa_signal(),
             ),
             _deployment_patch(
                 "_fetch_corpus_stats_sync",
-                return_value={
-                    "document_count": 5,
-                    "chunk_count": 100,
-                    "last_ingested_at": None,
-                },
+                return_value=_measured_corpus_signal(),
             ),
             _deployment_patch(
                 "_fetch_blast_radius_sync", return_value=dict(_BLAST_RADIUS_FIXTURE)
@@ -1814,7 +2065,17 @@ class TestTheWaitIsAChainOfMessages:
         assert self.mock_db.add.call_count == first_adds, (
             "a continuation inserted a second checklist_runs row"
         )
-        assert self.mock_db.execute.call_count == 0, (
+        # The guard is the only SELECT a pass makes. A continuation's writes are
+        # UPDATEs now that every one of them is fenced (`_claimed`), so counting
+        # every statement would count the beat and read it as a second guard.
+        from sqlalchemy.sql.selectable import Select
+
+        selects = [
+            call
+            for call in self.mock_db.execute.call_args_list
+            if call.args and isinstance(call.args[0], Select)
+        ]
+        assert selects == [], (
             "a continuation re-ran the idempotency guard and would skip itself"
         )
 
@@ -1933,12 +2194,11 @@ def _drive_with_verdict(
         ),
         _deployment_patch(
             "_fetch_verified_qa_stats_sync",
-            return_value=verified_qa
-            or {"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+            return_value=verified_qa or _measured_verified_qa_signal(),
         ),
         _deployment_patch(
             "_fetch_corpus_stats_sync",
-            return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+            return_value=_measured_corpus_signal(),
         ),
         _deployment_patch(
             "_fetch_blast_radius_sync", return_value=dict(_BLAST_RADIUS_FIXTURE)
@@ -2035,7 +2295,7 @@ class TestTheVerdictDrivesTheRecommendation:
         verdict's."""
         result, mock_run = _drive_with_verdict(
             _ship_verdict(),
-            verified_qa={"row_count": 4, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+            verified_qa=_measured_verified_qa_signal(row_count=4),
             red_team_summary=dict(_measured_red_team_signal(), medium_count=5),
         )
 
@@ -2423,7 +2683,13 @@ class TestTheVerdictIsComputedFromTheRecords:
 
 
 class TestATaskFailureBeforeTheVerdictStillFails:
-    """status='failed' is reserved for this, and only this (#54 criterion 5)."""
+    """status='failed' is reserved for this, and only this (#54 criterion 5).
+
+    The row is closed out on the LAST attempt, not the first. A pass with an
+    attempt still to come stays 'running' so its own retry can claim the row it
+    is retrying, which is why this drives the task with its retries already
+    spent (#124).
+    """
 
     def test_a_record_read_that_raises_marks_the_run_failed(self):
         from celery.exceptions import Retry
@@ -2457,13 +2723,13 @@ class TestATaskFailureBeforeTheVerdictStillFails:
             stack.enter_context(
                 _deployment_patch(
                     "_fetch_verified_qa_stats_sync",
-                    return_value={"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+                    return_value=_measured_verified_qa_signal(),
                 )
             )
             stack.enter_context(
                 _deployment_patch(
                     "_fetch_corpus_stats_sync",
-                    return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+                    return_value=_measured_corpus_signal(),
                 )
             )
             stack.enter_context(
@@ -2481,10 +2747,15 @@ class TestATaskFailureBeforeTheVerdictStillFails:
                     "_compute_verdict", side_effect=RuntimeError("tenant DB unreachable")
                 )
             )
+            run_deployment_checklist.push_request(
+                retries=run_deployment_checklist.max_retries
+            )
             try:
                 run_deployment_checklist.run(agent_id=agent_id)
             except (Retry, RuntimeError):
                 pass
+            finally:
+                run_deployment_checklist.pop_request()
 
         assert mock_run.status == "failed", (
             "the decision was never reached, so there is nothing to complete on"
@@ -2613,6 +2884,227 @@ class TestTheRunStatusReaders:
         assert status is None
 
 
+class TestAReplacementAdoptsTheRunTheReapedChainLeftBehind:
+    """The reaped chain's jobs outlive it, and the replacement cannot see them.
+
+    A chain reaped while its dispatched eval job was still queued leaves that job
+    to start afterwards. Its `eval_runs` row lands BEFORE the replacement
+    checklist's own dispatch moment, so the replacement's since-readers never see
+    it, while `run_eval_suite`'s idempotency guard answers `already_running` and
+    refuses to start the run the replacement needs. The replacement waits out the
+    whole ceiling and reports did_not_finish about a run that was going to
+    finish, on an agent that has already been graded once for nothing.
+
+    So the replacement adopts it: the boundary moves back to that run's own
+    started_at, which is the only value that admits the orphan and no terminal
+    row older than it.
+    """
+
+    #: The replacement's own dispatch moment, read off the tenant clock.
+    SINCE = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+
+    def _reader(self, started_at, status):
+        """`latest_eval_run_status_since` as the SQL behaves: the boundary decides.
+
+        A double that ignored `since` would answer for any boundary and the
+        adoption could not be observed at all.
+        """
+
+        def _read(_agent_id, _conn_str, since):
+            return status if started_at >= since else None
+
+        return _read
+
+    def _open(self, running_runs, *, mock_log=None):
+        with ExitStack() as stack:
+            for one in [
+                _deployment_patch("_dispatch_moment", return_value=self.SINCE),
+                _deployment_patch("_dispatch_eval_run", return_value=True),
+                _deployment_patch("_dispatch_red_team_run", return_value=True),
+                _deployment_patch("running_runs_since", return_value=running_runs),
+            ]:
+                stack.enter_context(one)
+            if mock_log is not None:
+                stack.enter_context(
+                    patch(
+                        "app.worker.tasks.runtime.deployment.log", mock_log
+                    )
+                )
+            from app.worker.tasks.runtime.deployment import _open_first_wait
+
+            return _open_first_wait("agent-1", "run-2", "postgresql://test/tenant")
+
+    def _polled(self, state, reader):
+        from app.worker.tasks.runtime.deployment import _poll_wait
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                _deployment_patch("latest_eval_run_status_since", new=reader)
+            )
+            stack.enter_context(
+                _deployment_patch(
+                    "latest_red_team_run_status_since", return_value=None
+                )
+            )
+            return _poll_wait("agent-1", "postgresql://test/tenant", state)
+
+    def test_the_wait_sees_the_orphaned_run_finish_instead_of_timing_out(self):
+        """The whole defect, end to end over one open and one poll."""
+        orphan_started = self.SINCE - timedelta(minutes=10)
+
+        state = self._open({"eval": ("eval-orphan", orphan_started)})
+        polled = self._polled(state, self._reader(orphan_started, "complete"))
+
+        assert polled["statuses"]["eval"] == "complete", (
+            "the run the reaped chain left in flight is the only eval run this "
+            "agent will get, because run_eval_suite's guard refuses a second "
+            "one while it is going; a boundary that excludes it burns the whole "
+            "ceiling and reports did_not_finish about a run that finished"
+        )
+
+    def test_without_an_orphan_the_boundary_is_this_checklists_own_dispatch(self):
+        """The control. Last night's terminal run stays out (#128)."""
+        state = self._open(_NO_RUNS)
+
+        assert state["since"] == self.SINCE.isoformat(), (
+            f"nothing was adopted, so nothing moves: {state['since']}"
+        )
+        polled = self._polled(
+            state, self._reader(self.SINCE - timedelta(hours=12), "complete")
+        )
+        assert polled["statuses"]["eval"] is None, (
+            "a run that finished last night is not this checklist's evidence"
+        )
+
+    def test_this_wait_does_not_adopt_the_run_its_own_dispatch_started(self):
+        """A run at or after the dispatch moment is already inside the boundary.
+
+        Moving the boundary onto it would be a widening with no cause, and on a
+        fast worker it would be the common case rather than the rare one.
+        """
+        ours = self.SINCE + timedelta(seconds=5)
+
+        state = self._open({"eval": ("eval-ours", ours)})
+
+        assert state["since"] == self.SINCE.isoformat(), (
+            f"this run started inside the wait's own boundary: {state['since']}"
+        )
+
+    def test_an_unreadable_tenant_db_leaves_the_boundary_where_it_was(self):
+        """`running_runs_since` answers None, and an open must not fail on it."""
+        state = self._open(None)
+
+        assert state["since"] == self.SINCE.isoformat()
+
+    def test_the_adoption_names_the_run_it_adopted_in_the_log(self):
+        """The wait now grades a run this checklist did not dispatch, and the
+        only place that is visible is here."""
+        mock_log = MagicMock()
+        orphan_started = self.SINCE - timedelta(minutes=10)
+
+        self._open({"eval": ("eval-orphan", orphan_started)}, mock_log=mock_log)
+
+        adopted = [
+            call
+            for call in mock_log.info.call_args_list
+            if call.args
+            and call.args[0] == "run_deployment_checklist.adopted_orphaned_run"
+        ]
+        assert len(adopted) == 1, (
+            f"expected one adopted_orphaned_run entry: {mock_log.info.call_args_list}"
+        )
+        assert adopted[0].kwargs["adopted"] == {"eval": "eval-orphan"}
+
+
+class TestTheRunsStillRunningReader:
+    """What the guard asks the tenant DB before it reaps a chain gone quiet.
+
+    The two since-readers above answer "has it FINISHED", so they exclude the
+    one status this one is entirely about. A silent chain with a job still
+    running is a chain still working, and only the tenant DB knows that.
+    """
+
+    def _read(self, rows, since):
+        from app.services.deployment_service import running_runs_since
+
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchone.side_effect = list(rows)
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect", return_value=mock_conn
+        ):
+            found = running_runs_since("agent-1", "postgresql://test/tenant", since)
+        return found, mock_cursor.execute.call_args_list
+
+    def test_it_names_both_kinds_and_asks_only_about_running_rows(self):
+        started = datetime(2026, 8, 30, 12, 5, tzinfo=timezone.utc)
+        since = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+
+        found, calls = self._read(
+            [("eval-run-1", started), ("red-run-9", started)], since
+        )
+
+        assert found == {
+            "eval": ("eval-run-1", started),
+            "red_team": ("red-run-9", started),
+        }
+        eval_sql, eval_params = calls[0].args
+        assert "FROM eval_runs" in eval_sql
+        assert "status = 'running'" in eval_sql, (
+            f"this reader is about the one status the others exclude: {eval_sql}"
+        )
+        assert "started_at >= %s" in eval_sql
+        assert eval_params == ("m6:agent-1", since)
+        red_sql, red_params = calls[1].args
+        assert "FROM red_team_runs" in red_sql
+        assert "status = 'running'" in red_sql
+        assert red_params == ("m7:agent-1", since)
+
+    def test_nothing_in_flight_reads_as_an_empty_answer_rather_than_no_answer(self):
+        found, _ = self._read(
+            [None, None], datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+        )
+
+        assert found == {}, (
+            "the tenant DB was read and holds nothing of this agent's, which is "
+            f"what lets the guard reap: {found}"
+        )
+
+    def test_one_half_still_going_is_reported_on_its_own(self):
+        started = datetime(2026, 8, 30, 12, 5, tzinfo=timezone.utc)
+
+        found, _ = self._read(
+            [None, ("red-run-9", started)],
+            datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
+        )
+
+        assert found == {"red_team": ("red-run-9", started)}
+
+    def test_an_unreachable_tenant_db_reads_as_none_rather_than_as_nothing(self):
+        """None and {} are the two answers the guard must never confuse.
+
+        {} lets it reap; None must not, or an outage that silences a chain also
+        supplies the evidence for throwing it away.
+        """
+        from app.services.deployment_service import running_runs_since
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            side_effect=RuntimeError("tenant DB unreachable"),
+        ):
+            found = running_runs_since(
+                "agent-1",
+                "postgresql://test/tenant",
+                datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
+            )
+
+        assert found is None
+
+
 class TestTheDispatchMoment:
     """The boundary comes from the tenant DB's clock, not the worker's."""
 
@@ -2702,6 +3194,7 @@ class TestTheReQueueGuardsTheChain:
             "statuses": {"eval": "complete", "red_team": None},
             "eval_dispatched": True,
             "red_team_dispatched": True,
+            "pass_no": 1,
         }
 
     def test_a_broker_failure_returns_false_and_names_the_run(self):
@@ -2757,6 +3250,933 @@ class TestTheReQueueGuardsTheChain:
         )
 
 
+# ---------------------------------------------------------------------------
+# The idempotency guard, executed by PostgreSQL rather than scripted (#129)
+# ---------------------------------------------------------------------------
+
+#: The disposable local cluster CLAUDE.md names, read through the same env-var
+#: override the other probe tests use so a machine with non-default local
+#: credentials is configured from one place. checklist_runs is a CONTROL DB
+#: table; what this borrows from the probe database is a real PostgreSQL to run
+#: the guard's WHERE against, inside a transaction that is rolled back.
+CONTROL_PROBE_URL = os.getenv(
+    "TEST_TENANT_PROBE_URL",
+    os.getenv("TEST_LOCAL_BASE", "postgresql://wchats:wchats@localhost:5432")
+    + "/wchats_tenant_probe",
+)
+
+class _StaleRead:
+    """The session of a trigger still carrying a row another trigger has reaped.
+
+    The guard reads, decides and writes in three steps, and the race lives in the
+    gap: two triggers SELECT the same stale row, then serialise on the UPDATE.
+    Only the SELECT is answered from the past here; every write goes to the real
+    session, so the loser's reap meets the row in the state the winner left it.
+    """
+
+    def __init__(self, db, row):
+        self._db = db
+        self._row = row
+
+    def execute(self, statement, *args, **kwargs):
+        if statement.is_select:
+            result = MagicMock()
+            result.scalar_one_or_none.return_value = self._row
+            return result
+        return self._db.execute(statement, *args, **kwargs)
+
+    def commit(self):
+        self._db.commit()
+
+
+#: What `running_runs_since` answers for a tenant DB that was read and holds
+#: nothing of this agent's still going. Named so the guard's default case is
+#: legible beside the two that are not: `None` for a tenant DB that could not be
+#: read at all, and a populated dict for a job still in flight.
+_NO_RUNS: dict = {}
+
+
+class TestTheIdempotencyGuardKeysOnTheRunNotTheClock:
+    """#129: a congested chain outlived the guard's 60-minute created_at window.
+
+    The ceiling caps the observed wait at 45 minutes, but continuations queue
+    behind the eval and red-team turns they are waiting for on the solo worker
+    and the deciding pass adds the orchestrator's budget on top. Past minute 60
+    the window no longer covered a run that was still going, a second trigger saw
+    no live row, and two checklists ran on one agent.
+
+    A MOCK CANNOT SEE THIS. Every other test of the guard scripts
+    `scalar_one_or_none`, so the WHERE clause is never evaluated and a row handed
+    back reads as live whatever the query said about it. These run the statement.
+    """
+
+    @pytest.fixture
+    def session(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import Session
+
+        from app.models.checklist_run import ChecklistRun
+
+        engine = create_engine(CONTROL_PROBE_URL)
+        try:
+            conn = engine.connect()
+        except Exception as exc:  # OperationalError and everything under it
+            engine.dispose()
+            pytest.skip(f"no local probe cluster at {CONTROL_PROBE_URL}: {exc}")
+        outer = conn.begin()
+        try:
+            ChecklistRun.__table__.create(bind=conn)
+            db = Session(bind=conn, join_transaction_mode="create_savepoint")
+            try:
+                yield db
+            finally:
+                db.close()
+        finally:
+            outer.rollback()
+            conn.close()
+            engine.dispose()
+
+    def _row(self, db, agent_id, *, age_s, beat_age_s, status="running"):
+        """One checklist_runs row, aged and beating exactly as the case needs."""
+        from datetime import timedelta
+
+        from app.models.checklist_run import ChecklistRun
+
+        now = datetime.now(timezone.utc)
+        run = ChecklistRun(
+            agent_id=agent_id,
+            status=status,
+            created_at=now - timedelta(seconds=age_s),
+            heartbeat_at=(
+                None if beat_age_s is None else now - timedelta(seconds=beat_age_s)
+            ),
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        return run
+
+    def _guard(self, db, agent_id, *, running_runs=_NO_RUNS, mock_log=None):
+        """The guard, over this row and whatever the tenant DB says is in flight.
+
+        `running_runs` is `running_runs_since`'s answer: `_NO_RUNS` for a tenant
+        DB holding nothing of this agent's, a populated dict for a job still
+        going, and None for a tenant DB that could not be read.
+        """
+        from app.worker.tasks.runtime import deployment as deployment_task
+
+        @contextmanager
+        def _lend():
+            yield db
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(deployment_task, "get_sync_db", _lend))
+            stack.enter_context(
+                patch.object(
+                    deployment_task, "running_runs_since", return_value=running_runs
+                )
+            )
+            if mock_log is not None:
+                stack.enter_context(patch.object(deployment_task, "log", mock_log))
+            return deployment_task._a_run_is_already_live(
+                str(agent_id), "postgresql://test/tenant"
+            )
+
+    def _stale_s(self):
+        """Long enough silence that the clock alone reads this row as abandoned."""
+        from app.worker.tasks.runtime.deployment import _stale_after_s
+
+        return _stale_after_s() + 60
+
+    def test_a_chain_still_beating_blocks_however_old_its_row_is(self, session):
+        """The whole of #129. Three hours old, beating ten seconds ago, alive."""
+        agent_id = uuid.uuid4()
+        self._row(session, agent_id, age_s=3 * 3600, beat_age_s=10)
+
+        assert self._guard(session, agent_id) is True, (
+            "a chain that beat ten seconds ago is running, and a second trigger "
+            "that starts beside it puts two checklists on one agent"
+        )
+
+    def test_a_row_whose_beat_went_silent_is_reaped_and_the_trigger_goes_through(
+        self, session
+    ):
+        """The other direction: an abandoned row must not block the agent forever."""
+        agent_id = uuid.uuid4()
+        run = self._row(session, agent_id, age_s=4 * 3600, beat_age_s=4 * 3600)
+
+        assert self._guard(session, agent_id) is False
+        session.refresh(run)
+        assert run.status == "failed", (
+            "a row nothing is going to finish has to be closed out, not skipped "
+            f"over: {run.status}"
+        )
+
+    def test_a_row_that_has_not_beaten_yet_falls_back_to_when_it_was_created(
+        self, session
+    ):
+        """The first pass inserts and then dispatches; it has not polled yet."""
+        agent_id = uuid.uuid4()
+        self._row(session, agent_id, age_s=5, beat_age_s=None)
+
+        assert self._guard(session, agent_id) is True
+
+    def test_a_row_that_never_beat_and_never_will_is_reaped_on_its_created_at(
+        self, session
+    ):
+        agent_id = uuid.uuid4()
+        run = self._row(session, agent_id, age_s=5 * 3600, beat_age_s=None)
+
+        assert self._guard(session, agent_id) is False
+        session.refresh(run)
+        assert run.status == "failed"
+
+    def test_a_chain_queued_behind_the_red_team_run_it_dispatched_is_not_reaped(
+        self, session
+    ):
+        """Prefork concurrency 2: the continuation waits out the red-team run.
+
+        The chain dispatches both jobs onto the same `runtime` queue it runs on,
+        so its next pass cannot execute until a slot frees. With two slots the
+        gap between two beats is one red-team run end to end.
+        """
+        from app.worker.tasks.runtime.red_team import red_team_run_bound_s
+
+        agent_id = uuid.uuid4()
+        gap = red_team_run_bound_s() + 1
+        self._row(session, agent_id, age_s=gap + 60, beat_age_s=gap)
+
+        assert self._guard(session, agent_id) is True, (
+            "the chain is queued behind the red-team run it dispatched, which is "
+            f"{red_team_run_bound_s()}s of silence the guard has to sit through"
+        )
+
+    def test_a_chain_queued_behind_both_jobs_it_dispatched_is_not_reaped(
+        self, session
+    ):
+        """The documented solo worker, and the whole of this defect.
+
+        One execution slot means the continuation queues behind the eval chain
+        AND the red-team run, so the gap between two beats is both bounds end to
+        end. The threshold was the ceiling plus the decide grace, which is
+        shorter than that, so the guard reaped a chain that was still working and
+        a second checklist started beside it.
+        """
+        from app.worker.tasks.runtime.eval import eval_run_bound_s
+        from app.worker.tasks.runtime.red_team import red_team_run_bound_s
+
+        agent_id = uuid.uuid4()
+        gap = eval_run_bound_s() + red_team_run_bound_s() + 1
+        self._row(session, agent_id, age_s=gap + 60, beat_age_s=gap)
+
+        assert self._guard(session, agent_id) is True, (
+            f"a chain queued behind {gap - 1}s of jobs it started itself is "
+            "working, and reaping it lets a second checklist run on this agent"
+        )
+
+    def test_a_stale_row_whose_eval_run_is_still_running_is_not_reaped(self, session):
+        """The clock cannot see queue depth. The chain's own jobs can.
+
+        `_stale_after_s` sums ONE agent's bounds and the `runtime` queue is
+        shared, so two agents on the solo worker put more silence between two
+        beats than the threshold allows. The row is stale by the clock and the
+        chain is working: the eval run it dispatched is still going, and that
+        outranks the clock.
+        """
+        agent_id = uuid.uuid4()
+        stale = self._stale_s()
+        run = self._row(session, agent_id, age_s=stale + 60, beat_age_s=stale)
+
+        live = self._guard(
+            session,
+            agent_id,
+            running_runs={"eval": ("eval-run-1", datetime.now(timezone.utc))},
+        )
+
+        assert live is True, (
+            "the eval run this chain dispatched is still running, so the chain "
+            "is alive whatever its last beat says, and reaping it throws away a "
+            "checklist that was going to finish"
+        )
+        session.refresh(run)
+        assert run.status == "running", (
+            f"a chain with a job still in flight keeps its row: {run.status}"
+        )
+
+    def test_a_stale_row_whose_jobs_are_both_terminal_is_reaped(self, session):
+        """The other direction. Nothing is in flight and nothing is coming back."""
+        agent_id = uuid.uuid4()
+        stale = self._stale_s()
+        run = self._row(session, agent_id, age_s=stale + 60, beat_age_s=stale)
+
+        live = self._guard(session, agent_id, running_runs=_NO_RUNS)
+
+        assert live is False, (
+            "silent past the threshold with neither job running is an abandoned "
+            "row, and leaving it blocks this agent's next checklist forever"
+        )
+        session.refresh(run)
+        assert run.status == "failed", (
+            f"an abandoned row is closed out, not skipped over: {run.status}"
+        )
+
+    def test_a_stale_row_is_not_reaped_when_the_tenant_db_cannot_be_read(
+        self, session
+    ):
+        """Fail closed to live. An unread tenant DB is not evidence of anything.
+
+        Reading a failed connection as "neither job is running" would reap on
+        exactly the outage that makes a chain go quiet in the first place.
+        """
+        mock_log = MagicMock()
+        agent_id = uuid.uuid4()
+        stale = self._stale_s()
+        run = self._row(session, agent_id, age_s=stale + 60, beat_age_s=stale)
+
+        live = self._guard(session, agent_id, running_runs=None, mock_log=mock_log)
+
+        assert live is True, (
+            "the tenant DB could not say whether this chain's jobs are running, "
+            "and reaping on that is a live checklist thrown away on an outage"
+        )
+        session.refresh(run)
+        assert run.status == "running", (
+            f"nothing was proven about this chain, so nothing is closed: {run.status}"
+        )
+        withheld = [
+            call
+            for call in mock_log.warning.call_args_list
+            if call.args
+            and call.args[0] == "run_deployment_checklist.reap_withheld_jobs_unread"
+        ]
+        assert len(withheld) == 1, (
+            "a reap withheld on an unreadable tenant DB has to say so, or the "
+            f"agent looks blocked for no reason: {mock_log.warning.call_args_list}"
+        )
+        assert withheld[0].kwargs["run_id"] == str(run.id)
+
+    def test_a_finished_row_is_not_a_live_run_whatever_its_beat_says(self, session):
+        agent_id = uuid.uuid4()
+        self._row(session, agent_id, age_s=60, beat_age_s=1, status="complete")
+
+        assert self._guard(session, agent_id) is False
+
+    def test_another_agents_live_run_does_not_block_this_one(self, session):
+        self._row(session, uuid.uuid4(), age_s=60, beat_age_s=1)
+
+        assert self._guard(session, uuid.uuid4()) is False
+
+    def test_an_agent_with_no_row_at_all_is_let_through(self, session):
+        assert self._guard(session, uuid.uuid4()) is False
+
+    def test_two_triggers_cannot_both_hold_a_live_run_for_one_agent(self, session):
+        """0021's partial unique index: the guard's rule, said as data.
+
+        The guard reads the row, decides, then inserts, and those are three
+        steps. Two triggers reading the same stale row both decided it was
+        abandoned, both reaped it and both inserted, because nothing refused the
+        second. The window between the read and the insert belongs to no
+        transaction either trigger could hold, so the database has to be the one
+        that refuses.
+        """
+        from sqlalchemy.exc import IntegrityError
+
+        from app.models.checklist_run import ChecklistRun
+
+        agent_id = uuid.uuid4()
+        self._row(session, agent_id, age_s=5, beat_age_s=1)
+
+        session.add(ChecklistRun(agent_id=agent_id, status="running"))
+        with pytest.raises(IntegrityError):
+            session.commit()
+        session.rollback()
+
+    def test_a_finished_run_never_blocks_the_next_one(self, session):
+        """PARTIAL, on the live predicate. This table keeps every run it made."""
+        agent_id = uuid.uuid4()
+        self._row(session, agent_id, age_s=600, beat_age_s=600, status="complete")
+        self._row(session, agent_id, age_s=300, beat_age_s=300, status="failed")
+
+        self._row(session, agent_id, age_s=5, beat_age_s=1)
+
+    def test_a_reap_the_first_trigger_already_made_reads_as_a_live_run(self, session):
+        """The loser of the race must not go on to insert beside the winner."""
+        from sqlalchemy import update as sa_update
+
+        from app.models.checklist_run import ChecklistRun
+        from app.worker.tasks.runtime import deployment as deployment_task
+
+        agent_id = uuid.uuid4()
+        run = self._row(session, agent_id, age_s=5 * 3600, beat_age_s=5 * 3600)
+        # The trigger that got here first reaped this row and inserted its own,
+        # which holds the index now. This trigger is still carrying the row it
+        # read before any of that happened.
+        session.execute(
+            sa_update(ChecklistRun)
+            .where(ChecklistRun.id == run.id)
+            .values(status="failed")
+        )
+        session.commit()
+
+        assert deployment_task._reap(session, str(agent_id), run) is False, (
+            "this row was closed out by the trigger that got here first, and a "
+            "reap reporting success sends this one on to insert a second live "
+            "checklist for the agent"
+        )
+
+    def test_the_guard_reads_a_reap_that_wrote_nothing_as_a_live_run(self, session):
+        """`_reap`'s answer has to REACH the caller, not just be correct.
+
+        The test above proves the fenced UPDATE returns False to the loser of the
+        race. This proves the guard acts on it. A guard that called `_reap` and
+        then decided on its own would let the loser through to insert a second
+        live checklist, and every assertion about the fence would still pass.
+        """
+        agent_id = uuid.uuid4()
+        stale = self._stale_s()
+        run = self._row(session, agent_id, age_s=stale + 60, beat_age_s=stale)
+
+        # Trigger A reads the row, finds it silent with neither job running, and
+        # reaps it. It goes on to insert its own, which holds 0021's index now.
+        assert self._guard(session, agent_id) is False, (
+            "the first trigger through finds an abandoned row and closes it"
+        )
+
+        # Trigger B SELECTed the same row before any of that happened. Its reap
+        # meets a row that no longer says 'running' and writes nothing, and that
+        # zero-row answer is the only thing telling it the agent is taken.
+        assert self._guard(_StaleRead(session, run), agent_id) is True, (
+            "this trigger's reap wrote nothing because another trigger had "
+            "already closed the row and its own fresh run holds the agent; "
+            "reading that as an abandoned row sends this one on to insert a "
+            "second live checklist"
+        )
+
+
+class TestTheStaleThresholdOutlastsTheJobsTheChainWaitsBehind:
+    """What the guard calls abandoned has to be longer than the queue wait.
+
+    The threshold was CHECKLIST_WAIT_CEILING_S plus the decide grace, and its
+    docstring said a live chain "is never quiet for longer than the gap between
+    two passes, and that gap is bounded by the ceiling itself". The ceiling
+    bounds the WAIT, never the queue: a continuation cannot run at all while the
+    eval and red-team jobs it dispatched hold the `runtime` slots, so the gap
+    between two beats is those jobs' own bounds. The numbers are read from the
+    modules that own them, so a change to any bound moves the test with the code.
+    """
+
+    def _bounds(self):
+        from app.worker.tasks.runtime.eval import eval_run_bound_s
+        from app.worker.tasks.runtime.red_team import red_team_run_bound_s
+
+        return eval_run_bound_s(), red_team_run_bound_s()
+
+    def test_the_threshold_covers_both_job_bounds_and_the_ceiling(self):
+        from app.core.config import settings
+        from app.worker.tasks.runtime.deployment import _stale_after_s
+
+        eval_bound, red_team_bound = self._bounds()
+        queue_gap = eval_bound + red_team_bound + settings.CHECKLIST_WAIT_CEILING_S
+
+        assert _stale_after_s() > queue_gap, (
+            f"a chain can go {queue_gap}s between beats on the documented solo "
+            f"worker and the guard reaps it after {_stale_after_s()}s, so the "
+            "run it reaps is still working"
+        )
+
+    def test_the_threshold_is_read_from_the_bounds_rather_than_sized_beside_them(
+        self,
+    ):
+        """A moved bound has to move the threshold, or the two drift (1.33)."""
+        from unittest.mock import patch as _patch
+
+        from app.worker.tasks.runtime.deployment import _stale_after_s
+
+        before = _stale_after_s()
+        with _patch(
+            "app.worker.tasks.runtime.red_team.ATTACKER_LOOP_TIMEOUT_S", 240.0
+        ):
+            after = _stale_after_s()
+
+        assert after > before, (
+            "doubling the attacker's per-attempt budget doubles how long a "
+            f"continuation waits behind it, and the threshold did not move: "
+            f"{before} then {after}"
+        )
+
+
+class TestEveryPassStampsTheRunsBeat:
+    """The guard reads a heartbeat, so a live chain has to write one (#129)."""
+
+    def test_a_pass_that_polls_stamps_the_beat_on_its_own_row(self):
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        mock_db, mock_run = _build_full_happy_path_mock_db("run-1")
+        mock_run.heartbeat_at = None
+        with ExitStack() as stack:
+            for one in [
+                _deployment_patch("get_sync_db", new=_make_sync_db_ctx(mock_db)),
+                _deployment_patch(
+                    "fernet_decrypt", return_value="postgresql://test/tenant"
+                ),
+                _deployment_patch(
+                    "_dispatch_moment",
+                    return_value=datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
+                ),
+                _deployment_patch("_dispatch_eval_run", return_value=True),
+                _deployment_patch("_dispatch_red_team_run", return_value=True),
+                _deployment_patch("latest_eval_run_status_since", return_value=None),
+                _deployment_patch(
+                    "latest_red_team_run_status_since", return_value=None
+                ),
+                _deployment_patch("_requeue_wait", return_value=True),
+            ]:
+                stack.enter_context(one)
+            result = run_deployment_checklist.run(agent_id=str(uuid.uuid4()))
+
+        assert result["status"] == "waiting"
+        assert isinstance(mock_run.heartbeat_at, datetime), (
+            "a pass that reached the tenant DB has to say so on its row, or the "
+            f"guard reads the chain as abandoned: {mock_run.heartbeat_at!r}"
+        )
+
+    def test_a_continuation_stamps_its_own_beat_too(self):
+        """The pass that actually goes quiet is a continuation, not the first.
+
+        The first pass beats seconds after the insert, when the row's created_at
+        already reads as fresh. Every beat that matters to the guard comes from a
+        continuation, and this pins that one directly rather than through the
+        shared `_polled` the first-pass test happens to exercise.
+        """
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        mock_db, mock_run = _build_full_happy_path_mock_db("run-1")
+        mock_run.heartbeat_at = None
+        with ExitStack() as stack:
+            for one in [
+                _deployment_patch("get_sync_db", new=_make_sync_db_ctx(mock_db)),
+                _deployment_patch(
+                    "fernet_decrypt", return_value="postgresql://test/tenant"
+                ),
+                _deployment_patch("_dispatch_eval_run", return_value=True),
+                _deployment_patch("_dispatch_red_team_run", return_value=True),
+                _deployment_patch("latest_eval_run_status_since", return_value=None),
+                _deployment_patch(
+                    "latest_red_team_run_status_since", return_value=None
+                ),
+                _deployment_patch("_requeue_wait", return_value=True),
+            ]:
+                stack.enter_context(one)
+            result = run_deployment_checklist.run(
+                agent_id=str(uuid.uuid4()),
+                wait_state=_continuation_state("run-1"),
+            )
+
+        assert result["status"] == "waiting"
+        assert isinstance(mock_run.heartbeat_at, datetime), (
+            "a continuation queued behind the jobs it dispatched is exactly the "
+            "chain the guard is deciding about, and it has to say it ran: "
+            f"{mock_run.heartbeat_at!r}"
+        )
+
+
+def _continuation_state(run_id, pass_no=0):
+    """The state a continuation carries, shaped the way `_open_wait` writes it."""
+    return {
+        "run_id": run_id,
+        "since": "2026-08-30T12:00:00+00:00",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "statuses": {"eval": None, "red_team": None},
+        "eval_dispatched": True,
+        "red_team_dispatched": True,
+        "pass_no": pass_no,
+    }
+
+
+class TestOneWaitIsOneChain:
+    """A redelivered continuation is the same wait twice, not two waits (#124).
+
+    The checklist waits by re-queueing itself, and the task is acks_late=True. A
+    worker that dies between `apply_async` and the ack hands its message back, so
+    one wait forks into two chains carrying the same run_id and the same
+    wait_state. Both would poll, both would re-queue, both would pass the ceiling
+    and both would decide: two orchestrator turns billed to the tenant, two
+    ledger rows, and two `_persist_complete` writes landing last-writer-wins on
+    one row, which can disagree.
+
+    The step-2 guard cannot see any of it. A continuation carries wait_state and
+    skips steps 2 and 3 entirely, so nothing between the broker and the row ever
+    asked whether this message had already been handled. checklist_runs.pass_no
+    does: each pass names the number it expects the row to hold and advances it,
+    so exactly one fork writes and the other stops.
+    """
+
+    def _drive(self, state, polls, requeued):
+        """One continuation pass against `mock_run`, counting what it spends."""
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        with ExitStack() as stack:
+            for one in [
+                _deployment_patch("get_sync_db", new=_make_sync_db_ctx(self.db)),
+                _deployment_patch(
+                    "fernet_decrypt", return_value="postgresql://test/tenant"
+                ),
+                _deployment_patch(
+                    "latest_eval_run_status_since",
+                    new=lambda *_a, **_k: polls.append("eval"),
+                ),
+                _deployment_patch(
+                    "latest_red_team_run_status_since",
+                    new=lambda *_a, **_k: polls.append("red_team"),
+                ),
+                _deployment_patch(
+                    "_requeue_wait",
+                    new=lambda _agent_id, s: requeued.append(s) or True,
+                ),
+                _deployment_patch("log", new=self.log),
+            ]:
+                stack.enter_context(one)
+            return run_deployment_checklist.run(agent_id=str(uuid.uuid4()), wait_state=state)
+
+    def setup_method(self):
+        self.db, self.run = _build_full_happy_path_mock_db("run-1")
+        self.run.heartbeat_at = None
+        self.log = MagicMock()
+
+    def test_the_second_delivery_of_one_continuation_stops_before_it_polls(self):
+        """The defect itself: one message, delivered twice, run twice."""
+        state = _continuation_state("run-1", pass_no=0)
+        polls, requeued = [], []
+
+        first = self._drive(state, polls, requeued)
+        assert first["status"] == "waiting", (
+            f"the first delivery of this continuation has to run: {first}"
+        )
+        polls_after_first = len(polls)
+        requeues_after_first = len(requeued)
+
+        # The SAME state object the broker held, redelivered verbatim.
+        second = self._drive(state, polls, requeued)
+
+        assert second == {}, (
+            f"a redelivered continuation must hand nothing back: {second}"
+        )
+        assert len(polls) == polls_after_first, (
+            "the redelivered fork read the tenant DB, which is the first half of "
+            f"a second chain: {polls}"
+        )
+        assert len(requeued) == requeues_after_first, (
+            "the redelivered fork re-queued itself, so two chains now poll, "
+            "decide and persist for one checklist run"
+        )
+
+    def test_the_surviving_chain_carries_the_number_it_advanced_to(self):
+        """A fence nothing advances is a fence a redelivery walks straight past."""
+        polls, requeued = [], []
+
+        self._drive(_continuation_state("run-1", pass_no=0), polls, requeued)
+
+        assert self.run.pass_no == 1, (
+            f"the pass has to be taken ON THE ROW, or nothing was claimed: {self.run.pass_no}"
+        )
+        assert requeued[0]["pass_no"] == 1, (
+            "the next continuation is fenced on the number this pass advanced to, "
+            f"and it was handed {requeued[0]['pass_no']!r}"
+        )
+
+    def test_the_chain_walks_forward_pass_after_pass(self):
+        """Three deliveries in a row, each claiming the number the last handed on."""
+        polls, requeued = [], []
+
+        state = _continuation_state("run-1", pass_no=0)
+        for _ in range(3):
+            assert self._drive(state, polls, requeued)["status"] == "waiting"
+            state = requeued[-1]
+
+        assert [s["pass_no"] for s in requeued] == [1, 2, 3], (
+            f"a live chain must not be stopped by its own fence: {requeued}"
+        )
+        assert len(polls) == 6, (
+            f"three passes, both halves polled on each: {polls}"
+        )
+
+    def test_the_stopped_fork_says_it_was_superseded_rather_than_reaped(self):
+        """Two incidents, one symptom, and the log line is all a reader gets.
+
+        A reaped row means the guard read this chain as abandoned and something
+        else holds the agent. A superseded pass means the broker delivered one
+        message twice, which nothing else in the system ever records.
+        """
+        state = _continuation_state("run-1", pass_no=0)
+        polls, requeued = [], []
+        self._drive(state, polls, requeued)
+        self.log.reset_mock()
+
+        self._drive(state, polls, requeued)
+
+        events = [
+            call.args[0] for call in self.log.warning.call_args_list if call.args
+        ]
+        assert "run_deployment_checklist.continuation_superseded" in events, (
+            f"the redelivery has to be named as one: {events}"
+        )
+        assert "run_deployment_checklist.run_reaped_while_live" not in events, (
+            "a live row whose pass moved on was not reaped, and sending a reader "
+            f"to the guard is sending them to the wrong incident: {events}"
+        )
+
+    def test_a_continuation_carrying_no_pass_number_is_refused(self):
+        """An older build's state has no number, and defaulting one forks the chain."""
+        from app.worker.tasks.runtime.deployment import _require_wait_state
+
+        state = _continuation_state("run-1")
+        del state["pass_no"]
+
+        with pytest.raises(KeyError) as excinfo:
+            _require_wait_state(state)
+        assert "pass_no" in str(excinfo.value)
+
+    def test_a_pass_number_that_is_not_an_integer_is_refused(self):
+        """The fence compares against an INTEGER column, so a string stops a live
+        chain the broker never forked."""
+        from app.worker.tasks.runtime.deployment import _require_wait_state
+
+        with pytest.raises(ValueError) as excinfo:
+            _require_wait_state(_continuation_state("run-1", pass_no="1"))
+        assert "pass_no" in str(excinfo.value)
+
+
+class TestAReapedRunIsNeverWrittenOverByItsOwnChain:
+    """#129's other direction: the guard closes a row and the chain reopens it.
+
+    The guard reaps a chain it reads as abandoned, and the next trigger starts a
+    fresh checklist for the agent. The reaped chain was never dead — it was
+    queued — so its next pass stamped a beat onto the row it no longer owned and
+    its deciding pass flipped that row to 'complete'. Two complete checklists on
+    one agent, which is the outcome the guard exists to prevent, reached from
+    inside it.
+
+    Every write the chain makes is now fenced on the row still saying 'running',
+    so a reaped run takes nothing further from it.
+    """
+
+    def _drive_continuation(self, mock_run_status, *, mock_log=None):
+        """One continuation pass against a row in the state the guard left it."""
+        from app.worker.tasks.runtime import deployment as deployment_task
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        mock_db, mock_run = _build_full_happy_path_mock_db("run-1")
+        mock_run.status = mock_run_status
+        mock_run.heartbeat_at = None
+        requeued = []
+
+        with ExitStack() as stack:
+            for one in [
+                _deployment_patch("get_sync_db", new=_make_sync_db_ctx(mock_db)),
+                _deployment_patch(
+                    "fernet_decrypt", return_value="postgresql://test/tenant"
+                ),
+                _deployment_patch("latest_eval_run_status_since", return_value=None),
+                _deployment_patch(
+                    "latest_red_team_run_status_since", return_value=None
+                ),
+                _deployment_patch(
+                    "_requeue_wait",
+                    new=lambda _agent_id, state: requeued.append(state) or True,
+                ),
+            ]:
+                stack.enter_context(one)
+            if mock_log is not None:
+                stack.enter_context(patch.object(deployment_task, "log", mock_log))
+            result = run_deployment_checklist.run(
+                agent_id=str(uuid.uuid4()),
+                wait_state=_continuation_state("run-1"),
+            )
+        return result, mock_run, requeued
+
+    def test_a_deciding_pass_whose_row_was_reaped_does_not_complete_it(self):
+        """The adversary's probe B. The reap lands during the narration turn."""
+        _, fetchers, collectors = _sequenced_world(eval_polls=0, red_team_polls=0)
+
+        result, mock_run, _ = _drive_sequenced(
+            fetchers,
+            collectors,
+            on_orchestrate=lambda run: setattr(run, "status", "failed"),
+        )
+
+        assert mock_run.status == "failed", (
+            "the guard closed this row out and a second checklist holds the "
+            f"agent now; completing it puts two reports on one: {mock_run.status}"
+        )
+        assert result == {"status": "reaped", "run_id": mock_run.id}, (
+            f"a pass that wrote nothing must not report a recommendation: {result}"
+        )
+
+    def test_a_continuation_whose_row_was_reaped_stops_before_it_re_queues(self):
+        """The beat is where a queued chain finds out, and it stops there."""
+        result, mock_run, requeued = self._drive_continuation("failed")
+
+        assert requeued == [], (
+            "a chain whose row was reaped must not keep the wait alive; the "
+            f"agent already has a live checklist: {requeued}"
+        )
+        assert result == {}, f"nothing was written, so nothing is reported: {result}"
+        assert mock_run.heartbeat_at is None, (
+            "the beat landed on a row this chain no longer owns, which is what "
+            "made the guard read the reaped run as alive again"
+        )
+
+    def test_the_reaped_chain_says_so_once_in_the_log(self):
+        mock_log = MagicMock()
+
+        self._drive_continuation("failed", mock_log=mock_log)
+
+        reaped = [
+            call
+            for call in mock_log.warning.call_args_list
+            if call.args
+            and call.args[0] == "run_deployment_checklist.run_reaped_while_live"
+        ]
+        assert len(reaped) == 1, (
+            f"expected one run_reaped_while_live warning: "
+            f"{mock_log.warning.call_args_list}"
+        )
+        assert reaped[0].kwargs["run_id"] == "run-1"
+
+    def test_a_row_still_running_is_still_this_chains_to_write(self):
+        """The fence is scoped to a reap. An ordinary continuation carries on."""
+        result, mock_run, requeued = self._drive_continuation("running")
+
+        assert result["status"] == "waiting", result
+        assert len(requeued) == 1
+        assert isinstance(mock_run.heartbeat_at, datetime), (
+            f"a live chain still beats: {mock_run.heartbeat_at!r}"
+        )
+
+
+class TestTheFirstPassIsFencedLikeTheContinuation:
+    """#125: the stretch from the row insert to the first poll had no fence.
+
+    A continuation that cannot be read marks its run failed, and a re-queue that
+    fails does the same. The FIRST pass ran the dispatch moment, both dispatches
+    and the first poll outside every try, so anything that raised there left the
+    row 'running' with no terminal update and the step-2 guard then refused every
+    re-run behind it for the whole window.
+    """
+
+    def _state(self):
+        return {
+            "run_id": "run-1",
+            "since": "2026-08-30T12:00:00+00:00",
+            "started_at": "2026-08-30T12:00:01+00:00",
+            "statuses": {"eval": None, "red_team": None},
+            "eval_dispatched": True,
+            "red_team_dispatched": True,
+            "pass_no": 0,
+        }
+
+    def _drive(self, patches, wait_state=None):
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        mock_db, mock_run = _build_full_happy_path_mock_db("run-1")
+        mock_log = MagicMock()
+        with ExitStack() as stack:
+            for one in [
+                _deployment_patch("get_sync_db", new=_make_sync_db_ctx(mock_db)),
+                _deployment_patch(
+                    "fernet_decrypt", return_value="postgresql://test/tenant"
+                ),
+                _deployment_patch("log", new=mock_log),
+                *patches,
+            ]:
+                stack.enter_context(one)
+            result = run_deployment_checklist.run(
+                agent_id=str(uuid.uuid4()), wait_state=wait_state
+            )
+        return result, mock_run, mock_log
+
+    def _opened(self):
+        return [
+            _deployment_patch(
+                "_dispatch_moment",
+                return_value=datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
+            ),
+            _deployment_patch("_dispatch_eval_run", return_value=True),
+            _deployment_patch("_dispatch_red_team_run", return_value=True),
+        ]
+
+    def test_a_wait_that_cannot_be_opened_marks_the_row_failed(self):
+        """The row exists from the insert on, so the failure has somewhere to land."""
+        result, mock_run, _ = self._drive(
+            [
+                _deployment_patch(
+                    "_dispatch_moment", side_effect=RuntimeError("tenant clock refused")
+                )
+            ]
+        )
+
+        assert result == {}, f"a run that never opened its wait is not waiting: {result}"
+        assert mock_run.status == "failed", (
+            "the row must not sit 'running' with no wait behind it: "
+            f"{mock_run.status}"
+        )
+
+    def test_the_first_poll_that_raises_marks_the_row_failed(self):
+        result, mock_run, _ = self._drive(
+            self._opened()
+            + [
+                _deployment_patch(
+                    "latest_eval_run_status_since",
+                    side_effect=RuntimeError("tenant db unreachable"),
+                )
+            ]
+        )
+
+        assert result == {}, f"a pass that never polled is not waiting: {result}"
+        assert mock_run.status == "failed", (
+            f"the row must not sit 'running' after a poll that raised: {mock_run.status}"
+        )
+
+    def test_a_poll_that_raises_on_a_continuation_marks_the_row_failed(self):
+        """The continuation reads its state fine and the poll is what falls over."""
+        result, mock_run, _ = self._drive(
+            [
+                _deployment_patch(
+                    "latest_eval_run_status_since",
+                    side_effect=RuntimeError("tenant db unreachable"),
+                )
+            ],
+            wait_state=self._state(),
+        )
+
+        assert result == {}
+        assert mock_run.status == "failed", (
+            f"a continuation whose poll raised must close its row: {mock_run.status}"
+        )
+
+    def test_the_failure_is_logged_with_the_error_type_that_caused_it(self):
+        """`_continue_wait`'s shape: the run is named and so is what went wrong."""
+        result, _, mock_log = self._drive(
+            [
+                _deployment_patch(
+                    "_dispatch_moment", side_effect=KeyError("no such setting")
+                )
+            ]
+        )
+
+        assert result == {}
+        failures = [
+            call
+            for call in mock_log.error.call_args_list
+            if call.args and call.args[0] == "run_deployment_checklist.failed"
+        ]
+        assert len(failures) == 1, mock_log.error.call_args_list
+        assert failures[0].kwargs["run_id"] == "run-1"
+        assert failures[0].kwargs["error_type"] == "KeyError", (
+            f"the original failure has to survive to the log: {failures[0].kwargs}"
+        )
+
+
 class TestAContinuationIsValidatedByValue:
     """FM-018: the reader checks what the writer guarantees, not key names alone."""
 
@@ -2768,6 +4188,7 @@ class TestAContinuationIsValidatedByValue:
             "statuses": {"eval": "complete", "red_team": None},
             "eval_dispatched": True,
             "red_team_dispatched": True,
+            "pass_no": 1,
         }
         state.update(over)
         return state
@@ -2852,4 +4273,254 @@ class TestTheWaitMeasuresItself:
         value = _waited_s({"started_at": started.isoformat()})
         assert 29.0 <= value <= 40.0, (
             f"thirty seconds of wait must read as about thirty seconds: {value}"
+        )
+
+
+class TestTheKnowledgeCollectorsRefuseLikeTheGatedTwo:
+    """#131: `_collected`'s two remaining fallbacks were exact plausible zeros.
+
+    The eval and red-team halves substitute an 'unavailable' signal the evidence
+    gate refuses to ship on. These two substituted
+    `{"row_count": 0, "avg_faithfulness": 0.0, "avg_relevance": 0.0}` and
+    `{"document_count": 0, "chunk_count": 0, "last_ingested_at": None}`, which
+    the owner's report renders as an empty knowledge base rather than as a read
+    that never happened. Driven through the real except path, because the
+    substitution is the thing under test.
+    """
+
+    def _drive(self):
+        from app.services.deployment_service import (
+            BLAST_RADIUS_DEFAULT_SIGNAL as _BLAST_RADIUS_DEFAULT_SIGNAL,
+        )
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        agent_id = str(uuid.uuid4())
+        mock_run_id = str(uuid.uuid4())
+        mock_db, mock_run = _build_full_happy_path_mock_db(mock_run_id)
+        told = {}
+
+        async def _fake_call_orchestrator_async(
+            signals_json, result_container, *, ledger=None
+        ):
+            told.update(json.loads(signals_json))
+            result_container["report"] = {
+                "recommendation": "ship",
+                "summary": "All good.",
+                "warnings": [],
+            }
+
+        with _past_step_3b(), patch(
+            "app.worker.tasks.runtime.deployment.get_sync_db",
+            _make_sync_db_ctx(mock_db),
+        ), patch(
+            "app.worker.tasks.runtime.deployment.fernet_decrypt",
+            return_value="postgresql://test/tenant",
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_eval_summary_sync",
+            return_value=_measured_eval_signal(),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_red_team_summary_sync",
+            return_value=_measured_red_team_signal(),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_verified_qa_stats_sync",
+            side_effect=RuntimeError("tenant DB unreachable"),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_corpus_stats_sync",
+            side_effect=RuntimeError("tenant DB unreachable"),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
+            return_value=dict(_BLAST_RADIUS_DEFAULT_SIGNAL),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._compute_envelope_hash_sync",
+            return_value="test-envelope-hash",
+        ), patch(
+            "app.worker.tasks.runtime.deployment._call_orchestrator_async",
+            side_effect=_fake_call_orchestrator_async,
+        ):
+            result = run_deployment_checklist.run(agent_id=agent_id)
+
+        return result, mock_run, told
+
+    def test_the_verified_qa_outage_is_persisted_as_an_outage(self):
+        _, mock_run, _ = self._drive()
+        stats = mock_run.report["verified_qa_stats"]
+
+        assert stats["signal"] == "unavailable"
+        assert stats["row_count"] is None
+        assert stats["avg_faithfulness"] is None
+        assert stats["avg_relevance"] is None
+
+    def test_the_corpus_outage_is_persisted_as_an_outage(self):
+        _, mock_run, _ = self._drive()
+        stats = mock_run.report["corpus_stats"]
+
+        assert stats["signal"] == "unavailable"
+        assert stats["document_count"] is None
+        assert stats["chunk_count"] is None
+
+    def test_a_reader_can_tell_an_outage_from_a_tenant_that_has_nothing(self):
+        """The zeros a real empty tenant produces, asserted as NOT what an
+        outage writes. This is the whole of #131."""
+        _, mock_run, _ = self._drive()
+
+        assert mock_run.report["verified_qa_stats"] != {
+            "row_count": 0,
+            "avg_faithfulness": 0.0,
+            "avg_relevance": 0.0,
+        }
+        assert mock_run.report["corpus_stats"] != {
+            "document_count": 0,
+            "chunk_count": 0,
+            "last_ingested_at": None,
+        }
+
+    def test_the_outage_reaches_the_owner_as_a_warning(self):
+        _, mock_run, _ = self._drive()
+        ids = [warning["warning_id"] for warning in mock_run.warnings]
+
+        assert "verified_qa_unavailable" in ids
+        assert "verified_qa_low_count" not in ids, (
+            "a corpus nobody counted is not a thin corpus"
+        )
+
+    def test_the_orchestrator_is_told_the_figures_are_absent(self):
+        _, _, told = self._drive()
+
+        assert told["verified_qa_stats"]["row_count"] is None
+        assert told["corpus_stats"]["document_count"] is None
+
+
+class TestAFailedPassIsHandedBackOnANumberTheRowWillMatch:
+    """A retried pass has to be able to claim the row it is retrying (#124).
+
+    `Task.retry` re-sends the message's OWN kwargs, and the message carries the
+    pass number the row held BEFORE this pass beat on it. The beat is the claim:
+    it advances the counter every continuation is fenced on, so by the time the
+    pass fails the number in the message is one behind the row and the retry is
+    refused by the very fence that stops a redelivered twin. The chain's own
+    retry looked exactly like a fork of it, stopped, and the run was left for the
+    staleness reap.
+
+    The row's status is the other half. Closing the run out as 'failed' and then
+    asking for a retry says two things that cannot both be true, and the fence is
+    on the status as well, so the retry could not have claimed even carrying the
+    right number. A run with an attempt still to come is running; it lands
+    'failed' when the attempts are spent.
+    """
+
+    def setup_method(self):
+        self.db, self.run = _build_full_happy_path_mock_db("run-1")
+        self.run.heartbeat_at = None
+        self.run.pass_no = 0
+        self.agent_id = str(uuid.uuid4())
+
+    def _drive(self, wait_state, handed_back):
+        """One post-wait pass whose decision raises, with its retry captured."""
+        from celery.exceptions import Retry
+
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        def _retry(*_args, **kwargs):
+            handed_back.append(kwargs)
+            raise Retry("handed back to the broker")
+
+        with ExitStack() as stack:
+            for one in [
+                _deployment_patch("get_sync_db", new=_make_sync_db_ctx(self.db)),
+                _deployment_patch(
+                    "fernet_decrypt", return_value="postgresql://test/tenant"
+                ),
+                _deployment_patch(
+                    "latest_eval_run_status_since", return_value="complete"
+                ),
+                _deployment_patch(
+                    "latest_red_team_run_status_since", return_value="complete"
+                ),
+                _deployment_patch("_requeue_wait", return_value=True),
+                _deployment_patch(
+                    "_collect_signals",
+                    return_value={
+                        "eval_summary": {},
+                        "red_team_summary": {},
+                        "verified_qa_stats": {},
+                        "corpus_stats": {},
+                        "blast_radius": {},
+                    },
+                ),
+                _deployment_patch("_envelope_hash", return_value="hash"),
+                _deployment_patch(
+                    "_compute_verdict",
+                    side_effect=RuntimeError("the record read fell over"),
+                ),
+                patch.object(run_deployment_checklist, "retry", side_effect=_retry),
+            ]:
+                stack.enter_context(one)
+            with pytest.raises(Retry):
+                run_deployment_checklist.run(
+                    agent_id=self.agent_id, wait_state=wait_state
+                )
+
+    def test_the_retry_carries_the_pass_number_the_beat_advanced_to(self):
+        """What goes back to the broker names the number the row now holds."""
+        handed_back: list = []
+
+        self._drive(_continuation_state("run-1", pass_no=0), handed_back)
+
+        assert self.run.pass_no == 1, (
+            f"the pass never beat on the row, so this test proves nothing: "
+            f"{self.run.pass_no}"
+        )
+        resent = handed_back[0].get("kwargs")
+        assert resent is not None, (
+            "the retry re-sent the message's own kwargs, which carry the pass "
+            "number this pass already spent"
+        )
+        assert resent["wait_state"]["pass_no"] == 1, (
+            "the retry carries pass "
+            f"{resent['wait_state']['pass_no']} while the row holds "
+            f"{self.run.pass_no}; the fence that stops a redelivered fork stops "
+            "the chain's own retry too"
+        )
+        assert resent["agent_id"] == self.agent_id
+
+    def test_the_row_stays_claimable_while_an_attempt_is_still_to_come(self):
+        """The retry beats on the row and takes the next pass, like any continuation."""
+        handed_back: list = []
+
+        self._drive(_continuation_state("run-1", pass_no=0), handed_back)
+        assert self.run.status == "running", (
+            f"the run was closed out as {self.run.status!r} and then retried; "
+            "the fence is on the status too, so the retry can never claim it"
+        )
+
+        self._drive(handed_back[0]["kwargs"]["wait_state"], handed_back)
+
+        assert self.run.pass_no == 2, (
+            "the retried pass was refused the row and stopped, so this checklist "
+            f"never retried at all: pass_no={self.run.pass_no}"
+        )
+
+    def test_the_run_is_closed_out_once_the_attempts_are_spent(self):
+        """The last attempt is where 'failed' belongs, and it still lands there."""
+        from app.worker.tasks.runtime.deployment import (
+            _failed_and_handed_back,
+            run_deployment_checklist,
+        )
+
+        spent = MagicMock()
+        spent.request.retries = run_deployment_checklist.max_retries
+        spent.max_retries = run_deployment_checklist.max_retries
+
+        with _deployment_patch("get_sync_db", new=_make_sync_db_ctx(self.db)):
+            result = _failed_and_handed_back(
+                spent,
+                self.agent_id,
+                _continuation_state("run-1", pass_no=1),
+                RuntimeError("the last attempt fell over too"),
+            )
+
+        assert result == {}
+        assert self.run.status == "failed", (
+            "a checklist with no attempts left has to close its own row, or the "
+            f"guard is the only thing that will: {self.run.status!r}"
         )
