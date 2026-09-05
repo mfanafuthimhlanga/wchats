@@ -1,8 +1,9 @@
 """
 parse_documents — Celery task: parse uploaded documents via Docling.
 
-Position in M2 chain (1st of 4):
+Position in the ingestion chain (1st of 6):
     parse_documents → chunk_documents → generate_metadata → embed_and_migrate
+    → synthesize_retrieval_strategy → finish_ingestion
 
 Idempotency contract (Layer 1 of 4 — source_hash guard):
     Each document is checked for parse_status == 'parsed'. If the document already

@@ -1,11 +1,12 @@
 """
 embed_and_migrate — Celery task: Voyage embedding + HNSW upsert + REINDEX.
 
-Position in M2 chain (4th and final of 4):
+Position in the ingestion chain (4th of 6):
     parse_documents → chunk_documents → generate_metadata → embed_and_migrate
+    → synthesize_retrieval_strategy → finish_ingestion
 
-This is the terminal task in the ingestion chain. After it succeeds, the
-job status is set to 'complete' and the tenant DB is ready for M3 retrieval.
+After it succeeds the tenant DB is ready for retrieval. It does NOT end the run:
+`job.complete` and the terminal `jobs` row belong to finish_ingestion (#168).
 
 Layer 4 idempotency mechanism:
     Two-level idempotency protects against task retry:
@@ -27,11 +28,10 @@ Terminal event order (CONTEXT.md §SSE Event Vocabulary):
     embedding.started  ← emitted per document (before embed call)
     embedding.complete ← emitted per document (after upsert commit)
     ingestion.complete ← emitted once (after all documents processed + REINDEX)
-    job.complete       ← emitted once (after job.status = 'complete' is written)
 
-Important: agent.status is NOT modified in M2. Only job.status moves to
-'complete'. This is different from migrations.py which sets agent.status='ready'
-— that is an M1-only behaviour. M2 assumes agent is already 'ready'.
+Important: agent.status is NOT modified by the ingestion chain. This is different
+from migrations.py, which sets agent.status='ready'; that is an M1-only behaviour
+and the ingestion chain assumes the agent is already 'ready'.
 
 Connection string security (CLAUDE.md non-negotiable rule):
     The tenant DB connection string is NEVER in the task arguments. The IngestionJob
@@ -47,7 +47,7 @@ Return value (chain contract):
     and returned unchanged, which is what the `or` chain here used to do.
 
     Two names that used to be one: `job` is the IngestionJob the chain carries, and
-    `job_row` is the control DB Job row this task marks complete.
+    `job_row` is the control DB Job row, read here only to confirm the run exists.
 
 Threat mitigations (T-02-05):
     T-02-05-01: Task signature is (self, job: IngestionJob); VOYAGE_API_KEY read from
@@ -62,7 +62,6 @@ Threat mitigations (T-02-05):
                 content, never vector values, never Voyage response body.
 """
 
-from datetime import datetime, timezone
 
 import psycopg2
 import psycopg2.extensions
@@ -100,21 +99,22 @@ _redis = redis_lib.from_url(_url_clean, **_ssl_opts)
 )
 @job_in_job_out
 def embed_and_migrate(self, job: IngestionJob) -> IngestionJob:
-    """Embed chunks, upsert into tenant embeddings table, REINDEX HNSW, emit terminal events.
+    """Embed chunks, upsert into the tenant embeddings table, REINDEX HNSW.
 
-    This is the fourth and final task in the M2 ingestion chain. It:
+    This is the fourth of the six tasks in the ingestion chain. It:
     1. Fetches only unembedded chunks per document (LEFT JOIN WHERE NULL — Layer 4 read guard).
     2. Calls embed_chunks() to batch-embed with Voyage AI (128 items/request, voyage-3).
     3. Upserts each vector via INSERT ... ON CONFLICT (chunk_id) DO UPDATE.
     4. Runs REINDEX INDEX CONCURRENTLY embeddings_vector_hnsw_idx in AUTOCOMMIT mode.
-    5. Emits terminal SSE events and sets job.status = 'complete'.
+    5. Emits ingestion.complete, its own step event. The run's terminal event
+       belongs to finish_ingestion, two hops later (#168).
 
     Args:
         job: The IngestionJob generate_metadata forwarded. Connection strings are
              NEVER on it; the type has no field for one (CLAUDE.md rule 1).
 
     Returns:
-        The same job, the chain's last hop handing back what it was given.
+        The same job, handed on to synthesize_retrieval_strategy.
         job_in_job_out converts both ends, so the broker still sees a dict.
     """
     agent_id = job.agent_id
@@ -131,7 +131,7 @@ def embed_and_migrate(self, job: IngestionJob) -> IngestionJob:
             return job
 
         # ------------------------------------------------------------------
-        # Fetch job from control DB — idempotent exit if already complete
+        # Fetch job from control DB. A run with no row is a run to abandon
         # ------------------------------------------------------------------
         job_row = db.get(Job, job_id)
         if job_row is None:
@@ -290,26 +290,16 @@ def embed_and_migrate(self, job: IngestionJob) -> IngestionJob:
             )
 
             # ------------------------------------------------------------------
-            # Emit terminal events and mark job complete
-            # (mirrors migrations.py lines 186-200)
+            # This hop's own step event, and nothing terminal (#168).
+            # `job.complete` and the `jobs` row belong to finish_ingestion, the
+            # hop appended for the purpose. This task stopped being last when
+            # synthesize_retrieval_strategy joined the chain, and a subscriber
+            # that closes on job.complete was closing one hop early.
             # ------------------------------------------------------------------
             emit(
                 job_id,
                 "ingestion.complete",
                 {"job_id": job_id, "total_chunks": total_chunks_embedded},
-                db,
-                _redis,
-            )
-
-            # Update job row — agent.status is NOT touched in M2 (M1-only behaviour)
-            job_row.status = "complete"
-            job_row.finished_at = datetime.now(timezone.utc)
-            db.commit()
-
-            emit(
-                job_id,
-                "job.complete",
-                {"job_id": job_id},
                 db,
                 _redis,
             )

@@ -1,8 +1,9 @@
 """
 generate_metadata — Celery task: metadata + entity extraction per chunk.
 
-Position in M2 chain (3rd of 4):
+Position in the ingestion chain (3rd of 6):
     parse_documents → chunk_documents → generate_metadata → embed_and_migrate
+    → synthesize_retrieval_strategy → finish_ingestion
 
 Layout:
     generate_metadata    the task, one tenant connection, the document loop, the
@@ -88,7 +89,8 @@ Cost design (batched model calls):
 Event emission order (CONTEXT.md §SSE Event Vocabulary):
     metadata.started  ← emitted per document (before the batch loop)
     metadata.progress ← emitted after each batch ({processed, total})
-    metadata.complete ← emitted per document (after all chunks processed)
+    metadata.complete ← emitted per document that produced metadata, or owed none
+    metadata.failed   ← emitted per document whose every batch failed (#168)
     job.failed        ← terminal, only on the wholly-failed path
 
 Return value (chain contract):
@@ -286,6 +288,22 @@ def _enrich_document(
 
     pending = _pending_chunks(tenant_conn, chunk_rows)
     enriched = _enrich_pending(tenant_conn, db, job_id, pending, ledger)
+
+    # A document whose every batch failed did not complete (#168). This emitted
+    # `metadata.complete` regardless, so a subscriber read `complete` for the
+    # document and then `job.failed` for the run it was the whole of. A document
+    # that owed nothing (no pending chunks) is complete, and so is a partial one:
+    # both produced the metadata they were able to.
+    if pending and not enriched:
+        emit(
+            job_id,
+            "metadata.failed",
+            {"document_id": doc_id, "chunks_seen": len(pending), "chunks_enriched": 0},
+            db,
+            _redis,
+        )
+        log.error("generate_metadata.document_enriched_nothing", document_id=doc_id, chunks_seen=len(pending))
+        return len(pending), enriched
 
     emit(job_id, "metadata.complete", {"document_id": doc_id}, db, _redis)
     log.info("generate_metadata.complete", document_id=doc_id, chunks_enriched=enriched)

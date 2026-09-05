@@ -1,8 +1,9 @@
 """
 chunk_documents — Celery task: chunk parsed documents via HybridChunker + table Markdown path.
 
-Position in M2 chain (2nd of 4):
+Position in the ingestion chain (2nd of 6):
     parse_documents → chunk_documents → generate_metadata → embed_and_migrate
+    → synthesize_retrieval_strategy → finish_ingestion
 
 Layer 2 idempotency (ON CONFLICT DO UPDATE):
     Chunk IDs are derived via uuid5(NAMESPACE_URL, f"{document_id}:{ordinal}") — stable

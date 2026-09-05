@@ -1,9 +1,9 @@
 """
 synthesize_retrieval_strategy — Celery task: corpus-signal-driven retrieval strategy synthesis.
 
-Position in M3 chain (5th of 5):
+Position in the ingestion chain (5th of 6):
     parse_documents → chunk_documents → generate_metadata → embed_and_migrate
-    → synthesize_retrieval_strategy
+    → synthesize_retrieval_strategy → finish_ingestion
 
 This task runs after embedding is complete. It:
 1. Fetches corpus signals from the tenant DB (psycopg2).

@@ -2,7 +2,7 @@
 Unit tests for M2 SSE event vocabulary — ING-08.
 
 Verifies that:
-  1. M2 defines exactly 11 SSE event types (RESEARCH.md §8 contract).
+  1. The chain defines exactly 14 SSE event types.
   2. M2 event types are distinct from M1 event vocabulary (no name collisions
      other than intentionally shared terminal events "job.complete" and "job.failed").
   3. All pipeline stage event types come in started/complete pairs.
@@ -16,8 +16,10 @@ are distinct from M1 vocabulary and form the complete set the chain emits.
 
 import inspect
 
-# M2 SSE event vocabulary — all 11 event types emitted by the ingestion chain
-# (RESEARCH.md §8, CONTEXT.md §SSE Event Vocabulary)
+# Every SSE event type the ingestion chain emits (CONTEXT.md §SSE Event
+# Vocabulary). It was eleven and named M2 when the chain was four hops. It is
+# fourteen now: `metadata.progress` and `strategy.synthesized` were emitted for
+# months without being listed here, and #168 added `metadata.failed`.
 M2_EVENT_TYPES = {
     "ingestion.started",
     "parsing.started",
@@ -25,10 +27,16 @@ M2_EVENT_TYPES = {
     "chunking.started",
     "chunking.complete",
     "metadata.started",
+    "metadata.progress",
     "metadata.complete",
+    # A document whose every batch failed did not complete (#168). Without this
+    # the stream said `metadata.complete` and then `job.failed` for the same run.
+    "metadata.failed",
     "embedding.started",
     "embedding.complete",
     "ingestion.complete",
+    "strategy.synthesized",
+    # finish_ingestion owns this one, and it is the last hop by construction.
     "job.complete",
 }
 
@@ -54,9 +62,9 @@ SHARED_TERMINAL_EVENTS = {"job.complete", "job.failed"}
 
 
 def test_m2_event_types_are_complete():
-    """M2 vocabulary contains exactly 11 event types (RESEARCH.md §8 contract)."""
-    assert len(M2_EVENT_TYPES) == 11, (
-        f"RESEARCH.md §8 specifies exactly 11 M2 event types; "
+    """The chain's vocabulary is fourteen event types, and adding one is deliberate."""
+    assert len(M2_EVENT_TYPES) == 14, (
+        f"the ingestion chain emits exactly 14 event types; "
         f"found {len(M2_EVENT_TYPES)}: {sorted(M2_EVENT_TYPES)}"
     )
 
@@ -116,7 +124,7 @@ def test_ingestion_lifecycle_events_present():
         "'ingestion.complete' is required — emitted after all documents embedded"
     )
     assert "job.complete" in M2_EVENT_TYPES, (
-        "'job.complete' is required — terminal event after job.status='complete'"
+        "'job.complete' is required. finish_ingestion owns it (#168)"
     )
 
 
