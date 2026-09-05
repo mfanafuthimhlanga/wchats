@@ -66,6 +66,17 @@ not about missing features.
   `apps/api/railway.*.toml` (one config file per service, #122), two Dockerfiles
   (`Dockerfile`, and `Dockerfile.pipeline` carrying the docling extra), Railway's managed
   Redis plugin, staging and production as two environments under a $20 hard limit.
+- `OBSERVED` 2026-08-31 on the staging dashboard, and the reason those toml files may be
+  documentation rather than applied config (#139): "Config as Code is deprecated. Prefer
+  Infrastructure as Code. Existing config files keep working until 2026-12-01. Starting
+  2026-08-28, services that have never used Config as Code cannot opt in." Every staging
+  service is newer than that date. `scripts/railway_staging_wizard.sh` now dictates each
+  service's fields out of its toml for the services Railway refuses, and **a change to a
+  toml then does not reach Railway on its own**. `OBSERVED` 2026-09-05 on railway 5.47.1:
+  `railway config migrate` is not a way out today, because it discovers only files named
+  `railway.toml` or `railway.json` and emits `builder`, `dockerfilePath`,
+  `preDeployCommand` and `watchPatterns` as comments rather than fields. Moving to
+  `.railway/railway.ts` before 2026-12-01 is an open decision and wants an ADR.
 - `deploy/terraform/`, `deploy/systemd/` and `deploy/caddy/` are **deleted** with ADR
   0005 (decision #14). Terraform was never applied (no state, no backend block, no
   `~/.aws` on this machine); git history keeps the trees.
@@ -97,11 +108,23 @@ not about missing features.
   volume justifies it.
 - `RECORD`: Railway's proxy idle timeout against SSE — the deleted ALB config held 4000s;
   the probe is `curl -N` surviving past 125s on a live SSE stream.
-- `RECORD`: migrations at deploy. Tenant migrations now have a place: `railway.api.toml`
-  carries `preDeployCommand = "python scripts/migrate_all_tenants.py"`, which walks every
-  provisioned tenant, logs the revision each moved between, and exits nonzero if any tenant
-  did not reach head so Railway aborts the release (#64). Never yet observed against a real
-  Railway deploy. Control-DB alembic still runs from nowhere on this stack.
+- `RECORD`: migrations at deploy. Both databases now have a place: `railway.api.toml`
+  carries `preDeployCommand = "python scripts/predeploy.py"`, which brings the control DB to
+  head first, then walks every provisioned tenant, logs the revision each moved between, and
+  exits nonzero if either half did not reach head so Railway aborts the release (#64). Never
+  yet observed against a real Railway deploy.
+  - **The control half was missing until 2026-09-05, and it bit.** `OBSERVED` 2026-09-04:
+    staging's control DB was at 0020 while `main` was at 0022, because the pre-deploy command
+    migrated tenants and nothing migrated the control DB. The owner ran the upgrade by hand.
+    A merge carrying a control migration shipped code against a schema it did not have, on
+    every merge, from the first Railway deploy.
+  - `OBSERVED` 2026-09-05 against the local PostgreSQL 17.6, on a disposable
+    `wchats_predeploy_probe` database: `predeploy.py` reported
+    `predeploy.control_migrated revision_after=0022 revision_before=None`, then
+    `migrate_all.complete failed=0 migrated=0 tenants=0`, exit 0. A second run reported
+    `revision_before=0022 revision_after=0022`, exit 0. Against a database that does not
+    exist it reported `predeploy.control_failed error_type=OperationalError` and exit 1 with
+    no tenant touched. What is still unobserved is Railway running it.
 
 ### 3.2 Configuration — the example env cannot boot the app
 

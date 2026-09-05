@@ -11,7 +11,7 @@ WHERE "LATEST FAITHFULNESS" COMES FROM (#51 slice 4). It used to be
 `AVG(er.score)` over the latest complete run's `eval_results` rows, in this
 module's own copy of `alert_service`'s query, and it pooled the golden and
 exploratory halves into one mean. It is now lifted off `eval_runs.result`
-through `eval_service.latest_faithfulness`, the same rule the console route, the
+through `eval_service.latest_faithfulness_by_dataset`, the same rule the alert and the
 deploy gate and the alert read. The digest names the dataset it quotes, and says
 so when the run measured nothing.
 
@@ -29,7 +29,7 @@ import structlog
 
 from app.core.config import settings
 from app.core.log_bounds import log_failure
-from app.services.eval_service import latest_faithfulness
+from app.services.eval_service import latest_faithfulness_by_dataset
 
 log = structlog.get_logger(__name__)
 
@@ -52,6 +52,7 @@ def _collect_digest_stats(agent_id: str, conn_str: str, db) -> dict:
         "faithfulness_score": None,
         # Which half of the run the score belongs to, null when there is none.
         "faithfulness_dataset": None,
+        "faithfulness_by_dataset": {},
         "critical_red_team_count": 0,
         "escalation_count": 0,
     }
@@ -61,10 +62,18 @@ def _collect_digest_stats(agent_id: str, conn_str: str, db) -> dict:
         conn = psycopg2.connect(conn_str, connect_timeout=10)
         try:
             # --- Tenant DB: the latest complete run's own faithfulness ---
+            # Each dataset that scored is read under its own name and never
+            # pooled: a golden set at 0.42 beside an exploratory sample at 0.88
+            # is two readings, not a 0.65. One scoring dataset keeps the flat
+            # pair the mail has always carried; two or more leave the pair
+            # empty and fill the per dataset map, and the mail names each.
             with conn.cursor() as cur:
-                value, dataset = latest_faithfulness(cur, agent_id)
-                stats["faithfulness_score"] = value
-                stats["faithfulness_dataset"] = dataset
+                by_dataset = latest_faithfulness_by_dataset(cur, agent_id)
+                stats["faithfulness_by_dataset"] = by_dataset
+                if len(by_dataset) == 1:
+                    (dataset, value), = by_dataset.items()
+                    stats["faithfulness_score"] = value
+                    stats["faithfulness_dataset"] = dataset
 
             # --- Tenant DB: critical findings from latest red_team_run ---
             # Filter by kind = 'm7:{agent_id}' — no agent_id column in tenant schema
@@ -107,26 +116,20 @@ def _collect_digest_stats(agent_id: str, conn_str: str, db) -> dict:
     return stats
 
 
-def send_digest_email(agent_name: str, agent_id: str, stats: dict) -> None:
-    """Send weekly digest email to OWNER_EMAIL. NEVER raises (fire-and-forget)."""
-    if not settings.DIGEST_ENABLED:
-        return
-    # Bound to locals so the narrowing survives for the type checker — mypy cannot
-    # narrow through all([...]), and these are Optional[str] on Settings.
-    smtp_host = settings.SMTP_HOST
-    smtp_from = settings.SMTP_FROM
-    owner_email = settings.OWNER_EMAIL
-    if not smtp_host or not smtp_from or not owner_email:
-        log.warning("digest_service.smtp_not_configured", agent_id=agent_id)
-        return
-
+def _render_digest_body(agent_name: str, stats: dict) -> str:
+    """The mail's text, from the stats alone, so a test can read it without SMTP."""
     faithfulness = stats.get("faithfulness_score")
     dataset = stats.get("faithfulness_dataset")
     # "not measured" rather than "no data": the run may well have happened and
     # scored other dimensions. Naming the dataset matters because the golden set
     # and the exploratory draw answer different questions, and a reader comparing
     # this week's number to last week's needs to know they are the same question.
-    if faithfulness is None:
+    by_dataset = stats.get("faithfulness_by_dataset") or {}
+    if len(by_dataset) >= 2:
+        faith_str = ", ".join(
+            f"{by_dataset[name]:.2f} ({name} set)" for name in sorted(by_dataset)
+        )
+    elif faithfulness is None:
         faith_str = "not measured"
     elif dataset:
         faith_str = f"{faithfulness:.2f} ({dataset} set)"
@@ -142,6 +145,23 @@ def send_digest_email(agent_name: str, agent_id: str, stats: dict) -> None:
         f"Critical red team hits: {stats['critical_red_team_count']}\n\n"
         f"Review your agent at your W Chats dashboard.\n"
     )
+    return body
+
+
+def send_digest_email(agent_name: str, agent_id: str, stats: dict) -> None:
+    """Send weekly digest email to OWNER_EMAIL. NEVER raises (fire-and-forget)."""
+    if not settings.DIGEST_ENABLED:
+        return
+    # Bound to locals so the narrowing survives for the type checker — mypy cannot
+    # narrow through all([...]), and these are Optional[str] on Settings.
+    smtp_host = settings.SMTP_HOST
+    smtp_from = settings.SMTP_FROM
+    owner_email = settings.OWNER_EMAIL
+    if not smtp_host or not smtp_from or not owner_email:
+        log.warning("digest_service.smtp_not_configured", agent_id=agent_id)
+        return
+
+    body = _render_digest_body(agent_name, stats)
     msg = MIMEText(body)
     msg["Subject"] = f"[W Chats] Weekly Digest: {agent_name}"
     msg["From"] = smtp_from
