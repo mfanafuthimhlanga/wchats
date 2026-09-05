@@ -18,15 +18,26 @@ dockerfilePath = "Dockerfile"
 watchPatterns = ["apps/api/**"]
 
 [deploy]
-# Bring every tenant database to head BEFORE any of the four services serve the
-# new code (#64). Tenant migrations run once, at provision, and nothing re-ran
-# them: a tenant provisioned before 0018 sits at 0017, and the new chunk INSERT
-# meets a column that is not there. Railway runs this on the built image, with
-# the service's variables, and aborts the deployment if it exits nonzero, so a
-# tenant that could not be migrated leaves the old code serving the old schema
-# rather than shipping new code past it. One line per tenant in the deploy log,
+# Bring the CONTROL database and then every tenant database to head BEFORE any
+# of the four services serve the new code (#64).
+#
+# Tenant migrations run once, at provision, and nothing re-ran them: a tenant
+# provisioned before 0018 sits at 0017, and the new chunk INSERT meets a column
+# that is not there. The control database had it worse. Nothing migrated it at
+# deploy at all, so staging was found at 0020 on 2026-09-04 while main was at
+# 0022 and the owner upgraded it by hand.
+#
+# `predeploy.py` runs the control migration first and refuses to walk the fleet
+# when it fails, because the walk reads the fleet OUT of the control DB. Railway
+# runs this on the built image, with the service's variables, and aborts the
+# deployment if it exits nonzero, so a database that could not be migrated
+# leaves the old code serving the old schema rather than shipping new code past
+# it. One line for the control DB and one per tenant in the deploy log, each
 # carrying the revision it moved between; no connection string in any of them.
-preDeployCommand = "python scripts/migrate_all_tenants.py"
+#
+# Only this service carries it. Four services running the same walk at once
+# would race each other for the same Alembic lock on every database.
+preDeployCommand = "python scripts/predeploy.py"
 # Railway injects PORT and routes public traffic to it. The Dockerfile's CMD
 # binds 8000; this overrides it so the bound port is whatever Railway chose.
 startCommand = "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"

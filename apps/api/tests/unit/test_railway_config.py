@@ -46,6 +46,37 @@ def test_the_two_workers_split_the_two_queues():
     assert "--queues=pipeline" not in commands["railway.worker-runtime.toml"]
 
 
+def test_the_api_service_migrates_both_databases_before_it_serves():
+    """The pre-deploy step is where a release meets its schema.
+
+    It ran the tenant walk alone, so a merge carrying a control migration
+    shipped code against a control schema nothing had upgraded: staging was at
+    0020 on 2026-09-04 with `main` at 0022. `predeploy.py` is the entry point
+    that runs the control migration first and the fleet second.
+    """
+    payload = tomllib.loads((_ROOT / "railway.api.toml").read_text(encoding="utf-8"))
+    command = payload["deploy"]["preDeployCommand"]
+    assert "scripts/predeploy.py" in command, (
+        f"the api service's preDeployCommand must run the ordered pair, not one "
+        f"half of it: {command!r}"
+    )
+    assert (_ROOT / "scripts" / "predeploy.py").exists(), (
+        "the preDeployCommand names a script that is not in the image"
+    )
+
+
+def test_only_the_api_service_migrates():
+    """Four services sharing one pre-deploy command would race each other for
+    the same Alembic lock on every database, once per release."""
+    for name in sorted(_SERVICES):
+        payload = tomllib.loads((_ROOT / name).read_text(encoding="utf-8"))
+        has_step = "preDeployCommand" in payload["deploy"]
+        assert has_step == (name == "railway.api.toml"), (
+            f"{name} {'carries' if has_step else 'is missing'} a "
+            f"preDeployCommand; exactly one service may run the migrations"
+        )
+
+
 def test_the_beat_never_scales():
     payload = tomllib.loads((_ROOT / "railway.beat.toml").read_text(encoding="utf-8"))
     assert payload["deploy"]["numReplicas"] == 1, (
