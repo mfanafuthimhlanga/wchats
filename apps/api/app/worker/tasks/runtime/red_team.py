@@ -48,7 +48,7 @@ import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
-from app.core.model_client import LedgerContext, ledger_recorder
+from app.core.model_client import LedgerContext, ledger_recorder, route_for
 from app.core.security import fernet_decrypt
 from app.domain.red_team_finding import RedTeamFinding
 from app.domain.red_team_result import RedTeamResult
@@ -71,6 +71,7 @@ from app.services.red_team_service import (
     run_value_bound_evasion_agent,
     run_vector_attempts,
 )
+from app.services.tool_loop import first_choice
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
@@ -159,19 +160,19 @@ def _build_probe_fn(agent: "Agent", conn_str: str, ledger: LedgerContext):
     async def _async_probe(message: str) -> str:
         """Send one probe message to the agent persona and return the response text."""
         try:
-            response = await asyncio.get_running_loop().run_in_executor(
+            completion = await asyncio.get_running_loop().run_in_executor(
                 None,
-                lambda: client.messages.create(
-                    model="claude-haiku-4-5",
-                    max_tokens=512,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": message}],
+                lambda: client.chat.completions.create(
+                    model=route_for(PROBE_PURPOSE).model,
+                    max_completion_tokens=512,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": message},
+                    ],
                 ),
             )
-            for block in response.content:
-                if hasattr(block, "text"):
-                    return block.text
-            return ""
+            choice = first_choice(completion)
+            return "" if choice is None else (choice.message.content or "")
         except Exception as exc:
             log.warning("probe_fn.failed", error=str(exc))
             return ""

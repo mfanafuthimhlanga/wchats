@@ -3,7 +3,7 @@
 De-xfailed in Phase 09-03. Tests cover:
     test_corpus_signals_shape              — _fetch_corpus_signals_sync returns correct keys/types
     test_strategy_validate_string_inputs   — RetrievalStrategy tolerates non-numeric string inputs
-    test_run_strategist_calls_asyncio_run  — asyncio.run is called at module boundary
+    test_run_strategist_forces_its_tool    — a forced generate_strategy call, read off the wire
     test_expand_query_returns_three        — _expand_query returns [original] + 2 variants
     test_expansion_calls_rrf_fuse_per_variant — rrf_fuse called once per query variant
 """
@@ -36,7 +36,7 @@ from app.services.strategy_service import (
     _fetch_corpus_signals_sync,
     run_strategist,
 )
-from tests.model_doubles import factory, ledger
+from tests.model_doubles import completion, factory, ledger, openai_client, tool_call
 
 # run_strategist now builds its client through app.core.model_client.make_client, so it
 # takes the three ids each ledger row carries and the tenant database each row is
@@ -162,27 +162,22 @@ def test_strategy_validate_string_inputs():
     assert result.query_expansion is True
 
 
-def test_run_strategist_calls_anthropic_api():
-    """run_strategist uses the direct Anthropic API (messages.create with tool_use)."""
+def test_run_strategist_forces_its_tool():
+    """run_strategist reads its parameters off a forced `generate_strategy` call."""
     result_container = {}
 
-    mock_block = MagicMock()
-    mock_block.type = "tool_use"
-    mock_block.name = "generate_strategy"
-    mock_block.input = {"vector_k": 15, "bm25_k": 15, "final_k": 3,
-                        "rerank_threshold": 0.1, "query_expansion": False,
-                        "metadata_filters": []}
+    strategy = {"vector_k": 15, "bm25_k": 15, "final_k": 3,
+                "rerank_threshold": 0.1, "query_expansion": False,
+                "metadata_filters": []}
+    create = MagicMock(return_value=completion(
+        tool_calls=[tool_call("generate_strategy", strategy)],
+        finish_reason="tool_calls",
+    ))
 
-    mock_response = MagicMock()
-    mock_response.content = [mock_block]
-
-    mock_client = MagicMock()
-    mock_client.messages.create.return_value = mock_response
-
-    with patch("anthropic.Anthropic", return_value=mock_client):
+    with factory(openai_client(create=create)):
         run_strategist("{}", result_container, _JOB, TENANT_DSN)
 
-    mock_client.messages.create.assert_called_once()
+    create.assert_called_once()
     assert result_container["strategy"]["vector_k"] == 15
 
 
@@ -199,11 +194,9 @@ def test_expand_query_returns_three():
     through the factory now (ticket #47), so one patch target covers it and no
     test has to put a real module object back afterwards.
     """
-    mock_message = MagicMock()
-    mock_message.content = [MagicMock(text="variant one\nvariant two")]
-
-    mock_client = MagicMock()
-    mock_client.messages.create.return_value = mock_message
+    mock_client = openai_client(
+        create=lambda **kw: completion(content="variant one\nvariant two")
+    )
 
     with factory(mock_client):
         result = _expand_query("orig", ledger())
@@ -275,7 +268,9 @@ def test_expansion_calls_rrf_fuse_per_variant():
 # The model-call ledger (ticket #46, issue #22)
 #
 # run_strategist is the first of the ten ad-hoc `anthropic.Anthropic()` sites to
-# build its client through app.core.model_client.make_client. The two tests below
+# build its client through the factory. It asks a `LedgerContext` for that client
+# since issue #76, so the patch target is the factory's own module global rather
+# than a name `strategy_service` binds. The two tests below
 # cover the two halves of that. The first reads what the site asked the factory
 # for. The second lets the real factory, the real SDK and the real response hook
 # run against a canned provider body, and reads the INSERT that comes out the far
@@ -283,29 +278,44 @@ def test_expansion_calls_rrf_fuse_per_variant():
 # ---------------------------------------------------------------------------
 
 
-def _messages_response(usage: dict | None = None) -> dict:
-    """A messages response with a generate_strategy tool call and provider counts."""
+def _completion_response(usage: dict | None = None) -> dict:
+    """A chat completion with a generate_strategy tool call and provider counts.
+
+    OpenAI reports `prompt_tokens` with the cached ones INCLUDED, so 1200 prompt
+    tokens against 200 cached is 1000 fresh input and zero cache creation.
+    """
+    import json
+
     return {
-        "id": "msg_01",
-        "type": "message",
-        "role": "assistant",
-        "model": "deepseek-v4-flash",
-        "content": [{
-            "type": "tool_use",
-            "id": "toolu_01",
-            "name": "generate_strategy",
-            "input": {
-                "vector_k": 15, "bm25_k": 15, "final_k": 3,
-                "rerank_threshold": 0.1, "query_expansion": False,
-                "metadata_filters": [],
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "gpt-5.6-luna",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "generate_strategy",
+                        "arguments": json.dumps({
+                            "vector_k": 15, "bm25_k": 15, "final_k": 3,
+                            "rerank_threshold": 0.1, "query_expansion": False,
+                            "metadata_filters": [],
+                        }),
+                    },
+                }],
             },
+            "finish_reason": "tool_calls",
         }],
-        "stop_reason": "tool_use",
         "usage": usage or {
-            "input_tokens": 1000,
-            "output_tokens": 500,
-            "cache_read_input_tokens": 2000,
-            "cache_creation_input_tokens": 300,
+            "prompt_tokens": 1200,
+            "completion_tokens": 500,
+            "total_tokens": 1700,
+            "prompt_tokens_details": {"cached_tokens": 200},
         },
     }
 
@@ -318,7 +328,7 @@ def test_run_strategist_asks_the_factory_for_the_jobs_ids():
         seen.update(kwargs, purpose=purpose)
         return MagicMock()
 
-    with patch("app.services.strategy_service.make_client", spy):
+    with patch("app.core.model_client.make_client", spy):
         run_strategist("{}", {}, _JOB, TENANT_DSN)
 
     assert seen["purpose"] == "retrieval_strategist"
@@ -340,7 +350,7 @@ def test_run_strategist_lands_one_ledger_row_in_the_jobs_tenant_database():
             purpose,
             http_client=httpx.Client(
                 transport=httpx.MockTransport(
-                    lambda request: httpx.Response(200, json=_messages_response())
+                    lambda request: httpx.Response(200, json=_completion_response())
                 )
             ),
             **kwargs,
@@ -355,7 +365,7 @@ def test_run_strategist_lands_one_ledger_row_in_the_jobs_tenant_database():
     connection.cursor.return_value = cursor
 
     result_container: dict = {}
-    with patch("app.services.strategy_service.make_client", spy), patch(
+    with patch("app.core.model_client.make_client", spy), patch(
         "app.core.model_client.psycopg2.connect", return_value=connection
     ) as connect:
         run_strategist("{}", result_container, _JOB, TENANT_DSN)
@@ -369,7 +379,7 @@ def test_run_strategist_lands_one_ledger_row_in_the_jobs_tenant_database():
     assert len(executed) == 1, f"expected one INSERT, got {executed}"
     sql, params = executed[0]
     assert "model_calls" in sql
-    assert 1000 in params and 500 in params and 2000 in params and 300 in params
+    assert 1000 in params and 500 in params and 200 in params
     assert _JOB.tenant_id in params
     assert _JOB.job_id in params
     assert "retrieval_strategist" in params

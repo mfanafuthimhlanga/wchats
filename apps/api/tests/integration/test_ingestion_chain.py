@@ -385,18 +385,18 @@ def _mock_redis_client():
 
 
 def _build_metadata_mock():
-    """Return a mock Anthropic result with valid ChunkMetadataAndEntities."""
+    """Return a parsed chat completion carrying a valid ChunkMetadataAndEntities."""
     from app.services.metadata_service import ChunkMetadataAndEntities
+    from tests.model_doubles import completion
 
-    parsed = ChunkMetadataAndEntities(
-        summary="A test summary.",
-        keywords=["test", "product"],
-        questions=["What is tested?"],
-        entities=[],
+    return completion(
+        parsed=ChunkMetadataAndEntities(
+            summary="A test summary.",
+            keywords=["test", "product"],
+            questions=["What is tested?"],
+            entities=[],
+        )
     )
-    mock_result = MagicMock()
-    mock_result.parsed_output = parsed
-    return mock_result
 
 
 def _count_rows(conn_url: str, table: str, where: str = "", params: tuple = ()) -> int:
@@ -633,7 +633,7 @@ def test_full_chain_runs_in_eager_mode_with_mocks(
         mock_chunker_cls.return_value = mock_chunker
 
         # Configure Anthropic mock
-        mock_factory.return_value.messages.parse.return_value = metadata_mock
+        mock_factory.return_value.chat.completions.parse.return_value = metadata_mock
 
         # Configure Voyage mock — returns 1024-dim vectors
         mock_vo.embed.return_value = MagicMock(
@@ -775,7 +775,7 @@ def test_idempotent_chain(
         mock_chunker.contextualize.side_effect = lambda c: c.text
         mock_chunker_cls.return_value = mock_chunker
 
-        mock_factory.return_value.messages.parse.return_value = metadata_mock
+        mock_factory.return_value.chat.completions.parse.return_value = metadata_mock
         mock_vo.embed.return_value = MagicMock(
             embeddings=[[0.1] * 1024, [0.2] * 1024]
         )
@@ -804,7 +804,7 @@ def test_idempotent_chain(
             "chunk_id IN (SELECT id FROM chunks WHERE document_id = %s)",
             (doc_id,),
         )
-        haiku_calls_run1 = mock_factory.return_value.messages.parse.call_count
+        enrich_calls_run1 = mock_factory.return_value.chat.completions.parse.call_count
 
         # --- RUN 2 ---
         dispatch_chain()
@@ -822,7 +822,7 @@ def test_idempotent_chain(
             "chunk_id IN (SELECT id FROM chunks WHERE document_id = %s)",
             (doc_id,),
         )
-        haiku_calls_run2 = mock_factory.return_value.messages.parse.call_count
+        enrich_calls_run2 = mock_factory.return_value.chat.completions.parse.call_count
 
     # Idempotency assertions
     assert count_chunks_run2 == count_chunks_run1, (
@@ -839,9 +839,9 @@ def test_idempotent_chain(
     )
 
     # Layer 3 verification: Haiku NOT called on run 2 (metadata already exists)
-    assert haiku_calls_run2 == haiku_calls_run1, (
+    assert enrich_calls_run2 == enrich_calls_run1, (
         f"Haiku was called again on run 2! "
-        f"Run 1 calls: {haiku_calls_run1}, Run 2 calls: {haiku_calls_run2}. "
+        f"Run 1 calls: {enrich_calls_run1}, Run 2 calls: {enrich_calls_run2}. "
         f"Layer 3 idempotency guard (SELECT COUNT(*) FROM chunk_metadata) should "
         f"have skipped Haiku for already-enriched chunks."
     )
@@ -924,7 +924,7 @@ def test_chain_emits_all_11_m2_event_types(
         mock_chunker.contextualize.side_effect = lambda c: c.text
         mock_chunker_cls.return_value = mock_chunker
 
-        mock_factory.return_value.messages.parse.return_value = metadata_mock
+        mock_factory.return_value.chat.completions.parse.return_value = metadata_mock
         mock_vo.embed.return_value = MagicMock(
             embeddings=[[0.1] * 1024, [0.2] * 1024]
         )
@@ -1007,7 +1007,7 @@ def test_chain_no_conn_strings_logged(
         mock_chunker.contextualize.side_effect = lambda c: c.text
         mock_chunker_cls.return_value = mock_chunker
 
-        mock_factory.return_value.messages.parse.return_value = metadata_mock
+        mock_factory.return_value.chat.completions.parse.return_value = metadata_mock
         mock_vo.embed.return_value = MagicMock(embeddings=[[0.1] * 1024])
 
         chain(

@@ -627,9 +627,8 @@ class TestRunOrchestrator:
     def test_the_model_and_the_persona_come_from_one_place_each(self):
         """The model is the routing table's, the prompt is the module's.
 
-        `SONNET_MODEL = "claude-sonnet-4-6"` was this module's own until #49, and
-        the credential it needed was revoked on 2026-08-26. A model named here
-        again would be a second answer to a question the table already answers.
+        A model named in `deployment_service` would be a second answer to a
+        question `PURPOSE_ROUTES` already answers, and the two would drift.
         """
         client = _FakeAsyncClient(_reply_calling(SUBMIT_REPORT_TOOL_NAME, _A_REPORT))
 
