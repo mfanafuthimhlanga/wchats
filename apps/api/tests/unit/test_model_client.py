@@ -45,7 +45,6 @@ from app.core.model_client import (
     PURPOSE_ROUTES,
     CallContext,
     Credentials,
-    EffortNeedsInstructor,
     LedgerContext,
     ModelRoute,
     UnknownPurpose,
@@ -869,9 +868,11 @@ JUDGE_PURPOSES = [
     "judge_retrieval_faithfulness",
 ]
 
-#: Every purpose whose route names an effort. The Agent turn joins the judges at
-#: `none`, and the owned loop sends that effort on each call it makes.
-EFFORT_NONE_PURPOSES = [*JUDGE_PURPOSES, "agent_turn"]
+#: Every purpose runs at effort `none` since 2026-09-05. The judges and the
+#: Agent turn were priced there by decision #34; the rest landed there because
+#: the provider refuses a tool-bearing chat completion that sends any other
+#: effort, or none at all. See `TestTheRawPathCarriesTheRouteEffort`.
+EFFORT_NONE_PURPOSES = list(EVERY_PURPOSE)
 
 
 class TestTheRoutingTable:
@@ -887,12 +888,14 @@ class TestTheRoutingTable:
         """The $0.62 per thousand floor holds only at effort none (decision #34)."""
         assert route_for(purpose).reasoning_effort == "none"
 
-    @pytest.mark.parametrize(
-        "purpose", [p for p in EVERY_PURPOSE if p not in EFFORT_NONE_PURPOSES]
-    )
-    def test_a_purpose_outside_that_set_names_no_effort(self, purpose):
-        """Nobody has measured what an effort buys here, so the factory asks for none."""
-        assert route_for(purpose).reasoning_effort is None
+    @pytest.mark.parametrize("purpose", EFFORT_NONE_PURPOSES)
+    def test_every_purpose_names_effort_none(self, purpose):
+        """OBSERVED 2026-09-05 on staging: `400 Function tools with reasoning_effort
+        are not supported for gpt-5.6-luna in /v1/chat/completions. To use function
+        tools, use /v1/responses or set reasoning_effort to 'none'.` for a call
+        that sent no effort field. A route naming no effort is a route the
+        provider refuses the moment a tool is attached."""
+        assert route_for(purpose).reasoning_effort == "none"
 
     def test_the_agent_turn_runs_at_effort_none_too(self):
         """Decision #34 prices the turn at $0.76 per thousand, and only at effort none."""
@@ -943,7 +946,7 @@ class TestTheRoutingTable:
 
 
 # ---------------------------------------------------------------------------
-# What the raw client path refuses, and why
+# What the raw client path refuses, and what it carries
 # ---------------------------------------------------------------------------
 
 
@@ -951,10 +954,7 @@ class TestTheRawPathChecksThePurpose:
     """`make_client` reads the routing table before it builds anything.
 
     Until it did, a purpose was a free-text string that reached the ledger
-    unread. A typo billed a real tenant under a name no rollup groups, and a
-    judge purpose built a client carrying no reasoning effort, so the run cost
-    what the provider's default effort costs rather than the figure decision #34
-    priced.
+    unread. A typo billed a real tenant under a name no rollup groups.
     """
 
     def _ledger(self) -> LedgerContext:
@@ -972,32 +972,7 @@ class TestTheRawPathChecksThePurpose:
         with pytest.raises(UnknownPurpose, match="spellcheck"):
             self._ledger().client("spellcheck")
 
-    def test_a_judge_purpose_is_refused_on_the_raw_path(self):
-        """The raw SDK client carries no reasoning effort, so it may not serve one."""
-        with pytest.raises(EffortNeedsInstructor, match="judge_faithfulness"):
-            make_client("judge_faithfulness", tenant_id=TENANT, recorder=lambda call: None)
-
-    def test_the_refusal_names_the_effort_the_route_asked_for(self):
-        with pytest.raises(EffortNeedsInstructor, match="none"):
-            make_client("judge_retrieval_faithfulness", tenant_id=TENANT, recorder=lambda call: None)
-
-    def test_the_ledger_shortcut_refuses_a_judge_too(self):
-        """`ledger.client("judge_faithfulness")` used to hand back a judge-billed
-        client running at the provider's own effort."""
-        with pytest.raises(EffortNeedsInstructor):
-            self._ledger().client("judge_faithfulness")
-
-    def test_the_agent_turn_is_refused_on_the_raw_path_as_well(self):
-        """The owned loop builds an async client and passes the route's effort per
-        call. A raw synchronous client would drop it and bill the turn at whatever
-        effort the provider picks."""
-        with pytest.raises(EffortNeedsInstructor, match="agent_turn"):
-            make_client("agent_turn", tenant_id=TENANT, recorder=lambda call: None)
-
-    def test_effort_needs_instructor_is_a_value_error(self):
-        assert issubclass(EffortNeedsInstructor, ValueError)
-
-    def test_a_purpose_the_table_routes_at_no_effort_still_builds(self):
+    def test_a_direct_api_purpose_builds_on_the_raw_path(self):
         client = make_client(
             "actor_gate",
             tenant_id=TENANT,
@@ -1008,6 +983,142 @@ class TestTheRawPathChecksThePurpose:
         )
 
         assert isinstance(client, openai.OpenAI)
+
+
+class TestTheRawPathCarriesTheRouteEffort:
+    """The route's effort reaches the wire on the raw seam, not only through instructor.
+
+    OBSERVED 2026-09-05 on staging, worker-runtime, agent ee8087ed: every raw call
+    that attached a tool (scenario generation, the red team's attacker and probe,
+    the deployment Orchestrator, the validation trio) came back `400 Function
+    tools with reasoning_effort are not supported for gpt-5.6-luna in
+    /v1/chat/completions. To use function tools, use /v1/responses or set
+    reasoning_effort to 'none'.` The raw client sent no effort field, because
+    the OpenAI SDK has no default body parameter and `make_client` refused any
+    route that named one. Reproduced from this box the same day: `none` with
+    tools succeeds, no field with tools is refused.
+
+    Nothing here touches a socket. The transport records the body the SDK built.
+    """
+
+    def _client(self, seen: dict, purpose="scenario_generation"):
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, json=_openai_body())
+
+        return make_client(
+            purpose,
+            tenant_id=TENANT,
+            recorder=lambda call: None,
+            credentials=Credentials(api_key="test-key"),
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+            clock=lambda: AT,
+        )
+
+    def _async_client(self, seen: dict, purpose="agent_turn"):
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, json=_openai_body())
+
+        return make_async_client(
+            purpose,
+            tenant_id=TENANT,
+            recorder=lambda call: None,
+            credentials=Credentials(api_key="test-key"),
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+            clock=lambda: AT,
+        )
+
+    _TOOL = {
+        "type": "function",
+        "function": {"name": "f", "description": "noop", "parameters": {"type": "object"}},
+    }
+    _MESSAGES = [{"role": "user", "content": "hello"}]
+
+    def test_a_tool_bearing_raw_call_goes_out_at_effort_none(self):
+        """The exact request shape staging refused: tools attached, no effort named."""
+        seen: dict = {}
+        self._client(seen).chat.completions.create(
+            model=LUNA, messages=self._MESSAGES, tools=[self._TOOL]
+        )
+
+        assert seen["tools"]
+        assert seen["reasoning_effort"] == "none"
+
+    def test_a_raw_call_with_no_tool_carries_it_too(self):
+        seen: dict = {}
+        self._client(seen, "query_expansion").chat.completions.create(
+            model=LUNA, messages=self._MESSAGES
+        )
+
+        assert seen["reasoning_effort"] == "none"
+
+    def test_parse_carries_it_the_same_way(self):
+        """`metadata_service` reaches the wire through `chat.completions.parse`."""
+        seen: dict = {}
+        self._client(seen, "metadata_enrichment").chat.completions.parse(
+            model=LUNA, messages=self._MESSAGES
+        )
+
+        assert seen["reasoning_effort"] == "none"
+
+    def test_an_effort_named_at_the_call_site_wins(self):
+        """The rule instructor applies: a default fills an absent kwarg only."""
+        seen: dict = {}
+        self._client(seen).chat.completions.create(
+            model=LUNA, messages=self._MESSAGES, reasoning_effort="low"
+        )
+
+        assert seen["reasoning_effort"] == "low"
+
+    def test_a_judge_purpose_builds_on_the_raw_path_and_carries_its_effort(self):
+        """`tests/evals/judge.py` forces a tool over `create` under `calibration_judge`."""
+        seen: dict = {}
+        self._client(seen, "calibration_judge").chat.completions.create(
+            model=LUNA, messages=self._MESSAGES, tools=[self._TOOL]
+        )
+
+        assert seen["reasoning_effort"] == "none"
+
+    def test_the_ledger_shortcut_carries_it_too(self):
+        seen: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, json=_openai_body())
+
+        ledger = LedgerContext(tenant_id=TENANT, recorder=lambda call: None)
+        ledger.client(
+            "auditor",
+            credentials=Credentials(api_key="test-key"),
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        ).chat.completions.create(model=LUNA, messages=self._MESSAGES, tools=[self._TOOL])
+
+        assert seen["reasoning_effort"] == "none"
+
+    async def test_the_async_factory_carries_it_for_the_owned_loop(self):
+        """`deployment_service` and `red_team_service` build here and attach tools."""
+        seen: dict = {}
+        await self._async_client(seen, "deployment_orchestrator").chat.completions.create(
+            model=LUNA, messages=self._MESSAGES, tools=[self._TOOL]
+        )
+
+        assert seen["reasoning_effort"] == "none"
+
+    def test_a_route_naming_no_effort_leaves_the_client_bare(self):
+        """Injected route, since the table no longer holds one. The default is the
+        route's, never a literal of this module's own."""
+        from app.core.model_client import _carry_route_effort
+
+        seen: dict = {}
+        client = self._client(seen)
+        bare = _carry_route_effort(
+            openai.OpenAI(api_key="test-key", http_client=client._client),
+            ModelRoute("openai", LUNA),
+        )
+        bare.chat.completions.create(model=LUNA, messages=self._MESSAGES)
+
+        assert "reasoning_effort" not in seen
 
 
 class TestTheFactoryTakesItsProviderFromTheRoute:
@@ -1243,12 +1354,12 @@ class TestMakeInstructorClient:
 
         assert seen["reasoning_effort"] == "none"
 
-    def test_a_non_judge_purpose_sends_no_effort_field_at_all(self):
-        """An explicit null asks for the provider default, which is a different request."""
+    def test_a_direct_api_purpose_sends_effort_none_as_well(self):
+        """The instructor seam reads the same table, so `_LUNA`'s effort reaches it too."""
         seen = {}
         self._ask(self._client("auditor", lambda call: None, seen))
 
-        assert "reasoning_effort" not in seen
+        assert seen["reasoning_effort"] == "none"
 
     def test_an_unknown_purpose_raises_before_any_client_is_built(self):
         with pytest.raises(UnknownPurpose):

@@ -2224,13 +2224,18 @@ class TestTheArtifactIsReadBackByTheApp:
             "the-judge-that-actually-ran"
         )
 
-    def test_the_real_judge_reports_no_identity_and_the_artifact_says_so(self):
-        """`tests/evals/judge.py` sends no reasoning effort, `JudgeIdentity`
-        refuses an empty field, and inventing one would widen the key until two
-        Judges grouped under one figure. None is the true state (#58)."""
-        from tests.evals.judge import judge_identity
+    def test_the_real_judge_reports_the_identity_it_sends(self):
+        """Since 2026-09-05 the calibration route names effort `none`, the raw
+        client puts it on the wire, and the identity is what ran: Luna at `none`
+        under the rubric version. Calibration itself still waits on #58's pairs."""
+        from tests.evals.judge import JUDGE_RUBRIC_VERSION, judge_identity
 
-        assert judge_identity() is None
+        identity = judge_identity()
+
+        assert identity is not None
+        assert identity.model == "gpt-5.6-luna"
+        assert identity.reasoning_effort == "none"
+        assert identity.prompt_version == JUDGE_RUBRIC_VERSION
 
     def test_two_judges_in_one_run_can_never_be_calibrated(
         self, calibration_tree, tmp_path
