@@ -65,14 +65,29 @@ def test_the_handler_logs_the_exception_TYPE_not_only_its_message():
     handler_start = source.index("run_deployment_checklist.orchestrator_failed")
     handler = source[handler_start : handler_start + 400]
 
-    assert "error_type=type(exc).__name__" in handler, (
-        "the orchestrator failure handler does not log the exception type. "
-        "asyncio.TimeoutError stringifies to '', so error=str(exc) alone "
-        "records a blank where the cause should be.\n"
-        f"handler:\n{handler}"
+    # Since #166 every failure log line goes through log_failure, which derives
+    # the type name and a first-line message with a fallback itself. The
+    # guarantee this test pins therefore has two halves: the handler hands the
+    # exception to that helper, and the helper still does what the inline
+    # spelling used to do. Either half regressing is the blank line coming back.
+    assert "log_failure(" in handler and ", exc," in handler, (
+        "the orchestrator failure handler does not hand the exception to "
+        "log_failure. asyncio.TimeoutError stringifies to '', so a bare "
+        "error=str(exc) records a blank where the cause should be.
+"
+        f"handler:
+{handler}"
     )
-    assert "str(exc) or repr(exc)" in handler, (
-        "str(exc) is used without a fallback; an exception whose message is "
+    from app.core import log_bounds
+
+    helper = inspect.getsource(log_bounds.log_failure) + inspect.getsource(
+        log_bounds.bounded_error_detail
+    )
+    assert "type(exc).__name__" in helper, (
+        "log_failure no longer records the exception's type name"
+    )
+    assert "str(exc) or repr(exc)" in helper, (
+        "the bounded message has no fallback; an exception whose message is "
         "empty logs nothing at all"
     )
     assert "timeout_s=" in handler, (
