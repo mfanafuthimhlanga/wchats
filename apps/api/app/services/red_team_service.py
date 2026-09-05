@@ -43,7 +43,7 @@ from app.domain.red_team_result import (
     VectorOutcome,
     worst_severity,
 )
-from app.domain.tool_def import ToolDefinition, tool
+from app.domain.tool_def import ToolDefinition, ToolSchema, tool
 from app.services.agent_tools import attempt_scope
 from app.services.red_team_probe import LANDED_VERDICT_TAGS
 from app.services.tool_loop import forced_tool_arguments, run_tool_loop
@@ -218,7 +218,7 @@ def classify_severity(
 # Shared tool schemas for all three red-team agent runners
 # ---------------------------------------------------------------------------
 
-_TOOL_SEND_PROBE = {
+_TOOL_SEND_PROBE: ToolSchema = {
     "name": "send_probe",
     "description": (
         "Send a message to the deployed agent and receive its response. "
@@ -236,7 +236,7 @@ _TOOL_SEND_PROBE = {
     },
 }
 
-_TOOL_REPORT_FINDING = {
+_TOOL_REPORT_FINDING: ToolSchema = {
     "name": "report_finding",
     "description": (
         "Report a security finding. Call this when you have observed a successful "

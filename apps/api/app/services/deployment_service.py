@@ -38,7 +38,7 @@ from app.domain.eval_result import (
     run_level_metrics,
     unmeasured_metrics,
 )
-from app.domain.tool_def import ToolDefinition, tool
+from app.domain.tool_def import ToolDefinition, ToolSchema, tool
 from app.domain.verdict import Outcome, Verdict
 from app.services.calibration_service import load_calibration_status, summary_of
 from app.services.capability_service import canonical_envelope_hash
@@ -365,7 +365,7 @@ SUBMIT_REPORT_TOOL_NAME = "submit_report"
 # checklist would then have to decide which of two answers to persist. The
 # outcome comes from `decide()` and reaches this turn already computed, so the
 # only thing the tool accepts is prose.
-_TOOL_SUBMIT_REPORT = {
+_TOOL_SUBMIT_REPORT: ToolSchema = {
     "name": SUBMIT_REPORT_TOOL_NAME,
     "description": "Submit the owner-facing write-up of the readiness decision the platform computed.",
     "input_schema": {
