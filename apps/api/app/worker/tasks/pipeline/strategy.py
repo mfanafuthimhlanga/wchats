@@ -43,6 +43,7 @@ import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import fernet_decrypt
 from app.domain.ingestion_job import IngestionJob
@@ -132,11 +133,7 @@ def synthesize_retrieval_strategy(self, job: IngestionJob) -> IngestionJob:
                 return job
             conn_str = fernet_decrypt(agent.neon_connection_string)
     except Exception as exc:
-        log.error(
-            "synthesize_retrieval_strategy.db_fetch_failed",
-            agent_id=agent_id,
-            error=str(exc),
-        )
+        log_failure(log, "synthesize_retrieval_strategy.db_fetch_failed", exc, level="error", agent_id=agent_id)
         with get_sync_db() as failure_db:
             retry_or_fail_the_job(self, exc, job_id, failure_db, _redis, 2 ** self.request.retries)
 
@@ -146,11 +143,7 @@ def synthesize_retrieval_strategy(self, job: IngestionJob) -> IngestionJob:
     try:
         signals = _fetch_corpus_signals_sync(agent_id, conn_str)
     except Exception as exc:
-        log.error(
-            "synthesize_retrieval_strategy.corpus_fetch_failed",
-            agent_id=agent_id,
-            error=str(exc),
-        )
+        log_failure(log, "synthesize_retrieval_strategy.corpus_fetch_failed", exc, level="error", agent_id=agent_id)
         with get_sync_db() as failure_db:
             retry_or_fail_the_job(self, exc, job_id, failure_db, _redis, 2 ** self.request.retries)
 
@@ -165,11 +158,7 @@ def synthesize_retrieval_strategy(self, job: IngestionJob) -> IngestionJob:
     try:
         run_strategist(signals_json, result_container, job, conn_str)
     except Exception as exc:
-        log.error(
-            "synthesize_retrieval_strategy.strategist_failed",
-            agent_id=agent_id,
-            error=str(exc),
-        )
+        log_failure(log, "synthesize_retrieval_strategy.strategist_failed", exc, level="error", agent_id=agent_id)
         # Fall through to validation with empty result_container — defaults applied.
 
     # ------------------------------------------------------------------
@@ -179,11 +168,7 @@ def synthesize_retrieval_strategy(self, job: IngestionJob) -> IngestionJob:
     try:
         strategy = RetrievalStrategy.model_validate(raw)
     except Exception as val_exc:
-        log.warning(
-            "synthesize_retrieval_strategy.validation_failed",
-            agent_id=agent_id,
-            error=str(val_exc),
-        )
+        log_failure(log, "synthesize_retrieval_strategy.validation_failed", val_exc, agent_id=agent_id)
         strategy = RetrievalStrategy()
 
     # ------------------------------------------------------------------
@@ -200,11 +185,7 @@ def synthesize_retrieval_strategy(self, job: IngestionJob) -> IngestionJob:
             # job_id is never empty. IngestionJob refuses to exist without one.
             emit(job_id, "strategy.synthesized", {"agent_id": agent_id}, db, _redis)
     except Exception as exc:
-        log.error(
-            "synthesize_retrieval_strategy.db_write_failed",
-            agent_id=agent_id,
-            error=str(exc),
-        )
+        log_failure(log, "synthesize_retrieval_strategy.db_write_failed", exc, level="error", agent_id=agent_id)
         with get_sync_db() as failure_db:
             retry_or_fail_the_job(self, exc, job_id, failure_db, _redis, 2 ** self.request.retries)
 

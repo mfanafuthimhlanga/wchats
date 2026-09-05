@@ -53,6 +53,7 @@ from structlog.contextvars import get_contextvars
 from app.api.deps import get_current_tenant
 from app.core.config import settings
 from app.core.database import get_async_db
+from app.core.log_bounds import log_failure
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.models.job import Job
@@ -715,11 +716,10 @@ async def delete_document(
         raise
     except Exception as exc:
         tenant_conn.rollback()
-        log.error(
-            "delete_document.tenant_db_failed",
+        log_failure(
+            log, "delete_document.tenant_db_failed", exc, level="error",
             agent_id=str(agent.id),
             document_id=str(document_id),
-            error=str(exc),
         )
         raise HTTPException(
             status_code=500, detail="Failed to delete document"

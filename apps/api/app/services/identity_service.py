@@ -32,6 +32,7 @@ import psycopg2
 import structlog
 
 from app.core.config import settings
+from app.core.log_bounds import log_failure
 
 log = structlog.get_logger(__name__)
 
@@ -285,7 +286,7 @@ def send_otp_email(to_email: str, code: str) -> None:
         log.info("otp_email.sent", to_domain=_log_domain)
     except Exception as exc:
         # Fire-and-forget: log warning but NEVER re-raise
-        log.warning("otp_email.send_failed", error=str(exc), to_domain=_log_domain)
+        log_failure(log, "otp_email.send_failed", exc, to_domain=_log_domain)
 
 
 def _deliver_otp(method: str, external_id: str, code: str) -> None:
@@ -303,7 +304,7 @@ def _deliver_otp(method: str, external_id: str, code: str) -> None:
             provider.send(external_id, body)
         except Exception as exc:  # noqa: BLE001
             # Fire-and-forget: log but NEVER re-raise (mirrors email pattern, T-17-08)
-            log.warning("otp_sms.send_failed", error=str(exc), method=method)
+            log_failure(log, "otp_sms.send_failed", exc, method=method)
     else:
         log.warning("otp_deliver.unknown_method", method=method)
 
@@ -446,7 +447,7 @@ async def verify_otp(
         # OTP is already consumed (Redis key deleted above — T-17-05 single-use invariant).
         # Raise a distinct exception so the route can return HTTP 503 with Retry-After,
         # telling the client to request a new OTP rather than retrying the same code.
-        log.error("verify_otp.upsert_failed", agent_id=agent_id, error=str(exc))
+        log_failure(log, "verify_otp.upsert_failed", exc, level="error", agent_id=agent_id)
         raise OtpStorageError("Session record could not be created — please try again") from exc
 
     return raw_token

@@ -79,6 +79,7 @@ from uuid import uuid4
 import structlog
 
 from app.core.config import settings
+from app.core.log_bounds import log_failure
 from app.core.model_client import ledger_recorder
 from app.domain.tool_result import Outcome, ToolResult, wire_text
 from app.domain.transactional_schemas import SKILL_INPUT_MODELS
@@ -630,7 +631,7 @@ def _build_transactional_probe_fn(
                 finally:
                     close_turn(turn)
         except Exception as exc:  # noqa: BLE001
-            log.warning("red_team_probe.victim_turn_failed", error=str(exc))
+            log_failure(log, "red_team_probe.victim_turn_failed", exc)
             return ""
 
     # The one channel out of a `Callable[[str], str]` that leaves the transcript

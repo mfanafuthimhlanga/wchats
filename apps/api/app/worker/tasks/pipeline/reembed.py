@@ -54,6 +54,7 @@ import psycopg2.extensions
 import structlog
 
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.services import bedrock_embedding_service
@@ -193,13 +194,10 @@ def reembed_corpus(self, agent_id: str) -> dict:
         except Exception:
             pass
 
-        log.error(
-            "reembed_corpus.unexpected_error",
+        log_failure(
+            log, "reembed_corpus.unexpected_error", exc, level="error",
             agent_id=agent_id,
-            error_type=type(exc).__name__,
-            error=str(exc),
             total_reembedded=total_reembedded,
-            # conn_str is NEVER logged (T-13-04-03)
         )
 
         if self.request.retries >= self.max_retries:
@@ -230,12 +228,7 @@ def reembed_corpus(self, agent_id: str) -> dict:
         )
     except Exception as reindex_exc:
         # Log and swallow — the data is already committed.
-        log.warning(
-            "reembed.reindex_skipped",
-            agent_id=agent_id,
-            reason=type(reindex_exc).__name__,
-            error=str(reindex_exc),
-        )
+        log_failure(log, "reembed.reindex_skipped", reindex_exc, agent_id=agent_id, reason=type(reindex_exc).__name__)
     finally:
         reindex_conn.close()
 

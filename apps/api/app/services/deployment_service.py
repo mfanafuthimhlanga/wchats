@@ -28,6 +28,7 @@ from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.model_client import LedgerContext, make_async_client, route_for
 from app.domain.eval_result import (
     EVAL_DATASETS,
@@ -917,10 +918,9 @@ def _record_of(run_id: str, payload: object) -> EvalResult | None:
     try:
         return EvalResult.from_payload(payload)
     except InvalidEvalResult as exc:
-        log.error(
-            "deployment_service.eval_summary.record_unreadable",
+        log_failure(
+            log, "deployment_service.eval_summary.record_unreadable", exc, level="error",
             run_id=run_id,
-            error=str(exc),
             detail="the stored record breaks a rule; the run reads as unmeasured",
         )
         return None
@@ -1007,9 +1007,8 @@ def _dispatch_moment(conn_str: str) -> datetime:
         finally:
             conn.close()
     except Exception as exc:
-        log.warning(
-            "deployment_service.dispatch_moment.tenant_clock_unread",
-            error=str(exc),
+        log_failure(
+            log, "deployment_service.dispatch_moment.tenant_clock_unread", exc,
             detail="falling back to the worker clock; skew can outlast the wait",
         )
         return datetime.now(timezone.utc)
@@ -1037,9 +1036,7 @@ def _latest_run_since(
         finally:
             conn.close()
     except Exception as exc:
-        log.warning(
-            "deployment_service.run_status.unread", kind=kind, error=str(exc)
-        )
+        log_failure(log, "deployment_service.run_status.unread", exc, kind=kind)
         return None
     return None if row is None else (row[0], row[1])
 
@@ -1142,11 +1139,7 @@ def running_runs_since(
         finally:
             conn.close()
     except Exception as exc:
-        log.warning(
-            "deployment_service.running_runs.unread",
-            agent_id=agent_id,
-            error=str(exc) or repr(exc),
-        )
+        log_failure(log, "deployment_service.running_runs.unread", exc, agent_id=agent_id)
         return None
     return found
 
@@ -1380,11 +1373,7 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
             except Exception as exc:
                 # An UNKNOWN rather than the zeros _fetch_verified_qa_stats_sync
                 # returns. Zeros are a measurement; this is the absence of one.
-                log.warning(
-                    "deployment_service.eval_summary.query_failed",
-                    agent_id=agent_id,
-                    error=str(exc),
-                )
+                log_failure(log, "deployment_service.eval_summary.query_failed", exc, agent_id=agent_id)
                 return _eval_summary(
                     EVAL_SIGNAL_UNAVAILABLE,
                     detail=f"eval signal could not be read: {type(exc).__name__}",
@@ -1769,11 +1758,7 @@ def _fetch_verified_qa_stats_sync(agent_id: str, conn_str: str) -> dict:
                     avg_relevance=None if row[2] is None else float(row[2]),
                 )
             except Exception as exc:
-                log.warning(
-                    "deployment_service.verified_qa_stats.query_failed",
-                    agent_id=agent_id,
-                    error=str(exc),
-                )
+                log_failure(log, "deployment_service.verified_qa_stats.query_failed", exc, agent_id=agent_id)
                 return _verified_qa_stats(
                     VERIFIED_QA_SIGNAL_UNAVAILABLE,
                     detail=f"the verified_qa read failed: {type(exc).__name__}",
@@ -3241,11 +3226,7 @@ async def _close_client(client) -> None:
     try:
         await client.close()
     except Exception as exc:
-        log.warning(
-            "deployment_orchestrator.client_not_closed",
-            error_type=type(exc).__name__,
-            error=str(exc),
-        )
+        log_failure(log, "deployment_orchestrator.client_not_closed", exc)
 
 
 async def _run_orchestrator_loop(
@@ -3333,9 +3314,4 @@ def run_orchestrator(
         )
     except Exception as exc:
         # error_type, not str(exc): str(asyncio.TimeoutError()) is "" (1.30).
-        log.warning(
-            "deployment_orchestrator.failed",
-            error_type=type(exc).__name__,
-            error=str(exc) or repr(exc),
-            timeout_s=ORCHESTRATOR_TIMEOUT_S,
-        )
+        log_failure(log, "deployment_orchestrator.failed", exc, timeout_s=ORCHESTRATOR_TIMEOUT_S)

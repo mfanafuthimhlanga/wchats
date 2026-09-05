@@ -52,6 +52,7 @@ from celery.schedules import crontab
 from kombu import Exchange, Queue
 
 from app.core.config import settings
+from app.core.log_bounds import log_failure
 from app.core.redis_tls import redis_ssl_kwargs
 
 log = structlog.get_logger(__name__)
@@ -352,11 +353,7 @@ def on_worker_ready(sender=None, **_):
     try:
         duration = docling_service.warm_up()
     except Exception as exc:
-        log.warning(
-            "worker.docling_warmup_failed",
-            error_type=type(exc).__name__,
-            error=str(exc),
-        )
+        log_failure(log, "worker.docling_warmup_failed", exc)
         return
     log.info("worker.docling_warmup_complete", duration_s=duration)
 

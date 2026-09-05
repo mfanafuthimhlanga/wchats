@@ -83,6 +83,7 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.model_client import LedgerContext, ledger_recorder
 from app.domain.tool_def import tool
 from app.domain.tool_result import Outcome, ToolResult, to_wire, wire_text
@@ -729,12 +730,7 @@ async def _execute_transactional_tool(
         except Exception as exc:  # noqa: BLE001
             # DB error (e.g. psycopg2.OperationalError on Neon cold start) — fail CLOSED.
             # Never allow the mutating tool to proceed when the IDV check cannot complete.
-            log.warning(
-                "transactional_tool.idv_check_failed",
-                agent_id=agent_id,
-                skill=skill,
-                error=str(exc),
-            )
+            log_failure(log, "transactional_tool.idv_check_failed", exc, agent_id=agent_id, skill=skill)
             if recorded:
                 record_suppressed_side_effect(
                     RECORDED_DECLINED,

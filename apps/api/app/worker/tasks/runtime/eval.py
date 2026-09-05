@@ -111,6 +111,7 @@ import psycopg2
 import structlog
 
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent, select_beat_fanout_agents
@@ -195,11 +196,10 @@ def _mark_failed_on_production(run_id: str, conn_str: str, agent_id: str) -> Non
     try:
         update_eval_run_status(run_id, "failed", finished_at=True, conn_str=conn_str)
     except Exception as status_exc:
-        log.error(
-            "run_eval_suite.mark_failed_failed",
+        log_failure(
+            log, "run_eval_suite.mark_failed_failed", status_exc, level="error",
             agent_id=agent_id,
             run_id=run_id,
-            error=str(status_exc),
             detail="production eval_runs row still reads 'running' for a finished run",
         )
 
@@ -581,12 +581,10 @@ def _invoke_agent_for_scenarios(
                 # rather than the agent's behaviour, in the direction that reads
                 # as a quality regression. The message is composed, not copied.
                 record["error"], record["error_message"] = _failure_of(exc)
-                log.warning(
-                    "run_eval_suite.scenario_invocation_failed",
+                log_failure(
+                    log, "run_eval_suite.scenario_invocation_failed", exc,
                     agent_id=agent_id,
                     scenario_id=record["scenario_id"],
-                    error_type=type(exc).__name__,
-                    error=str(exc),
                 )
 
             # Read on BOTH paths and before the next turn resets the sink: a
@@ -943,11 +941,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
             return {"status": "already_running"}
     except Exception as exc:
         # If we cannot check, proceed — idempotency guard is best-effort
-        log.warning(
-            "run_eval_suite.idempotency_check_failed",
-            agent_id=agent_id,
-            error=str(exc),
-        )
+        log_failure(log, "run_eval_suite.idempotency_check_failed", exc, agent_id=agent_id)
 
     # ------------------------------------------------------------------
     # Step 3 — Fetch eval scenarios from tenant DB (PRODUCTION).
@@ -1031,11 +1025,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
         finally:
             _scen_conn.close()
     except Exception as exc:
-        log.error(
-            "run_eval_suite.fetch_scenarios_failed",
-            agent_id=agent_id,
-            error=str(exc),
-        )
+        log_failure(log, "run_eval_suite.fetch_scenarios_failed", exc, level="error", agent_id=agent_id)
         if self.request.retries >= self.max_retries:
             return {}
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)
@@ -1092,11 +1082,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
             store_scenarios(mined, conn_str)
     except Exception as mine_exc:
         # Mining is best-effort — never blocks the eval run
-        log.warning(
-            "run_eval_suite.mine_failed",
-            agent_id=agent_id,
-            error=str(mine_exc),
-        )
+        log_failure(log, "run_eval_suite.mine_failed", mine_exc, agent_id=agent_id)
 
     if not scenarios:
         log.warning(
@@ -1141,15 +1127,15 @@ def run_eval_suite(self, agent_id: str) -> dict:
             # nothing-to-do into a retry storm. It is logged at error level
             # because the consequence — an unexplained permanent block — is the
             # thing this write exists to prevent.
-            log.error(
+            log_failure(
+                log,
                 "run_eval_suite.empty_run_record_failed",
+                record_exc,
+                level="error",
                 agent_id=agent_id,
                 run_id=empty_run_id,
-                error=str(record_exc),
-                detail=(
-                    "no eval_runs row explains why this agent's deploy is "
-                    "blocked"
-                ),
+                detail="no eval_runs row explains why this agent's deploy is "
+                    "blocked",
             )
         # The denominators travel even on the empty path. A run that scored
         # nothing must be readable as such rather than as an absent key a caller
@@ -1183,11 +1169,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
             conn_str,
         )
     except Exception as exc:
-        log.error(
-            "run_eval_suite.insert_eval_run_failed",
-            agent_id=agent_id,
-            error=str(exc),
-        )
+        log_failure(log, "run_eval_suite.insert_eval_run_failed", exc, level="error", agent_id=agent_id)
         if self.request.retries >= self.max_retries:
             return {}
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)
@@ -1353,11 +1335,10 @@ def run_eval_suite(self, agent_id: str) -> dict:
         )
 
     except Exception as exc:
-        log.error(
-            "run_eval_suite.eval_failed",
+        log_failure(
+            log, "run_eval_suite.eval_failed", exc, level="error",
             agent_id=agent_id,
             run_id=run_id,
-            error=str(exc),
             agent_was_invoked=agent_was_invoked,
         )
         _mark_failed_on_production(run_id, conn_str, agent_id)
@@ -1454,11 +1435,7 @@ def generate_eval_suite(self, agent_id: str) -> dict:
             return {"status": "already_generated", "count": count}
 
     except Exception as exc:
-        log.warning(
-            "generate_eval_suite.idempotency_check_failed",
-            agent_id=agent_id,
-            error=str(exc),
-        )
+        log_failure(log, "generate_eval_suite.idempotency_check_failed", exc, agent_id=agent_id)
 
     # ------------------------------------------------------------------
     # Generate scenario suite via scenario_service (Claude Haiku — D-12)
@@ -1473,11 +1450,7 @@ def generate_eval_suite(self, agent_id: str) -> dict:
         return {"agent_id": agent_id, "scenario_count": count}
 
     except Exception as exc:
-        log.error(
-            "generate_eval_suite.failed",
-            agent_id=agent_id,
-            error=str(exc),
-        )
+        log_failure(log, "generate_eval_suite.failed", exc, level="error", agent_id=agent_id)
         if self.request.retries >= self.max_retries:
             return {}
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)

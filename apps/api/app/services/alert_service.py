@@ -28,6 +28,7 @@ import structlog
 from sqlalchemy import text
 
 from app.core.config import settings
+from app.core.log_bounds import log_failure
 from app.models.alert import Alert
 from app.services.eval_service import latest_faithfulness
 
@@ -56,9 +57,7 @@ def latest_faithfulness_reading(
         finally:
             conn.close()
     except Exception as exc:
-        log.warning(
-            "alert_service.faithfulness_fetch_failed", agent_id=agent_id, error=str(exc)
-        )
+        log_failure(log, "alert_service.faithfulness_fetch_failed", exc, agent_id=agent_id)
         return (None, None)
 
 
@@ -94,7 +93,7 @@ def _get_latest_critical_count(agent_id: str, conn_str: str) -> int:
         finally:
             conn.close()
     except Exception as exc:
-        log.warning("alert_service.critical_count_fetch_failed", agent_id=agent_id, error=str(exc))
+        log_failure(log, "alert_service.critical_count_fetch_failed", exc, agent_id=agent_id)
         return 0
 
 
@@ -153,7 +152,7 @@ def send_alert_email(agent_name: str, agent_id: str, alert_type: str, message: s
             server.sendmail(smtp_from, [owner_email], msg.as_string())
         log.info("alert_service.email_sent", agent_id=agent_id, alert_type=alert_type)
     except Exception as exc:
-        log.warning("alert_service.email_failed", agent_id=agent_id, error=str(exc))
+        log_failure(log, "alert_service.email_failed", exc, agent_id=agent_id)
 
 
 def check_and_write_alerts(

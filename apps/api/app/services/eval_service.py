@@ -86,6 +86,7 @@ from sqlalchemy import text as sa_text
 
 from app.core.config import AGENT_TURN_MODEL, settings
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 
 # The ledger's column list, imported from the module that WRITES it. `usage.py`
 # keeps a second copy under a test pinning the two together; a third copy here
@@ -1401,11 +1402,7 @@ async def _score_samples(metrics: list, samples: list) -> list[dict]:
             try:
                 value = (await metric.ascore(**kwargs)).value
             except Exception as exc:  # noqa: BLE001 — one metric, one sample
-                log.warning(
-                    "run_ragas_eval.metric_failed",
-                    metric=metric.name,
-                    error=str(exc),
-                )
+                log_failure(log, "run_ragas_eval.metric_failed", exc, metric=metric.name)
                 value = None
             row[metric.name] = (
                 float(value) if value is not None and value == value else None  # NaN check
@@ -1883,11 +1880,7 @@ def build_eval_run_config(
         prompt_version_id = str(row[0]) if row else None
     except Exception as exc:
         unavailable.append("prompt_version_id")
-        log.warning(
-            "build_eval_run_config.prompt_version_unavailable",
-            agent_id=agent_id,
-            error=str(exc),
-        )
+        log_failure(log, "build_eval_run_config.prompt_version_unavailable", exc, agent_id=agent_id)
 
     # --- retrieval_config_hash (control DB: agents.retrieval_strategy) --
     # Hashed through RetrievalStrategy.model_validate so that an absent key
@@ -1906,11 +1899,7 @@ def build_eval_run_config(
         retrieval_config_hash = _canonical_hash(strategy.model_dump(mode="json"))
     except Exception as exc:
         unavailable.append("retrieval_config_hash")
-        log.warning(
-            "build_eval_run_config.retrieval_config_unavailable",
-            agent_id=agent_id,
-            error=str(exc),
-        )
+        log_failure(log, "build_eval_run_config.retrieval_config_unavailable", exc, agent_id=agent_id)
 
     # --- envelope_hash (control DB: capability_envelopes) ---------------
     envelope_hash: str | None = None
@@ -1922,11 +1911,7 @@ def build_eval_run_config(
         envelope_hash = _compute_envelope_hash_sync(agent_id)
     except Exception as exc:
         unavailable.append("envelope_hash")
-        log.warning(
-            "build_eval_run_config.envelope_hash_unavailable",
-            agent_id=agent_id,
-            error=str(exc),
-        )
+        log_failure(log, "build_eval_run_config.envelope_hash_unavailable", exc, agent_id=agent_id)
 
     # --- corpus_chunk_count (tenant DB, production) ---------------------
     corpus_chunk_count: int | None = None
@@ -1938,11 +1923,7 @@ def build_eval_run_config(
         corpus_chunk_count = _fetch_corpus_stats_sync(agent_id, conn_str)["chunk_count"]
     except Exception as exc:
         unavailable.append("corpus_chunk_count")
-        log.warning(
-            "build_eval_run_config.corpus_stats_unavailable",
-            agent_id=agent_id,
-            error=str(exc),
-        )
+        log_failure(log, "build_eval_run_config.corpus_stats_unavailable", exc, agent_id=agent_id)
 
     config = {
         # The model that serves a customer turn, read from the one constant
@@ -2129,14 +2110,14 @@ def update_eval_run_config(run_id: str, patch: dict, conn_str: str) -> bool:
         finally:
             conn.close()
     except Exception as exc:
-        log.error(
+        log_failure(
+            log,
             "update_eval_run_config.failed",
+            exc,
+            level="error",
             run_id=run_id,
-            error=str(exc),
-            detail=(
-                "the run keeps agent_invoked=false and will be refused by the "
-                "deploy gate — fail-closed, but the measurement is lost"
-            ),
+            detail="the run keeps agent_invoked=false and will be refused by the "
+                "deploy gate. Fail-closed, but the measurement is lost",
         )
         return False
 
@@ -2227,10 +2208,9 @@ def read_run_ledger(run_id: str, conn_str: str) -> list[ModelCall]:
         )
         return []
     except Exception as exc:
-        log.error(
-            "read_run_ledger.failed",
+        log_failure(
+            log, "read_run_ledger.failed", exc, level="error",
             run_id=run_id,
-            error=str(exc),
             detail="the run's cost reads as unknown rather than as zero",
         )
         return []
@@ -2496,10 +2476,9 @@ def write_eval_result(run_id: str, result: EvalResult, conn_str: str) -> bool:
         finally:
             conn.close()
     except Exception as exc:
-        log.error(
-            "write_eval_result.failed",
+        log_failure(
+            log, "write_eval_result.failed", exc, level="error",
             run_id=run_id,
-            error=str(exc),
             detail="the run's numbers live only in this task's return value",
         )
         return False
@@ -2563,10 +2542,9 @@ def latest_run_record(cur, agent_id: str) -> EvalResult | None:
     try:
         return EvalResult.from_payload(row[1])
     except InvalidEvalResult as exc:
-        log.error(
-            "eval_service.latest_run_record.unreadable",
+        log_failure(
+            log, "eval_service.latest_run_record.unreadable", exc, level="error",
             run_id=str(row[0]),
-            error=str(exc),
             detail="the stored record breaks a rule; the run reads as unmeasured",
         )
         return None
@@ -2652,13 +2630,13 @@ def read_eval_result(run_id: str, conn_str: str) -> EvalResult | None:
     try:
         return EvalResult.from_payload(row[0])
     except InvalidEvalResult as exc:
-        log.error(
+        log_failure(
+            log,
             "read_eval_result.unreadable",
+            exc,
+            level="error",
             run_id=run_id,
-            error=str(exc),
-            detail=(
-                "the stored record breaks a construction rule; the run reads as "
-                "unmeasured"
-            ),
+            detail="the stored record breaks a construction rule; the run reads as "
+                "unmeasured",
         )
         return None

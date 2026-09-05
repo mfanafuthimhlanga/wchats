@@ -28,6 +28,7 @@ import psycopg2
 import structlog
 
 from app.core.config import settings
+from app.core.log_bounds import log_failure
 from app.services.eval_service import latest_faithfulness
 
 log = structlog.get_logger(__name__)
@@ -101,7 +102,7 @@ def _collect_digest_stats(agent_id: str, conn_str: str, db) -> dict:
         finally:
             conn.close()
     except Exception as exc:
-        log.warning("digest_service.tenant_fetch_failed", agent_id=agent_id, error=str(exc))
+        log_failure(log, "digest_service.tenant_fetch_failed", exc, agent_id=agent_id)
 
     return stats
 
@@ -154,4 +155,4 @@ def send_digest_email(agent_name: str, agent_id: str, stats: dict) -> None:
             server.sendmail(smtp_from, [owner_email], msg.as_string())
         log.info("digest_service.email_sent", agent_id=agent_id, to=owner_email)
     except Exception as exc:
-        log.warning("digest_service.email_failed", agent_id=agent_id, error=str(exc))
+        log_failure(log, "digest_service.email_failed", exc, agent_id=agent_id)

@@ -119,6 +119,7 @@ import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import fernet_decrypt, require_ciphertext
@@ -241,11 +242,10 @@ def _enrich_pending(
         except Exception as exc:
             # One bad batch does not abort the document. Every batch taking this
             # path is what the wholly-failed rule catches.
-            log.warning(
-                "generate_metadata.batch_extraction_failed",
+            log_failure(
+                log, "generate_metadata.batch_extraction_failed", exc,
                 batch_start=batch_start,
                 batch_size=len(batch),
-                error=str(exc),
             )
             continue
 
@@ -366,7 +366,7 @@ def generate_metadata(self, job: IngestionJob) -> IngestionJob:
                 tenant_conn.rollback()
             except Exception:
                 pass
-            log.error("generate_metadata.unexpected_error", error_type=type(exc).__name__, error=str(exc))
+            log_failure(log, "generate_metadata.unexpected_error", exc, level="error")
             retry_or_fail_the_job(self, exc, job_id, db, _redis, 2**self.request.retries)
         finally:
             tenant_conn.close()

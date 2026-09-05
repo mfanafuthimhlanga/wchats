@@ -500,3 +500,70 @@ SITE_CASES = [
 def test_source_assertion_sites(label, snippet, expected):
     """The matcher counts app-source reads and skips fixture reads and self reads."""
     assert gates.source_assertion_sites(snippet) == expected
+
+
+# ---------------------------------------------------------------------------
+# Log bounds (#166). Every snippet below is a whole module, because the scan
+# reads a module: the names it treats as exceptions come from the `except`
+# clauses and the annotated parameters of the same file.
+
+HANDLER = """
+def work():
+    try:
+        run()
+    except Exception as exc:
+        %s
+"""
+
+LOG_BOUND_CASES = [
+    ("the shape #166 converted", 'log.warning("x.failed", error=str(exc))', 1),
+    ("an id rendered beside it", 'log.warning("x.failed", agent_id=str(agent_id))', 0),
+    ("the class name on its own", 'log.warning("x.failed", error_type=type(exc).__name__)', 0),
+    ("the bounded reader", 'log.warning("x.failed", error=bounded_error_detail(exc))', 0),
+    ("a repr instead of a str", 'log.warning("x.failed", error=repr(exc))', 1),
+    ("a slice of the message", 'log.warning("x.failed", exc_msg=str(exc)[:200])', 1),
+    ("an f-string carrying both", 'log.warning("x.failed", error=f"{type(exc).__name__}: {exc}")', 1),
+    ("percent formatting", 'log.warning("x.failed", error="%s" % exc)', 1),
+    ("the exception passed whole", 'log.warning("x.failed", error=exc)', 1),
+    ("args, the message every exception has", 'log.warning("x.failed", error=exc.args)', 1),
+    ("a field the raiser named and sized", 'log.warning("x.failed", detail=exc.message)', 0),
+    ("a scalar field", 'log.warning("x.failed", status_code=exc.status_code)', 0),
+    ("two leaks in one call", 'log.error("x.failed", a=str(exc), b=repr(exc))', 2),
+    ("the converted call", 'log_failure(log, "x.failed", exc, agent_id=agent_id)', 0),
+    ("the event, which is positional", 'log.warning(str(exc))', 0),
+]
+
+
+@pytest.mark.parametrize("label, call, expected", LOG_BOUND_CASES)
+def test_unbounded_log_sites(label, call, expected):
+    """The scan reports the exception's own rendering and nothing else."""
+    assert len(gates.unbounded_log_sites(HANDLER % call)) == expected
+
+
+def test_an_exception_reaches_the_scan_through_an_annotation_too():
+    """A helper that takes the exception as a parameter has no except clause to find."""
+    module = 'def note(exc: Exception) -> None:\n    log.warning("x.failed", error=str(exc))\n'
+    assert len(gates.unbounded_log_sites(module)) == 1
+
+
+def test_a_module_that_binds_no_exception_is_read_as_clean():
+    """Without a bound name there is nothing to leak, and `str` is left alone."""
+    assert gates.unbounded_log_sites('log.info("started", agent_id=str(agent_id))\n') == []
+
+
+def test_the_log_bounds_pin_is_zero():
+    """One site anywhere fails the gate. There is no baseline to add a file to."""
+    assert gates.log_bound_failures({}, 162) == []
+    report = "\n".join(gates.log_bound_failures({"app/one.py": [(12, "error")]}, 162))
+    assert "app/one.py:12  error=" in report
+    assert "log_failure" in report
+
+
+def test_a_scan_that_read_nothing_is_not_a_pass():
+    """A renamed app/ makes the walk return nothing, and a gate over nothing is vacuous."""
+    assert gates.log_bound_failures({}, 0) != []
+
+
+def test_log_bounds_runs_in_the_static_mode():
+    """The gate the Stop hook runs is the one that carries this check."""
+    assert "log bounds" in [label for label, _ in gates.steps("static")]

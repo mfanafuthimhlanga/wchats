@@ -13,6 +13,7 @@ import psycopg2
 import structlog
 from sqlalchemy import text
 
+from app.core.log_bounds import log_failure
 from app.core.model_client import LedgerContext, ledger_recorder, route_for
 from app.domain.eval_result import DATASET_EXPLORATORY, DATASET_GOLDEN, EVAL_DATASETS
 from app.services.tool_loop import forced_tool_arguments
@@ -290,12 +291,7 @@ def generate_eval_suite_for_agent(
             new_scenarios = generate_scenarios_from_chunks(batch, ledger, n=5)
             all_scenarios.extend(new_scenarios)
         except Exception as exc:
-            log.warning(
-                "scenario_service.batch_failed",
-                agent_id=agent_id,
-                batch_start=start,
-                error=str(exc),
-            )
+            log_failure(log, "scenario_service.batch_failed", exc, agent_id=agent_id, batch_start=start)
 
     # Trim to num_scenarios
     all_scenarios = all_scenarios[:num_scenarios]

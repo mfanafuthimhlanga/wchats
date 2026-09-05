@@ -53,6 +53,7 @@ import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
@@ -155,12 +156,7 @@ def apply_migrations(self, result: dict) -> None:
         try:
             run_tenant_migrations(direct_conn_string)
         except Exception as exc:
-            log.error(
-                "apply_migrations.migration_failed",
-                agent_id=agent_id,
-                error_type=type(exc).__name__,
-                error=str(exc),
-            )
+            log_failure(log, "apply_migrations.migration_failed", exc, level="error", agent_id=agent_id)
             agent.status = "failed"
             job.status = "failed"
             job.error = str(exc)

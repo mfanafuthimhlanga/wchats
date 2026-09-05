@@ -37,6 +37,7 @@ import structlog
 from redis import Redis as SyncRedis
 from sqlalchemy.orm import Session
 
+from app.core.log_bounds import log_failure
 from app.models.job import Job
 from app.services import events
 
@@ -159,13 +160,7 @@ def _terminal_write_failed(half: str, exc: Exception, job_id: UUID | str) -> Non
     control session, redis.ConnectionError names an unreachable broker, and the
     two ask for different fixes.
     """
-    log.error(
-        "fail_the_job.terminal_write_failed",
-        half=half,
-        job_id=str(job_id),
-        error_type=type(exc).__name__,
-        error=str(exc),
-    )
+    log_failure(log, "fail_the_job.terminal_write_failed", exc, level="error", half=half, job_id=str(job_id))
 
 
 def retry_or_fail_the_job(

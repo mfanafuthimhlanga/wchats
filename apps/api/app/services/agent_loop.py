@@ -82,6 +82,7 @@ from typing import Any
 import structlog
 
 from app.core.config import settings
+from app.core.log_bounds import log_failure
 from app.core.model_client import ModelRoute, Recorder, make_async_client, route_for
 from app.domain.model_call import ModelCall
 from app.domain.pii_firewall import detect_pii, scan_response
@@ -285,7 +286,7 @@ def record_turn_calls(turn: AgentTurn) -> int:
         try:
             turn.ledger(call)
         except Exception as exc:
-            log.error("agent_loop.ledger_row_not_written", error_type=type(exc).__name__, error=str(exc))
+            log_failure(log, "agent_loop.ledger_row_not_written", exc, level="error")
             continue
         written += 1
     return written
@@ -405,11 +406,7 @@ def _discard_client(client) -> None:
     try:
         asyncio.run(client.close())
     except Exception as exc:
-        log.warning(
-            "agent_loop.unused_client_not_closed",
-            error_type=type(exc).__name__,
-            error=str(exc),
-        )
+        log_failure(log, "agent_loop.unused_client_not_closed", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -550,7 +547,7 @@ def _over_budget(turn: AgentTurn) -> bool:
         try:
             total += cost_usd(call)[0]
         except UnknownPrice as exc:
-            log.warning("agent_loop.budget_unpriced", error=str(exc))
+            log_failure(log, "agent_loop.budget_unpriced", exc)
             return False
     return float(total) >= turn.max_budget_usd
 

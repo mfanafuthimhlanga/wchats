@@ -49,6 +49,7 @@ from langfuse import Langfuse
 from pydantic import BaseModel
 
 from app.core.config import settings
+from app.core.log_bounds import log_failure
 from app.core.model_client import LedgerContext, route_for
 from app.services.tool_loop import forced_tool_arguments
 
@@ -229,12 +230,7 @@ async def call_actor_gate(
                 f"[{row['role'].upper()}]: {row['content']}" for row in history_rows
             )
     except Exception as exc:  # noqa: BLE001
-        log.warning(
-            "actor_gate.history_fetch_failed",
-            agent_id=agent_id,
-            conversation_id=conversation_id,
-            error=str(exc),
-        )
+        log_failure(log, "actor_gate.history_fetch_failed", exc, agent_id=agent_id, conversation_id=conversation_id)
         # conversation_history_str remains the fallback sentinel
 
     # ---------------------------------------------- Step C: forced-tool-use judge call
@@ -316,6 +312,6 @@ async def call_actor_gate(
             # The SDK's background flusher and atexit deliver both from the long-lived
             # worker. The judges run post-response and can afford the per-call flush.
         except Exception as exc:  # noqa: BLE001
-            log.warning("langfuse.actor_log_failed", error=str(exc))
+            log_failure(log, "langfuse.actor_log_failed", exc)
 
     return (decision, rationale)

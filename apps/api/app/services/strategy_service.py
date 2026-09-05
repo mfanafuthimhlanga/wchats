@@ -16,6 +16,7 @@ from __future__ import annotations
 import psycopg2
 import structlog
 
+from app.core.log_bounds import log_failure
 from app.core.model_client import LedgerContext, ledger_recorder, route_for
 from app.domain.ingestion_job import IngestionJob
 from app.services.tool_loop import forced_tool_arguments
@@ -251,4 +252,4 @@ def run_strategist(
         # RetrievalStrategy() defaults, so the log is the only place the failure is
         # named, and `ForcedToolCallTruncated` there means the 500-token ceiling is
         # too low for the strategy JSON rather than that the model refused.
-        log.warning("run_strategist.failed", error=str(exc), error_type=type(exc).__name__)
+        log_failure(log, "run_strategist.failed", exc)

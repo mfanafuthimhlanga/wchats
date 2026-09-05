@@ -71,6 +71,7 @@ import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.log_bounds import log_failure
 from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.domain.ingestion_job import IngestionJob
@@ -279,11 +280,7 @@ def embed_and_migrate(self, job: IngestionJob) -> IngestionJob:
                 #   - Index does not exist yet (first ingestion before HNSW created)
                 #   - pgvector extension not installed (test environments without pgvector)
                 #   - Transient Postgres error (retries will attempt REINDEX again)
-                log.warning(
-                    "embed_and_migrate.reindex_skipped",
-                    reason=type(reindex_exc).__name__,
-                    error=str(reindex_exc),
-                )
+                log_failure(log, "embed_and_migrate.reindex_skipped", reindex_exc, reason=type(reindex_exc).__name__)
             finally:
                 reindex_conn.close()
 
@@ -330,10 +327,8 @@ def embed_and_migrate(self, job: IngestionJob) -> IngestionJob:
             except Exception:
                 pass
 
-            log.error(
-                "embed_and_migrate.unexpected_error",
-                error_type=type(exc).__name__,
-                error=str(exc),
+            log_failure(
+                log, "embed_and_migrate.unexpected_error", exc, level="error",
                 total_chunks_embedded=total_chunks_embedded,
             )
 

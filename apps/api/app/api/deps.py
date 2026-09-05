@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.clerk_jwt import verify_clerk_jwt
 from app.core.config import settings
 from app.core.database import get_async_db
+from app.core.log_bounds import bounded_error_detail, log_failure
 from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import hmac_key_prefix, verify_api_key
 from app.models.tenant import Tenant
@@ -142,13 +143,8 @@ async def get_current_tenant(
         except InvalidTokenError as exc:
             # JWT signature/expiry/format failure — genuine auth failure → 401.
             token_prefix = (bearer.credentials[:8] + "...") if bearer and len(bearer.credentials) > 8 else "(short)"
-            exc_msg = str(exc)[:200]
-            log.warning(
-                "jwt.verify_failed",
-                exc_type=type(exc).__name__,
-                exc_msg=exc_msg,
-                token_prefix=token_prefix,
-            )
+            exc_msg = bounded_error_detail(exc)
+            log_failure(log, "jwt.verify_failed", exc, token_prefix=token_prefix)
             detail = f"Invalid session token: {exc_msg}" if settings.ENVIRONMENT != "production" else "Invalid session token"
             raise HTTPException(status_code=401, detail=detail)
         except Exception as exc:
@@ -156,12 +152,7 @@ async def get_current_tenant(
             # error (not warning) and return 503 to avoid masking infra failures as 401.
             # T-04-03: detail string contains no DB error message or key fragment.
             token_prefix = (bearer.credentials[:8] + "...") if bearer and len(bearer.credentials) > 8 else "(short)"
-            log.error(
-                "jwt.unexpected_error",
-                exc_type=type(exc).__name__,
-                exc_msg=str(exc)[:200],
-                token_prefix=token_prefix,
-            )
+            log_failure(log, "jwt.unexpected_error", exc, level="error", token_prefix=token_prefix)
             raise HTTPException(
                 status_code=503,
                 detail="Authentication service temporarily unavailable. Please retry.",
