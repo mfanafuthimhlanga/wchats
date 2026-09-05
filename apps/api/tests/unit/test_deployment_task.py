@@ -253,8 +253,8 @@ class TestRunDeploymentChecklistHappyPath:
         # Signal fetch return values (minimal valid dicts)
         empty_eval = _measured_eval_signal()
         empty_red_team = _measured_red_team_signal()
-        empty_verified_qa = {"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9}
-        empty_corpus = {"document_count": 5, "chunk_count": 100, "last_ingested_at": None}
+        empty_verified_qa = _measured_verified_qa_signal()
+        empty_corpus = _measured_corpus_signal()
         empty_blast_radius = {
             "configured_max_single_action_cents": None,
             "configured_max_hourly_aggregate_cents": None,
@@ -375,10 +375,10 @@ class TestRunDeploymentChecklistHappyPath:
             return_value=_measured_red_team_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_verified_qa_stats_sync",
-            return_value={"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+            return_value=_measured_verified_qa_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_corpus_stats_sync",
-            return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+            return_value=_measured_corpus_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
             return_value={
@@ -464,8 +464,11 @@ class TestRunDeploymentChecklistFailurePath:
 
         empty_eval = _measured_eval_signal()
         empty_red_team = _measured_red_team_signal()
-        empty_verified_qa = {"row_count": 0, "avg_faithfulness": 0.0, "avg_relevance": 0.0}
-        empty_corpus = {"document_count": 0, "chunk_count": 0, "last_ingested_at": None}
+        # A tenant whose corpus was READ and came back empty. The dict this
+        # replaces put 0.0 in both averages, which is the #121 payload itself:
+        # a faithfulness of nought asserted about pairs that do not exist.
+        empty_verified_qa = _measured_verified_qa_signal(row_count=0)
+        empty_corpus = _measured_corpus_signal(document_count=0, chunk_count=0)
         empty_blast_radius = {
             "configured_max_single_action_cents": None,
             "configured_max_hourly_aggregate_cents": None,
@@ -655,13 +658,56 @@ def _measured_red_team_signal():
     }
 
 
+def _measured_verified_qa_signal(row_count=60, average=0.9):
+    """The verified-QA payload the collector writes when it counted something.
+
+    Built through the collector's own constructor for the reason
+    `_measured_eval_signal` is: the hand-written dict this replaces carried no
+    `signal` key at all, which is the pre-#131 shape, so every wiring test that
+    used it sent `derive_quality_warnings` down the compatibility branch kept
+    for reports stored before that fix. The happy paths were therefore the one
+    place in this module NOT exercising what production stores today.
+
+    A `row_count` of nought comes back with both averages None, because that is
+    what the constructor does with an average over no rows.
+    """
+    from app.services.deployment_service import (
+        VERIFIED_QA_SIGNAL_MEASURED,
+        _verified_qa_stats,
+    )
+
+    return _verified_qa_stats(
+        VERIFIED_QA_SIGNAL_MEASURED,
+        row_count=row_count,
+        avg_faithfulness=average,
+        avg_relevance=average,
+    )
+
+
+def _measured_corpus_signal(document_count=5, chunk_count=100):
+    """The corpus payload the collector writes when it reached the tenant DB.
+
+    Same provenance and same reason as `_measured_verified_qa_signal`. Every
+    figure here is a count, so all three are real at nought and the signal is
+    the only thing that separates nought documents from no read at all.
+    """
+    from app.services.deployment_service import CORPUS_SIGNAL_MEASURED, _corpus_stats
+
+    return _corpus_stats(
+        CORPUS_SIGNAL_MEASURED,
+        document_count=document_count,
+        chunk_count=chunk_count,
+        last_ingested_at=None,
+    )
+
+
 def _empty_first_four_signals():
     """The four pre-existing safe-default signal dicts, reused across BLR-01 wiring tests."""
     return (
         _measured_eval_signal(),
         _measured_red_team_signal(),
-        {"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
-        {"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+        _measured_verified_qa_signal(),
+        _measured_corpus_signal(),
     )
 
 
@@ -971,10 +1017,10 @@ class TestEvidenceGateWiring:
             return_value=red_team_summary,
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_verified_qa_stats_sync",
-            return_value={"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+            return_value=_measured_verified_qa_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_corpus_stats_sync",
-            return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+            return_value=_measured_corpus_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
             return_value=blast_radius,
@@ -1094,10 +1140,10 @@ class TestEvidenceGateWiring:
             return_value=_measured_red_team_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_verified_qa_stats_sync",
-            return_value={"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+            return_value=_measured_verified_qa_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_corpus_stats_sync",
-            return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+            return_value=_measured_corpus_signal(),
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
             return_value=dict(_BLAST_RADIUS_DEFAULT_SIGNAL),
@@ -1518,11 +1564,11 @@ def _drive_sequenced(
         _target("_fetch_red_team_summary_sync", side_effect=collectors[1]),
         _target(
             "_fetch_verified_qa_stats_sync",
-            return_value={"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+            return_value=_measured_verified_qa_signal(),
         ),
         _target(
             "_fetch_corpus_stats_sync",
-            return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+            return_value=_measured_corpus_signal(),
         ),
         _target("_fetch_blast_radius_sync", return_value=dict(_BLAST_RADIUS_FIXTURE)),
         _target("_compute_envelope_hash_sync", return_value="test-envelope-hash"),
@@ -1744,19 +1790,11 @@ class TestTheWaitIsAChainOfMessages:
             _deployment_patch("_fetch_red_team_summary_sync", new=_collect("red_team")),
             _deployment_patch(
                 "_fetch_verified_qa_stats_sync",
-                return_value={
-                    "row_count": 60,
-                    "avg_faithfulness": 0.9,
-                    "avg_relevance": 0.9,
-                },
+                return_value=_measured_verified_qa_signal(),
             ),
             _deployment_patch(
                 "_fetch_corpus_stats_sync",
-                return_value={
-                    "document_count": 5,
-                    "chunk_count": 100,
-                    "last_ingested_at": None,
-                },
+                return_value=_measured_corpus_signal(),
             ),
             _deployment_patch(
                 "_fetch_blast_radius_sync", return_value=dict(_BLAST_RADIUS_FIXTURE)
@@ -1933,12 +1971,11 @@ def _drive_with_verdict(
         ),
         _deployment_patch(
             "_fetch_verified_qa_stats_sync",
-            return_value=verified_qa
-            or {"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+            return_value=verified_qa or _measured_verified_qa_signal(),
         ),
         _deployment_patch(
             "_fetch_corpus_stats_sync",
-            return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+            return_value=_measured_corpus_signal(),
         ),
         _deployment_patch(
             "_fetch_blast_radius_sync", return_value=dict(_BLAST_RADIUS_FIXTURE)
@@ -2035,7 +2072,7 @@ class TestTheVerdictDrivesTheRecommendation:
         verdict's."""
         result, mock_run = _drive_with_verdict(
             _ship_verdict(),
-            verified_qa={"row_count": 4, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+            verified_qa=_measured_verified_qa_signal(row_count=4),
             red_team_summary=dict(_measured_red_team_signal(), medium_count=5),
         )
 
@@ -2457,13 +2494,13 @@ class TestATaskFailureBeforeTheVerdictStillFails:
             stack.enter_context(
                 _deployment_patch(
                     "_fetch_verified_qa_stats_sync",
-                    return_value={"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+                    return_value=_measured_verified_qa_signal(),
                 )
             )
             stack.enter_context(
                 _deployment_patch(
                     "_fetch_corpus_stats_sync",
-                    return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+                    return_value=_measured_corpus_signal(),
                 )
             )
             stack.enter_context(
@@ -2853,3 +2890,117 @@ class TestTheWaitMeasuresItself:
         assert 29.0 <= value <= 40.0, (
             f"thirty seconds of wait must read as about thirty seconds: {value}"
         )
+
+
+class TestTheKnowledgeCollectorsRefuseLikeTheGatedTwo:
+    """#131: `_collected`'s two remaining fallbacks were exact plausible zeros.
+
+    The eval and red-team halves substitute an 'unavailable' signal the evidence
+    gate refuses to ship on. These two substituted
+    `{"row_count": 0, "avg_faithfulness": 0.0, "avg_relevance": 0.0}` and
+    `{"document_count": 0, "chunk_count": 0, "last_ingested_at": None}`, which
+    the owner's report renders as an empty knowledge base rather than as a read
+    that never happened. Driven through the real except path, because the
+    substitution is the thing under test.
+    """
+
+    def _drive(self):
+        from app.services.deployment_service import (
+            BLAST_RADIUS_DEFAULT_SIGNAL as _BLAST_RADIUS_DEFAULT_SIGNAL,
+        )
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        agent_id = str(uuid.uuid4())
+        mock_run_id = str(uuid.uuid4())
+        mock_db, mock_run = _build_full_happy_path_mock_db(mock_run_id)
+        told = {}
+
+        async def _fake_call_orchestrator_async(
+            signals_json, result_container, *, ledger=None
+        ):
+            told.update(json.loads(signals_json))
+            result_container["report"] = {
+                "recommendation": "ship",
+                "summary": "All good.",
+                "warnings": [],
+            }
+
+        with _past_step_3b(), patch(
+            "app.worker.tasks.runtime.deployment.get_sync_db",
+            _make_sync_db_ctx(mock_db),
+        ), patch(
+            "app.worker.tasks.runtime.deployment.fernet_decrypt",
+            return_value="postgresql://test/tenant",
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_eval_summary_sync",
+            return_value=_measured_eval_signal(),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_red_team_summary_sync",
+            return_value=_measured_red_team_signal(),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_verified_qa_stats_sync",
+            side_effect=RuntimeError("tenant DB unreachable"),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_corpus_stats_sync",
+            side_effect=RuntimeError("tenant DB unreachable"),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
+            return_value=dict(_BLAST_RADIUS_DEFAULT_SIGNAL),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._compute_envelope_hash_sync",
+            return_value="test-envelope-hash",
+        ), patch(
+            "app.worker.tasks.runtime.deployment._call_orchestrator_async",
+            side_effect=_fake_call_orchestrator_async,
+        ):
+            result = run_deployment_checklist.run(agent_id=agent_id)
+
+        return result, mock_run, told
+
+    def test_the_verified_qa_outage_is_persisted_as_an_outage(self):
+        _, mock_run, _ = self._drive()
+        stats = mock_run.report["verified_qa_stats"]
+
+        assert stats["signal"] == "unavailable"
+        assert stats["row_count"] is None
+        assert stats["avg_faithfulness"] is None
+        assert stats["avg_relevance"] is None
+
+    def test_the_corpus_outage_is_persisted_as_an_outage(self):
+        _, mock_run, _ = self._drive()
+        stats = mock_run.report["corpus_stats"]
+
+        assert stats["signal"] == "unavailable"
+        assert stats["document_count"] is None
+        assert stats["chunk_count"] is None
+
+    def test_a_reader_can_tell_an_outage_from_a_tenant_that_has_nothing(self):
+        """The zeros a real empty tenant produces, asserted as NOT what an
+        outage writes. This is the whole of #131."""
+        _, mock_run, _ = self._drive()
+
+        assert mock_run.report["verified_qa_stats"] != {
+            "row_count": 0,
+            "avg_faithfulness": 0.0,
+            "avg_relevance": 0.0,
+        }
+        assert mock_run.report["corpus_stats"] != {
+            "document_count": 0,
+            "chunk_count": 0,
+            "last_ingested_at": None,
+        }
+
+    def test_the_outage_reaches_the_owner_as_a_warning(self):
+        _, mock_run, _ = self._drive()
+        ids = [warning["warning_id"] for warning in mock_run.warnings]
+
+        assert "verified_qa_unavailable" in ids
+        assert "verified_qa_low_count" not in ids, (
+            "a corpus nobody counted is not a thin corpus"
+        )
+
+    def test_the_orchestrator_is_told_the_figures_are_absent(self):
+        _, _, told = self._drive()
+
+        assert told["verified_qa_stats"]["row_count"] is None
+        assert told["corpus_stats"]["document_count"] is None

@@ -20,7 +20,12 @@ Mock strategy:
     - the orchestrator's client is a scripted stand-in, injected by patching
       app.services.deployment_service.make_async_client. The loop itself runs.
     - psycopg2.connect patched at app.services.deployment_service.psycopg2.connect
-    - No live provider or DB calls in any test
+    - No live provider call in any test.
+    - One class reaches a DATABASE on purpose:
+      TestVerifiedQaStatsAgainstTheProbeCluster runs the verified_qa aggregate
+      against the local wchats_tenant_probe cluster and skips when nothing is
+      listening. A mocked cursor never parses the SQL string, so with a mock
+      alone the collector's own statement is unreachable by any assertion here.
 """
 
 import base64
@@ -101,6 +106,7 @@ from app.services.deployment_service import (
     _fetch_blast_radius_sync,
     _fetch_eval_summary_sync,
     _fetch_red_team_summary_sync,
+    _fetch_verified_qa_stats_sync,
     _resolve_blast_radius_thresholds,
     apply_signal_evidence_gate,
     derive_blast_radius_warnings,
@@ -3689,3 +3695,268 @@ class TestTheCalibrationBlock:
         a token nothing explained."""
         for reason in ABSENT_REASONS:
             assert reason in _DEPLOYMENT_SYSTEM_PROMPT, reason
+
+
+# ---------------------------------------------------------------------------
+# TestVerifiedQaStatsSignal - a corpus nobody counted is not an empty one (#121)
+# ---------------------------------------------------------------------------
+
+
+class TestVerifiedQaStatsSignal:
+    """`_fetch_verified_qa_stats_sync`, where the averages were defaults.
+
+    `COALESCE(AVG(faithfulness), 0.0)` over an empty table returned 0.0 and the
+    except branch returned that same dict, so three different events reached
+    every downstream reader as one value: nobody has written a verified pair,
+    the read never happened, and every pair scored nought.
+    """
+
+    def _stats(self, fetchone_value=None, execute_error=None):
+        conn = _make_psycopg2_conn(fetchone_value=fetchone_value)
+        if execute_error is not None:
+            conn.cursor.return_value.execute.side_effect = execute_error
+        with patch(
+            "app.services.deployment_service.psycopg2.connect", return_value=conn
+        ):
+            return _fetch_verified_qa_stats_sync("agent-1", "postgresql://tenant")
+
+    def test_scored_rows_carry_the_averages_they_were_read_from(self):
+        stats = self._stats(fetchone_value=(12, 0.82, 0.91))
+
+        assert stats["signal"] == "measured"
+        assert stats["row_count"] == 12
+        assert stats["avg_faithfulness"] == pytest.approx(0.82)
+        assert stats["avg_relevance"] == pytest.approx(0.91)
+
+    def test_no_rows_is_a_counted_nought_with_nothing_averaged(self):
+        """The COUNT is a reading even at nought, so it travels. The averages
+        over nought rows are not, and 0.0 asserted a score no pair received."""
+        stats = self._stats(fetchone_value=(0, None, None))
+
+        assert stats["signal"] == "measured"
+        assert stats["row_count"] == 0
+        assert stats["avg_faithfulness"] is None
+        assert stats["avg_relevance"] is None
+
+    def test_rows_that_scored_nothing_average_to_nothing(self):
+        """Pairs exist and none carries a score. AVG is NULL, and the count
+        beside it is what keeps this apart from an empty table."""
+        stats = self._stats(fetchone_value=(7, None, None))
+
+        assert stats["row_count"] == 7
+        assert stats["avg_faithfulness"] is None
+        assert stats["avg_relevance"] is None
+
+    def test_a_read_that_failed_counted_nothing(self):
+        stats = self._stats(
+            execute_error=psycopg2.errors.UndefinedTable("no relation verified_qa")
+        )
+
+        assert stats["signal"] == "unavailable"
+        assert stats["row_count"] is None
+        assert stats["avg_faithfulness"] is None
+        assert stats["avg_relevance"] is None
+
+    def test_an_outage_and_an_empty_table_are_different_values(self):
+        """The defect in one test, named key by key rather than by inequality.
+
+        `outage != empty` is weaker than it looks. The two payloads carry a
+        `signal_detail` that differs whatever else is wrong with them, so the
+        comparison stays true while the outage claims a measurement of nought
+        pairs, which is #131 exactly. Every field a reader acts on is asserted
+        here instead.
+        """
+        outage = self._stats(
+            execute_error=psycopg2.errors.UndefinedTable("no relation verified_qa")
+        )
+        empty = self._stats(fetchone_value=(0, None, None))
+
+        assert outage["signal"] == "unavailable"
+        assert outage["row_count"] is None
+        assert outage["avg_faithfulness"] is None
+        assert outage["avg_relevance"] is None
+
+        assert empty["signal"] == "measured"
+        assert empty["row_count"] == 0
+
+
+class TestAnUnreadVerifiedCorpusIsReportedAsUnread:
+    """derive_quality_warnings is the only reader of these figures, and its
+    row-count guard was written for a None the collector could never hand it."""
+
+    _UNREAD = {"signal": "unavailable", "row_count": None}
+
+    def test_an_unavailable_signal_warns_that_it_was_not_read(self):
+        warnings = derive_quality_warnings(dict(self._UNREAD), _measured_red_team())
+
+        assert [w.warning_id for w in warnings] == ["verified_qa_unavailable"]
+        assert warnings[0].category == "knowledge_depth"
+        assert warnings[0].severity_level == "warning"
+
+    def test_an_unread_corpus_is_never_also_called_a_thin_one(self):
+        ids = [
+            w.warning_id
+            for w in derive_quality_warnings(dict(self._UNREAD), _measured_red_team())
+        ]
+
+        assert "verified_qa_low_count" not in ids
+
+    def test_a_zero_beside_an_unread_signal_is_still_not_a_thin_corpus(self):
+        """The payload built by hand rather than by the collector.
+
+        `_verified_qa_stats` never puts a count beside an unread signal, so the
+        test above passes on a None the constructor supplied. This one supplies
+        the zero a caller can write, and a zero IS an int, so the depth check
+        used to fire underneath the outage warning and tell the owner to write
+        more pairs about a database nobody reached. Two remedies, one of which
+        does not apply.
+        """
+        warnings = derive_quality_warnings(
+            {"signal": "unavailable", "row_count": 0}, _measured_red_team()
+        )
+
+        assert [w.warning_id for w in warnings] == ["verified_qa_unavailable"]
+
+    def test_a_measured_corpus_warns_on_its_depth_and_not_on_the_read(self):
+        warnings = derive_quality_warnings(
+            {"signal": "measured", "row_count": 12}, _measured_red_team()
+        )
+
+        assert [w.warning_id for w in warnings] == ["verified_qa_low_count"]
+
+
+# ---------------------------------------------------------------------------
+# TestVerifiedQaStatsAgainstTheProbeCluster - the SQL itself, executed
+# ---------------------------------------------------------------------------
+
+#: The disposable local tenant database CLAUDE.md names, read through the same
+#: env-var override `test_turn_history_order.py` uses, so a machine with
+#: non-default local credentials is configured from one place.
+PROBE_DB_URL = os.getenv(
+    "TEST_TENANT_PROBE_URL",
+    os.getenv("TEST_LOCAL_BASE", "postgresql://wchats:wchats@localhost:5432")
+    + "/wchats_tenant_probe",
+)
+
+#: verified_qa.question_vector is VECTOR(1024) NOT NULL (alembic_tenant 0005),
+#: so a row this test writes needs 1024 dimensions. The server builds them,
+#: which keeps a 1024-element literal out of this file.
+_ZERO_VECTOR = "array_fill(0::real, ARRAY[1024])::vector"
+
+
+class _LendConnection:
+    """Hands the collector a connection this test owns and refuses its close().
+
+    `_fetch_verified_qa_stats_sync` closes whatever `psycopg2.connect` gave it.
+    A real close would discard the transaction too, so the rollback does not
+    depend on this; the no-op keeps the fixture's own rollback from raising
+    `InterfaceError` on a connection the collector already closed. `cursor` is
+    the real one on the real socket, and only `close` is absent.
+    """
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def cursor(self):
+        return self._conn.cursor()
+
+    def close(self):
+        pass
+
+
+class TestVerifiedQaStatsAgainstTheProbeCluster:
+    """The COUNT and the two AVGs, run by PostgreSQL rather than by a mock.
+
+    Every other test of this collector scripts `fetchone`, so nothing parses the
+    SQL string: restoring `COALESCE(AVG(faithfulness), 0.0)` and leaving the
+    Python alone keeps all of them green while republishing the defect #121 is
+    about. These two execute the statement.
+
+    The table is left as it was found. Both cases run inside one transaction the
+    fixture rolls back, so a probe database holding rows is emptied for the
+    length of the test and never on disk.
+    """
+
+    @pytest.fixture
+    def probe_conn(self):
+        try:
+            conn = psycopg2.connect(PROBE_DB_URL, connect_timeout=5)
+        except psycopg2.OperationalError as exc:
+            pytest.skip(f"no local tenant probe cluster at {PROBE_DB_URL}: {exc}")
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('verified_qa')")
+                if cur.fetchone()[0] is None:
+                    pytest.skip(
+                        "the probe database has no verified_qa table: run "
+                        "run_tenant_migrations against it first"
+                    )
+                # Both cases below count up from nought. This DELETE is inside
+                # the transaction the teardown rolls back, so rows that were
+                # here before the test are here after it.
+                cur.execute("DELETE FROM verified_qa")
+            yield conn
+        finally:
+            conn.rollback()
+            conn.close()
+
+    def _insert(self, conn, faithfulness, relevance):
+        """One verified pair, scored or not. The scores go in as SQL literals
+        so a NULL is written as a NULL rather than as a bound None."""
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO verified_qa "
+                "(question, question_vector, answer, citations, source, "
+                "faithfulness, relevance) "
+                f"VALUES ('q', {_ZERO_VECTOR}, 'a', '[]'::jsonb, "
+                f"'human_authored', {faithfulness}, {relevance})"
+            )
+
+    def _stats(self, conn):
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=_LendConnection(conn),
+        ):
+            return _fetch_verified_qa_stats_sync("agent-1", PROBE_DB_URL)
+
+    def test_an_empty_table_averages_to_nothing(self, probe_conn):
+        """AVG over nought rows is SQL NULL, and the count beside it is a real
+        reading at nought. This is the state `COALESCE(AVG(faithfulness), 0.0)`
+        published as a faithfulness of nought (#121)."""
+        stats = self._stats(probe_conn)
+
+        assert stats["signal"] == "measured"
+        assert stats["row_count"] == 0
+        assert stats["avg_faithfulness"] is None
+        assert stats["avg_relevance"] is None
+
+    def test_a_row_nobody_scored_averages_to_nothing(self, probe_conn):
+        """The case that makes the SQL observable at all.
+
+        `_verified_qa_stats` nulls both averages whenever `row_count` is nought,
+        so the empty table above cannot tell `COALESCE(AVG(...), 0.0)` from
+        `AVG(...)`: the Python discards the 0.0 before any reader sees it. A row
+        that exists and carries no score is the shape where the two answers
+        differ, and where a restored COALESCE reaches the report as a
+        faithfulness of nought for a pair nobody has reviewed.
+        """
+        self._insert(probe_conn, faithfulness="NULL", relevance="NULL")
+
+        stats = self._stats(probe_conn)
+
+        assert stats["row_count"] == 1
+        assert stats["avg_faithfulness"] is None
+        assert stats["avg_relevance"] is None
+
+    def test_one_scored_row_averages_to_its_own_scores(self, probe_conn):
+        """The counterpart: a real average still arrives, and arrives as a float
+        rather than the Decimal psycopg2 returns for a NUMERIC column."""
+        self._insert(probe_conn, faithfulness="0.75", relevance="0.5")
+
+        stats = self._stats(probe_conn)
+
+        assert stats["signal"] == "measured"
+        assert stats["row_count"] == 1
+        assert isinstance(stats["avg_faithfulness"], float)
+        assert stats["avg_faithfulness"] == pytest.approx(0.75)
+        assert stats["avg_relevance"] == pytest.approx(0.5)

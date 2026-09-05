@@ -73,10 +73,12 @@ from app.models.checklist_run import ChecklistRun
 from app.services.calibration_service import load_calibration_status
 from app.services.deployment_service import (
     BLAST_RADIUS_DEFAULT_SIGNAL,
+    CORPUS_STATS_UNAVAILABLE_SIGNAL,
     EVAL_SUMMARY_UNAVAILABLE_SIGNAL,
     NARRATION_UNAVAILABLE_SUMMARY,
     RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL,
     TERMINAL_RUN_STATUSES,
+    VERIFIED_QA_STATS_UNAVAILABLE_SIGNAL,
     DeploymentReport,
     _compute_envelope_hash_sync,
     _dispatch_moment,
@@ -449,15 +451,17 @@ def _collected(agent_id: str, event: str, fetch, fallback):
     """One collector, whose own failure is substituted rather than raised.
 
     A collector that raises must not fail a checklist that has already read the
-    others and still owes the owner a report. THE TWO GATED HALVES NEVER
-    SUBSTITUTE A PLAUSIBLE NUMBER: eval and red team fall back to an
-    'unavailable' signal the evidence gate refuses to ship on, because the
-    zeros nobody read used to look exactly like the zeros of a clean run. The
-    verified_qa and corpus fallbacks below still substitute zeros a reader
-    cannot tell from a measurement; they gate nothing, and #131 tracks making
-    them refuse the same way. The refused half is audit D3, and it
-    is why the fallback is a callable rather than a shared dict: a caller that
-    handed the module constant itself would let a later mutation poison it.
+    others and still owes the owner a report. NO COLLECTOR SUBSTITUTES A
+    PLAUSIBLE NUMBER any more. All four fall back to an 'unavailable' signal
+    carrying nothing, because the zeros nobody read used to look exactly like
+    the zeros of a clean run. Eval and red team came first (audit D3), since the
+    evidence gate refuses to ship on their signal; verified_qa and corpus gate
+    nothing and outlived them by that much, until #131, and what they reached
+    instead was the owner's report and derive_quality_warnings, which read an
+    unreachable tenant DB as a thin corpus and an empty knowledge base.
+
+    The fallback is a callable rather than a shared dict so a caller that handed
+    the module constant itself cannot let a later mutation poison it.
 
     `event` is spelled in full at the call site so every log name this task can
     emit is greppable in the source.
@@ -523,13 +527,13 @@ def _collect_signals(
             agent_id,
             "run_deployment_checklist.verified_qa_stats_fetch_failed",
             lambda: _fetch_verified_qa_stats_sync(agent_id, conn_str),
-            lambda: {"row_count": 0, "avg_faithfulness": 0.0, "avg_relevance": 0.0},
+            lambda: dict(VERIFIED_QA_STATS_UNAVAILABLE_SIGNAL),
         ),
         "corpus_stats": _collected(
             agent_id,
             "run_deployment_checklist.corpus_stats_fetch_failed",
             lambda: _fetch_corpus_stats_sync(agent_id, conn_str),
-            lambda: {"document_count": 0, "chunk_count": 0, "last_ingested_at": None},
+            lambda: dict(CORPUS_STATS_UNAVAILABLE_SIGNAL),
         ),
         "blast_radius": _collected(
             agent_id,
