@@ -133,7 +133,7 @@ PINNED_LIZARD = {
     ("app/services/deployment_service.py", "_fetch_red_team_summary_sync"): (11, 114),
     ("app/services/deployment_service.py", "apply_signal_evidence_gate"): (7, 133),
     ("app/services/deployment_service.py", "derive_blast_radius_warnings"): (8, 77),
-    ("app/services/digest_service.py", "_collect_digest_stats"): (10, 71),
+    ("app/services/digest_service.py", "_collect_digest_stats"): (10, 70),
     ("app/services/eval_service.py", "build_eval_run_config"): (11, 191),
     ("app/services/eval_service.py", "insert_eval_run"): (4, 62),
     ("app/services/eval_service.py", "run_ragas_eval"): (11, 153),
