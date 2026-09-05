@@ -40,7 +40,7 @@ import re
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import replace
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 import psycopg2
 import redis as redis_lib
@@ -480,6 +480,26 @@ def get_tool_results() -> list[ToolResult]:
 #: with the token that `.set()` returned. `release_tool_context` is the only
 #: reader, and an empty tuple means nothing was published and nothing is owed.
 BoundToolContext = tuple[tuple[ContextVar, Token], ...]
+
+_Published = TypeVar("_Published")
+
+
+def _publish(var: ContextVar[_Published], value: _Published) -> tuple[ContextVar, Token]:
+    """Set one ContextVar and hand back the pair `release_tool_context` reads.
+
+    THE PAIRING IS WHAT NEEDS A NAME. `bind_tool_context` publishes a dozen
+    variables of eight different value types, and a collection of (var, value)
+    pairs collapses every one of them into a union: `str | RetrievalStrategy |
+    Any | int | list[Any]` against a `ContextVar` that is equally unioned. A
+    `.set` over that pair is uncheckable, and mypy reported it as four wrong
+    arguments at one line. Here the variable and its value share one type
+    parameter, so each call is checked on its own and a value that does not
+    belong to the variable beside it is refused at the line that pairs them.
+
+    The return is the erased `(ContextVar, Token)` BoundToolContext holds, because
+    the release loop resets tokens without caring what they carry.
+    """
+    return var, var.set(value)
 
 
 def release_tool_context(bound: BoundToolContext) -> None:
@@ -1290,25 +1310,24 @@ def bind_tool_context(
     """
     _require_side_effect_mode("bind_tool_context", side_effects)
 
-    published = (
-        (_conn_str_var, conn_str),
-        (_agent_id_var, agent_id),
-        (_tenant_id_var, tenant_id),
-        (_agent_name_var, agent_name),
-        (_strategy_var, strategy),
-        (_conversation_id_var, conversation_id),
-        (_notify_fn_var, notify_fn),
-        (_job_id_var, job_id),
-        (_retrieve_call_count_var, 0),  # D-10: this turn's retrieve counter starts at zero
-        (_verified_session_token_var, verified_session_token),  # IDV-05, never logged
-        (_side_effects_var, side_effects),  # the mode, after every step that can raise
-        (_tool_results_var, []),  # a fresh sink, never the previous turn's verdicts
-    )
     log.debug("bind_tool_context.ready", agent_id=agent_id, conversation_id=conversation_id)
     # NOTHING BETWEEN HERE AND THE RETURN MAY RAISE. The tokens exist only in this
     # tuple, so a step that threw after the mode was set would leave "recorded" in
     # force with nothing holding the key to it.
-    bound: BoundToolContext = tuple((var, var.set(value)) for var, value in published)
+    bound: BoundToolContext = (
+        _publish(_conn_str_var, conn_str),
+        _publish(_agent_id_var, agent_id),
+        _publish(_tenant_id_var, tenant_id),
+        _publish(_agent_name_var, agent_name),
+        _publish(_strategy_var, strategy),
+        _publish(_conversation_id_var, conversation_id),
+        _publish(_notify_fn_var, notify_fn),
+        _publish(_job_id_var, job_id),
+        _publish(_retrieve_call_count_var, 0),  # D-10: this turn's counter starts at zero
+        _publish(_verified_session_token_var, verified_session_token),  # IDV-05, never logged
+        _publish(_side_effects_var, side_effects),  # the mode, after every step that can raise
+        _publish(_tool_results_var, []),  # a fresh sink, never the previous turn's verdicts
+    )
 
     # Fresh, and outside `bound` on purpose: the eval reads this sink after the
     # turn returns. `release_tool_context`'s block comment carries the argument.
