@@ -233,8 +233,10 @@ class TestTheRouteThisJudgeRunsOn:
         OBSERVED 2026-09-05 on staging: a tool-bearing chat completion that sends
         no effort field is refused by the provider (`set reasoning_effort to
         'none'`). The route names `none` and `make_client` puts it on every call,
-        the same effort the five production judges run at, so a calibration run
-        now measures the Judge it calibrates.
+        the same effort the five production judges run at. The prompt version
+        still differs, `ai-spec-5.2` here against `ragas-<version>` on an eval
+        run, so the deploy path reads an artifact from this judge as
+        `identity_mismatch` until #58 settles which Judge the calibration is of.
         """
         assert route_for("calibration_judge").reasoning_effort == "none"
 

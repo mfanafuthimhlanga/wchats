@@ -269,8 +269,10 @@ def judge_identity():
     sends any other effort or none at all, and `make_client` puts that effort
     on every call this judge makes. So the identity is real: Luna, at `none`,
     under `JUDGE_RUBRIC_VERSION`, the same effort the five production judges
-    run at. Whether an artifact may claim `calibrated` is still #58's call, and
-    it needs the owner's labelled pairs, not this.
+    run at. The prompt version is `ai-spec-5.2` where an eval run stamps
+    `ragas-<version>`, so the deploy path still reads an artifact from this
+    judge as `identity_mismatch`; which Judge the calibration is of remains
+    #58's call.
 
     Returns:
         JudgeIdentity when all three fields are real, None when any is not.

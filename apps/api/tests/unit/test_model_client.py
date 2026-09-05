@@ -1111,14 +1111,34 @@ class TestTheRawPathCarriesTheRouteEffort:
         from app.core.model_client import _carry_route_effort
 
         seen: dict = {}
-        client = self._client(seen)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, json=_openai_body())
+
         bare = _carry_route_effort(
-            openai.OpenAI(api_key="test-key", http_client=client._client),
+            openai.OpenAI(
+                api_key="test-key",
+                http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+            ),
             ModelRoute("openai", LUNA),
         )
         bare.chat.completions.create(model=LUNA, messages=self._MESSAGES)
 
         assert "reasoning_effort" not in seen
+
+    def test_the_default_leaves_the_async_create_as_the_sdk_shipped_it(self):
+        """OBSERVED 2026-09-05, openai 2.45.0: the SDK's own `AsyncCompletions.create`
+        is not a coroutine function to `inspect` (it sits under `required_args`),
+        and only `inspect.unwrap` reaches one. The wrap keeps both facts as they
+        were, so anything reading either sees what it saw before."""
+        import inspect
+
+        bare = openai.AsyncOpenAI(api_key="test-key").chat.completions.create
+        wrapped = self._async_client({}, "auditor").chat.completions.create
+
+        assert inspect.iscoroutinefunction(wrapped) is inspect.iscoroutinefunction(bare)
+        assert inspect.iscoroutinefunction(inspect.unwrap(wrapped))
 
 
 class TestTheFactoryTakesItsProviderFromTheRoute:
@@ -1136,9 +1156,7 @@ class TestTheFactoryTakesItsProviderFromTheRoute:
     these are claims about the object the factory hands back.
     """
 
-    RAW_PURPOSES = [p for p in EVERY_PURPOSE if p not in EFFORT_NONE_PURPOSES]
-
-    @pytest.mark.parametrize("purpose", RAW_PURPOSES)
+    @pytest.mark.parametrize("purpose", EVERY_PURPOSE)
     def test_a_purpose_routed_to_luna_builds_an_openai_client(self, purpose):
         client = make_client(
             purpose,

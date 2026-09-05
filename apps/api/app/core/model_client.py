@@ -298,9 +298,8 @@ class LedgerContext:
         which would cost the suite its cheapest seam and prove nothing about
         production, where the routing table already decides this.
 
-        Raises whatever `make_client` raises, including on a purpose the routing
-        table does not hold and on a judge purpose, which belongs to
-        `instructor_client` because its route names a reasoning effort.
+        Raises whatever `make_client` raises, which is `UnknownPurpose` on a
+        purpose the routing table does not hold.
         """
         return cast(
             _openai.OpenAI,
@@ -811,22 +810,18 @@ def _sdk_client(
     )
 
 
-def _check_raw_purpose(purpose: str) -> None:
-    """Refuse a purpose the table does not route, before anything is built.
-
-    Read off `PURPOSE_ROUTES`. A purpose the table does not route used to reach
-    the ledger unread, so a typo billed a real tenant under a name no rollup
-    groups and no report expects.
-
-    Raises:
-        UnknownPurpose: the table routes no such purpose. The message lists the
-                        ones it does hold.
-    """
-    route_for(purpose)
-
-
 def _with_default(call: Callable[..., _R], **defaults: object) -> Callable[..., _R]:
-    """`call`, with each of `defaults` filled into a kwarg the caller left out."""
+    """`call`, with each of `defaults` filled into a kwarg the caller left out.
+
+    One plain wrapper serves the sync and the async method alike, because the
+    async one returns a coroutine and this hands it back unawaited. OBSERVED
+    2026-09-05, openai 2.45.0: `inspect.iscoroutinefunction` already answers
+    False for the SDK's own `AsyncCompletions.create`, which the SDK wraps in
+    `required_args`; only `inspect.unwrap` reaches the coroutine function, and
+    `functools.wraps` keeps that chain intact through this wrapper too. Ragas
+    reads the instructor method, not this one (`ragas/llms/base.py`,
+    `_check_client_async`, ragas 0.4.3).
+    """
 
     @functools.wraps(call)
     def filled(*args: object, **kwargs: object) -> _R:
@@ -872,7 +867,7 @@ def _hooked_sdk_client(
 ) -> ProviderClient:
     """Build the client and bolt the hook on. The construction half of `make_client`.
 
-    Separate from the check above so `make_instructor_client` can come straight
+    Separate from `make_client` so `make_instructor_client` can come straight
     here. That seam installs the route's effort as an instructor default itself,
     so this function hands back the client bare.
     """
@@ -930,21 +925,22 @@ def make_client(
         `chat.completions`. See WHERE A PURPOSE GOES above.
 
     Raises:
-        UnknownPurpose: the table routes no such purpose.
+        UnknownPurpose: the table routes no such purpose. Raised here, before
+                        anything is built, so a typo never reaches the ledger.
     """
-    _check_raw_purpose(purpose)
+    route = route_for(purpose)
     client = _hooked_sdk_client(
         purpose,
         tenant_id=tenant_id,
         recorder=recorder,
         agent_id=agent_id,
         job_id=job_id,
-        provider=provider,
+        provider=provider or route.provider,
         credentials=credentials,
         http_client=http_client,
         clock=clock,
     )
-    return _carry_route_effort(client, route_for(purpose))
+    return _carry_route_effort(client, route)
 
 
 def make_async_client(

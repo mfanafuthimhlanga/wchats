@@ -2298,9 +2298,9 @@ class TestTheArtifactIsReadBackByTheApp:
     def test_a_judge_that_reports_no_identity_leaves_the_identity_absent(
         self, calibration_tree, tmp_path
     ):
-        """The state of this harness today. Its judge sends no reasoning effort
-        and reads a rubric versioned nowhere, so `judge_identity()` returns None
-        and every row reports None."""
+        """A judge double reporting no identity, the state of this harness before
+        2026-09-05, when its route named no reasoning effort. Every row then
+        reports None."""
         calibration_tree(_FOUR_ROWS)
         result = cc.compute_correlation(_judge_returning(_PERFECT))
 

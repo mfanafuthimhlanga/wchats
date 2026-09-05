@@ -183,8 +183,9 @@ def _judge_absence(
     """Why the artifact is not about this run's Judge, or None when it is.
 
     A NULL STORED IDENTITY IS ITS OWN ANSWER, AND IT IS CHECKED FIRST. Every
-    artifact this harness writes today carries null there, because the judge it
-    calls cannot be named at the grain `JudgeIdentity` keys on (#58). Reading
+    artifact this harness wrote before 2026-09-05 carries null there, because its
+    judge named no reasoning effort and `JudgeIdentity` refuses an empty field
+    (#58); the route names `none` now, so newer artifacts carry a real one. Reading
     that through the mismatch branch reported "measured on another Judge" over a
     file that measured nobody, and logged three None fields beside three real
     ones. The two send an owner to different work. `artifact_names_no_judge`
