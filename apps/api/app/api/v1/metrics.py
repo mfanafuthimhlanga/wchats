@@ -128,12 +128,17 @@ async def get_agent_retrieval_health(
          avg_retrieved_tokens, avg_ctx_window_utilization,
          avg_carried_never_cited_tokens, avg_compaction_ratio,
          avg_citation_coverage, avg_faithfulness,
+         faithfulness_sample_count, faithfulness_other_instrument_count,
          index_staleness: {stale_count, stale_document_ids, drift_detected,
                             drift_model_counts, current_embedding_model}}
         Every retrieval-health average is either a float or the literal
         string "not tracked yet" when zero underlying rows exist in the
         window, or the metric has no non-NULL values yet (honest-empty-state
         discipline — never a fabricated number, DOMAIN-NOTES §6).
+        avg_faithfulness covers ONE instrument (issue #120) and the two
+        faithfulness_* counts say how many rows it covered and how many it left
+        out. A sample count of 0 beside a non-zero other-instrument count is a
+        window scored under an earlier instrument, NOT an empty window.
         index_staleness signals independently degrade to "not_tracked" only
         on an actual scan failure — a genuinely empty/healthy corpus reports
         real zero/false values, not a sentinel (same discipline

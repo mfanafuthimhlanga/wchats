@@ -9,7 +9,7 @@ Tests validate:
   - Subsequent turn: reads the conversation's history and hands it to the loop
   - Escalation: emits agent.escalated event before agent.response
   - Missing CITATIONS block: citations==[] and structlog.warning called
-  - _read_turn_history: order, tiebreak and cap
+  - _read_turn_history: order, cap and scoping
 
 Mock strategy: patch asyncio.run at 'app.worker.tasks.runtime.agent.asyncio.run'
 with a canned dict return value. Do NOT use AsyncMock for the turn -- the task
@@ -1424,10 +1424,10 @@ def test_a_retrieve_tool_call_still_persists_its_audit_capture():
 # Railway replaces that filesystem on every deploy, so a follow-up turn now
 # reads what was said from `messages`. Three properties, one defect each:
 #
-#   1. within one timestamp the question precedes the answer. `_persist_messages`
-#      writes both rows in ONE transaction, so both carry the same
-#      transaction_timestamp() and created_at alone leaves their order to the
-#      plan (issue #79).
+#   1. the rows come back in INSERT order. `_persist_messages` writes a turn's
+#      question and its answer in ONE transaction, so both carry the same
+#      transaction_timestamp() and created_at cannot separate them. `seq`
+#      (tenant 0025) is monotonic in insert order and settles it (issue #79).
 #   2. the cap takes the NEWEST rows, not an arbitrary forty.
 #   3. what comes back is oldest first, because that is the order a message list
 #      is read in.
@@ -1443,9 +1443,9 @@ class _OrderedCursor:
     """A cursor that honours the ORDER BY in the SQL it executes.
 
     `rows` arrive in HEAP order, which is what a sequential scan returns when nothing
-    orders it. Insertion order is deliberately the opposite of the tiebreak's,
-    so a query that has lost the tiebreak falls back to heap order and the
-    ordering test sees it.
+    orders it. Insertion order is deliberately the opposite of the query's, so a
+    query that has lost its ORDER BY falls back to heap order and the ordering
+    test sees it.
     """
 
     def __init__(self, rows):
@@ -1471,8 +1471,8 @@ class _OrderedCursor:
         # Python's sort is stable, so a key that omits a clause leaves the rows
         # in heap order for the rows that clause would have separated, which is
         # exactly what PostgreSQL does with an unordered scan.
-        if "CASE role WHEN 'assistant' THEN 0 ELSE 1 END" in sql:
-            selected.sort(key=lambda r: (-r["created_at"], 0 if r["role"] == "assistant" else 1))
+        if "seq DESC" in sql:
+            selected.sort(key=lambda r: -r["seq"])
         elif "created_at DESC" in sql:
             selected.sort(key=lambda r: -r["created_at"])
         self._result = [(r["role"], r["content"]) for r in selected[:limit]]
@@ -1492,17 +1492,19 @@ class _OrderedConn:
 CONV = "conv-history-0001"
 
 
-def _row(role, content, created_at, conv=CONV):
+def _row(role, content, created_at, seq, conv=CONV):
     return {
         "conversation_id": conv,
         "role": role,
         "content": content,
         "created_at": created_at,
+        "seq": seq,
     }
 
 
-#: The tiebreak expression, as PostgreSQL has to receive it.
-_TIEBREAK = "CASE role WHEN 'assistant' THEN 0 ELSE 1 END"
+#: The whole ORDER BY, as PostgreSQL has to receive it. One term, no tiebreak,
+#: because `seq` leaves no ties to break.
+_ORDER_BY = "seq DESC"
 
 _SQL_COMMENTS = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
 
@@ -1522,35 +1524,32 @@ def _order_by_clause(sql: str) -> str:
     return " ".join(re.split(r"\blimit\b", tail, flags=re.IGNORECASE)[0].split())
 
 
-def test_the_tiebreak_is_in_the_order_by_that_reaches_postgres():
+def test_the_order_by_that_reaches_postgres_is_seq_alone():
     """The clause the planner sorts on, not a mention of it anywhere in the text.
 
-    `_OrderedCursor` decides its own sort by looking for the tiebreak in the SQL
+    `_OrderedCursor` decides its own sort by looking for the ORDER BY in the SQL
     string, so every ordering test below is satisfied by the characters being
     present ANYWHERE, a comment included. This reads the same statement the way
     a server does: comments stripped, then the segment after the final ORDER BY
     and before the LIMIT.
 
-    The position assertion is the second half. A tiebreak listed BEFORE
-    `created_at DESC` is not a tiebreak; it is the primary sort key, and it would
-    interleave two conversations' turns by role.
+    Equality rather than containment, because `created_at` is what has to be
+    gone. It cannot separate a turn's two rows, so leading with it and settling
+    the pair with a `CASE role` tiebreak, which is what this query did, ordered
+    two rows of the SAME role at one timestamp by nothing at all. `seq` never
+    ties, so it is the whole clause.
     """
     from app.worker.tasks.runtime.agent import _read_turn_history
 
-    conn = _OrderedConn([_row("user", "q", 100), _row("assistant", "a", 100)])
+    conn = _OrderedConn([_row("user", "q", 100, 1), _row("assistant", "a", 100, 2)])
     _read_turn_history(conn, CONV)
 
     clause = _order_by_clause(conn.cursor_obj.last_sql)
-    assert _TIEBREAK in clause, (
-        f"the ORDER BY PostgreSQL receives is {clause!r} and it carries no "
-        f"tiebreak. Both rows of a turn share one transaction_timestamp(), so "
-        f"created_at alone leaves their order to the plan (issue #79). The "
-        f"expression has to be in the clause, not in a comment beside it."
-    )
-    assert clause.index("created_at DESC") < clause.index(_TIEBREAK), (
-        f"the tiebreak sorts BEFORE created_at in {clause!r}, which makes role "
-        "the primary key and interleaves the whole conversation by role rather "
-        "than settling one timestamp's ties."
+    assert clause == _ORDER_BY, (
+        f"the ORDER BY PostgreSQL receives is {clause!r}. `seq` (tenant 0025) is "
+        f"monotonic in insert order and is the whole ordering this read needs "
+        f"(issue #79). The term has to be in the clause, not in a comment "
+        f"beside it."
     )
 
 
@@ -1558,16 +1557,16 @@ def test_the_history_puts_the_question_before_the_answer_within_one_timestamp():
     """Issue #79. Both rows of a turn share one transaction_timestamp().
 
     The heap holds the USER row first, which is what a scan can return and what
-    `created_at DESC` alone would therefore preserve. The CASE is what pulls the
-    assistant row to the front of the DESC scan so the reversal puts the
-    question first. Without it the model reads its own answer before the
-    question it answered.
+    a query with no usable ORDER BY would therefore preserve into the reversal,
+    handing the model its own answer above the question it answered. `seq DESC`
+    pulls the assistant row to the front of the scan so the reversal puts the
+    question first.
     """
     from app.worker.tasks.runtime.agent import _read_turn_history
 
     conn = _OrderedConn([
-        _row("user", "Do you deliver to Soweto?", 100),
-        _row("assistant", "Yes, within two working days.", 100),
+        _row("user", "Do you deliver to Soweto?", 100, 1),
+        _row("assistant", "Yes, within two working days.", 100, 2),
     ])
 
     history = _read_turn_history(conn, CONV)
@@ -1577,9 +1576,9 @@ def test_the_history_puts_the_question_before_the_answer_within_one_timestamp():
         {"role": "assistant", "content": "Yes, within two working days."},
     ], (
         f"the turn came back as {history}. Its user row and its assistant row "
-        "share one transaction_timestamp(), so created_at alone cannot order "
-        "them and the CASE tiebreak is what settles it (issue #79). Reversed, "
-        "the model reads the answer before the question."
+        "share one transaction_timestamp(), so created_at cannot order them "
+        "and `seq` is what settles it (issue #79). Reversed, the model reads "
+        "the answer before the question."
     )
 
 
@@ -1588,10 +1587,10 @@ def test_the_history_comes_back_oldest_first():
     from app.worker.tasks.runtime.agent import _read_turn_history
 
     conn = _OrderedConn([
-        _row("user", "first question", 100),
-        _row("assistant", "first answer", 100),
-        _row("user", "second question", 200),
-        _row("assistant", "second answer", 200),
+        _row("user", "first question", 100, 1),
+        _row("assistant", "first answer", 100, 2),
+        _row("user", "second question", 200, 3),
+        _row("assistant", "second answer", 200, 4),
     ])
 
     history = _read_turn_history(conn, CONV)
@@ -1620,7 +1619,7 @@ def test_the_history_cap_takes_the_newest_rows():
 
     total = TURN_HISTORY_MAX_MESSAGES + 6
     conn = _OrderedConn([
-        _row("user" if i % 2 == 0 else "assistant", f"message {i}", i)
+        _row("user" if i % 2 == 0 else "assistant", f"message {i}", i, i + 1)
         for i in range(total)
     ])
 
@@ -1652,10 +1651,10 @@ def test_an_empty_assistant_row_does_not_travel_into_the_next_turn():
     from app.worker.tasks.runtime.agent import _read_turn_history
 
     conn = _OrderedConn([
-        _row("user", "Where is my order?", 100),
-        _row("assistant", "", 100),
-        _row("user", "Hello?", 200),
-        _row("assistant", "   \n ", 200),
+        _row("user", "Where is my order?", 100, 1),
+        _row("assistant", "", 100, 2),
+        _row("user", "Hello?", 200, 3),
+        _row("assistant", "   \n ", 200, 4),
     ])
 
     history = _read_turn_history(conn, CONV)
@@ -1675,8 +1674,8 @@ def test_the_history_ignores_rows_from_another_conversation():
     from app.worker.tasks.runtime.agent import _read_turn_history
 
     conn = _OrderedConn([
-        _row("user", "ours", 100),
-        _row("user", "somebody else's", 100, conv="conv-history-0002"),
+        _row("user", "ours", 100, 1),
+        _row("user", "somebody else's", 100, 2, conv="conv-history-0002"),
     ])
 
     history = _read_turn_history(conn, CONV)

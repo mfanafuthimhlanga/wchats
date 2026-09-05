@@ -125,7 +125,7 @@ def _fetch_customer_turn(conn_str: str, conversation_id: str, agent_turn_text: s
         """
         SELECT role, content FROM messages
         WHERE conversation_id = %(conv_id)s::uuid
-        ORDER BY created_at ASC
+        ORDER BY seq ASC
         """,
         {"conv_id": conversation_id},
     )

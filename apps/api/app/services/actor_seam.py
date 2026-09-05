@@ -111,9 +111,12 @@ async def _fetch_history(conn_str: str, conv_id: str) -> list[dict]:
         try:
             with conn.cursor() as cur:
                 cur.execute(
+                    # seq, not created_at (#79). A turn's user and assistant rows
+                    # share one transaction_timestamp(), so created_at alone left
+                    # the pair order to the plan.
                     "SELECT role, content FROM messages "
                     "WHERE conversation_id = %s "
-                    "ORDER BY created_at DESC LIMIT 10",
+                    "ORDER BY seq DESC LIMIT 10",
                     (conv_id,),
                 )
                 rows = cur.fetchall()

@@ -93,6 +93,7 @@ def _patch_resolver_boundary(
     rate_denial: str | None = None,
     reservation: Reservation | None = None,
     adapter_side_effect: Exception | None = None,
+    get_adapter_side_effect: Exception | None = None,
 ):
     """Patch every DB/Redis/network boundary the resolver and the shared
     steps 6-7 helper touch, at the names each module imports them under.
@@ -132,7 +133,7 @@ def _patch_resolver_boundary(
         ) as mock_audit_resolver,
         patch(
             "app.services.transactional.tools.get_adapter_for_skill",
-            AsyncMock(return_value=mock_adapter),
+            AsyncMock(return_value=mock_adapter, side_effect=get_adapter_side_effect),
         ) as mock_get_adapter,
         patch(
             "app.services.transactional.tools.write_audit_row",
@@ -482,3 +483,117 @@ class TestIdempotency:
         # let a fresh reserve_idempotency call reclaim and re-execute a key
         # that may already have hit the adapter once.
         mocks["release_resolver"].assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# TestAdapterFault — a provider that broke is not a gate that refused (#73)
+# ---------------------------------------------------------------------------
+
+
+class TestAdapterFault:
+    """`_execute_adapter_and_audit` returns Outcome.ok or Outcome.error and
+    never Outcome.denied: its docstring says so and its three failure returns
+    are all `Outcome.error`.
+
+    The resolver read `result.is_error`, a single bit that a gate refusal and a
+    provider outage both set, and reported "denied" for both. An approved refund
+    that Stripe was down for therefore reached the owner as a refusal, which
+    reads as "the platform decided not to" rather than "the provider could not",
+    and those two need different actions from the owner.
+
+    The gate refusals keep "denied" — TestLiveEnvelope and TestIdempotency pin
+    four of them — and that contrast is the point of these tests.
+    """
+
+    async def test_an_adapter_outage_is_failed_not_denied(self):
+        with _patch_resolver_boundary(
+            adapter_side_effect=RuntimeError("stripe: 503 service unavailable")
+        ) as mocks:
+            outcome = await _resolve()
+
+        assert outcome.outcome == "failed", (
+            "a provider outage during an approved refund reported %r, the same "
+            "word the capability gate uses when it refuses the call outright"
+            % outcome.outcome
+        )
+        assert mocks["adapter"].issue_refund.await_count == 1, (
+            "the adapter must have been reached; a fault this test drives before "
+            "the call would be testing the wrong branch"
+        )
+
+    async def test_the_failure_reason_names_the_provider_not_a_gate(self):
+        with _patch_resolver_boundary(
+            adapter_side_effect=RuntimeError("stripe: 503 service unavailable")
+        ):
+            outcome = await _resolve()
+
+        assert not (outcome.reason or "").startswith("capability.denial:"), (
+            "the reason wears the capability gate's prefix, so a reader cannot "
+            "tell a refusal from an outage: %r" % outcome.reason
+        )
+        assert "stripe: 503 service unavailable" in (outcome.reason or ""), (
+            "the reason drops what the provider actually said: %r" % outcome.reason
+        )
+
+    async def test_an_unconfigured_provider_is_also_failed(self):
+        """The helper's other Outcome.error return: no credential to call with.
+
+        Nothing was refused here either. The owner connected no provider, or the
+        stored credential will not decrypt, and both are the platform's problem.
+        """
+        from app.services.transactional.credential_service import ProviderNotConfiguredError
+
+        with _patch_resolver_boundary(
+            get_adapter_side_effect=ProviderNotConfiguredError(
+                "no provider configured for issue_refund"
+            )
+        ) as mocks:
+            outcome = await _resolve()
+
+        assert outcome.outcome == "failed", (
+            "an unconfigured provider reported %r" % outcome.outcome
+        )
+        assert mocks["adapter"].issue_refund.await_count == 0
+
+    async def test_a_widened_helper_verdict_lands_on_failed(self):
+        """The check is `is not Outcome.ok`, and this is what that buys.
+
+        `_execute_adapter_and_audit` returns only `ok` and `error` today, so
+        `requires_human` is a verdict the Outcome enum can carry and this helper
+        does not yet produce. An equality check against `Outcome.error` would
+        fall through to the executed branch the day it does, and report an
+        execution that never happened. Driven by returning the widened verdict
+        from the helper directly, because no boundary in the resolver can
+        produce it.
+        """
+        from app.domain.tool_result import Outcome, ToolResult
+
+        widened = ToolResult(
+            skill="issue_refund",
+            outcome=Outcome.requires_human,
+            text="a second approver is required",
+        )
+        with _patch_resolver_boundary():
+            with patch.object(
+                cr, "_execute_adapter_and_audit", AsyncMock(return_value=widened)
+            ):
+                outcome = await _resolve()
+
+        assert outcome.outcome == "failed", (
+            "a verdict that is not Outcome.ok reported %r, so a call that did "
+            "not execute is on the owner's queue as one that did" % outcome.outcome
+        )
+        assert "a second approver is required" in (outcome.reason or ""), (
+            "the reason drops what the helper said: %r" % outcome.reason
+        )
+
+    async def test_a_gate_refusal_is_still_denied(self):
+        """The contrast, in one place. Widening the fault case must not widen
+        this one: the capability envelope refusing a call is a decision, and
+        `denied` is the honest word for it."""
+        with _patch_resolver_boundary(capability_denial="disabled") as mocks:
+            outcome = await _resolve()
+
+        assert outcome.outcome == "denied"
+        assert outcome.reason == "capability.denial:disabled"
+        assert mocks["adapter"].issue_refund.await_count == 0

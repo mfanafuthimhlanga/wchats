@@ -373,21 +373,25 @@ def _read_turn_history(conn, conv_id: str) -> list[dict]:
         SELECT role, content
         FROM messages
         WHERE conversation_id = %s AND role IN ('user', 'assistant')
-        ORDER BY created_at DESC,
-                 CASE role WHEN 'assistant' THEN 0 ELSE 1 END
+        ORDER BY seq DESC
         LIMIT %s
     """
     with conn.cursor() as cur:
         cur.execute(sql, (conv_id, TURN_HISTORY_MAX_MESSAGES))
         rows = list(cur.fetchall())
 
-    # THE CASE IS LOAD-BEARING (issue #79). `_persist_messages` writes a turn's
-    # user row and assistant row in ONE transaction, so both carry the same
-    # `transaction_timestamp()` and `created_at` alone leaves their order to the
-    # plan. Within one timestamp the user row precedes the assistant row, so a
-    # DESC scan has to take the assistant row FIRST, which is what the CASE
-    # says. Without it a turn's own answer can come back before its question and
-    # the model reads the conversation inside out.
+    # `seq` (tenant 0025, issue #79), because `created_at` cannot order a turn.
+    # `_persist_messages` writes a turn's user row and assistant row in ONE
+    # transaction, so both carry the same `transaction_timestamp()` and a sort
+    # on that column alone leaves the pair to the plan. This read carried a
+    # `CASE role` tiebreak instead, which put the pair right and ordered two
+    # rows of the SAME role at one timestamp by nothing at all. `seq` is
+    # monotonic in INSERT order, so a DESC scan of it takes the newest row
+    # first with no ties left to break, and the LIMIT above now takes the
+    # newest 40 rather than the newest 40 of an order the plan chose.
+    #
+    # DESC then reverse, rather than ASC, because the LIMIT has to keep the END
+    # of a long conversation.
     rows.reverse()
     # An assistant row with no text is what a turn that exhausted
     # `max_model_calls` persists. The loop ran out of calls while the model was

@@ -677,12 +677,21 @@ class TestTheJoinKeyStaysOnThePersistedRow:
 class TestTheMapCoversWhatTheTurnEmits:
     """The map is hand-written, so this pins it against what the code can emit.
 
-    DERIVATION. `emit` is the one function that writes a job_events row, so the set of
-    event types is the set of second arguments its call sites pass. Those are read off
-    the COMPILED modules (`loader.get_code`, then `dis`), never off source text and
-    never off a syntax tree. The modules scanned are the turn's entry point plus the
-    app modules it imports, taken from the entry point's own IMPORT_NAME instructions
-    and filtered to the ones that bind `emit`.
+    DERIVATION. `emit` and `emit_async` are the two functions that write a job_events
+    row, so the set of event types is the set of second arguments their call sites
+    pass. Those are read off the COMPILED modules (`loader.get_code`, then `dis`),
+    never off source text and never off a syntax tree. The modules scanned are the
+    turn's entry point plus the app modules it imports, taken from the entry point's
+    own IMPORT_NAME instructions and filtered to the ones that bind either name.
+
+    BOTH NAMES, since #86. `emit_async` writes the same row; it publishes to Redis on
+    the caller's thread and hands the control-DB write to a worker thread, because
+    run_agent_loop calls it from inside the async body a customer is waiting on. A
+    derivation that knew only `emit` did not merely miss those call sites: it skipped
+    app.services.agent_loop entirely, because the module binds neither `emit` nor
+    anything else this scanner looked for, and agent.tool_call and agent.tool_result
+    dropped out of what the map is checked against. The guard below caught it, which
+    is what that guard is for.
 
     WHAT THIS DOES NOT COVER:
       * An emitter two hops out, a task dispatched by a task the turn dispatches.
@@ -700,6 +709,11 @@ class TestTheMapCoversWhatTheTurnEmits:
     """
 
     TURN_ENTRY = "app.worker.tasks.runtime.agent"
+
+    #: Every function that writes a job_events row. A new one added to
+    #: app/services/events.py and used on the turn belongs here, or its event
+    #: types are outside everything this class checks.
+    EMITTERS = ("emit", "emit_async")
 
     @staticmethod
     def _module_code(name):
@@ -726,7 +740,7 @@ class TestTheMapCoversWhatTheTurnEmits:
         for code in cls._nested(cls._module_code(name)):
             instructions = list(dis.get_instructions(code))
             for index, op in enumerate(instructions):
-                if not (op.opname.startswith("LOAD_") and op.argval == "emit"):
+                if not (op.opname.startswith("LOAD_") and op.argval in cls.EMITTERS):
                     continue
                 sites += 1
                 for following in instructions[index + 1:index + 12]:
@@ -748,7 +762,8 @@ class TestTheMapCoversWhatTheTurnEmits:
         }
         found, sites = set(), 0
         for name in sorted(modules):
-            if getattr(importlib.import_module(name), "emit", None) is None:
+            module = importlib.import_module(name)
+            if all(getattr(module, emitter, None) is None for emitter in cls.EMITTERS):
                 continue
             module_found, module_sites = cls._event_types_in(name)
             found |= module_found
@@ -760,7 +775,15 @@ class TestTheMapCoversWhatTheTurnEmits:
         found, sites = self._turn_path()
 
         assert sites >= len(found) >= 6, (found, sites)
-        assert "agent.response" in found and "agent.tool_call" in found
+        assert "agent.response" in found, (
+            "the derivation lost the turn's own emit call sites: %r" % (sorted(found),)
+        )
+        assert "agent.tool_call" in found, (
+            "the derivation lost agent_loop's call sites. That module reaches "
+            "job_events through `emit_async` and nothing else, so a scanner that "
+            "knows only some of EMITTERS skips it whole and checks the map against "
+            "a turn that cannot call a tool. Found: %r" % (sorted(found),)
+        )
 
     def test_every_derived_string_looks_like_an_event_type(self):
         """If the scanner ever took the wrong constant, it says so here."""

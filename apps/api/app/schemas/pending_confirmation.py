@@ -48,6 +48,12 @@ class PendingConfirmationResponse(BaseModel):
     tool_calls_audit (OD-3, no 0020 migration) — always None on every other
     row, and honestly None on an approved row whose resolver-driven audit row
     does not (yet, or ever) exist.
+
+    execution_outcome carries three states, not two. "not_executed" means a
+    gate refused the call and the owner can change that decision; "failed"
+    means the adapter ran and broke, and someone has to fix the provider.
+    The resolver has told those apart since #73; this is where the owner sees
+    it.
     """
 
     id: UUID
@@ -57,7 +63,7 @@ class PendingConfirmationResponse(BaseModel):
     expires_at: datetime | None
     resolved_at: datetime | None
     resolution: str | None
-    execution_outcome: Literal["executed", "not_executed"] | None
+    execution_outcome: Literal["executed", "not_executed", "failed"] | None
     execution_error: str | None
     executed_at: datetime | None
 

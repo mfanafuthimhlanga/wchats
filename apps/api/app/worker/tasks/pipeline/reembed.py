@@ -26,6 +26,13 @@ Tenant isolation (T-13-04-01):
     runtime. Never iterates other agents or tenants. Callers dispatch one task
     per tenant.
 
+Retry exhaustion (#63):
+    The seven job-scoped pipeline tasks route their last failed attempt through
+    app/services/job_failure.py, which writes the jobs row and emits job.failed.
+    This task is not job-scoped — it takes an agent_id and nothing else, so there
+    is no jobs row to mark and no job_events channel to publish on. A bare
+    re-raise is everything its caller can observe, and that is why it has none.
+
 REINDEX endpoint requirement (Pitfall 7, T-13-04-04):
     REINDEX CONCURRENTLY cannot run inside a transaction block and behaves
     incorrectly through PgBouncer transaction mode (the pooled endpoint).

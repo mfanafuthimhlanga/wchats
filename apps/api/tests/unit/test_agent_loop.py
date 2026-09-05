@@ -39,6 +39,7 @@ WHAT THE BUDGET TESTS PRICE
 
 from __future__ import annotations
 
+import threading
 import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -193,14 +194,18 @@ def _turn(client, *, tools=(), max_model_calls=MAX_MODEL_CALLS_PER_TURN,
 
 
 async def _drive(turn, message="what is the return window?", history=()):
-    """One loop run with the two event sinks captured rather than emitted."""
+    """One loop run with the two event sinks captured rather than emitted.
+
+    The double is a coroutine function because the loop awaits its emit since
+    #86. `patch` on an async def target gives an AsyncMock, but the capture is
+    written out here so the recorded call is the loop's own arguments.
+    """
     events: list[tuple] = []
-    with patch(
-        "app.services.agent_loop.emit",
-        side_effect=lambda job_id, event_type, payload, db, redis: events.append(
-            (event_type, payload)
-        ),
-    ):
+
+    async def _capture(job_id, event_type, payload, db, redis):
+        events.append((event_type, payload))
+
+    with patch("app.services.agent_loop.emit_async", new=_capture):
         out = await run_agent_loop(
             message,
             history=list(history),
@@ -1671,3 +1676,91 @@ class TestTheEvents:
         _, events = await _drive(_turn(_Client(_completion(content="ok"))))
 
         assert events == []
+
+
+# ---------------------------------------------------------------------------
+# Where the control-DB write happens (#86)
+# ---------------------------------------------------------------------------
+
+
+class TestTheEventWritesLeaveTheEventLoop:
+    """#48 moved the tenant ledger writes off the loop and left the control-DB
+    writes on it.
+
+    `emit` publishes to Redis and then does `db.add()` and `db.commit()`.
+    `_run_tool_call` calls it twice, so a turn spending the retrieve cap of 8
+    commits sixteen times to the control database from inside the async body the
+    customer is waiting on, and a suspended Neon endpoint takes 8 to 20 seconds
+    to wake.
+
+    The thread id is what these read, because "off the event loop" is not a
+    property of the call count. Sixteen commits are still sixteen commits after
+    the fix; what changes is that none of them runs on the thread carrying the
+    turn.
+    """
+
+    @staticmethod
+    def _eight_retrieve_calls():
+        """A turn that spends the whole retrieve cap: eight calls, then a reply."""
+        return _Client(
+            _completion(
+                tool_calls=[
+                    _tool_call("call-%d" % n, "retrieve", '{"query": "returns"}')
+                    for n in range(8)
+                ],
+                finish_reason="tool_calls",
+            ),
+            _completion(content="done.", finish_reason="stop"),
+        )
+
+    @staticmethod
+    async def _drive_recording_threads(turn):
+        """Run the loop with the REAL emit and record which thread each call ran on."""
+        commit_threads: list[int] = []
+        publish_threads: list[int] = []
+        db, redis = MagicMock(), MagicMock()
+        db.commit.side_effect = lambda: commit_threads.append(threading.get_ident())
+        redis.publish.side_effect = lambda *a: publish_threads.append(
+            threading.get_ident()
+        )
+
+        await run_agent_loop(
+            "what is the return window?",
+            history=[],
+            turn=turn,
+            job_id=JOB,
+            db=db,
+            redis=redis,
+        )
+        return commit_threads, publish_threads, threading.get_ident()
+
+    async def test_no_control_db_commit_runs_on_the_turns_thread(self):
+        turn = _turn(
+            self._eight_retrieve_calls(), tools=[_tool("retrieve", _echo_handler)]
+        )
+
+        commits, _, loop_thread = await self._drive_recording_threads(turn)
+
+        assert len(commits) == 16, (
+            "expected the measured sixteen commits for eight tool calls, got %d"
+            % len(commits)
+        )
+        assert loop_thread not in commits, (
+            "the control-DB commits ran on the thread carrying the customer's turn. "
+            "Each one is a round trip to Neon, and a suspended endpoint takes 8 to "
+            "20 seconds to wake."
+        )
+
+    async def test_the_redis_publish_stays_on_the_turns_thread(self):
+        """The other half of the trade. The widget stream is the live path, so the
+        publish stays inline and only the durable write is handed off."""
+        turn = _turn(
+            self._eight_retrieve_calls(), tools=[_tool("retrieve", _echo_handler)]
+        )
+
+        _, publishes, loop_thread = await self._drive_recording_threads(turn)
+
+        assert publishes == [loop_thread] * 16, (
+            "the Redis publish left the loop thread, so the live SSE delivery now "
+            "waits on a thread hop: %r" % (publishes,)
+        )

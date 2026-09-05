@@ -74,7 +74,7 @@ from app.schemas.pending_confirmation import (
     PendingConfirmationResolve,
     PendingConfirmationResponse,
 )
-from app.services.transactional.audit import write_audit_row
+from app.services.transactional.audit import ADAPTER_FAULT_PREFIXES, write_audit_row
 
 router = APIRouter(tags=["pending-confirmations"])
 log = structlog.get_logger(__name__)
@@ -128,12 +128,23 @@ def _is_confirm_action_shaped(arguments: dict | None) -> bool:
 # ---------------------------------------------------------------------------
 
 
+# THE THIRD EXECUTION OUTCOME (issue #73), read off the audit row's error text.
+#
+# The resolver has told a gate refusal from a provider outage since #73 and
+# returns "failed" for the second, and that word travelled no further than a
+# Celery return dict nobody reads. The owner's queue read this column, saw one
+# non-NULL error, and called both "Not executed", telling an owner whose
+# provider was down that the platform had decided against them. The adapter
+# step's own errors carry ADAPTER_FAULT_PREFIXES; everything else a resolver
+# writes is a refusal the owner can act on by changing a decision.
+
+
 async def _execution_outcome_for(
     db: AsyncSession,
     agent_id: UUID,
     skill: str,
     arguments: dict | None,
-) -> tuple[Literal["executed", "not_executed"] | None, str | None, datetime | None]:
+) -> tuple[Literal["executed", "not_executed", "failed"] | None, str | None, datetime | None]:
     """Read-time execution-outcome lookup against tool_calls_audit (OD-3).
 
     No new column, no 0020 migration — the resolver already writes exactly
@@ -155,6 +166,8 @@ async def _execution_outcome_for(
         matching audit row exists yet (the honest "awaiting execution" state:
         the task has not run, or the dispatch itself failed, T-22-ACT-09).
         ("executed", None, created_at) when the matched row's error is NULL.
+        ("failed", raw_error_string, created_at) when the adapter step wrote
+        that error. See the comment above this function.
         ("not_executed", raw_error_string, created_at) otherwise.
     """
     if not isinstance(arguments, dict):
@@ -180,12 +193,14 @@ async def _execution_outcome_for(
         return None, None, None
     if row["error"] is None:
         return "executed", None, row["created_at"]
+    if str(row["error"]).startswith(ADAPTER_FAULT_PREFIXES):
+        return "failed", row["error"], row["created_at"]
     return "not_executed", row["error"], row["created_at"]
 
 
 def _row_to_response(
     row: dict,
-    execution_outcome: Literal["executed", "not_executed"] | None,
+    execution_outcome: Literal["executed", "not_executed", "failed"] | None,
     execution_error: str | None,
     executed_at: datetime | None,
 ) -> PendingConfirmationResponse:

@@ -64,6 +64,7 @@ from app.models.agent import Agent
 from app.services import storage_service
 from app.services.chunking_service import chunk_document
 from app.services.events import emit
+from app.services.job_failure import retry_or_fail_the_job
 from app.worker.celery_app import celery_app
 from app.worker.tasks.pipeline.chain_edge import job_in_job_out
 
@@ -233,7 +234,7 @@ def chunk_documents(self, job: IngestionJob) -> IngestionJob:
                         document_id=doc_id,
                         error_type=type(exc).__name__,
                     )
-                    raise self.retry(exc=exc, countdown=2**self.request.retries)
+                    retry_or_fail_the_job(self, exc, job_id, db, _redis, 2**self.request.retries)
 
                 # Reopen connection for post-parse writes (released before re-parse)
                 tenant_conn = psycopg2.connect(conn_str)
@@ -302,7 +303,7 @@ def chunk_documents(self, job: IngestionJob) -> IngestionJob:
                 error_type=type(exc).__name__,
                 error=str(exc),
             )
-            raise self.retry(exc=exc, countdown=2**self.request.retries)
+            retry_or_fail_the_job(self, exc, job_id, db, _redis, 2**self.request.retries)
         finally:
             if tenant_conn is not None:
                 tenant_conn.close()
