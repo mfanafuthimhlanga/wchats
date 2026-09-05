@@ -224,6 +224,42 @@ class TestDigestFaithfulnessReadsTheRecord:
         )
         assert "AVG(" not in sql, "the digest is averaging eval_results again"
 
+    def test_two_scoring_datasets_are_named_separately_and_never_pooled(self):
+        """A golden set at 0.42 beside an exploratory sample at 0.88 is two
+        readings. The flat pair stays empty, because there is no one number,
+        and the mail names each half. The alert learned this in #175; the
+        digest was the last reader still asking for a run-level figure."""
+        from uuid import uuid4
+
+        record = _eval_record({"golden": _scored(0.42), "exploratory": _scored(0.88)})
+        stats, conn = self._stats((str(uuid4()), record.payload))
+
+        assert stats["faithfulness_by_dataset"] == {"golden": 0.42, "exploratory": 0.88}
+        assert stats["faithfulness_score"] is None, "two datasets were pooled into one number"
+        assert stats["faithfulness_dataset"] is None
+
+        sql = " ".join(
+            c.args[0] for c in conn.cursor.return_value.execute.call_args_list
+        )
+        assert "AVG(" not in sql
+
+    def test_the_mail_names_each_dataset_when_two_scored(self, monkeypatch):
+        from app.services.digest_service import _render_digest_body
+
+        body = _render_digest_body(
+            "Bantuson",
+            {
+                "conversation_count": 3,
+                "escalation_count": 0,
+                "faithfulness_score": None,
+                "faithfulness_dataset": None,
+                "faithfulness_by_dataset": {"golden": 0.42, "exploratory": 0.88},
+                "critical_red_team_count": 0,
+            },
+        )
+        assert "0.88 (exploratory set), 0.42 (golden set)" in body
+        assert "0.65" not in body and "not measured" not in body
+
     def test_a_failed_latest_run_reads_as_unmeasured_not_an_older_number(self):
         """The newest finished run failed and still carries a full record.
 
