@@ -83,15 +83,6 @@ def test_the_unit_suite_runs_with_rs(monkeypatch):
 
 PINNED_RUFF = {}
 
-PINNED_MYPY = {
-    "app/core/model_client.py": 3,
-    "app/domain/ingestion_job.py": 2,
-    "app/services/agent_tools.py": 5,
-    "app/services/deployment_service.py": 3,
-    "app/services/red_team_service.py": 7,
-    "app/worker/tasks/runtime/agent.py": 2,
-}
-
 PINNED_LIZARD = {
     ("app/api/deps.py", "get_current_tenant"): (19, 110),
     ("app/api/v1/agent_chat.py", "get_agent_conversations"): (4, 69),
@@ -282,17 +273,19 @@ def test_ruff_baseline_equals_the_snapshot():
     assert snapshot_differences("RUFF_BASELINE", gates.RUFF_BASELINE, PINNED_RUFF) == []
 
 
-def test_mypy_baseline_equals_the_snapshot():
-    """Every MYPY_BASELINE count equals its snapshot count, is above zero, and names a real file.
+def test_the_mypy_gate_has_no_baseline_to_snapshot():
+    """#92 closed on zero type errors, and the gate holds the tree there with no pin.
 
-    A pin at zero errors, or a pin on a path that has left the tree, is a line the gate
-    can never satisfy: run_mypy reads both as stale and stays red until someone deletes
-    the line. The loop catches that here rather than after a 44s mypy run.
+    A count-pinned baseline is the right shape while a number is coming down and the
+    wrong shape once it reaches zero, because a file the pin does not name may gain
+    errors freely. This test is what makes reintroducing one a deliberate act: adding
+    MYPY_BASELINE back to scripts/gates.py fails here, in the file that would have to
+    carry its snapshot.
     """
-    assert snapshot_differences("MYPY_BASELINE", gates.MYPY_BASELINE, PINNED_MYPY) == []
-    for path, count in gates.MYPY_BASELINE.items():
-        assert count > 0, "%s is pinned at 0 errors. Delete the line" % path
-        assert (API_DIR / path).exists(), "%s is pinned and is not in the tree" % path
+    assert not hasattr(gates, "MYPY_BASELINE"), (
+        "scripts/gates.py has a MYPY_BASELINE again. The standard is zero errors, so "
+        "fix the type error rather than pinning it, or change this test on purpose"
+    )
 
 
 def test_lizard_baseline_equals_the_snapshot():
@@ -367,50 +360,32 @@ def test_source_assertion_failures(label, found, expect_failure):
     assert bool(gates.source_assertion_failures(found, SOURCE_PIN)) is expect_failure
 
 
-MYPY_PIN = {"app/one.py": 3, "app/two.py": 2}
-
-# Every case carries app/two.py, so no case passes by an empty reading, and the unpinned
-# case carries both pinned files EXACTLY at their counts, so it cannot pass with the
-# unpinned branch deleted.
+# The standard is zero, so the only reading that passes is the empty one. A single
+# error in a single file fails, which is the case a baseline used to absorb.
 MYPY_CASES = [
+    ("one error in one file", {"app/one.py": 1}, True),
+    ("many errors in one file", {"app/one.py": 12}, True),
     (
-        "a file with type errors that nothing pins",
-        {"app/one.py": 3, "app/two.py": 2, "app/three.py": 1},
+        "errors spread over three files",
+        {"app/one.py": 1, "app/two.py": 2, "app/three.py": 3},
         True,
     ),
-    ("a pinned file whose count grew", {"app/one.py": 4, "app/two.py": 2}, True),
-    ("a pinned file whose count shrank", {"app/one.py": 2, "app/two.py": 2}, True),
-    ("a pinned file mypy no longer errors in", {"app/two.py": 2}, True),
-    (
-        "an unpinned file beside a pinned file that grew",
-        {"app/one.py": 4, "app/two.py": 2, "app/three.py": 1},
-        True,
-    ),
-    ("the tree exactly as pinned", {"app/one.py": 3, "app/two.py": 2}, False),
+    ("a type-clean tree", {}, False),
 ]
 
 
 @pytest.mark.parametrize("label, found, expect_failure", MYPY_CASES)
 def test_mypy_failures(label, found, expect_failure):
-    """Unpinned, grown and stale each fail. An exact match passes."""
-    assert bool(gates.mypy_failures(found, MYPY_PIN)) is expect_failure
+    """Any file with a type error fails. Only an empty reading passes."""
+    assert bool(gates.mypy_failures(found)) is expect_failure
 
 
-def test_a_mixed_mypy_reading_reports_the_growth_alone():
-    """One file up and another down reports growth only, so one remedy reaches the reader."""
-    failures = gates.mypy_failures({"app/one.py": 4, "app/two.py": 1}, MYPY_PIN)
-    report = "\n".join(failures)
-    assert "gained type errors" in report
-    assert "stale" not in report
-
-
-def test_an_unpinned_file_is_still_reported_beside_growth():
-    """Growth suppresses the stale lines, never the unpinned ones."""
-    failures = gates.mypy_failures({"app/one.py": 4, "app/two.py": 2, "app/three.py": 1}, MYPY_PIN)
-    report = "\n".join(failures)
-    assert "gained type errors" in report
-    assert "nothing pins them" in report
-    assert "app/three.py" in report
+def test_the_mypy_report_names_every_file_and_its_count():
+    """The reader gets the whole of what to fix, not the first file mypy printed."""
+    report = chr(10).join(gates.mypy_failures({"app/two.py": 2, "app/one.py": 1}))
+    assert "2 file(s) have type errors" in report
+    assert "app/one.py  x1" in report
+    assert "app/two.py  x2" in report
 
 
 # The two lines CI printed for seventeen days (#92): one error, then a summary with no

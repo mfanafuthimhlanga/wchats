@@ -135,4 +135,11 @@ class IngestionJob:
         same outcome the tasks reached by asking `result.get(...)` and testing
         the answer.
         """
-        return cls(**{field.name: mapping.get(field.name) for field in fields(cls)})
+        # `Mapping[str, Any].get` widens every value to `Any | None`, and mypy reads a
+        # `**` unpack of that against three `str` fields and a `Sequence[str]` as four
+        # wrong arguments. The absent key is the case this classmethod exists to take:
+        # it arrives as None, `__post_init__` refuses it, and the caller gets
+        # InvalidJobDict. `dict[str, Any]` is the wire's own value type with that
+        # `| None` dropped, which is the sentence the paragraph above already makes.
+        wire: dict[str, Any] = {field.name: mapping.get(field.name) for field in fields(cls)}
+        return cls(**wire)

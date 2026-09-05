@@ -197,6 +197,27 @@ def test_only_pinned_modules_run_a_tool_loop():
     )
 
 
+def _bound_names(node: ast.stmt) -> list[str]:
+    """Every module-scope name one statement BINDS A VALUE TO.
+
+    Two node types bind at module scope and they carry the target differently:
+    `X = {...}` is an `ast.Assign` with a list of `targets`, and `X: T = {...}` is
+    an `ast.AnnAssign` with one `target`. Reading only the first made a schema
+    invisible the moment it took a type annotation, and this test then failed on
+    its own "declares no _TOOL_* schema" line rather than on anything about the
+    code (#92: `_TOOL_SEND_PROBE: ToolSchema = {...}`).
+
+    A bare `X: T` with no value binds nothing, so it is not a declared schema and
+    is not returned. That is the case this test must keep refusing: a name with a
+    type and no dict behind it is exactly the dead contract it looks for.
+    """
+    if isinstance(node, ast.Assign):
+        return [t.id for t in node.targets if isinstance(t, ast.Name)]
+    if isinstance(node, ast.AnnAssign) and node.value is not None:
+        return [node.target.id] if isinstance(node.target, ast.Name) else []
+    return []
+
+
 @pytest.mark.parametrize("module", sorted(PINNED_TOOL_LOOP_CALLERS))
 def test_every_module_scope_tool_schema_is_read_by_executable_code(module: str):
     """A `_TOOL_*` dict defined and never READ is a dead contract.
@@ -207,11 +228,10 @@ def test_every_module_scope_tool_schema_is_read_by_executable_code(module: str):
     """
     tree = _tree(module)
     schemas = [
-        t.id
+        name
         for node in tree.body
-        if isinstance(node, ast.Assign)
-        for t in node.targets
-        if isinstance(t, ast.Name) and t.id.startswith("_TOOL_")
+        for name in _bound_names(node)
+        if name.startswith("_TOOL_")
     ]
     assert schemas, f"{module} declares no _TOOL_* schema; update this test"
 

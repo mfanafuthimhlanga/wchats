@@ -42,13 +42,31 @@ from __future__ import annotations
 import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
 #: One tool call's arguments in, one wire result dict out. The wire dict is the
 #: MCP content shape (`{"content": [{"type": "text", "text": ...}], "is_error":
 #: bool}`), unchanged from the SDK because the model reads it and
 #: `app.domain.tool_result.ToolResult` parses it.
 ToolHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+
+
+class ToolSchema(TypedDict):
+    """The three declaration arguments of `tool`, held as one dict.
+
+    Several services hoist a tool's name, description and JSON Schema to a module
+    constant and read the three keys back at the decorator (`@tool(S["name"],
+    S["description"], S["input_schema"])`). An unannotated dict literal of those
+    three keys infers `dict[str, Collection[str]]`, the join of `str` and
+    `dict[str, Any]`, so each read comes back as `Collection[str]` and none of the
+    three arguments type-checks. Declaring the constant as this TypedDict gives each
+    key back its own type, and a schema that is spelled with a wrong key or a
+    missing one is refused where it is written rather than at the decorator.
+    """
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
 
 
 @dataclass(frozen=True)
