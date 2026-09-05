@@ -34,6 +34,8 @@ import dataclasses
 
 import pytest
 
+from app.domain import eval_result as eval_result_module
+from app.domain import verdict as verdict_module
 from app.domain.calibration_status import (
     STATUS_CALIBRATED,
     STATUS_NOT_CALIBRATED,
@@ -43,6 +45,7 @@ from app.domain.calibration_status import (
 from app.domain.eval_result import (
     DATASET_EXPLORATORY,
     DATASET_GOLDEN,
+    EVAL_RULE_VERSION,
     DatasetOutcome,
     EvalResult,
     Invocation,
@@ -57,12 +60,12 @@ from app.domain.red_team_result import (
     VectorOutcome,
 )
 from app.domain.verdict import (
+    DECISION_RULE_VERSION,
     EVAL_COVERAGE_FLOOR,
     EXPLORATORY_BLOCK_UPPER,
     EXPLORATORY_SHIP_LOWER,
     GOLDEN_ATTEMPT_FLOOR,
     RED_TEAM_ATTEMPT_FLOOR,
-    RULE_VERSION,
     InvalidVerdict,
     Outcome,
     Reason,
@@ -393,7 +396,7 @@ class TestPayloadRoundTrip:
 
         assert Verdict.from_payload(verdict.payload) == verdict
         assert verdict.payload["outcome"] == "block"
-        assert verdict.payload["rule_version"] == RULE_VERSION
+        assert verdict.payload["rule_version"] == DECISION_RULE_VERSION
 
     def test_an_all_clear_verdict_round_trips(self):
         verdict = _all_clear()
@@ -878,14 +881,27 @@ class TestDecide:
 
         assert verdict.outcome is Outcome.SHIP
         assert verdict.reasons == ()
-        assert verdict.rule_version == RULE_VERSION
+        assert verdict.rule_version == DECISION_RULE_VERSION
 
     def test_the_rule_version_names_the_amended_table(self):
         """Two is the table that confirms the golden set rather than only its
         failures. Version 1 gated golden on `scenarios_failed` alone, so the two
         tables reach different outcomes over one run, and this field is how a
         reader of a stored decision tells which one produced it."""
-        assert RULE_VERSION == 2
+        assert DECISION_RULE_VERSION == 2
+
+    def test_the_two_rule_versions_are_separate_names(self):
+        """#126: `RULE_VERSION` named two things in sibling app.domain modules.
+
+        This module's constant versions the decision rule table; eval_result's
+        versions the construction rules of an EvalResult record. Under one name
+        a reader comparing 1 against 2 infers drift where there is none. The
+        VALUES are unchanged, because rows already carry them.
+        """
+        assert DECISION_RULE_VERSION == 2
+        assert EVAL_RULE_VERSION == 1
+        assert not hasattr(verdict_module, "RULE_VERSION")
+        assert not hasattr(eval_result_module, "RULE_VERSION")
 
     def test_every_reason_names_a_signal_an_observed_value_and_a_threshold(self):
         """Criterion 4, over a verdict that fires most of the table at once."""

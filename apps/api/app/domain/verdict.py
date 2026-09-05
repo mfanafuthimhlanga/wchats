@@ -15,9 +15,9 @@ WHY THE DECISION IS COMPUTED HERE AND NOWHERE ELSE
 
 THE THRESHOLDS LIVE IN THIS MODULE AND NOWHERE ELSE
     Criterion 2 of the ticket. Every number the decision turns on is a module
-    constant below, beside RULE_VERSION. A threshold repeated in a prompt is a
-    second copy that drifts, and the copy a deploy acts on would be whichever the
-    model happened to quote. A stored Verdict carries `rule_version`, so two
+    constant below, beside DECISION_RULE_VERSION. A threshold repeated in a prompt
+    is a second copy that drifts, and the copy a deploy acts on would be whichever
+    the model happened to quote. A stored Verdict carries `rule_version`, so two
     verdicts reached under different rules are visibly not comparable.
 
 THE RULE TABLE IS ONE FUNCTION PER ROW, FOLDED ONCE
@@ -76,7 +76,12 @@ from app.domain.red_team_result import RED_TEAM_VECTORS, RedTeamResult
 #:    scored, because the coverage floor pools both datasets and the exploratory
 #:    draw carried the ratio. The version moves because the two tables reach
 #:    different outcomes over one run.
-RULE_VERSION = 2
+#:
+#: The DECISION_ prefix is #126: eval_result.py has its own constant for the
+#: construction rules of an EvalResult record, sitting at 1, and under a shared
+#: bare name a reader comparing the two sibling modules reads drift where there
+#: is none. The stored field stays `rule_version` and the value stays 2.
+DECISION_RULE_VERSION = 2
 
 #: Golden scenarios a run must attempt before "every golden scenario passed" is
 #: a claim about anything. THE AMENDMENT: "golden gates absolutely" is vacuously
@@ -429,7 +434,7 @@ class Verdict:
     # The init input, not what the record holds. __post_init__ copies whatever
     # sequence it is handed into a tuple.
     reasons: Sequence[Reason] = ()
-    rule_version: int = RULE_VERSION
+    rule_version: int = DECISION_RULE_VERSION
 
     def __post_init__(self) -> None:
         _require_count("rule_version", self.rule_version)
@@ -581,7 +586,7 @@ def _rule_golden_unconfirmed(
     calibration: CalibrationStatus,
     block_on_high: bool,
 ) -> tuple[Reason, ...]:
-    """Row 2, the unmeasured half. The 2026-08-30 amendment, RULE_VERSION 2.
+    """Row 2, the unmeasured half. The 2026-08-30 amendment, DECISION_RULE_VERSION 2.
 
     A golden scenario is confirmed when the run scored it AND the Judge decided
     every gated dimension of it. Two ways to miss, both counted against

@@ -97,9 +97,13 @@ app = FastAPI(
     title="W Chats Control Plane",
     version="1.0.0",
     # Disable interactive API docs in production to reduce attack surface (WR-04).
-    # Set ENVIRONMENT=production in the deployment environment to suppress /docs and /redoc.
+    # Set ENVIRONMENT=production in the deployment environment to suppress /docs
+    # and /redoc. openapi_url goes with them (#143): the schema alone lists every
+    # path, parameter and response model, so serving it while hiding the two UIs
+    # that render it hides nothing.
     docs_url=None if _is_production else "/docs",
     redoc_url=None if _is_production else "/redoc",
+    openapi_url=None if _is_production else "/openapi.json",
     lifespan=lifespan,
 )
 
