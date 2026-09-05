@@ -182,12 +182,92 @@ finish() {
 # ──────────────────────────────────────────────────────────────────────────
 # STAGES: Railway staging + R2 for W Chats (ticket 18, ADR 0005).
 # The four service configs are checked in as apps/api/railway.*.toml; this
-# wizard is the human half: create the services, point each at its file, wire
-# Redis and R2, set the variables, and observe /health on the public URL.
+# wizard is the human half: create the services, set each service's fields,
+# wire Redis and R2, set the variables, and observe /health on the public URL.
+#
+# CONFIG-AS-CODE IS CLOSED TO NEW SERVICES (#139). Railway's own panel, read on
+# the staging dashboard 2026-08-31: "Config as Code is deprecated. Prefer
+# Infrastructure as Code. Existing config files keep working until 2026-12-01.
+# Starting 2026-08-28, services that have never used Config as Code cannot opt
+# in." Every staging service is newer than that date, so pointing a service at
+# its toml is the path that MIGHT work, and typing the toml's fields into the
+# UI is the path that always does. Both are offered per service below.
+#
+# The CLI's migrate path does not replace either, verified 2026-09-05 with
+# `railway config migrate` on railway 5.47.1. It discovers only files literally
+# named railway.toml or railway.json ("No railway.json or railway.toml found in
+# this repository" against this directory's four), and on a file it does find it
+# emits `builder`, `dockerfilePath`, `preDeployCommand` and `watchPatterns` as
+# COMMENTS in .railway/railway.ts rather than as fields. Migrating today would
+# silently drop the pre-deploy migrations.
 
 # Interactive only: every checkpoint waits on a human answer, and EOF would
 # spin the re-prompt loops forever.
 [[ -t 0 ]] || { echo "this wizard needs a terminal (stdin is not a tty)"; exit 1; }
+
+# apps/api, wherever this script was invoked from. The per-service field lists
+# below are read out of the tomls that live there, so the wizard cannot drift
+# from the files that are the record.
+API_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# toml_value FILE KEY prints the value of a top-level `KEY = ...` line, quotes
+# and brackets intact so what is printed is the literal the file carries.
+# The four service files are flat (one [build] table, one [deploy] table, no
+# nesting), so a line match is the whole parser this needs.
+toml_value() {
+  local line
+  line=$(grep -E "^${2} = " "$API_DIR/${1}" | head -n1) || return 1
+  printf '%s' "${line#* = }"
+}
+
+# service_fields FILE prints every field the Railway UI needs for one service,
+# read out of that service's toml. Fields absent from a file are skipped, so
+# beat's single replica and the api's health check and pre-deploy command each
+# appear on exactly the service that carries them.
+service_fields() {
+  local file="$1" value
+  note "  Settings > Source > Root Directory        apps/api"
+  note "  Settings > Build > Builder                $(toml_value "$file" builder)"
+  note "  Settings > Build > Dockerfile Path        $(toml_value "$file" dockerfilePath)"
+  note "  Settings > Build > Watch Paths            $(toml_value "$file" watchPatterns)"
+  if value="$(toml_value "$file" preDeployCommand)"; then
+    note "  Settings > Deploy > Pre-Deploy Command    $value"
+  fi
+  note "  Settings > Deploy > Custom Start Command  $(toml_value "$file" startCommand)"
+  if value="$(toml_value "$file" healthcheckPath)"; then
+    note "  Settings > Deploy > Healthcheck Path      $value"
+  fi
+  if value="$(toml_value "$file" healthcheckTimeout)"; then
+    note "  Settings > Deploy > Healthcheck Timeout   $value"
+  fi
+  if value="$(toml_value "$file" numReplicas)"; then
+    note "  Settings > Deploy > Replicas              $value"
+  fi
+  note "  Settings > Deploy > Restart Policy        $(toml_value "$file" restartPolicyType)"
+  note "  Settings > Deploy > Max Retries           $(toml_value "$file" restartPolicyMaxRetries)"
+}
+
+# service_config STAGE_FILE SERVICE_NAME walks the one decision every service
+# stage has to make: use the checked-in toml if this service is allowed to, and
+# type its fields in by hand if it is not.
+service_config() {
+  local file="$1" service="$2"
+  step "Settings > Source > Root Directory = apps/api"
+  say "Open Settings and look for a Config-as-code section (#139: Railway"
+  say "closed it to services created after 2026-08-28)."
+  if confirm "Does $service offer a Config-as-code file path you can set?"; then
+    step "Settings > Config-as-code > file path = $file"
+    note "If the deploy IGNORES the toml (wrong start command in the deploy log),"
+    note "Railway resolved the path from the repo root: set it to"
+    note "apps/api/$file instead, and the same for the other three."
+  else
+    say "Then $file is documentation, not applied config. Type these into"
+    say "$service by hand; every value is read out of that file:"
+    service_fields "$file"
+    SKIPPED+=("$service: fields typed by hand from $file, so a change to that file does NOT reach Railway")
+  fi
+  until confirm "$service configured?"; do say "Finish the step above, then answer y."; done
+}
 
 # Captured values persist here, never in .env: the local .env is the dev
 # seam (MinIO) and these are Railway-side facts.
@@ -220,34 +300,29 @@ fi
 
 # ──────────────────────────────────────────────────────────────────────────
 stage "api service"
-say "Each service reads its own checked-in config file; two fields live in the"
-say "UI per service and cannot be config-as-code."
+say "Each service carries the same set of fields. They come from that service's"
+say "checked-in toml, either because Railway reads the file or because you type"
+say "them in from it."
 step "On the service created from the repo (or + New > GitHub Repo):"
-step "Settings > Source > Root Directory = apps/api"
-step "Settings > Config-as-code > file path = railway.api.toml"
 note "The first green build's log opens with 'Using Detected Dockerfile'."
 note "A 9-second 'Railpack could not determine how to build' means Root Directory is unset."
-note "If the deploy IGNORES the toml (wrong start command in the deploy log),"
-note "Railway resolved the path from the repo root: set it to"
-note "apps/api/railway.api.toml instead, and the same for the other three."
-until confirm "api service points at apps/api and railway.api.toml?"; do say "Finish the step above, then answer y."; done
+service_config railway.api.toml "api service"
+note "The pre-deploy command is the release step that brings the control DB and"
+note "every tenant DB to head. Without it a deploy ships code against the schema"
+note "it had before, which is how staging sat at 0020 under 0022 code."
 
 # ──────────────────────────────────────────────────────────────────────────
 stage "worker-runtime service"
 step "+ New > GitHub Repo > the same wchats repo"
-step "Settings > Source > Root Directory = apps/api"
-step "Settings > Config-as-code > file path = railway.worker-runtime.toml"
 note "The cheap worker: agent turns and evals, no docling, no public networking."
-until confirm "worker-runtime configured?"; do say "Finish the step above, then answer y."; done
+service_config railway.worker-runtime.toml "worker-runtime"
 
 # ──────────────────────────────────────────────────────────────────────────
 stage "beat service"
 step "+ New > GitHub Repo > the same repo"
-step "Settings > Source > Root Directory = apps/api"
-step "Settings > Config-as-code > file path = railway.beat.toml"
 note "One replica, never scaled. Schedules arm per agent at deploy: every beat"
 note "fans out to is_deployed agents only, so an empty staging idles cheaply."
-until confirm "beat configured?"; do say "Finish the step above, then answer y."; done
+service_config railway.beat.toml "beat"
 
 # ──────────────────────────────────────────────────────────────────────────
 stage "worker-pipeline service (optional today)"
@@ -256,12 +331,11 @@ say "is being tested and remove it afterwards; it idles at far more RAM than"
 say "the other three (the file's own header says the same)."
 if confirm "Add the pipeline worker now?"; then
   step "+ New > GitHub Repo > the same repo"
-  step "Settings > Source > Root Directory = apps/api"
-  step "Settings > Config-as-code > file path = railway.worker-pipeline.toml"
+  service_config railway.worker-pipeline.toml "worker-pipeline"
   step "Variables tab, add exactly these two:"
   note "  LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu"
   note "  HF_HUB_DISABLE_XET_ENDPOINT=1"
-  until confirm "pipeline worker configured with both variables?"; do say "Finish the step above, then answer y."; done
+  until confirm "pipeline worker has both variables?"; do say "Finish the step above, then answer y."; done
 else
   note "Skipped. Ingestion stays down until it exists; everything else serves."
 fi

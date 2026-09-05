@@ -1,12 +1,19 @@
 # Railway config as code for the API service (ADR 0005, ticket 18).
 #
-# One repo, four services, one file per service. The two fields that cannot
-# live in a file are set once per service in the Railway UI:
-#   Settings > Source > Root Directory        apps/api
-#   Settings > Config-as-code > file path     railway.api.toml
-# With the root set, Railway detects the Dockerfile in this directory and the
-# builder below stops it from ever falling back to Railpack, which is what
-# produced "could not determine how to build the app" on the first deploy.
+# One repo, four services, one file per service.
+#
+# Root Directory is set once per service in the Railway UI and cannot live in a
+# file: Settings > Source > Root Directory = apps/api. With the root set,
+# Railway detects the Dockerfile in this directory and the builder below stops
+# it from ever falling back to Railpack, which is what produced "could not
+# determine how to build the app" on the first deploy.
+#
+# WHETHER RAILWAY READS THIS FILE AT ALL IS NOT GUARANTEED (#139). Config as
+# Code is deprecated; existing files keep working until 2026-12-01, and a
+# service that has never used it cannot opt in since 2026-08-28. Where the
+# section is closed, this file is the record the operator types from, field by
+# field, and `scripts/railway_staging_wizard.sh` reads the values out of it so
+# the two cannot disagree. A change here then does NOT reach Railway on its own.
 #
 # Build command: none. The Dockerfile is the build.
 # Watch paths are relative to the repo root: a push that touches only the

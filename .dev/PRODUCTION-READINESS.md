@@ -66,6 +66,17 @@ not about missing features.
   `apps/api/railway.*.toml` (one config file per service, #122), two Dockerfiles
   (`Dockerfile`, and `Dockerfile.pipeline` carrying the docling extra), Railway's managed
   Redis plugin, staging and production as two environments under a $20 hard limit.
+- `OBSERVED` 2026-08-31 on the staging dashboard, and the reason those toml files may be
+  documentation rather than applied config (#139): "Config as Code is deprecated. Prefer
+  Infrastructure as Code. Existing config files keep working until 2026-12-01. Starting
+  2026-08-28, services that have never used Config as Code cannot opt in." Every staging
+  service is newer than that date. `scripts/railway_staging_wizard.sh` now dictates each
+  service's fields out of its toml for the services Railway refuses, and **a change to a
+  toml then does not reach Railway on its own**. `OBSERVED` 2026-09-05 on railway 5.47.1:
+  `railway config migrate` is not a way out today, because it discovers only files named
+  `railway.toml` or `railway.json` and emits `builder`, `dockerfilePath`,
+  `preDeployCommand` and `watchPatterns` as comments rather than fields. Moving to
+  `.railway/railway.ts` before 2026-12-01 is an open decision and wants an ADR.
 - `deploy/terraform/`, `deploy/systemd/` and `deploy/caddy/` are **deleted** with ADR
   0005 (decision #14). Terraform was never applied (no state, no backend block, no
   `~/.aws` on this machine); git history keeps the trees.
