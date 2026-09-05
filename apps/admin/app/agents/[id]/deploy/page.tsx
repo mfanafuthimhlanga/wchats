@@ -15,6 +15,7 @@ import {
   computeSeverityCounts,
   gateMessage,
 } from '../components/opsFormat'
+import { type EvalSummary, readEvalReadiness } from './evalReadiness'
 
 /**
  * Deploy — `/agents/[id]/deploy` (UI-SPEC S6.8, UI2-06, ported from
@@ -105,10 +106,11 @@ interface BlastRadiusSignal {
 
 interface DeploymentReport {
   summary?: string
-  eval_summary?: {
-    pass_rates?: Record<string, number>
-    failing_scenarios?: number
-  }
+  // The whole shape lives in deploy/evalReadiness.ts, beside the one reader of
+  // it. Declaring the two numeric fields here was how the page came to average
+  // `pass_rates` over nothing and read `failing_scenarios ?? 0` as zero failing
+  // (#175): a type that names two numbers invites two numbers.
+  eval_summary?: EvalSummary
   red_team_summary?: {
     deployment_blocked?: boolean
     critical_count?: number
@@ -486,13 +488,6 @@ type CapabilityEnvelopePatch = Partial<{
 function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return '—'
   return new Date(iso).toISOString().slice(0, 16).replace('T', ' ')
-}
-
-function avgPassRate(rates: Record<string, number> | undefined): number | null {
-  if (!rates) return null
-  const values = Object.values(rates)
-  if (values.length === 0) return null
-  return values.reduce((a, b) => a + b, 0) / values.length
 }
 
 function buildConsequence(run: ChecklistRun | null): string {
@@ -2491,8 +2486,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
   // (mirrors the gatebar pattern in agents/[id]/page.tsx). No page-local
   // toggle ever exists here (must-fix 4). --------------------------------
   const report = latestRun?.status === 'complete' ? latestRun.report : null
-  const evalAvg = avgPassRate(report?.eval_summary?.pass_rates)
-  const failingScenarios = report?.eval_summary?.failing_scenarios ?? 0
+  const evalReadiness = readEvalReadiness(report?.eval_summary)
   const criticalFindings = report?.red_team_summary?.critical_count ?? 0
   const highFindings = report?.red_team_summary?.high_count ?? 0
   const redTeamBlockedSignal = report?.red_team_summary?.deployment_blocked === true
@@ -2763,15 +2757,14 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                         Evals pass rate
                         <span className="why">Ragas-scored scenarios, judged for faithfulness &amp; relevancy</span>
                       </LedgerRowHead>
-                      <td className="val mono">
-                        {evalAvg !== null
-                          ? `${evalAvg.toFixed(2)} avg${failingScenarios > 0 ? ` · ${failingScenarios} failing` : ''}`
-                          : 'not yet run'}
-                      </td>
+                      {/* One reader, `readEvalReadiness`, decides the number,
+                          the sentence and the chip together. Three expressions
+                          over one payload is how the cell came to say "0.00
+                          avg" beside a "Pass" over a run that measured nothing
+                          (#175). */}
+                      <td className="val mono">{evalReadiness.value}</td>
                       <td>
-                        <Chip verdict={evalAvg === null ? 'mute' : failingScenarios > 0 ? 'fail' : 'pass'}>
-                          {evalAvg === null ? 'No data' : failingScenarios > 0 ? 'Fail' : 'Pass'}
-                        </Chip>
+                        <Chip verdict={evalReadiness.verdict}>{evalReadiness.chipLabel}</Chip>
                       </td>
                     </tr>
                     <tr>

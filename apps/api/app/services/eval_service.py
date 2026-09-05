@@ -101,6 +101,7 @@ from app.domain.eval_result import (
     Measurement,
     ScenarioFailure,
     cost_of_run,
+    metrics_of,
     run_level_metrics,
 )
 from app.domain.judge_identity import JUDGE_PROMPT_VERSION, JudgeIdentity
@@ -2610,6 +2611,48 @@ def latest_faithfulness(cur, agent_id: str) -> tuple[float | None, str | None]:
         )
         return (None, None)
     return (reading.value, dataset)
+
+
+def latest_faithfulness_by_dataset(cur, agent_id: str) -> dict[str, float]:
+    """The newest finished run's faithfulness on EACH dataset that measured it.
+
+    `latest_faithfulness` above asks for one run-level number, which a run whose
+    two datasets both scored does not have, and its docstring records the cost:
+    the alert stops firing for exactly the tenants who curated a golden set. This
+    is the same reading without the pooling question. Each half is returned under
+    its own name and the caller compares each to the threshold separately, so a
+    golden regression is visible whether or not the exploratory sample also
+    moved, and no figure is ever an average of the two.
+
+    An empty dict is the honest answer to every absence: no finished run, a run
+    that did not complete, no record, an unreadable record, or a run that scored
+    no faithfulness anywhere. A caller must not read it as "nothing is wrong".
+
+    Args:
+        cur: a live cursor on the PRODUCTION tenant DB.
+        agent_id: the agent whose runs are keyed 'm6:{agent_id}'.
+    """
+    record = latest_run_record(cur, agent_id)
+    if record is None:
+        return {}
+    readings: dict[str, float] = {}
+    for name in EVAL_DATASETS:
+        outcome = record.datasets.get(name)
+        if outcome is None:
+            continue
+        reading = metrics_of(outcome)["faithfulness"]
+        if reading.measured and reading.value is not None:
+            readings[name] = reading.value
+    if not readings:
+        log.info(
+            "eval_service.latest_faithfulness_by_dataset.unmeasured",
+            agent_id=agent_id,
+            run_id=record.run_id,
+            scored_datasets=sorted(
+                name for name, outcome in record.datasets.items() if outcome.scored
+            ),
+        )
+    return readings
 
 
 def read_eval_result(run_id: str, conn_str: str) -> EvalResult | None:
