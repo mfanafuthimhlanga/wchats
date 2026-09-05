@@ -77,17 +77,22 @@ def test_the_handler_logs_the_exception_TYPE_not_only_its_message():
         "error=str(exc) records a blank where the cause should be."
         f"handler:\n{handler}"
     )
-    from app.core import log_bounds
+    # The helper's half is checked by driving it, not by reading it: an
+    # exception whose str() is empty, which is exactly asyncio.TimeoutError's
+    # shape, must still reach the log line with its type and a non-empty message.
+    import asyncio
+    from unittest.mock import MagicMock
 
-    helper = inspect.getsource(log_bounds.log_failure) + inspect.getsource(
-        log_bounds.bounded_error_detail
+    from app.core.log_bounds import log_failure
+
+    logger = MagicMock()
+    log_failure(logger, "probe.event", asyncio.TimeoutError(), level="error")
+    (_event,), fields = logger.error.call_args.args, logger.error.call_args.kwargs
+    assert fields.get("error_type") == "TimeoutError", (
+        f"log_failure no longer records the exception's type name: {fields}"
     )
-    assert "type(exc).__name__" in helper, (
-        "log_failure no longer records the exception's type name"
-    )
-    assert "str(exc) or repr(exc)" in helper, (
-        "the bounded message has no fallback; an exception whose message is "
-        "empty logs nothing at all"
+    assert fields.get("error"), (
+        f"an exception whose message is empty logged nothing for it: {fields}"
     )
     assert "timeout_s=" in handler, (
         "the ceiling that fired is not in the log line, so the reader cannot "

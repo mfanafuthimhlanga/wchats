@@ -34,6 +34,23 @@ from app.services.eval_service import latest_faithfulness_by_dataset
 log = structlog.get_logger(__name__)
 
 
+def _faithfulness_fields(cur, agent_id: str) -> dict:
+    """The digest's three faithfulness fields, read per dataset and never pooled.
+
+    One scoring dataset keeps the flat score and dataset pair the mail has always
+    carried. Two or more leave the pair empty and fill the per dataset map, and
+    the mail names each half. A golden set at 0.42 beside an exploratory sample
+    at 0.88 is two readings, not a 0.65.
+    """
+    by_dataset = latest_faithfulness_by_dataset(cur, agent_id)
+    fields: dict = {"faithfulness_by_dataset": by_dataset}
+    if len(by_dataset) == 1:
+        ((dataset, value),) = by_dataset.items()
+        fields["faithfulness_score"] = value
+        fields["faithfulness_dataset"] = dataset
+    return fields
+
+
 def _collect_digest_stats(agent_id: str, conn_str: str, db) -> dict:
     """Collect 4 digest metrics from the tenant DB (conn_str).
 
@@ -62,18 +79,8 @@ def _collect_digest_stats(agent_id: str, conn_str: str, db) -> dict:
         conn = psycopg2.connect(conn_str, connect_timeout=10)
         try:
             # --- Tenant DB: the latest complete run's own faithfulness ---
-            # Each dataset that scored is read under its own name and never
-            # pooled: a golden set at 0.42 beside an exploratory sample at 0.88
-            # is two readings, not a 0.65. One scoring dataset keeps the flat
-            # pair the mail has always carried; two or more leave the pair
-            # empty and fill the per dataset map, and the mail names each.
             with conn.cursor() as cur:
-                by_dataset = latest_faithfulness_by_dataset(cur, agent_id)
-                stats["faithfulness_by_dataset"] = by_dataset
-                if len(by_dataset) == 1:
-                    (dataset, value), = by_dataset.items()
-                    stats["faithfulness_score"] = value
-                    stats["faithfulness_dataset"] = dataset
+                stats.update(_faithfulness_fields(cur, agent_id))
 
             # --- Tenant DB: critical findings from latest red_team_run ---
             # Filter by kind = 'm7:{agent_id}' — no agent_id column in tenant schema
