@@ -51,6 +51,10 @@ Usage:
     says which inputs the harness has and which it is missing, which is the
     question worth asking before spending a judge call per row.
 
+    A RUN ASKS THAT QUESTION TOO, and refuses when the answer is NOT READY. The
+    difference between the two is what happens after the block prints: --check
+    stops either way, a run continues only from READY.
+
 WHOSE COLUMN human_score IS
     The owner's, and no one else's. Every cell ships empty by design. An
     agent-filled calibration set would silently destroy the only instrument
@@ -76,7 +80,10 @@ Requirements:
       `human_score` (1-5) is optional and feeds the reported Spearman only
     - human_scores_pass2.csv holds the SAME rows labelled a second time, blind.
       Emit it with --emit-second-pass; it is what measures the ceiling
-    - ANTHROPIC_API_KEY set in environment
+    - the judge's environment, which `--check` names one line at a time:
+      OPENAI_API_KEY for the model its route sends to, plus
+      CALIBRATION_TENANT_ID and CALIBRATION_TENANT_DSN for the model_calls
+      rows it writes
 
 WHAT A RUN LEAVES BEHIND (ticket #53)
     `calibration.json`, beside the sheets, holding this run's status, verdict
@@ -228,7 +235,7 @@ MIN_MINORITY_ROWS = 2
 
 # The second floor, and the P4 review is why it exists (MIN_PAIRS alone is not
 # enough). A judge that returns verdict='ERROR' on seven of ten labelled rows —
-# Anthropic 529s, a JSON parse failure, judge.py:170-177's score=0 on any
+# a provider 5xx, a reply cut off at the ceiling, `judge()`'s score=0 on any
 # exception — still leaves three pairs, and if those three happen to rank in
 # agreement the harness reported rho=1.000 and "PASS - judge is calibrated. Safe
 # to trust automated results." over a judge that failed 70% of its calls. The
@@ -237,6 +244,17 @@ MIN_MINORITY_ROWS = 2
 # A correlation over a fifth of the labelled rows is not a measurement of the
 # set the human scored, so it reports NOT CALIBRATED YET rather than a verdict.
 MIN_PAIR_RATE = 0.8
+
+#: The judge's environment, in the order `--check` prints it.
+#:
+#: Spelled here rather than imported, because every app import in this module is
+#: lazy so that `--help` and a typo'd flag stay free of them, and these three
+#: strings are read at CLI print time. `OPENAI_API_KEY` is the Settings field the
+#: judge's key arrives in; the other two are what `tests.evals.judge` reads out of
+#: os.environ, and `test_calibration_harness.py` pins both spellings against that
+#: module's own constants so the two files cannot drift.
+JUDGE_KEY_ENV = "OPENAI_API_KEY"
+JUDGE_LEDGER_ENV = ("CALIBRATION_TENANT_ID", "CALIBRATION_TENANT_DSN")
 
 # ---------------------------------------------------------------------------
 # Exit codes and the statuses they encode
@@ -266,7 +284,8 @@ KNOWN_FLAGS = ("--check", "--emit-second-pass")
 USAGE = (
     "compute_correlation.py - calibrate the LLM judge against human labels",
     "",
-    "  (no arguments)        run the calibration. COSTS one judge call per labelled row.",
+    "  (no arguments)        run the calibration. COSTS one judge call per labelled row,",
+    "                        and refuses before the first one unless readiness says READY.",
     "  --check               report which inputs are present. No judge calls, no network.",
     "  --emit-second-pass    write the blind second-pass sheet, shuffled and empty.",
     "",
@@ -651,9 +670,9 @@ def readiness() -> dict:
 
     Answers the question that is actually blocking: not "is the judge
     calibrated" (it cannot be, yet) but "what is stopping anyone from finding
-    out". Every check here is local — no network, no ANTHROPIC_API_KEY, no
-    judge call — so it is safe to run anywhere, including a machine with none
-    of the runtime services.
+    out". Every check here is local — no network, no judge call, nothing sent
+    anywhere — so it is safe to run on a machine with none of the runtime
+    services. It reads the judge's credentials; it never uses them.
 
     `human_scores_valid` is reported beside `human_scores_attempted` rather than
     as a bare count, and `blocking` never says "the human scores are missing" as
@@ -666,7 +685,12 @@ def readiness() -> dict:
         `ready_to_calibrate` — True only when a judge run could actually produce
         MIN_PAIRS usable pairs.
     """
-    from tests.evals.judge import JUDGE_RUBRICS  # noqa: PLC0415  (avoid import at CLI parse time)
+    # Lazy, so `--help` and a typo'd flag cost no app import (avoid import at CLI parse time).
+    from app.core.model_client import (  # noqa: PLC0415
+        OPENAI_PROVIDER,
+        resolve_credentials,
+    )
+    from tests.evals.judge import JUDGE_RUBRICS  # noqa: PLC0415
 
     scenario_files = sorted(SCENARIOS_DIR.glob("S-*.json"))
     scenario_ids = {p.name.split("_")[0] for p in scenario_files}
@@ -743,11 +767,24 @@ def readiness() -> dict:
     minority = min(passes, fails)
     balance_is_workable = minority >= MIN_MINORITY_ROWS
 
-    # `--check` is documented as saying which inputs are missing, and the run
-    # needs this one. It is read from os.environ, not from .env: the settings
-    # loader and the Anthropic client read different places, which has cost four
-    # debugging cycles in this repo (CLAUDE.md, 1.28).
-    api_key_exported = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    # `--check` is documented as saying which inputs are missing, and a run needs
+    # all three of these. #154 moved the judge onto `app.core.model_client`, so
+    # the names moved with it: it reaches OpenAI through PURPOSE_ROUTES and bills
+    # its rows to a tenant the operator names.
+    #
+    # TWO PLACES, AND THE SPLIT IS REAL. The KEY is read through
+    # `resolve_credentials`, which takes it from Settings, and pydantic fills
+    # Settings from `.env` — so an unexported key still authenticates. That is
+    # the INVERSE of what this line said for eight days. It read os.environ
+    # because the Agent SDK's client read os.environ while pydantic read `.env`,
+    # a gap that cost four debugging cycles (CLAUDE.md, 1.28), and #49 removed
+    # that SDK. The two LEDGER variables are read straight from os.environ by
+    # `tests.evals.judge.calibration_ledger`, so for those `.env` is not enough.
+    judge_key_present = bool(resolve_credentials(OPENAI_PROVIDER).api_key)
+    judge_ledger_env_missing = [
+        name for name in JUDGE_LEDGER_ENV if not os.environ.get(name, "").strip()
+    ]
+    judge_can_run = judge_key_present and not judge_ledger_env_missing
 
     return {
         "scenarios_present": len(scenario_files),
@@ -767,7 +804,9 @@ def readiness() -> dict:
         "label_fail_rows": fails,
         "minority_label_rows": minority,
         "balance_is_workable": balance_is_workable,
-        "api_key_exported": api_key_exported,
+        "judge_key_present": judge_key_present,
+        "judge_ledger_env_missing": judge_ledger_env_missing,
+        "judge_can_run": judge_can_run,
         "deflected_responses": deflected,
         "scorable_rows": scorable_rows,
         "human_scores_attempted": parsed["attempted"],
@@ -784,7 +823,7 @@ def readiness() -> dict:
         # locally, so none of them should be discovered after the money is spent.
         "ready_to_calibrate": (
             not blocking and not awaiting_owner and balance_is_workable
-            and api_key_exported
+            and judge_can_run
         ),
     }
 
@@ -815,11 +854,17 @@ def print_readiness(report: dict) -> int:
            f"   NOT ENOUGH: {MIN_MINORITY_ROWS} rows must carry each label")
     )
     print(
-        "  ANTHROPIC_API_KEY          : "
-        + ("exported" if report["api_key_exported"] else
-           "NOT in os.environ. Present in .env is not enough: the settings "
-           "loader and the Anthropic client read different places (1.28)")
+        f"  {JUDGE_KEY_ENV:<26} : "
+        + ("set" if report["judge_key_present"] else
+           "NOT set. Settings reads it from .env, so it needs no export - but "
+           "it does need a value, and the judge routes to OpenAI since #154")
     )
+    for name in JUDGE_LEDGER_ENV:
+        print(
+            f"  {name:<26} : "
+            + ("exported" if name not in report["judge_ledger_env_missing"] else
+               "NOT in os.environ (.env is not enough - judge.py reads it there)")
+        )
 
     # Every row either sheet could not read, by name and with its reason.
     # These were computed and thrown away, so a sheet whose verdicts read
@@ -1539,48 +1584,18 @@ def write_calibration_artifact(result: dict, path: pathlib.Path) -> pathlib.Path
     return path
 
 
-def main(argv: list[str] | None = None) -> int:
-    """CLI entry point. Returns the exit code rather than calling sys.exit."""
-    args = sys.argv[1:] if argv is None else argv
+def print_run_report(result: dict) -> int:
+    """Render a finished run and return the exit code its status implies.
 
-    # A run costs one judge call per labelled row. `--help`, `-h` and every typo
-    # of `--check` used to fall straight through to that, spend the money, and
-    # exit 1 - which a shell reads as "the judge is not calibrated". Unknown
-    # arguments now refuse before anything is imported or billed.
-    unknown = [a for a in args if a not in KNOWN_FLAGS]
-    if unknown or "--help" in args or "-h" in args:
-        for line in USAGE:
-            print(line)
-        return EXIT_SETUP_ERROR if unknown else EXIT_READY_TO_CALIBRATE
+    Split out of `main` when F2 put `readiness()` in front of the loop. A tree
+    readiness refuses no longer reaches this through `main`, and what a report
+    says over a run that DID happen is a behaviour of its own (the "never
+    measured" wording, the three verdict lines, a headline that must not invent
+    a cause), so it needs a seam a test can drive without an environment.
 
-    if "--emit-second-pass" in args:
-        code, messages = emit_second_pass()
-        for message in messages:
-            print(message)
-        return code
-
-    if "--check" in args:
-        return print_readiness(readiness())
-
-    from tests.evals.judge import judge  # noqa: PLC0415
-
-    try:
-        result = compute_correlation(judge)
-    except Exception as exc:
-        write_harness_raised(CALIBRATION_ARTIFACT_JSON, exc)
-        raise
-
-    # Before the report, so a run that dies formatting its own output still
-    # leaves the record. An OSError here is a disk problem rather than a judge
-    # problem, and it may not cost the operator the report they paid for.
-    try:
-        write_calibration_artifact(result, CALIBRATION_ARTIFACT_JSON)
-    except OSError as exc:
-        print(f"Could not write {CALIBRATION_ARTIFACT_JSON.name}: {exc}\n")
-    except Exception as exc:
-        write_harness_raised(CALIBRATION_ARTIFACT_JSON, exc)
-        raise
-
+    Args:
+        result: what `compute_correlation` returned.
+    """
     print(
         f"Calibration run - {result['valid']} scored / {result['attempted']} rows present\n"
     )
@@ -1681,6 +1696,64 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     return EXIT_CODE_FOR_STATUS[status]
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point. Returns the exit code rather than calling sys.exit."""
+    args = sys.argv[1:] if argv is None else argv
+
+    # A run costs one judge call per labelled row. `--help`, `-h` and every typo
+    # of `--check` used to fall straight through to that, spend the money, and
+    # exit 1 - which a shell reads as "the judge is not calibrated". Unknown
+    # arguments now refuse before anything is imported or billed.
+    unknown = [a for a in args if a not in KNOWN_FLAGS]
+    if unknown or "--help" in args or "-h" in args:
+        for line in USAGE:
+            print(line)
+        return EXIT_SETUP_ERROR if unknown else EXIT_READY_TO_CALIBRATE
+
+    if "--emit-second-pass" in args:
+        code, messages = emit_second_pass()
+        for message in messages:
+            print(message)
+        return code
+
+    # F2, adversarial review 2026-09-03. `readiness()` ran under `--check` and
+    # nowhere else, so a shell missing one of the two ledger variables reached the
+    # loop, asked the judge once per labelled row, turned every answer into an
+    # ERROR verdict off the `calibration_ledger()` ValueError, and reported NOT
+    # CALIBRATED YET about a judge that had never been asked anything. Every input
+    # readiness reads is on this disk or in this environment, so the run answers
+    # the free question first and the operator reads the same block either way.
+    report = readiness()
+    readiness_code = print_readiness(report)
+    if "--check" in args or not report["ready_to_calibrate"]:
+        return readiness_code
+
+    from tests.evals.judge import close_judge_clients, judge  # noqa: PLC0415
+
+    try:
+        result = compute_correlation(judge)
+    except Exception as exc:
+        write_harness_raised(CALIBRATION_ARTIFACT_JSON, exc)
+        raise
+    finally:
+        # F10. The run's verdicts share one HTTP client, and a run that
+        # raised is the case where nothing else would ever close its pool.
+        close_judge_clients()
+
+    # Before the report, so a run that dies formatting its own output still
+    # leaves the record. An OSError here is a disk problem rather than a judge
+    # problem, and it may not cost the operator the report they paid for.
+    try:
+        write_calibration_artifact(result, CALIBRATION_ARTIFACT_JSON)
+    except OSError as exc:
+        print(f"Could not write {CALIBRATION_ARTIFACT_JSON.name}: {exc}\n")
+    except Exception as exc:
+        write_harness_raised(CALIBRATION_ARTIFACT_JSON, exc)
+        raise
+
+    return print_run_report(result)
 
 
 if __name__ == "__main__":

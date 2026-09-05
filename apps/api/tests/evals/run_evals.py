@@ -8,9 +8,12 @@ Modes:
         Runs D5 (citation regex), D6 (tool call correctness), D7 (widget bundle size).
         Skips gracefully if responses/ or widget dist/ do not yet exist.
 
-    Full E2E (requires AGENT_E2E_ENABLED=1 + ANTHROPIC_API_KEY):
+    Full E2E (requires AGENT_E2E_ENABLED=1 + the judge's credentials):
         AGENT_E2E_ENABLED=1 pytest tests/evals/run_evals.py -v
-        Adds D1/D2/D3/D4/D8 via LLM judge (claude-sonnet-4-5-20251001).
+        Adds D1/D2/D3/D4/D8 via the LLM judge, which since #154 builds its client
+        through `app.core.model_client` and takes its model from the
+        `calibration_judge` route. It needs OPENAI_API_KEY plus the two
+        variables `tests/evals/judge.py` names for the ledger it bills.
 
 CLI entry point:
     python apps/api/tests/evals/run_evals.py
@@ -382,7 +385,7 @@ def collect_deterministic(scenarios: list[dict]) -> dict:
 
 
 def test_deterministic_dimensions_d5_d6_d7():
-    """Deterministic eval checks — runs without ANTHROPIC_API_KEY.
+    """Deterministic eval checks — runs without reaching any model.
 
     D5: Citation format regex against recorded response stubs.
     D6: Tool call correctness assertions against recorded response stubs.
@@ -441,10 +444,10 @@ def test_deterministic_dimensions_d5_d6_d7():
 
 @pytest.mark.skipif(
     not os.getenv("AGENT_E2E_ENABLED"),
-    reason="Set AGENT_E2E_ENABLED=1 to run LLM-judged evals (requires ANTHROPIC_API_KEY)",
+    reason="Set AGENT_E2E_ENABLED=1 to run LLM-judged evals (they spend on the judge route)",
 )
 def test_llm_judged_dimensions_d1_d2_d3_d4_d8():
-    """LLM-judged eval dimensions — requires AGENT_E2E_ENABLED=1 and ANTHROPIC_API_KEY.
+    """LLM-judged eval dimensions — requires AGENT_E2E_ENABLED=1 and the judge's credentials.
 
     D1: Grounding fidelity
     D2: Escalation accuracy

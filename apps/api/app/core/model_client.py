@@ -437,6 +437,27 @@ PURPOSE_ROUTES: Mapping[str, ModelRoute] = MappingProxyType({
     "strategist": _LUNA,
     "gatekeeper": _LUNA,
     "auditor": _LUNA,
+    # Added by ticket #154. The judge the calibration harness correlates against
+    # the owner's labels (#58) built its own Anthropic client under `tests/`, so
+    # it left no row and #153 did not reach it.
+    #
+    # `_LUNA` AND NOT `_JUDGE`, and #154 chose the raw path rather than being
+    # forced onto it. `_check_raw_purpose` does refuse an effort-bearing route on
+    # the raw client `tests/evals/judge.py` builds (OBSERVED 2026-09-03:
+    # `make_client("judge_faithfulness", ...)` raises `EffortNeedsInstructor`),
+    # yet this repo keeps an effort on the wire two other ways: through
+    # `make_instructor_client`, which stores the route's effort as a default that
+    # a `response_model=None` call still carries while returning a raw
+    # completion, and through `agent_loop._request_kwargs`, which writes
+    # `route.reasoning_effort` onto every body it builds. The choice costs a
+    # measurement, because the five production judges run at effort `none` (the
+    # figure decision #34 priced) while this one runs at Luna's provider default,
+    # so a calibration run measures a judge at a different effort from the judges
+    # it calibrates and its per-verdict cost for #60 is a number nobody chose.
+    # Routing this purpose at `_JUDGE` and building the judge through
+    # `LedgerContext.instructor_client` is the alternative, once #58 decides which
+    # judge the calibration is of.
+    "calibration_judge": _LUNA,
 })
 
 
