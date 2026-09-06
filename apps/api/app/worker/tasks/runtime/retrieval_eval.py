@@ -440,7 +440,9 @@ def _build_instructor_llm(purpose: str, ledger: LedgerContext):
     `eval_service` uses, so the nightly judge and the sampled live-turn judge are
     one Judge: same client, same route, same temperature, same
     `max_completion_tokens` rename (#198). The import stays inside the function
-    because ragas is a LAZY import in this task (see the module docstring).
+    so importing this module alone stays cheap (see the module docstring); at a
+    real worker boot the eval and deployment tasks import ragas at module level
+    anyway, so this buys nothing there.
 
     Args:
         purpose: the routing-table key this judge call bills under. Passed in

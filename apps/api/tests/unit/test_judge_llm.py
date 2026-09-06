@@ -35,19 +35,23 @@ def _tool_call_body() -> dict:
         "object": "chat.completion",
         "created": 1,
         "model": "gpt-5.6-luna",
-        "choices": [{
-            "index": 0,
-            "finish_reason": "tool_calls",
-            "message": {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [{
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {"name": "_Verdict", "arguments": json.dumps({"score": 1})},
-                }],
-            },
-        }],
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "_Verdict", "arguments": json.dumps({"score": 1})},
+                        }
+                    ],
+                },
+            }
+        ],
         "usage": {"prompt_tokens": 100, "completion_tokens": 20},
     }
 
@@ -66,7 +70,8 @@ def _judge_through(sent: dict, monkeypatch: pytest.MonkeyPatch, purpose: str = "
             super().__init__(transport=transport, **kwargs)
 
     monkeypatch.setattr(httpx, "AsyncClient", _Pinned)
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    # The api key comes from cached Settings, not the environment, and it never
+    # leaves the process: every request lands in the MockTransport above.
     return build_judge_llm(purpose, LedgerContext(tenant_id=TENANT, recorder=lambda call: None))
 
 
