@@ -90,7 +90,6 @@ from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.log_bounds import log_failure
 from app.core.model_client import (
-    OPENAI_PROVIDER,
     LedgerContext,
     ledger_recorder,
     route_for,
@@ -437,19 +436,13 @@ def _citation_coverage(citations: list, measured_calls: int) -> float | None:
 def _build_instructor_llm(purpose: str, ledger: LedgerContext):
     """The InstructorLLM this task's Faithfulness metric scores through.
 
-    The client is async. Collections metrics await `llm.agenerate(...)`
-    exclusively, and `InstructorLLM.agenerate` raises
-    TypeError("Cannot use agenerate() with a synchronous client") for any client
-    whose `chat.completions.create` is not a coroutine function
-    (`ragas/llms/base.py`, `_check_client_async`). It carries the ledger hook, so
-    a sampled live turn's judge call is counted like every other call.
-
-    `thinking={"type": "disabled"}` is gone with the provider that needed it. It
-    cleared a DeepSeek 400 on the forced tool_choice instructor puts on every
-    structured call; OpenAI has no such parameter, and ragas splats every extra
-    kwarg straight into `client.chat.completions.create()`
-    (`ragas/llms/base.py:1109`), so leaving it in would put an unknown field on
-    the wire.
+    Built by `app.services.judge_llm.build_judge_llm`, the same builder
+    `eval_service` uses, so the nightly judge and the sampled live-turn judge are
+    one Judge: same client, same route, same temperature, same
+    `max_completion_tokens` rename (#198). The import stays inside the function
+    so importing this module alone stays cheap (see the module docstring); at a
+    real worker boot the eval and deployment tasks import ragas at module level
+    anyway, so this buys nothing there.
 
     Args:
         purpose: the routing-table key this judge call bills under. Passed in
@@ -457,28 +450,9 @@ def _build_instructor_llm(purpose: str, ledger: LedgerContext):
             same shape as eval_service's and one test drives both.
         ledger: the ids this judge call is billed to and where its row goes.
     """
-    from ragas.llms import InstructorLLM
+    from app.services.judge_llm import build_judge_llm  # noqa: PLC0415
 
-    return InstructorLLM(
-        client=ledger.instructor_client(purpose, is_async=True),
-        model=route_for(purpose).model,
-        provider=OPENAI_PROVIDER,
-        # BACKLOG 8.2a. The **kwargs seam: merged into `model_args`
-        # (ragas/llms/base.py:772) and splatted into the client call by agenerate
-        # (:1109). Ragas metrics ARE judges, so they get the same temperature as
-        # every other verdict in the system.
-        #
-        # CORRECTED 2026-08-18 by adversarial review: this site was NOT sampling
-        # at the provider default before 8.2a. ragas 0.4.3's InstructorModelArgs
-        # defaults to `temperature=0.01, top_p=0.1` whenever `model_args is None`,
-        # which is how this is constructed, and 0.01 was measured on the wire. So
-        # the change here is 0.01 -> 0, not "unset -> 0".
-        #
-        # STILL OPEN and deliberately not changed here: ragas also sends
-        # `top_p: 0.1` alongside, and setting temperature and top_p together is
-        # against both providers' guidance. BACKLOG 8.10.
-        temperature=0,
-    )
+    return build_judge_llm(purpose, ledger)
 
 
 def _build_faithfulness_metrics(llm) -> list:

@@ -93,7 +93,7 @@ from app.core.log_bounds import log_failure
 # would be a third thing to keep in step, and a reader that disagreed with the
 # writer would build ModelCall rows with the fields shuffled.
 from app.core.model_client import _COLUMNS as LEDGER_COLUMNS
-from app.core.model_client import OPENAI_PROVIDER, LedgerContext, route_for
+from app.core.model_client import LedgerContext, route_for
 from app.domain.eval_result import (
     DatasetOutcome,
     EvalResult,
@@ -109,6 +109,7 @@ from app.domain.judge_identity import JUDGE_PROMPT_VERSION, JudgeIdentity
 from app.domain.judge_record import JudgeRecord, scenario_verdict
 from app.domain.model_call import ModelCall
 from app.services.embedding_service import EMBEDDING_MODEL, _get_vo
+from app.services.judge_llm import build_judge_llm
 
 log = structlog.get_logger(__name__)
 
@@ -1309,56 +1310,12 @@ class _VoyageRagasEmbedding(BaseRagasEmbedding):
 def _build_instructor_llm(purpose: str, ledger: LedgerContext) -> InstructorLLM:
     """The InstructorLLM one metric scores through, billed under its own purpose.
 
-    The client is async. Collections metrics await `llm.agenerate(...)`
-    exclusively, and `InstructorLLM.agenerate` raises
-    TypeError("Cannot use agenerate() with a synchronous client") for any client
-    whose `chat.completions.create` is not a coroutine function
-    (`ragas/llms/base.py`, `_check_client_async`). `make_async_client` is the
-    factory's answer to that, and it carries the same ledger hook as every other
-    client here, so a Ragas run lands rows without Ragas knowing this exists.
-
-    `thinking={"type": "disabled"}` is gone with the provider that needed it.
-    It cleared a DeepSeek 400 on a forced tool_choice; OpenAI has no such
-    parameter, and ragas splats every extra kwarg straight into
-    `client.chat.completions.create()` (`ragas/llms/base.py:1109`), so leaving it
-    in would put an unknown field on the wire.
-
-    `provider="openai"` reaches `_map_openai_params`, which forces
-    `temperature=1.0` and drops `top_p` for a model it reads as a reasoning
-    model. Observed 2026-08-25 against ragas 0.4.3: `gpt-5.6-luna` is NOT one.
-    `is_reasoning_model` parses the version out of `gpt-<version>-...` with
-    `int()`, and `int("5.6")` raises, so the branch is never taken and
-    `temperature=0` reaches the wire as written. The reasoning effort the Judge
-    floor was priced at rides the instructor client's defaults instead, which is
-    where `make_instructor_client` puts it.
-
-    Args:
-        purpose: the routing-table key this metric's calls bill under.
-        ledger:  the ids each row carries and where it is written.
+    Built by `app.services.judge_llm.build_judge_llm`, the one home for the
+    judge's client, route, temperature and the `max_completion_tokens` rename
+    the provider requires (#198). This name stays because the eval task and its
+    tests reach the builder through this module.
     """
-    return InstructorLLM(
-        client=ledger.instructor_client(purpose, is_async=True),
-        model=route_for(purpose).model,
-        provider=OPENAI_PROVIDER,
-        # BACKLOG 8.2a. Same **kwargs seam: merged into `model_args`
-        # (ragas/llms/base.py:772) and splatted into the client call by agenerate
-        # (:1109). Ragas metrics ARE judges, so they get the same temperature as
-        # every other verdict in the system.
-        #
-        # CORRECTED 2026-08-18 by adversarial review: this site was NOT sampling
-        # at the provider default before 8.2a. ragas 0.4.3's InstructorModelArgs
-        # defaults to `temperature=0.01, top_p=0.1` whenever `model_args is None`,
-        # which is how this is constructed, and 0.01 was measured on the wire. So
-        # the change here is 0.01 -> 0, not "unset -> 0", and the 8.2a commit's
-        # "every LLM call sampled at whatever the provider defaults to" was false
-        # for 2 of the 9 sites.
-        #
-        # STILL OPEN and deliberately not changed here: ragas also sends
-        # `top_p: 0.1` alongside, and setting temperature and top_p together is
-        # against both providers' guidance. Changing it changes eval behaviour
-        # and wants its own measurement. BACKLOG 8.10.
-        temperature=0,
-    )
+    return build_judge_llm(purpose, ledger)
 
 
 def _build_ragas_metrics(ledger: LedgerContext, embeddings) -> list:
