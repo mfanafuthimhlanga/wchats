@@ -17,10 +17,10 @@ The calls share a rate, so overlapping them queues more and scores no faster.
 Splitting the four judge purposes across four OpenAI projects, one key each (#218, ADR
 0009 option A), changed the total by two percent, and upward. The worker confirmed
 `judge_keys=4` at the start of run `ec85275a` and logged nine SDK retries over the 45
-minutes, about the count on one key. The projects share the wall. Each of the three new
-projects sits at OpenAI's default usage tier for a fresh project, so the next thing to read
-is the tier on each project's Limits page. Until a project shows a higher tier than the
-original, option A is measured and has not paid.
+minutes, about the count on one key. The projects share the wall. Nobody has read the
+usage tier on any of the four projects' Limits pages, and a fresh project can start at a
+lower tier than an established one, so that page is the next thing to read. Until a
+project shows a higher tier than the original, option A is measured and has not paid.
 
 What this decides:
 
