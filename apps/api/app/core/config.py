@@ -351,10 +351,20 @@ class Settings(BaseSettings):
     # wait; it never decides what the report may claim.
     CHECKLIST_WAIT_CEILING_S: int = 2700
 
+    # The wait scales with the eval's size (#213): the ceiling a checklist opens
+    # with is the larger of CHECKLIST_WAIT_CEILING_S and this many seconds per
+    # eval scenario. OBSERVED 2026-09-07 on staging: 31 scenarios scored in 2693 s
+    # at four in flight and 2676 s at eight, after four minutes of answering, so
+    # the rate is about 87 s per scenario whatever the concurrency and the
+    # constant ceiling expired at 2710 s with the eval seconds from done. 100 s a
+    # scenario leaves that run a margin; the constant stays as the floor for a
+    # small golden set.
+    CHECKLIST_WAIT_PER_SCENARIO_S: int = 100
+
     # Samples an eval scores at once. OBSERVED 2026-09-06 (#205): one at a time,
-    # 31 scenarios by four metrics did not finish inside the ceiling above. Four
-    # in flight is inside the provider's rate limits at this volume and costs the
-    # 1 GB worker nothing it notices; the metrics within a sample stay sequential.
+    # 31 scenarios by four metrics did not finish inside the ceiling above. Then
+    # OBSERVED 2026-09-07 (#213): eight in flight scored no faster than four, so
+    # the judge path is rate-bound and this number buys nothing above 4.
     EVAL_SCORING_CONCURRENCY: int = 4
 
     # The countdown between one poll of the tenant DB and the next. Each poll

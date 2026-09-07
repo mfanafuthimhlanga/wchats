@@ -93,6 +93,7 @@ from app.services.deployment_service import (
     _fetch_eval_summary_sync,
     _fetch_red_team_summary_sync,
     _fetch_verified_qa_stats_sync,
+    _scenario_count,
     apply_signal_evidence_gate,
     derive_blast_radius_warnings,
     derive_quality_warnings,
@@ -231,9 +232,30 @@ def _continue_wait(agent_id: str, wait_state: object) -> dict | None:
         return None
 
 
-def _wait_continues(pending: list, waited_s: float) -> bool:
+def checklist_wait_ceiling_s(scenario_count: int) -> int:
+    """How long this checklist will wait: the floor, or the eval's own size (#213).
+
+    31 scenarios scored in about 2680 s on staging at four and at eight in
+    flight, so the judge path is rate-bound and the wait has to grow with the
+    scenario count rather than with anything the worker can do. The constant
+    stays as the floor so a small golden set is not waited on for longer than
+    before.
+    """
+    return max(
+        settings.CHECKLIST_WAIT_CEILING_S,
+        max(0, scenario_count) * settings.CHECKLIST_WAIT_PER_SCENARIO_S,
+    )
+
+
+def _ceiling_of(state: dict) -> float:
+    """The ceiling the wait opened with. A state written before #213 carries
+    none and gets the floor, which is the shorter of the two: fail closed."""
+    return state.get("ceiling_s", settings.CHECKLIST_WAIT_CEILING_S)
+
+
+def _wait_continues(pending: list, waited_s: float, ceiling_s: float) -> bool:
     """Still under the ceiling with a half outstanding."""
-    return bool(pending) and waited_s < settings.CHECKLIST_WAIT_CEILING_S
+    return bool(pending) and waited_s < ceiling_s
 
 
 def _hand_off(
@@ -323,7 +345,7 @@ def _log_wait_outcome(agent_id: str, state: dict, waited_s: float) -> None:
             agent_id=agent_id,
             timed_out=timed_out,
             waited_s=round(waited_s, 1),
-            ceiling_s=settings.CHECKLIST_WAIT_CEILING_S,
+            ceiling_s=_ceiling_of(state),
             detail="each named job reads as an absent measurement and blocks",
         )
     if not absent:
@@ -356,8 +378,7 @@ def _require_wait_state(wait_state: object) -> dict:
     A missing key is refused rather than defaulted. Defaulting `since` would
     move the boundary the wait reads runs against, and defaulting `statuses`
     would forget every terminal status already observed and start the wait
-    again, so both would resolve into a report about the wrong runs. The
-    checklist is a deploy gate, so an unreadable continuation stops.
+    again, so both would report on the wrong runs. A deploy gate stops instead.
     """
     if not isinstance(wait_state, dict):
         raise TypeError(
@@ -409,7 +430,24 @@ def _require_wait_state(wait_state: object) -> dict:
             "and the fence that stops a forked chain compares it against a "
             "non-negative integer column."
         )
+    _require_ceiling(wait_state.get("ceiling_s"))
     return dict(wait_state)
+
+
+def _require_ceiling(ceiling_s: object) -> None:
+    """A carried ceiling is a positive number or absent; anything else is refused.
+
+    Absent is a state written before #213 and reads as the floor. A bool is
+    refused by name because it is an int to `isinstance`, and True would wait
+    one second.
+    """
+    if ceiling_s is None:
+        return
+    if isinstance(ceiling_s, bool) or not isinstance(ceiling_s, (int, float)) or ceiling_s <= 0:
+        raise ValueError(
+            f"run_deployment_checklist was continued with ceiling_s={ceiling_s!r}, "
+            "which is not a wait this build opened."
+        )
 
 
 def _open_wait(run_id: str, agent_id: str, conn_str: str) -> dict:
@@ -453,6 +491,10 @@ def _open_wait(run_id: str, agent_id: str, conn_str: str) -> dict:
         # Zero passes taken, which is what the freshly inserted row's own column
         # says too (#124). The first pass claims pass 0 and hands pass 1 on.
         "pass_no": 0,
+        # Sized once, when the wait opens, from the eval this checklist is about
+        # to start (#213). Carried so every continuation waits against the same
+        # number and a setting changed mid-wait cannot move it.
+        "ceiling_s": checklist_wait_ceiling_s(_scenario_count(conn_str)),
     }
 
 
@@ -1566,7 +1608,7 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
     run_id = state["run_id"]
     waited_s = _waited_s(state)
     pending = _pending(state)
-    if _wait_continues(pending, waited_s):
+    if _wait_continues(pending, waited_s, _ceiling_of(state)):
         return _hand_off(agent_id, run_id, state, pending, waited_s)
 
     _log_wait_outcome(agent_id, state, waited_s)

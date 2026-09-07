@@ -1633,6 +1633,8 @@ def _drive_sequenced(
             "_dispatch_moment",
             return_value=datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
         ),
+        # No scenarios, so the wait opens at the floor, which is `ceiling_s`.
+        _target("_scenario_count", return_value=0),
         _target("_dispatch_eval_run", new=dispatch_eval),
         _target("_dispatch_red_team_run", new=dispatch_red_team),
         _target("_requeue_wait", new=_capture_requeue),

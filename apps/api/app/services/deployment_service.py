@@ -989,6 +989,27 @@ _RED_TEAM_RUN_SINCE_SQL = (
 )
 
 
+def _scenario_count(conn_str: str) -> int:
+    """How many eval scenarios the tenant holds, which sizes the checklist's wait.
+
+    Best effort, and the failure direction is the short one: a count that could
+    not be read is 0, so the wait falls back to the constant floor rather than
+    stretching on a number nobody measured.
+    """
+    try:
+        conn = psycopg2.connect(conn_str, connect_timeout=10)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM eval_scenarios")
+                row = cur.fetchone()
+        finally:
+            conn.close()
+        return int(row[0]) if row else 0
+    except Exception as exc:
+        log_failure(log, "deployment_service.scenario_count_unavailable", exc)
+        return 0
+
+
 def _dispatch_moment(conn_str: str) -> datetime:
     """The tenant DB's own clock, read at the moment the checklist dispatches.
 
