@@ -2146,7 +2146,7 @@ _READ_EVAL_RUN_RESULT_SQL = """
 #: third copy would be a third thing to keep in step.
 _SELECT_RUN_LEDGER_SQL = (
     "SELECT " + ", ".join(LEDGER_COLUMNS)
-    + " FROM model_calls WHERE job_id = %(id)s::uuid"
+    + " FROM model_calls WHERE job_id = %(id)s"
 )
 
 #: The counters `summarise_agent_invocation` reports that `Invocation` holds,
