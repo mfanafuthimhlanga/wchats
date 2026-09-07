@@ -196,6 +196,66 @@ class TestRunRedTeamProgrammeWrites:
         assert len(run_updates) == 1, "The existing run-row status UPDATE must still occur"
         assert "SET status = 'complete'" in run_updates[0]
 
+    def test_the_victim_context_is_bound_to_the_run_id_so_its_turns_reach_the_ledger(self):
+        """#200: bound with job_id="", every Agent turn the red team drove was
+        refused by ModelCall (a non-empty string or None) and dropped from
+        model_calls, 64 times on one staging run. The run id is the job."""
+        from app.worker.tasks.runtime.red_team import run_red_team
+
+        agent_id = str(uuid.uuid4())
+        mock_agent = MagicMock()
+        mock_agent.neon_connection_string = b"encrypted_conn"
+        mock_agent.neon_project_id = "proj_789"
+        mock_agent.name = "Ledger Test Agent"
+        mock_agent.soul_voice = None
+        mock_agent.soul_role = None
+        mock_agent.soul_do_list = None
+        mock_agent.soul_donot_list = None
+        mock_agent.id = agent_id
+        mock_agent.tenant_id = str(uuid.uuid4())
+        mock_agent.retrieval_strategy = {}
+        mock_db = MagicMock()
+        mock_db.get.return_value = mock_agent
+        mock_check_conn, _ = _make_psycopg2_conn(fetchone_value=None)
+        mock_insert_conn, _ = _make_psycopg2_conn(fetchone_value=None)
+        mock_agents_conn, _ = _make_psycopg2_conn(fetchone_value=None)
+        bind = MagicMock(return_value=MagicMock())
+
+        with patch(
+            "app.worker.tasks.runtime.red_team.get_sync_db", _make_sync_db_ctx(mock_db)
+        ), patch(
+            "app.worker.tasks.runtime.red_team.fernet_decrypt",
+            return_value="postgresql://test:test@localhost/tenant",
+        ), patch(
+            "app.worker.tasks.runtime.red_team.psycopg2.connect",
+            side_effect=[mock_check_conn, mock_insert_conn, mock_agents_conn],
+        ), patch(
+            "app.worker.tasks.runtime.red_team.run_conversation_injection_agent", return_value=[]
+        ), patch(
+            "app.worker.tasks.runtime.red_team.run_content_injection_agent", return_value=[]
+        ), patch(
+            "app.worker.tasks.runtime.red_team.run_data_leakage_agent", return_value=[]
+        ), patch(
+            "app.worker.tasks.runtime.red_team.run_hallucination_agent", return_value=[]
+        ), patch(
+            "app.worker.tasks.runtime.red_team.run_confused_deputy_agent", return_value=[]
+        ), patch(
+            "app.worker.tasks.runtime.red_team.run_value_bound_evasion_agent", return_value=[]
+        ), patch(
+            "app.worker.tasks.runtime.red_team.run_identity_bypass_agent", return_value=[]
+        ), patch(
+            "app.worker.tasks.runtime.red_team.bind_tool_context", bind
+        ), patch(
+            "app.worker.tasks.runtime.red_team._build_transactional_probe_fn",
+            return_value=MagicMock(),
+        ):
+            result = run_red_team.run(agent_id=agent_id)
+
+        assert bind.call_count == 1, "the victim context was never bound, so this proves nothing"
+        bound_job_id = bind.call_args.kwargs["job_id"]
+        assert bound_job_id == result["run_id"]
+        uuid.UUID(bound_job_id)
+
     def test_no_findings_skips_strategy_and_probe_writes_but_run_row_still_updates(self):
         """Zero findings -> no strategy/probe writes, but the run-row UPDATE still fires."""
         from app.worker.tasks.runtime.red_team import run_red_team
