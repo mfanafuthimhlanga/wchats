@@ -61,6 +61,7 @@ import asyncio
 import dataclasses
 import hashlib
 import json
+import time
 import uuid
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
@@ -140,6 +141,9 @@ JUDGE_PURPOSES = (
 # AnswerRelevancy sees no contexts at all, ContextPrecision/ContextRecall score
 # against `reference` rather than `response` — and passing the wrong set raises
 # TypeError, so the mapping is data rather than four hand-written call sites.
+#: How many scored samples between two `run_ragas_eval.progress` lines.
+_SCORING_PROGRESS_EVERY = 5
+
 _METRIC_ASCORE_ARGS: Mapping[str, tuple[str, ...]] = MappingProxyType({
     "faithfulness": ("user_input", "response", "retrieved_contexts"),
     "answer_relevancy": ("user_input", "response"),
@@ -1338,35 +1342,65 @@ def _build_ragas_metrics(ledger: LedgerContext, embeddings) -> list:
     ]
 
 
-async def _score_samples(metrics: list, samples: list) -> list[dict]:
+async def _score_samples(
+    metrics: list, samples: list, concurrency: int | None = None
+) -> list[dict]:
     """Score every validated sample against every metric, one row per sample.
 
     A metric that raises for one sample yields None for that cell and nothing
     else: a failed measurement is `unknown`, never a zero, and never a reason to
     lose the three metrics that did return. The row carries user_input and
     reference because attribute_returned_rows matches on that pair.
+
+    SAMPLES RUN CONCURRENTLY UNDER A BOUND; the metrics within a sample run in
+    sequence. OBSERVED 2026-09-06 on staging (run 978689db, agent ee8087ed): one
+    awaited call at a time over 31 scenarios and four metrics logged nothing
+    between `run_ragas_eval.start` and the checklist's 45 minute ceiling, and the
+    eval did not finish (#205). One Faithfulness score is 5 to 7 s from this box
+    at effort none, and the other three metrics each make their own calls.
+    `settings.EVAL_SCORING_CONCURRENCY` samples in flight keeps the whole run
+    inside the ceiling and inside the provider's rate limits at this volume.
+    Rows come back in sample order whatever order the calls finish in.
+
+    A progress line every `_SCORING_PROGRESS_EVERY` samples carries the count and
+    the elapsed seconds, so a slow run and a stuck one no longer look the same.
     """
-    rows: list[dict] = []
-    for sample in samples:
-        row: dict = {
-            "user_input": sample.user_input,
-            "reference": sample.reference,
-        }
-        for metric in metrics:
-            kwargs = {
-                name: getattr(sample, name)
-                for name in _METRIC_ASCORE_ARGS[metric.name]
+    bound = concurrency if concurrency is not None else settings.EVAL_SCORING_CONCURRENCY
+    gate = asyncio.Semaphore(max(1, bound))
+    started = time.monotonic()
+    done = 0
+
+    async def score_one(sample) -> dict:
+        nonlocal done
+        async with gate:
+            row: dict = {
+                "user_input": sample.user_input,
+                "reference": sample.reference,
             }
-            try:
-                value = (await metric.ascore(**kwargs)).value
-            except Exception as exc:  # noqa: BLE001 — one metric, one sample
-                log_failure(log, "run_ragas_eval.metric_failed", exc, metric=metric.name)
-                value = None
-            row[metric.name] = (
-                float(value) if value is not None and value == value else None  # NaN check
-            )
-        rows.append(row)
-    return rows
+            for metric in metrics:
+                kwargs = {
+                    name: getattr(sample, name)
+                    for name in _METRIC_ASCORE_ARGS[metric.name]
+                }
+                try:
+                    value = (await metric.ascore(**kwargs)).value
+                except Exception as exc:  # noqa: BLE001 — one metric, one sample
+                    log_failure(log, "run_ragas_eval.metric_failed", exc, metric=metric.name)
+                    value = None
+                row[metric.name] = (
+                    float(value) if value is not None and value == value else None  # NaN check
+                )
+            done += 1
+            if done % _SCORING_PROGRESS_EVERY == 0 or done == len(samples):
+                log.info(
+                    "run_ragas_eval.progress",
+                    scored=done,
+                    of=len(samples),
+                    elapsed_s=round(time.monotonic() - started, 1),
+                )
+            return row
+
+    return list(await asyncio.gather(*(score_one(sample) for sample in samples)))
 
 
 def _placed_score_rows(

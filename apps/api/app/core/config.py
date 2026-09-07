@@ -351,6 +351,12 @@ class Settings(BaseSettings):
     # wait; it never decides what the report may claim.
     CHECKLIST_WAIT_CEILING_S: int = 2700
 
+    # Samples an eval scores at once. OBSERVED 2026-09-06 (#205): one at a time,
+    # 31 scenarios by four metrics did not finish inside the ceiling above. Four
+    # in flight is inside the provider's rate limits at this volume and costs the
+    # 1 GB worker nothing it notices; the metrics within a sample stay sequential.
+    EVAL_SCORING_CONCURRENCY: int = 4
+
     # The countdown between one poll of the tenant DB and the next. Each poll
     # opens one short psycopg2 connection per job still in flight and costs one
     # Celery message, so at the 2700s ceiling the worst case is 270 polls.

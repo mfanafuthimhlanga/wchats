@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import threading
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -799,6 +800,19 @@ class TestTheAsyncHookFailsOpenToo:
         assert failures[0]["purpose"] == "judge_faithfulness"
         assert failures[0]["tenant_id"] == TENANT
         assert failures[0]["log_level"] == "error"
+
+    async def test_the_async_recorder_runs_off_the_event_loop_thread(self):
+        """The recorder opens a psycopg2 connection and commits, which blocks. Four
+        judge calls in flight (#206) each stall on every other one's ledger write
+        when that runs on the loop, so the hook hands it to a thread."""
+        seen: list[threading.Thread] = []
+
+        await self._client(lambda call: seen.append(threading.current_thread())).chat.completions.create(
+            model=LUNA, messages=[{"role": "user", "content": "grounded?"}]
+        )
+
+        assert len(seen) == 1, "the recorder never ran, so the thread check proves nothing"
+        assert seen[0] is not threading.current_thread()
 
     async def test_a_malformed_async_body_is_swallowed_the_same_way(self):
         client = httpx.AsyncClient(
