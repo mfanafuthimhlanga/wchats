@@ -769,7 +769,7 @@ def run_red_team(self, agent_id: str) -> dict:
         notify_fn=lambda reason, context: None,  # never send a real escalation email
         tenant_id=tenant_id_str,
         verified_session_token="",  # RTX-03's unverified posture (attempt 1)
-        job_id="",
+        job_id=run_id,  # the run is the job (#200)
     )
     try:
         run_result = _attempt_every_vector(
