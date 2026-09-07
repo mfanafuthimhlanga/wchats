@@ -94,7 +94,7 @@ from app.core.log_bounds import log_failure
 # would be a third thing to keep in step, and a reader that disagreed with the
 # writer would build ModelCall rows with the fields shuffled.
 from app.core.model_client import _COLUMNS as LEDGER_COLUMNS
-from app.core.model_client import LedgerContext, route_for
+from app.core.model_client import LedgerContext, judge_key_spread, route_for
 from app.domain.eval_result import (
     DatasetOutcome,
     EvalResult,
@@ -1516,7 +1516,7 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
             "unattributed": 0,
         }
 
-    log.info("run_ragas_eval.start", scenario_count=len(samples))
+    log.info("run_ragas_eval.start", scenario_count=len(samples), judge_keys=judge_key_spread())
 
     # EvaluationDataset is the schema check, and it is load-bearing: the loop
     # below reads the SAMPLES IT VALIDATED, not the dicts handed to it, so a

@@ -494,8 +494,43 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def resolve_credentials(provider: str | None = None) -> Credentials:
+#: The judge purposes that may carry their own OpenAI key, and the Settings field
+#: each reads (#213). A purpose absent here, or a field left empty, reads
+#: OPENAI_API_KEY. The names are the purpose upper-cased under the key's prefix,
+#: so a fifth judge adds one row and one Settings field and nothing else.
+PURPOSE_KEY_SETTINGS: Mapping[str, str] = MappingProxyType({
+    "judge_faithfulness": "OPENAI_API_KEY_JUDGE_FAITHFULNESS",
+    "judge_answer_relevancy": "OPENAI_API_KEY_JUDGE_ANSWER_RELEVANCY",
+    "judge_context_precision": "OPENAI_API_KEY_JUDGE_CONTEXT_PRECISION",
+    "judge_context_recall": "OPENAI_API_KEY_JUDGE_CONTEXT_RECALL",
+})
+
+
+def _openai_key_for(purpose: str | None) -> str:
+    """The purpose's own key when one is set, else the shared one."""
+    field = PURPOSE_KEY_SETTINGS.get(purpose or "")
+    own = getattr(settings, field, "") if field else ""
+    return own or settings.OPENAI_API_KEY
+
+
+def judge_key_spread() -> int:
+    """How many distinct OpenAI keys the four judge purposes resolve to right now.
+
+    Logged at the start of every scoring run, so a run that was meant to spread
+    its calls across keys and did not (a variable unset on the worker) says so in
+    its own log rather than in a rate-limit retry an hour later. 1 means every
+    judge shares OPENAI_API_KEY.
+    """
+    return len({_openai_key_for(purpose) for purpose in PURPOSE_KEY_SETTINGS})
+
+
+def resolve_credentials(provider: str | None = None, purpose: str | None = None) -> Credentials:
     """The api key from Settings and the base url from `os.environ`, per provider.
+
+    For the `openai` provider a judge purpose reads its own key when one is set
+    (PURPOSE_KEY_SETTINGS), so the four judges' calls can spread across four
+    rates. Every other purpose, and a judge whose variable is empty, reads
+    OPENAI_API_KEY.
 
     The key comes from Settings because a Celery worker started without inheriting
     `.env` has it nowhere else, which is the reason `metadata_service` already
@@ -517,7 +552,7 @@ def resolve_credentials(provider: str | None = None) -> Credentials:
     """
     if provider == OPENAI_PROVIDER:
         return Credentials(
-            api_key=settings.OPENAI_API_KEY,
+            api_key=_openai_key_for(purpose),
             base_url=os.environ.get("OPENAI_BASE_URL"),
         )
     return Credentials(api_key=settings.ANTHROPIC_API_KEY, base_url=None)
@@ -882,7 +917,7 @@ def _hooked_sdk_client(
     so this function hands back the client bare.
     """
     provider = provider or route_for(purpose).provider
-    credentials = credentials or resolve_credentials(provider)
+    credentials = credentials or resolve_credentials(provider, purpose)
     http_client = http_client or httpx.Client()
     attach_ledger_hook(
         http_client,
@@ -996,7 +1031,7 @@ def make_async_client(
         http_client: an async httpx client to hook instead of a fresh one.
         clock:       reads the instant each row is stamped with.
     """
-    credentials = credentials or resolve_credentials(OPENAI_PROVIDER)
+    credentials = credentials or resolve_credentials(OPENAI_PROVIDER, purpose)
     http_client = http_client or httpx.AsyncClient()
     attach_async_ledger_hook(
         http_client,
