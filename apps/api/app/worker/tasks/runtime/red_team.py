@@ -52,7 +52,7 @@ from app.core.log_bounds import log_failure
 from app.core.model_client import LedgerContext, ledger_recorder, route_for
 from app.core.security import fernet_decrypt
 from app.domain.red_team_finding import RedTeamFinding
-from app.domain.red_team_result import RedTeamResult
+from app.domain.red_team_result import RED_TEAM_VECTORS, RedTeamResult
 from app.models.agent import Agent, select_beat_fanout_agents
 from app.services.agent_tools import (
     RetrievalStrategy,
@@ -62,6 +62,7 @@ from app.services.agent_tools import (
 from app.services.red_team_probe import _build_transactional_probe_fn
 from app.services.red_team_service import (
     ATTACKER_LOOP_TIMEOUT_S,
+    INVALID_MARKER_PROBE_MESSAGE_PATTERN,
     VectorObservation,
     run_confused_deputy_agent,
     run_content_injection_agent,
@@ -550,6 +551,69 @@ def _fail_run(conn, run_id: str, agent_id: str, error_type: str) -> None:
         )
 
 
+#: An invalid-run marker is a finding about the RUN, not the agent: "this vector
+#: observed nothing". The deploy gate counts open findings across every run of
+#: the agent, which is right for a breach and wrong for a marker, because a later
+#: run that DID observe the vector is exactly what should retire it. Nothing did,
+#: so one broken run blocked the agent as 12 high findings for good (#201). This
+#: closes the markers of every vector the finishing run observed, on this agent's
+#: earlier runs only. A breach from an earlier run has a real probe_message and
+#: stays open.
+_RETIRE_INVALID_MARKERS_SQL = (
+    "UPDATE red_team_findings f SET status = 'closed' "
+    "FROM red_team_runs r "
+    "WHERE r.id = f.run_id AND r.kind = %s AND f.run_id <> %s "
+    "AND f.status = 'open' AND f.probe_message LIKE %s "
+    "AND f.attack_vector = ANY(%s)"
+)
+
+
+def _vectors_observed(coverage_json: str) -> list[str]:
+    """The vectors this run observed: every vector run_coverage did not call invalid.
+
+    An incomplete vector observed the agent and stopped early; it retires a
+    marker, because the marker said nothing was observed. A vector that is
+    absent from the coverage payload is invalid there by run_coverage's own rule
+    (a dispatched vector with no observation), so it is listed and excluded.
+    """
+    invalid = set(json.loads(coverage_json).get("invalid_vectors") or [])
+    return [vector for vector in RED_TEAM_VECTORS if vector not in invalid]
+
+
+def retire_superseded_invalid_markers(
+    conn, agent_id: str, run_id: str, observed_vectors: list[str]
+) -> int:
+    """Close earlier runs' invalid-run markers for the vectors this run observed.
+
+    Returns the number of markers closed. Commits on its own connection use;
+    the caller's run row is already committed.
+    """
+    if not observed_vectors:
+        return 0
+    with conn.cursor() as cur:
+        cur.execute(
+            _RETIRE_INVALID_MARKERS_SQL,
+            (f"m7:{agent_id}", run_id, INVALID_MARKER_PROBE_MESSAGE_PATTERN, observed_vectors),
+        )
+        closed = cur.rowcount
+    conn.commit()
+    return closed
+
+
+def _retire_markers_best_effort(conn, run_id: str, agent_id: str, coverage_json: str) -> None:
+    """The retire step never takes the completed run row down with it."""
+    try:
+        closed = retire_superseded_invalid_markers(
+            conn, agent_id, run_id, _vectors_observed(coverage_json)
+        )
+    except Exception as exc:  # noqa: BLE001 — one best-effort statement after the row committed
+        conn.rollback()
+        log_failure(log, "run_red_team.retire_markers_failed", exc, agent_id=agent_id, run_id=run_id)
+        return
+    if closed:
+        log.info("run_red_team.invalid_markers_retired", agent_id=agent_id, run_id=run_id, closed=closed)
+
+
 def _write_completion(conn, run_id: str, agent_id: str, base_params: tuple,
                       coverage_json: str, result_json: str) -> None:
     """`_store_completion`, plus the terminal status the row is owed when it fails.
@@ -562,6 +626,7 @@ def _write_completion(conn, run_id: str, agent_id: str, base_params: tuple,
     try:
         if _store_completion(conn, run_id, agent_id, base_params,
                              coverage_json, result_json):
+            _retire_markers_best_effort(conn, run_id, agent_id, coverage_json)
             return
         error_type = "UndefinedColumn"
         log.warning(

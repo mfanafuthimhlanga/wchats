@@ -1345,18 +1345,26 @@ def _drive_insert_run_failed(monkeypatch):
 
 
 def _drive_programme_write_failed(monkeypatch):
-    """Step 7b's cursor raises, with Step 7's completion write already committed."""
+    """Step 7b's cursor raises, with Step 7's completion write and the retire step done."""
     agents_conn = _make_psycopg2_conn(fetchone_value=None)
     ok = agents_conn.cursor.return_value
-    agents_conn.cursor.side_effect = [ok, _two_line_exc(), ok]
+    agents_conn.cursor.side_effect = [ok, ok, _two_line_exc(), ok]
     TestRunRedTeamReportsValidity()._drive(agents_conn=agents_conn)
 
 
 def _drive_findings_write_failed(monkeypatch):
-    """Step 7c's cursor raises, with Step 7 and Step 7b already committed."""
+    """Step 7c's cursor raises, with Step 7, the retire step and Step 7b already committed."""
     agents_conn = _make_psycopg2_conn(fetchone_value=None)
     ok = agents_conn.cursor.return_value
-    agents_conn.cursor.side_effect = [ok, ok, _two_line_exc()]
+    agents_conn.cursor.side_effect = [ok, ok, ok, _two_line_exc()]
+    TestRunRedTeamReportsValidity()._drive(agents_conn=agents_conn)
+
+
+def _drive_retire_markers_failed(monkeypatch):
+    """The retire UPDATE after Step 7 raises; the completed run row stays (#201)."""
+    agents_conn = _make_psycopg2_conn(fetchone_value=None)
+    ok = agents_conn.cursor.return_value
+    agents_conn.cursor.side_effect = [ok, _two_line_exc(), ok, ok]
     TestRunRedTeamReportsValidity()._drive(agents_conn=agents_conn)
 
 
@@ -1384,7 +1392,7 @@ def _drive_update_failed_status_error(monkeypatch):
 
 
 #: Every event in the module that logs an exception, paired with the failure
-#: that reaches it. Nine of them, and the count is the point. The bound went in
+#: that reaches it. Ten of them, and the count is the point. The bound went in
 #: three handlers at a time, and a handler with no case here is one nobody
 #: notices going back to `str(exc)`.
 BOUNDED_LOG_SITES = [
@@ -1395,6 +1403,7 @@ BOUNDED_LOG_SITES = [
     ("run_red_team.insert_run_failed", _drive_insert_run_failed),
     ("run_red_team.programme_write_failed", _drive_programme_write_failed),
     ("run_red_team.findings_write_failed", _drive_findings_write_failed),
+    ("run_red_team.retire_markers_failed", _drive_retire_markers_failed),
     ("run_red_team.agents_failed", _drive_agents_failed),
     ("run_red_team.update_failed_status_error", _drive_update_failed_status_error),
 ]
