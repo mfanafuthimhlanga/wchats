@@ -5,6 +5,13 @@ Status: proposed. Drafted 2026-09-07 from issue #213 and the measurement in
 wait that scales with the scenario count, is already in; this ADR is the second half and
 needs the owner's decision.
 
+Option A was built (#218) and measured the same day on checklist run `ec85275a`: four keys
+from four OpenAI projects, `judge_keys=4` confirmed on the worker, 2715 s to score 31
+scenarios against 2661 s on one key. The projects share the wall, so A as routed buys
+nothing until a project's usage tier is raised. The per-purpose key stays in the code. The
+decision between B and C is still open, and B is now the only option left that shortens
+the wall without the provider's help.
+
 ## The measurement
 
 Scoring 31 scenarios against the four Ragas metrics on the production judge route took
