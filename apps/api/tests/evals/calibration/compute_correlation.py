@@ -1087,6 +1087,40 @@ def compute_correlation(judge_fn) -> dict:
                       "judge_identity": verdict.get("judge_identity"),
                       "reason": verdict["reason"]})
 
+    return agreement_result(
+        parsed, binary_pairs, judged_rows, human_scores, judge_scores, errors, table
+    )
+
+
+def agreement_result(
+    parsed: dict,
+    binary_pairs: list[tuple[bool, bool]],
+    judged_rows: list[tuple[str, str, bool]],
+    human_scores: list[float],
+    judge_scores: list[float],
+    errors: list[str],
+    table: list[dict],
+    second_pass_path: pathlib.Path | None = None,
+) -> dict:
+    """The statistics and the status, from the pairs a scoring loop produced.
+
+    Split out of `compute_correlation` so a loop that reads verdicts off an eval
+    run's stored rows (`calibrate_run.py`, #58) reaches the same floors, the
+    same kappa, the same ceiling and the same status as the loop that asks a
+    judge. Two copies of the gate would be two gates.
+
+    Args:
+        parsed:           `read_human_score_rows`' output for the sheet scored.
+        binary_pairs:     (human_passed, judge_passed) per row that produced both.
+        judged_rows:      (scenario_id, dimension, human_passed) for those rows,
+                          the set the ceiling is measured over.
+        human_scores:     optional 1-5 human scores, for the reported Spearman.
+        judge_scores:     the judge's score on the same rows, same order.
+        errors:           what the loop already had to say.
+        table:            the per-row report the loop built.
+        second_pass_path: the blind sheet; the module default when None.
+    """
+
     pairs = len(binary_pairs)
     pair_rate = pairs / parsed["valid"]
     cells = confusion(binary_pairs)
@@ -1150,7 +1184,7 @@ def compute_correlation(judge_fn) -> dict:
     # labels, never a constant. `judge` is what this run measured; `ceiling` is
     # what the labeller achieves against themself on the SAME rows.
     judge_interval = bootstrap_kappa(binary_pairs)
-    second = read_second_pass()
+    second = read_second_pass(second_pass_path)
     ceiling = ceiling_pairs_for(judged_rows, second)
 
     ceiling_interval = None
@@ -1168,7 +1202,7 @@ def compute_correlation(judge_fn) -> dict:
         errors = errors + [
             f"{len(ceiling['missing'])} of {pairs} judged row(s) have no blind second "
             f"verdict, so the human ceiling was NOT computed: {', '.join(ceiling['missing'])}. "
-            f"Add them to {HUMAN_SCORES_PASS2_CSV.name} (it already exists, so "
+            f"Add them to {(second_pass_path or HUMAN_SCORES_PASS2_CSV).name} (it already exists, so "
             "`--emit-second-pass` will refuse rather than overwrite your labels), then "
             "run again."
         ]
@@ -1179,7 +1213,7 @@ def compute_correlation(judge_fn) -> dict:
     # defect F3 reintroduced one file over).
     if second["unusable"]:
         errors = errors + [
-            f"{HUMAN_SCORES_PASS2_CSV.name}: {reason}" for reason in second["unusable"]
+            f"{(second_pass_path or HUMAN_SCORES_PASS2_CSV).name}: {reason}" for reason in second["unusable"]
         ]
 
     gate = calibration_verdict(judge_interval, ceiling_interval, difference_interval)
@@ -1339,7 +1373,9 @@ def _half(value: bool | None) -> str:
 SECOND_PASS_SHUFFLE_SEED = 20260818
 
 
-def emit_second_pass(path: pathlib.Path | None = None) -> tuple[int, list[str]]:
+def emit_second_pass(
+    path: pathlib.Path | None = None, first_pass: pathlib.Path | None = None
+) -> tuple[int, list[str]]:
     """Write the blind re-labelling sheet. Returns (exit code, messages).
 
     Three refusals, and each one protects the ceiling from being a number about
@@ -1363,9 +1399,9 @@ def emit_second_pass(path: pathlib.Path | None = None) -> tuple[int, list[str]]:
             "only you can produce; delete it by hand if you really mean to start over."
         ]
 
-    parsed = read_human_score_rows()
+    parsed = read_human_score_rows(first_pass)
     if parsed["missing_file"]:
-        return EXIT_SETUP_ERROR, [f"{HUMAN_SCORES_CSV.name} not found."]
+        return EXIT_SETUP_ERROR, [f"{(first_pass or HUMAN_SCORES_CSV).name} not found."]
     if parsed["unusable"] or parsed["valid"] == 0:
         return EXIT_SETUP_ERROR, [
             f"the first pass is not finished: {parsed['valid']} of {parsed['attempted']} "
@@ -1443,7 +1479,7 @@ def judge_identity_for_run(result: dict) -> JudgeIdentity | None:
     return None
 
 
-def labels_made_at() -> str | None:
+def labels_made_at(sheet: pathlib.Path | None = None) -> str | None:
     """When the sheet this figure covers was last written, as ISO 8601 UTC.
 
     The sheet's mtime, because no column in it records when a row was labelled
@@ -1453,13 +1489,15 @@ def labels_made_at() -> str | None:
     this field, so a stale figure can be seen to be stale.
     """
     try:
-        stamp = HUMAN_SCORES_CSV.stat().st_mtime
+        stamp = (sheet or HUMAN_SCORES_CSV).stat().st_mtime
     except OSError:
         return None
     return datetime.datetime.fromtimestamp(stamp, datetime.UTC).isoformat()
 
 
-def calibration_record(result: dict) -> CalibrationStatus:
+def calibration_record(
+    result: dict, sheet: pathlib.Path | None = None
+) -> CalibrationStatus:
     """This run, as `app.domain.calibration_status` holds it.
 
     ONE JUDGEMENT LIVES HERE AND IT IS NAMED. A run whose scored rows report no
@@ -1492,7 +1530,7 @@ def calibration_record(result: dict) -> CalibrationStatus:
                 result,
                 status=STATUS_NOT_CALIBRATED_YET,
                 judge_identity=None,
-                labels_made_at=labels_made_at(),
+                labels_made_at=labels_made_at(sheet),
                 harness_version=HARNESS_VERSION,
             ),
             reason="no_single_judge_identity",
@@ -1501,7 +1539,7 @@ def calibration_record(result: dict) -> CalibrationStatus:
         result,
         status=result["status"],
         judge_identity=identity,
-        labels_made_at=labels_made_at(),
+        labels_made_at=labels_made_at(sheet),
         harness_version=HARNESS_VERSION,
     )
 
@@ -1557,7 +1595,9 @@ def write_harness_raised(path: pathlib.Path, exc: BaseException) -> None:
         print(f"Could not write {path.name} after the run raised: {write_failure}\n")
 
 
-def write_calibration_artifact(result: dict, path: pathlib.Path) -> pathlib.Path:
+def write_calibration_artifact(
+    result: dict, path: pathlib.Path, sheet: pathlib.Path | None = None
+) -> pathlib.Path:
     """Leave this run's record at `path`, overwriting whatever was there.
 
     IT OVERWRITES, where the second-pass sheet refuses to. That sheet holds
@@ -1575,7 +1615,7 @@ def write_calibration_artifact(result: dict, path: pathlib.Path) -> pathlib.Path
     The path is a parameter rather than the module constant so a test can send an
     artifact somewhere other than the tree the owner labelled.
     """
-    record = dataclasses.replace(calibration_record(result), written_at=written_at())
+    record = dataclasses.replace(calibration_record(result, sheet), written_at=written_at())
     staged = path.with_name(path.name + ".partial")
     staged.write_text(
         json.dumps(record.payload, indent=2, sort_keys=True), encoding="utf-8"
