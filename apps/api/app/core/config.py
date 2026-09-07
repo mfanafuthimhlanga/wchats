@@ -252,6 +252,20 @@ class Settings(BaseSettings):
     # which refuses an empty key at construction, so the failure lands where the
     # key is used. Make it required once those nine sites speak OpenAI too.
     OPENAI_API_KEY: str = ""
+    # One key per judge purpose, each optional and falling back to OPENAI_API_KEY
+    # (#213, ADR 0009 option A). The judge path is rate-bound: 31 scenarios
+    # scored in the same 2680 s at four and at eight in flight because every
+    # call shared one rate. OpenAI meters that rate PER PROJECT, not per key, so
+    # each of these must come from its own OpenAI project; four keys minted in
+    # one project share one budget and spread nothing. A scenario costs the four
+    # judges 2, 3, 5 and 1 calls, so a project per purpose spreads the load
+    # 5:3:2:1 and the busiest carries under half of it. Only the runtime worker
+    # scores evals, so only it needs these set. The ledger keeps them separable
+    # because each is its own purpose already.
+    OPENAI_API_KEY_JUDGE_FAITHFULNESS: str = ""
+    OPENAI_API_KEY_JUDGE_ANSWER_RELEVANCY: str = ""
+    OPENAI_API_KEY_JUDGE_CONTEXT_PRECISION: str = ""
+    OPENAI_API_KEY_JUDGE_CONTEXT_RECALL: str = ""
     VOYAGE_API_KEY: str
     # M3: Cohere reranker fallback (RET-05); optional so existing envs are not broken
     COHERE_API_KEY: str | None = None

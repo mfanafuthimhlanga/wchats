@@ -25,8 +25,10 @@ measures the same rows and was unreadable until #208, which is why nobody had th
 
 ## Options
 
-**A. Pay for rate.** Raise the provider's limit on the judge key, or route the four judge
-purposes across separate keys so each has its own rate. No code beyond `PURPOSE_ROUTES`.
+**A. Pay for rate.** Raise the provider's limit on the judge project, or route the four
+judge purposes across separate OpenAI projects so each has its own rate. OpenAI meters
+rate per project, not per key: four keys from one project share one budget. One Settings
+field per judge purpose and a purpose-aware credential lookup; nothing else.
 Keeps the Ragas Judge and its calibration work under #58 as it stands. Cost scales with
 scenarios exactly as now; only the wall clock shrinks. The rate is the provider's to grant,
 and a tenant with 300 scenarios meets the same wall again.
