@@ -494,10 +494,12 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-#: The judge purposes that may carry their own OpenAI key, and the Settings field
+#: The eval judges that may carry their own OpenAI key, and the Settings field
 #: each reads (#213). A purpose absent here, or a field left empty, reads
-#: OPENAI_API_KEY. The names are the purpose upper-cased under the key's prefix,
-#: so a fifth judge adds one row and one Settings field and nothing else.
+#: OPENAI_API_KEY: that includes the sampled live-turn judge
+#: `judge_retrieval_faithfulness` and `calibration_judge`, which are not batch
+#: scorers and stay on the shared key. The names are the purpose upper-cased
+#: under the key's prefix, so adding a judge here is one row and one field.
 PURPOSE_KEY_SETTINGS: Mapping[str, str] = MappingProxyType({
     "judge_faithfulness": "OPENAI_API_KEY_JUDGE_FAITHFULNESS",
     "judge_answer_relevancy": "OPENAI_API_KEY_JUDGE_ANSWER_RELEVANCY",

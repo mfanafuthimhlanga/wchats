@@ -7,6 +7,9 @@ are resolved and read, never used.
 
 from __future__ import annotations
 
+import asyncio
+
+import httpx
 import pytest
 
 from app.core.config import settings
@@ -14,9 +17,27 @@ from app.core.model_client import (
     OPENAI_PROVIDER,
     PURPOSE_KEY_SETTINGS,
     judge_key_spread,
+    make_async_client,
+    make_client,
     resolve_credentials,
 )
 from app.services.eval_service import JUDGE_PURPOSES
+
+_CHAT_BODY = {
+    "id": "chatcmpl-1",
+    "object": "chat.completion",
+    "model": "gpt-5.6-luna",
+    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+}
+
+
+def _capturing_transport(seen: dict):
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["authorization"] = request.headers.get("authorization")
+        return httpx.Response(200, json=_CHAT_BODY, headers={"content-type": "application/json"})
+
+    return httpx.MockTransport(handler)
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +73,61 @@ class TestEachJudgeReadsItsOwnKey:
         monkeypatch.setattr(settings, "OPENAI_API_KEY_JUDGE_FAITHFULNESS", "faithfulness-key")
 
         assert resolve_credentials("anthropic", "judge_faithfulness").api_key == "anthropic-key"
+
+
+class TheKeyReachesTheWire:
+    """The factories are the two lines between the table and a real request. A
+    table that resolves the right key while the factory asks without the purpose
+    spreads nothing, so the header the provider would see is what is pinned."""
+
+
+class TestTheKeyReachesTheWire(TheKeyReachesTheWire):
+    def test_the_async_judge_client_sends_the_purposes_own_key(self, monkeypatch):
+        monkeypatch.setattr(settings, "OPENAI_API_KEY_JUDGE_CONTEXT_PRECISION", "precision-key")
+        seen: dict = {}
+        client = make_async_client(
+            "judge_context_precision",
+            tenant_id="11111111-1111-1111-1111-111111111111",
+            recorder=lambda call: None,
+            http_client=httpx.AsyncClient(transport=_capturing_transport(seen)),
+        )
+
+        asyncio.run(client.chat.completions.create(
+            model="gpt-5.6-luna", messages=[{"role": "user", "content": "grounded?"}]
+        ))
+
+        assert seen["authorization"] == "Bearer precision-key"
+
+    def test_the_sync_client_sends_the_purposes_own_key(self, monkeypatch):
+        monkeypatch.setattr(settings, "OPENAI_API_KEY_JUDGE_FAITHFULNESS", "faithfulness-key")
+        seen: dict = {}
+        client = make_client(
+            "judge_faithfulness",
+            tenant_id="11111111-1111-1111-1111-111111111111",
+            recorder=lambda call: None,
+            http_client=httpx.Client(transport=_capturing_transport(seen)),
+        )
+
+        client.chat.completions.create(
+            model="gpt-5.6-luna", messages=[{"role": "user", "content": "grounded?"}]
+        )
+
+        assert seen["authorization"] == "Bearer faithfulness-key"
+
+    def test_a_judge_without_its_own_key_sends_the_shared_one(self):
+        seen: dict = {}
+        client = make_async_client(
+            "judge_context_recall",
+            tenant_id="11111111-1111-1111-1111-111111111111",
+            recorder=lambda call: None,
+            http_client=httpx.AsyncClient(transport=_capturing_transport(seen)),
+        )
+
+        asyncio.run(client.chat.completions.create(
+            model="gpt-5.6-luna", messages=[{"role": "user", "content": "grounded?"}]
+        ))
+
+        assert seen["authorization"] == "Bearer shared-key"
 
 
 class TestTheRunSaysHowManyKeysItSpreadsOver:
