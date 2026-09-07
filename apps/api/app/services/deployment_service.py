@@ -42,7 +42,11 @@ from app.domain.tool_def import ToolDefinition, ToolSchema, tool
 from app.domain.verdict import Outcome, Verdict
 from app.services.calibration_service import load_calibration_status, summary_of
 from app.services.capability_service import canonical_envelope_hash
-from app.services.eval_service import EVAL_RUN_STATUS_COMPLETE, GATED_METRIC_KEYS
+from app.services.eval_service import (
+    EVAL_RUN_STATUS_COMPLETE,
+    GATED_METRIC_KEYS,
+    SELECTOR_ELIGIBILITY_PREDICATE,
+)
 from app.services.tool_loop import run_tool_loop
 from app.services.transactional.enforcement import _parse_rate_limit
 
@@ -989,18 +993,25 @@ _RED_TEAM_RUN_SINCE_SQL = (
 )
 
 
-def _scenario_count(conn_str: str) -> int:
-    """How many eval scenarios the tenant holds, which sizes the checklist's wait.
+#: The rows an eval can score, which is what the checklist's wait is sized on: the
+#: eval's own selector predicate, so a mined failure or a filed trace with no
+#: reference answer counts for nothing here, as it scores nothing there.
+_SCORABLE_SCENARIOS_SQL = (
+    "SELECT COUNT(*) FROM eval_scenarios WHERE " + SELECTOR_ELIGIBILITY_PREDICATE
+)
 
-    Best effort, and the failure direction is the short one: a count that could
-    not be read is 0, so the wait falls back to the constant floor rather than
-    stretching on a number nobody measured.
+
+def _scenario_count(conn_str: str) -> int:
+    """How many scorable eval scenarios the tenant holds, sizing the checklist's wait.
+
+    Best effort, and an unreadable count fails short: 0, so the wait falls back
+    to the constant floor rather than stretching on a number nobody measured.
     """
     try:
-        conn = psycopg2.connect(conn_str, connect_timeout=10)
+        conn = psycopg2.connect(conn_str, connect_timeout=5)
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM eval_scenarios")
+                cur.execute(_SCORABLE_SCENARIOS_SQL)
                 row = cur.fetchone()
         finally:
             conn.close()

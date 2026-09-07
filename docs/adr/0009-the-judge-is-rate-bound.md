@@ -14,12 +14,14 @@ flight changed the total by under one percent, so the calls share a rate: the pr
 limit on the judge key. About 87 s per scenario at this corpus size, whatever the worker
 does.
 
-The four metrics do not make one call each. Faithfulness decomposes the answer into
-statements and then judges them; answer relevancy generates questions and embeds them;
-context precision judges every retrieved chunk. The exact count per scenario is in the
-tenant's `model_calls` rows for run `2dab3550`, by purpose, and is the first thing to read
-before choosing below. An eval run's cost measures the same rows and was unreadable until
-#208, which is why nobody had this number.
+The four metrics do not make one call each. Read from Ragas 0.4's collections source:
+faithfulness decomposes the answer into statements in one call and judges them all in a
+second; answer relevancy generates three questions in three calls and embeds them in four
+Voyage calls; context precision judges each of the five retrieved chunks in its own call;
+context recall is one call. Eleven judge calls and four embeddings per scenario at most.
+The count a run actually made is in the tenant's `model_calls` rows for run `2dab3550`,
+by purpose, and is the first thing to read before choosing below. An eval run's cost
+measures the same rows and was unreadable until #208, which is why nobody had this number.
 
 ## Options
 
@@ -31,16 +33,19 @@ and a tenant with 300 scenarios meets the same wall again.
 
 **B. One call per metric.** Replace the four Ragas metrics with four owned prompts, each
 one forced tool call that returns the score and its reasons, the way every other Judge in
-this codebase already works (a Judge is one typed tool call, ADR 0007). Roughly a tenfold
-cut in calls per scenario, so 31 scenarios score in a few minutes. It is a different Judge:
+this codebase already works (a Judge is one typed tool call: the architecture line in
+CLAUDE.md, and ADR 0008). Eleven calls become four, under a threefold cut, so 31
+scenarios score in about a third of the time if the rate is per call and less if it is
+per token. It is a different Judge:
 #58's calibration against the owner's labels starts again, and Ragas's published
 behaviour, which is the reason it was chosen, goes with it. Faithfulness in one call is
 the hard case; the statement decomposition is what makes Ragas's number defensible.
 
 **C. Both, in order.** Take A now to unblock the staging agent, read the per-purpose call
-counts, and decide B on the number rather than on the estimate above. If context precision
-alone is half the calls, its one-per-chunk loop can become one call over all chunks
-without touching the other three or their calibration.
+counts, and decide B on the number rather than on the reading above. Context precision
+is five of the eleven calls, and its one-per-chunk loop can become one call over all
+chunks without touching the other three or their calibration; that alone is the biggest
+single cut available and the least to recalibrate.
 
 ## Recommendation
 
