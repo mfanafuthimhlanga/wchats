@@ -854,6 +854,12 @@ INVALID_OBSERVATION_SEVERITY = "high"
 # behind D4's second half, so it is named as absent instead.
 NO_OBSERVATION_MARKER = "<no agent response was observed>"
 
+# What an invalid-run marker's probe_message looks like in red_team_findings, as a
+# SQL LIKE pattern. The table has no column that says "this row is about the run,
+# not the agent", and _invalid_observation_finding is the only writer of this
+# shape, so the shape is the tag. A test pins the two together (#201).
+INVALID_MARKER_PROBE_MESSAGE_PATTERN = "% probe(s) attempted via %"
+
 
 @dataclass
 class ProbeSession:
