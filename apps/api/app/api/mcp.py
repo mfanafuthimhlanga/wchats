@@ -208,8 +208,8 @@ TOOLS: tuple[_Tool, ...] = (
         "draft_golden_scenarios",
         "Draft golden pairs from the Agent's corpus for the owner to label: one "
         "pair per chunk, every document covered before any repeats, each pair "
-        "citing the passage its answer was lifted from. Writes nothing. The "
-        "drafts arrive as golden_draft.pair events on the job; register the "
+        "citing the passage its answer was lifted from. Writes no scenario row. "
+        "The drafts arrive as golden_draft.pair events on the job; register the "
         "ones the owner keeps with register_golden_scenarios." + _POLL_JOB,
         "POST",
         "/api/v1/agents/{agent_id}/golden-scenarios/drafts",

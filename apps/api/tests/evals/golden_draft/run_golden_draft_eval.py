@@ -13,9 +13,10 @@ What it reports:
 - kept and dropped: how many drafts survived the citation check, which the code
   decides.
 - keep rate: how many of the kept drafts a person labelled `keep` in
-  `labels.json`, keyed by question text. That file is written by hand after
-  reading `drafts.json`; the drafter never writes it. Without it the keep rate
-  is reported as unlabelled, never as a number.
+  `labels.json`, keyed by `source_chunk_id`, which is stable across runs where
+  the question text is not. That file is written by hand after reading
+  `drafts.json`; the drafter never writes it. Without it the keep rate is
+  reported as unlabelled, never as a number.
 
 The bar is the hand-drafted set of 2026-09-06: 11 of 23 kept as written. Until a
 labelled run of this fixture exists there is no baseline, so nothing here fails.
@@ -35,7 +36,7 @@ CORPUS = HERE / "corpus"
 DRAFTS = HERE / "drafts.json"
 LABELS = HERE / "labels.json"
 
-MIN_CHUNK_CHARS = 300
+MIN_CHUNK_CHARS = 200
 
 
 def chunk_document(path: Path) -> list[dict]:
@@ -85,10 +86,10 @@ def main(n: int) -> int:
     print(f"documents={len({r['document_id'] for r in rows})} chunks={len(rows)} drafted_from={len(chunks)}")
     print(f"kept={len(kept)} dropped={dropped} model_calls={len(spent)}")
     if labels is None:
-        print("keep rate: unlabelled. Read drafts.json, write labels.json {question: keep|drop}, rerun.")
+        print("keep rate: unlabelled. Read drafts.json, write labels.json {source_chunk_id: keep|drop}, rerun.")
         return 0
-    labelled = [d for d in kept if d["question"] in labels]
-    keeps = sum(1 for d in labelled if labels[d["question"]] == "keep")
+    labelled = [d for d in kept if d["source_chunk_id"] in labels]
+    keeps = sum(1 for d in labelled if labels[d["source_chunk_id"]] == "keep")
     print(f"keep rate: {keeps} of {len(labelled)} labelled ({len(kept) - len(labelled)} unlabelled). Bar: 11 of 23.")
     return 0
 

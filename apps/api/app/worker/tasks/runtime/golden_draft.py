@@ -1,21 +1,28 @@
-"""draft_golden_scenarios: draft golden pairs for the owner to label, writing no rows (#203).
+"""draft_golden_scenarios: draft golden pairs for the owner to label (#203).
 
 The route creates a Job of kind `golden_draft` and dispatches this task on the
-runtime queue with ids only. The task reads the corpus, picks chunks so every
-document is covered before any repeats, drafts one pair per chunk, keeps the ones
-whose citation is a passage of their chunk, and hands them back as job events:
+runtime queue with ids only. The task reads the corpus index, picks chunks so
+every document is covered before any repeats, fetches those chunks' content,
+drafts one pair per chunk, keeps the ones the chunk vouches for, and hands them
+back as job events:
 
     golden_draft.started    {agent_id, n}
     golden_draft.pair       one per kept draft, the DraftPair as its payload
     golden_draft.complete   {kept, dropped, documents}
+    golden_draft.failed     {error_type}
 
 `get_job` returns the last 100 events, so a caller reads the drafts from the job.
-Nothing is written to eval_scenarios; a keep goes through the golden registration
-route like any hand-written pair.
+No scenario row is written; a keep goes through the golden registration route
+like any hand-written pair. What is written: the job row, the events, and one
+tenant ledger row per model call.
 
-Idempotent by the same guard `retrieve_and_rank` uses: a `golden_draft.complete`
-event already on the job means a redelivery returns at once, so a retry never
-re-bills the drafts or duplicates the pair events.
+Idempotency, in two parts. A `golden_draft.complete` event already on the job
+means a redelivery returns at once. A redelivery of a job that was mid-run (the
+worker was stopped between two pair events) reads the pair events already on the
+job and drafts only the chunks that have none, so the drafts already billed are
+neither re-billed nor duplicated. There is no Celery retry: a failure fails the
+job on its first attempt, because the owner asking again is cheaper than every
+draft being billed twice.
 """
 
 from __future__ import annotations
@@ -37,7 +44,8 @@ from app.models.job import Job
 from app.services.events import emit
 from app.services.golden_draft_service import (
     draft_golden_pairs,
-    fetch_chunks_by_document,
+    fetch_chunk_content,
+    fetch_chunk_index,
     pick_chunks_by_document,
 )
 from app.worker.celery_app import celery_app
@@ -52,15 +60,23 @@ EVENT_PAIR = "golden_draft.pair"
 EVENT_COMPLETE = "golden_draft.complete"
 EVENT_FAILED = "golden_draft.failed"
 
+_COMPLETE_SQL = sa_text(
+    "SELECT 1 FROM job_events WHERE job_id = :jid AND event_type = :et LIMIT 1"
+)
+_DRAFTED_CHUNKS_SQL = sa_text(
+    "SELECT payload->>'source_chunk_id' FROM job_events "
+    "WHERE job_id = :jid AND event_type = :et"
+)
+
 
 def _already_complete(db, job_id: str) -> bool:
-    row = db.execute(
-        sa_text(
-            "SELECT 1 FROM job_events WHERE job_id = :jid AND event_type = :et LIMIT 1"
-        ),
-        {"jid": job_id, "et": EVENT_COMPLETE},
-    ).fetchone()
-    return row is not None
+    return db.execute(_COMPLETE_SQL, {"jid": job_id, "et": EVENT_COMPLETE}).fetchone() is not None
+
+
+def _chunks_already_drafted(db, job_id: str) -> set[str]:
+    """The chunks whose pair events a previous delivery already emitted."""
+    rows = db.execute(_DRAFTED_CHUNKS_SQL, {"jid": job_id, "et": EVENT_PAIR}).fetchall()
+    return {row[0] for row in rows if row[0]}
 
 
 def _finish(db, job: Job, status: str) -> None:
@@ -69,24 +85,30 @@ def _finish(db, job: Job, status: str) -> None:
     db.commit()
 
 
+def _fail(job_id: str, agent_id: str, exc: Exception) -> None:
+    """Mark the job failed on a fresh session, so a session the failure poisoned
+    cannot take the terminal write down with it and leave the job running."""
+    try:
+        with get_sync_db() as db:
+            job = db.get(Job, job_id)
+            emit(job_id, EVENT_FAILED, {"error_type": type(exc).__name__}, db, _redis)
+            if job is not None:
+                _finish(db, job, "failed")
+    except Exception as terminal_exc:  # noqa: BLE001 — the record of the failure, best effort
+        log_failure(log, "golden_draft.fail_write_failed", terminal_exc, job_id=job_id, agent_id=agent_id)
+
+
 @celery_app.task(
     bind=True,
     acks_late=True,
-    max_retries=1,
-    default_retry_delay=30,
+    max_retries=0,
     queue="runtime",
     name="app.worker.tasks.runtime.golden_draft.draft_golden_scenarios",
 )
 def draft_golden_scenarios(self, job_id: str, agent_id: str, n: int) -> dict:
     """Draft `n` golden pairs for the agent and emit them on the job.
 
-    Args:
-        job_id:   the control-DB job the route created.
-        agent_id: the agent whose corpus is drafted from.
-        n:        how many chunks to draft from; the kept count is at most this.
-
-    Returns:
-        {"kept": int, "dropped": int} for the worker log, never the drafts.
+    Returns {"kept", "dropped", "documents"} for the worker log, never the drafts.
     """
     with get_sync_db() as db:
         if _already_complete(db, job_id):
@@ -101,33 +123,33 @@ def draft_golden_scenarios(self, job_id: str, agent_id: str, n: int) -> dict:
             require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string")
         )
         try:
-            job.status = "running"
-            job.started_at = datetime.now(timezone.utc)
-            db.commit()
-            emit(job_id, EVENT_STARTED, {"agent_id": agent_id, "n": n}, db, _redis)
+            drafted = _chunks_already_drafted(db, job_id)
+            if not drafted:
+                job.status = "running"
+                job.started_at = datetime.now(timezone.utc)
+                db.commit()
+                emit(job_id, EVENT_STARTED, {"agent_id": agent_id, "n": n}, db, _redis)
 
-            chunks = pick_chunks_by_document(fetch_chunks_by_document(conn_str), n)
+            picked = pick_chunks_by_document(fetch_chunk_index(conn_str), n)
+            to_draft = fetch_chunk_content(conn_str, [c for c in picked if c["chunk_id"] not in drafted])
             ledger = LedgerContext(
                 tenant_id=str(agent.tenant_id), agent_id=agent_id, job_id=job_id,
                 recorder=ledger_recorder(conn_str),
             )
-            kept, dropped = draft_golden_pairs(chunks, ledger)
-
+            kept, dropped = draft_golden_pairs(to_draft, ledger)
             for draft in kept:
                 emit(job_id, EVENT_PAIR, draft, db, _redis)
             summary = {
-                "kept": len(kept),
+                "kept": len(kept) + len(drafted),
                 "dropped": dropped,
-                "documents": len({c["document_id"] for c in chunks}),
+                "documents": len({c["document_id"] for c in picked}),
             }
             emit(job_id, EVENT_COMPLETE, summary, db, _redis)
             _finish(db, job, "complete")
-            log.info("golden_draft.complete", job_id=job_id, agent_id=agent_id, **summary)
+            log.info("golden_draft.complete", job_id=job_id, agent_id=agent_id, resumed=len(drafted), **summary)
             return summary
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — the task's own terminal handler
             log_failure(log, "golden_draft.failed", exc, level="error", job_id=job_id, agent_id=agent_id)
-            if self.request.retries >= self.max_retries:
-                emit(job_id, EVENT_FAILED, {"error_type": type(exc).__name__}, db, _redis)
-                _finish(db, job, "failed")
-                return {}
-            raise self.retry(exc=exc)
+            failure: Exception = exc
+    _fail(job_id, agent_id, failure)
+    return {}

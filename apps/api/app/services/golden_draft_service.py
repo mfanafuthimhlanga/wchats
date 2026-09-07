@@ -2,9 +2,10 @@
 
 The golden set is the owner's own assertion, and `scenario_service` is right that
 no model writes `dataset='golden'`. It does not follow that a model may not draft.
-This module drafts; it writes nothing. The owner keeps, edits or drops each draft,
-and only a keep reaches the golden registration route, which stays the single
-writer of golden rows.
+This module drafts and writes no scenario row. The owner keeps, edits or drops
+each draft, and only a keep reaches the golden registration route, which stays
+the single writer of golden rows. What a draft run does write: its job row, one
+job event per draft, and one ledger row per model call.
 
 The bar is the hand-drafted set of 2026-09-06: one grounded pair per document,
 the answer lifted near verbatim from one passage, 11 of 23 kept as written. What
@@ -72,19 +73,23 @@ _SYSTEM_PROMPT = (
     "Call submit_golden_draft with the question, the reference answer and the citation."
 )
 
-_CHUNKS_BY_DOCUMENT_SQL = (
-    "SELECT c.id, c.document_id, c.ordinal, c.content, d.title, d.source_uri "
+#: The pick needs ids and order, not text. Content is fetched for the picked
+#: chunks only, so a corpus of thousands of chunks costs the worker a list of
+#: ids, not the corpus.
+_CHUNK_INDEX_SQL = (
+    "SELECT c.id, c.document_id, c.ordinal, d.title, d.source_uri "
     "FROM chunks c JOIN documents d ON d.id = c.document_id "
     "ORDER BY d.created_at, d.id, c.ordinal"
 )
+_CHUNK_CONTENT_SQL = "SELECT id, content FROM chunks WHERE id = ANY(%s)"
 
 
-def fetch_chunks_by_document(tenant_conn_str: str) -> list[dict]:
-    """Every chunk of the corpus with the document it belongs to, in document order."""
+def fetch_chunk_index(tenant_conn_str: str) -> list[dict]:
+    """Every chunk's id, document and ordinal, in document order, without content."""
     conn = psycopg2.connect(tenant_conn_str, connect_timeout=5)
     try:
         with conn.cursor() as cur:
-            cur.execute(_CHUNKS_BY_DOCUMENT_SQL)
+            cur.execute(_CHUNK_INDEX_SQL)
             rows = cur.fetchall()
     finally:
         conn.close()
@@ -93,11 +98,24 @@ def fetch_chunks_by_document(tenant_conn_str: str) -> list[dict]:
             "chunk_id": str(chunk_id),
             "document_id": str(document_id),
             "ordinal": ordinal,
-            "content": content,
             "document": title or source_uri,
         }
-        for chunk_id, document_id, ordinal, content, title, source_uri in rows
+        for chunk_id, document_id, ordinal, title, source_uri in rows
     ]
+
+
+def fetch_chunk_content(tenant_conn_str: str, chunks: list[dict]) -> list[dict]:
+    """The picked chunks with their content filled in, in the order given."""
+    if not chunks:
+        return []
+    conn = psycopg2.connect(tenant_conn_str, connect_timeout=5)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_CHUNK_CONTENT_SQL, ([c["chunk_id"] for c in chunks],))
+            content = {str(chunk_id): text for chunk_id, text in cur.fetchall()}
+    finally:
+        conn.close()
+    return [{**c, "content": content[c["chunk_id"]]} for c in chunks if c["chunk_id"] in content]
 
 
 def pick_chunks_by_document(rows: list[dict], n: int) -> list[dict]:
@@ -155,18 +173,49 @@ def _fill_from_remaining(documents: list[list[dict]], picked: list[dict], n: int
     return picked
 
 
+#: A citation shorter than this is a heading or a name, which any chunk about the
+#: business contains, so it would bind nothing. Forty characters is a short sentence.
+CITATION_MIN_CHARS = 40
+
+#: The share of an answer's words that must appear in the chunk. Rule 2 says near
+#: verbatim; a word in five of slack covers articles the model added or dropped.
+ANSWER_GROUNDING_FLOOR = 0.8
+
+
 def _squash(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
 def citation_in_chunk(citation: str, content: str) -> bool:
-    """Whether the citation is a passage of the chunk, whitespace aside.
+    """Whether the citation is a passage of the chunk, whitespace aside, and long
+    enough to bind anything.
 
     Line breaks and indentation differ between a chunk and a model's copy of it;
-    words, numbers and punctuation may not. An empty citation cites nothing.
+    words, numbers and punctuation may not. An empty or one-line citation cites
+    nothing: it is in every chunk that names the business.
     """
     needle = _squash(citation)
-    return bool(needle) and needle in _squash(content)
+    return len(needle) >= CITATION_MIN_CHARS and needle in _squash(content)
+
+
+def _words(text: str) -> list[str]:
+    return [w for w in re.findall(r"[0-9a-z]+", text.lower()) if len(w) >= 3]
+
+
+def answer_grounded_in_chunk(answer: str, content: str) -> bool:
+    """Whether at least ANSWER_GROUNDING_FLOOR of the answer's words are in the chunk.
+
+    The citation check binds the citation; this binds the answer. A citation that
+    is really in the chunk beside an answer the model composed from elsewhere is
+    the case the first check alone lets through. Word presence is a floor, not
+    proof: an answer that reorders the chunk's own words passes, and that is the
+    owner's call on the bench.
+    """
+    words = _words(answer)
+    if not words:
+        return False
+    present = set(_words(content))
+    return sum(1 for w in words if w in present) / len(words) >= ANSWER_GROUNDING_FLOOR
 
 
 def draft_pair_from_chunk(chunk: dict, ledger: LedgerContext) -> dict | None:
@@ -189,39 +238,52 @@ def draft_pair_from_chunk(chunk: dict, ledger: LedgerContext) -> dict | None:
     arguments = forced_tool_arguments(response, "submit_golden_draft")
     if arguments is None:
         return None
+    fields = {name: arguments.get(name) for name in ("question", "reference_answer", "citation")}
+    if not all(isinstance(value, str) and value.strip() for value in fields.values()):
+        # The tool schema names the three as required strings; the reader checks
+        # only that the arguments are an object, so a null or a number lands here.
+        return None
     return {
-        "question": arguments["question"],
-        "reference_answer": arguments["reference_answer"],
-        "citation": arguments["citation"],
+        **fields,
         "source_document_id": chunk["document_id"],
         "source_document": chunk["document"],
         "source_chunk_id": chunk["chunk_id"],
     }
 
 
-def draft_golden_pairs(chunks: list[dict], ledger: LedgerContext) -> tuple[list[dict], int]:
-    """Draft one pair per chunk and keep the ones whose citation is in their chunk.
+def _reason_to_drop(draft: dict | None, content: str) -> str | None:
+    """Why a draft never reaches the owner, or None when it does."""
+    if draft is None:
+        return "no_draft"
+    if not citation_in_chunk(draft["citation"], content):
+        return "citation_not_in_chunk"
+    if not answer_grounded_in_chunk(draft["reference_answer"], content):
+        return "answer_not_in_chunk"
+    return None
 
-    Returns (kept, dropped). A draft is dropped when the model returned none, or
-    when its citation is not a passage of the chunk it was given: an answer whose
-    source cannot be found is the invention the golden set exists to catch, so
-    it never reaches the owner. A model call that raises drops that chunk only.
+
+def draft_golden_pairs(chunks: list[dict], ledger: LedgerContext) -> tuple[list[dict], int]:
+    """Draft one pair per chunk and keep the ones the chunk itself vouches for.
+
+    Returns (kept, dropped). A draft is dropped when the model returned none,
+    when its citation is not a passage of the chunk it was given, or when its
+    answer's words are mostly not in that chunk. An answer whose source cannot be
+    found is the invention the golden set exists to catch, so it never reaches
+    the owner. Anything that raises for one chunk, the call or the checks, drops
+    that chunk only.
     """
     kept: list[dict] = []
     dropped = 0
     for chunk in chunks:
         try:
             draft = draft_pair_from_chunk(chunk, ledger)
+            reason = _reason_to_drop(draft, chunk["content"])
         except Exception as exc:  # noqa: BLE001 — one chunk, one draft
             log_failure(log, "golden_draft.chunk_failed", exc, chunk_id=chunk["chunk_id"])
             dropped += 1
             continue
-        if draft is None or not citation_in_chunk(draft["citation"], chunk["content"]):
-            log.info(
-                "golden_draft.dropped",
-                chunk_id=chunk["chunk_id"],
-                reason="no_draft" if draft is None else "citation_not_in_chunk",
-            )
+        if reason is not None or draft is None:
+            log.info("golden_draft.dropped", chunk_id=chunk["chunk_id"], reason=reason)
             dropped += 1
             continue
         kept.append(draft)

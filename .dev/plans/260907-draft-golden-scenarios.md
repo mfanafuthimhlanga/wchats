@@ -29,23 +29,28 @@ as one.
 draft_golden_scenarios.apply_async(kwargs={"agent_id": ..., "job_id": ..., "n": 15}, queue="runtime")
 
 # service, pure apart from the model call
-chunks = pick_chunks_by_document(rows, n=15, per_document=2)     # round robin, coverage by document
-draft = draft_pair_from_chunk(chunk, ledger)                     # one forced tool call, or None
-ok    = citation_in_chunk(draft["citation"], chunk["content"])   # whitespace-normalised substring
+chunks = pick_chunks_by_document(fetch_chunk_index(dsn), n=15)   # round robin, coverage by document
+chunks = fetch_chunk_content(dsn, chunks)                        # content for the picked ids only
+draft  = draft_pair_from_chunk(chunk, ledger)                    # one forced tool call, or None
+ok     = citation_in_chunk(draft["citation"], chunk["content"])  # 40+ chars, whitespace aside
+ok    &= answer_grounded_in_chunk(draft["reference_answer"], chunk["content"])  # 80% of words
 ```
 
 The route creates a `Job` of kind `golden_draft` and dispatches the task, the same shape as
 `upload_documents`. The task emits one `golden_draft.pair` event per kept draft and a
 terminal `golden_draft.complete` event carrying `{kept, dropped, documents}`. `get_job`
 already returns the last 100 events with payloads, so the MCP caller reads the drafts from
-the job and nothing new is stored. `n` is 10 to 30, under the 100 event window.
+the job. What a run writes: the job row, the events, and a tenant ledger row per model
+call. No scenario row. `n` is 10 to 30, under the 100 event window.
 
 ## Files
 
 - `app/services/golden_draft_service.py`: the three functions above, the tool schema
   `submit_golden_draft`, the prompt with the five rules.
-- `app/worker/tasks/runtime/golden_draft.py`: the task. `acks_late=True`; idempotent because
-  a rerun re-emits the same events under the same job and writes no rows.
+- `app/worker/tasks/runtime/golden_draft.py`: the task. `acks_late=True`, no Celery retry.
+  Idempotent in two parts: a job with a complete event is skipped, and a job with pair
+  events already on it drafts only the chunks that have none, so a redelivery resumes
+  rather than re-billing.
 - `app/api/v1/evals.py`: `POST /agents/{agent_id}/golden-scenarios/drafts`, body `{n}`,
   202 with `job_id`.
 - `app/schemas/eval.py`: `GoldenDraftRequest`, `GoldenDraftResponse`.
@@ -73,8 +78,8 @@ document before repeating one.
   picks from every document before repeating one and stops at `n`; a draft call that
   returns no tool call yields None; the ledger purpose is `golden_draft`.
 - Unit, `tests/unit/test_golden_draft_task.py`: the task emits one pair event per kept
-  draft and a complete event with the counts; a chunk fetch failure fails the job through
-  `fail_the_job`.
+  draft and a complete event with the counts; a redelivery drafts only the chunks without
+  a pair event; a corpus read failure fails the job on a fresh session.
 - Unit, route: 404 on a foreign agent; 202 with a job id; `n` outside 10 to 30 is 422.
 - Offline eval, `tests/evals/golden_draft/`: a four-document fixture corpus and a
   hand-labelled keep/drop set. Reports the keep rate; asserts nothing until a baseline

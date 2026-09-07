@@ -37,6 +37,8 @@ def test_twelve_drafts_come_from_every_document_at_least_twice():
     runner = _runner()
     rows = [c for path in sorted(runner.CORPUS.glob("*.md")) for c in runner.chunk_document(path)]
 
+    assert len(rows) > 12, "the corpus must be larger than the pick, or the pick is everything"
+
     picked = pick_chunks_by_document(rows, 12)
 
     counts: dict[str, int] = {}
@@ -45,3 +47,5 @@ def test_twelve_drafts_come_from_every_document_at_least_twice():
     assert len(picked) == 12
     assert len(counts) == 4 and min(counts.values()) >= 2, counts
     assert len({c["chunk_id"] for c in picked}) == 12, "a chunk was drafted from twice"
+    in_corpus_order = [r["chunk_id"] for r in rows[:12]]
+    assert [c["chunk_id"] for c in picked] != in_corpus_order, "the pick is corpus order"
