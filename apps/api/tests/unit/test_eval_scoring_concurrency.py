@@ -9,7 +9,6 @@ metric is a coroutine that sleeps.
 from __future__ import annotations
 
 import asyncio
-import time
 from dataclasses import dataclass
 
 import pytest
@@ -34,25 +33,39 @@ class _Scored:
 
 
 class _SleepingMetric:
-    """A metric that takes SLEEP_S per call and remembers how many ran at once."""
+    """A metric that takes SLEEP_S per call and remembers how many ran at once.
 
-    name = "faithfulness"
+    `shorter_inputs_take_longer` makes the first sample the slowest, so that under
+    a bound above one the samples finish in the reverse of the order they started.
+    `finished` records the order they did finish in, so a test can check that the
+    out-of-order completion it relies on actually happened.
+    """
 
-    def __init__(self, fail_on: str | None = None):
+    def __init__(
+        self,
+        name: str = "faithfulness",
+        fail_on: str | None = None,
+        shorter_inputs_take_longer: bool = False,
+    ):
+        self.name = name
         self.in_flight = 0
         self.peak = 0
         self.fail_on = fail_on
+        self.shorter_inputs_take_longer = shorter_inputs_take_longer
+        self.finished: list[str] = []
 
-    async def ascore(self, user_input, response, retrieved_contexts):  # noqa: ARG002
+    async def ascore(self, user_input, **_ignored):
         self.in_flight += 1
         self.peak = max(self.peak, self.in_flight)
         try:
-            await asyncio.sleep(SLEEP_S)
+            delay = SLEEP_S / len(user_input) if self.shorter_inputs_take_longer else SLEEP_S
+            await asyncio.sleep(delay)
             if user_input == self.fail_on:
                 raise RuntimeError("the judge refused this one")
             return _Scored(value=float(len(user_input)))
         finally:
             self.in_flight -= 1
+            self.finished.append(user_input)
 
 
 def _samples(n: int) -> list[_Sample]:
@@ -60,15 +73,12 @@ def _samples(n: int) -> list[_Sample]:
 
 
 class TestSamplesScoreConcurrentlyUnderABound:
-    def test_eight_samples_at_four_in_flight_take_two_rounds(self):
+    def test_eight_samples_at_a_bound_of_four_reach_four_in_flight(self):
         metric = _SleepingMetric()
-        started = time.monotonic()
 
         rows = asyncio.run(_score_samples([metric], _samples(8), concurrency=4))
 
-        elapsed = time.monotonic() - started
         assert metric.peak == 4, f"peak in flight was {metric.peak}, the bound is 4"
-        assert elapsed < SLEEP_S * 4, f"eight samples took {elapsed:.2f}s, sequential would be {SLEEP_S * 8:.2f}s"
         assert len(rows) == 8
 
     def test_a_bound_of_one_is_the_old_sequential_run(self):
@@ -79,11 +89,13 @@ class TestSamplesScoreConcurrentlyUnderABound:
         assert metric.peak == 1
 
     def test_rows_come_back_in_sample_order_whatever_finishes_first(self):
-        metric = _SleepingMetric()
+        metric = _SleepingMetric(shorter_inputs_take_longer=True)
+        in_sample_order = ["q" * (i + 1) for i in range(6)]
 
         rows = asyncio.run(_score_samples([metric], _samples(6), concurrency=3))
 
-        assert [r["user_input"] for r in rows] == ["q" * (i + 1) for i in range(6)]
+        assert metric.finished != in_sample_order, "the samples finished in order, so this proves nothing"
+        assert [r["user_input"] for r in rows] == in_sample_order
         assert [r["faithfulness"] for r in rows] == [float(i + 1) for i in range(6)]
 
     def test_the_bound_defaults_to_the_setting(self, monkeypatch):
@@ -95,11 +107,13 @@ class TestSamplesScoreConcurrentlyUnderABound:
         assert metric.peak == 2
 
     def test_a_metric_that_raises_leaves_none_in_that_cell_only(self):
-        metric = _SleepingMetric(fail_on="qq")
+        faithfulness = _SleepingMetric(fail_on="qq")
+        relevancy = _SleepingMetric(name="answer_relevancy")
 
-        rows = asyncio.run(_score_samples([metric], _samples(3), concurrency=3))
+        rows = asyncio.run(_score_samples([faithfulness, relevancy], _samples(3), concurrency=3))
 
         assert [r["faithfulness"] for r in rows] == [1.0, None, 3.0]
+        assert [r["answer_relevancy"] for r in rows] == [1.0, 2.0, 3.0]
 
 
 class TestTheRunSaysHowFarItGot:
