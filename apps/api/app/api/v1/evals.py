@@ -105,8 +105,11 @@ from app.domain.eval_result import (
 )
 from app.domain.judge_record import scenario_verdict
 from app.models.agent import Agent
+from app.models.job import Job
 from app.models.tenant import Tenant
 from app.schemas.eval import (
+    GoldenDraftRequest,
+    GoldenDraftResponse,
     GoldenScenariosRegisterRequest,
     GoldenScenariosRegisterResponse,
 )
@@ -118,6 +121,7 @@ from app.services.scenario_service import (
     insert_authored_golden_scenario,
 )
 from app.worker.tasks.runtime.eval import run_eval_suite
+from app.worker.tasks.runtime.golden_draft import draft_golden_scenarios
 
 router = APIRouter(tags=["evals"])
 log = structlog.get_logger(__name__)
@@ -859,4 +863,55 @@ async def register_golden_scenarios(
         registered=registered,
         skipped_duplicates=skipped,
         golden_total=total,
+    )
+
+
+# ---------------------------------------------------------------------------
+# #203: golden drafts, a read of the corpus that writes no scenario row
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/agents/{agent_id}/golden-scenarios/drafts",
+    status_code=202,
+    response_model=GoldenDraftResponse,
+)
+async def draft_golden_scenarios_route(
+    agent_id: UUID,
+    body: GoldenDraftRequest,
+    db: AsyncSession = Depends(get_async_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> GoldenDraftResponse:
+    """Draft golden pairs from the agent's corpus for the owner to label (#203).
+
+    Creates a `golden_draft` job and dispatches the runtime task with ids only.
+    The drafts come back as `golden_draft.pair` events on the job; nothing is
+    written to eval_scenarios. A kept draft is registered through the golden
+    registration route above, which stays the single writer of golden rows.
+
+    Security:
+        IDOR check on agent (404 on foreign or missing agent). 404 when the
+        agent has no tenant database yet.
+    """
+    agent = await db.get(Agent, agent_id)
+    if agent is None or agent.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if not agent.neon_connection_string:
+        raise HTTPException(status_code=404, detail="Agent database not provisioned")
+
+    job = Job(tenant_id=tenant.id, agent_id=agent.id, kind="golden_draft", status="pending")
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+
+    draft_golden_scenarios.apply_async(
+        kwargs={"job_id": str(job.id), "agent_id": str(agent_id), "n": body.n},
+        queue="runtime",
+    )
+    log.info(
+        "golden_draft.dispatched",
+        agent_id=str(agent_id), tenant_id=str(tenant.id), job_id=str(job.id), n=body.n,
+    )
+    return GoldenDraftResponse(
+        status="queued", job_id=str(job.id), agent_id=str(agent_id), n=body.n
     )

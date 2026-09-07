@@ -145,6 +145,7 @@ celery_app.conf.update(
         "app.worker.tasks.pipeline.reembed",
         # M3: hybrid retrieval task (runtime queue)
         "app.worker.tasks.runtime.retrieve",
+        "app.worker.tasks.runtime.golden_draft",
         # M4: agent turn task (runtime queue)
         "app.worker.tasks.runtime.agent",
         # M5: validation chain (Gatekeeper, Auditor, Strategist)

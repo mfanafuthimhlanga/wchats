@@ -2,7 +2,7 @@
 Unit tests for the MCP endpoint (app/api/mcp.py, #56).
 
 Protocol surface:
-    1. tools/list returns the eighteen tools in deterministic order with cache hints
+    1. tools/list returns the nineteen tools in deterministic order with cache hints
     2. GET and DELETE /mcp return 405 with Allow: POST
     3. No credential returns 401
     4. Unknown method returns HTTP 404 with JSON-RPC -32601
@@ -45,6 +45,7 @@ EXPECTED_TOOL_NAMES = [
     "update_soul",
     "upload_documents",
     "register_golden_scenarios",
+    "draft_golden_scenarios",
     "get_job",
     "trigger_eval",
     "list_eval_runs",
@@ -119,7 +120,7 @@ def _override_outer_auth(tenant: Tenant) -> None:
 
 
 class TestToolsList:
-    async def test_lists_the_eighteen_tools_in_deterministic_order(self):
+    async def test_lists_the_nineteen_tools_in_deterministic_order(self):
         tenant = _make_fake_tenant()
         _override_outer_auth(tenant)
         try:
@@ -359,10 +360,10 @@ class TestToolWrapping:
 
 
 class TestToolTable:
-    def test_eighteen_tools_with_legal_unique_names(self):
+    def test_nineteen_tools_with_legal_unique_names(self):
         names = [t.name for t in TOOLS]
-        assert len(names) == 18
-        assert len(set(names)) == 18
+        assert len(names) == 19
+        assert len(set(names)) == 19
         for name in names:
             assert re.fullmatch(r"[A-Za-z0-9_.\-]{1,128}", name)
 

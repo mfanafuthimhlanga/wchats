@@ -34,3 +34,20 @@ class GoldenScenariosRegisterResponse(BaseModel):
     registered: int
     skipped_duplicates: list[str]
     golden_total: int
+
+
+class GoldenDraftRequest(BaseModel):
+    """How many chunks to draft one golden pair each from (#203).
+
+    Bounded because every draft is one model call and the drafts travel back as
+    job events, of which the job read returns the last 100.
+    """
+
+    n: int = Field(15, ge=10, le=30)
+
+
+class GoldenDraftResponse(BaseModel):
+    status: str
+    job_id: str
+    agent_id: str
+    n: int

@@ -850,6 +850,7 @@ EVERY_PURPOSE = [
     "judge_context_recall",
     "judge_retrieval_faithfulness",
     "scenario_generation",
+    "golden_draft",
     "metadata_enrichment",
     "actor_gate",
     "red_team_prompt",
