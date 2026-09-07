@@ -39,7 +39,7 @@ from app.core.database import get_async_db
 from app.models.tenant import Tenant
 from app.schemas.agent import AgentCreate, AgentSoulUpdate
 from app.schemas.deployment import AcknowledgeRequest, ApproveDeploymentRequest
-from app.schemas.eval import GoldenScenariosRegisterRequest
+from app.schemas.eval import GoldenDraftRequest, GoldenScenariosRegisterRequest
 
 router = APIRouter(tags=["mcp"])
 log = structlog.get_logger(__name__)
@@ -203,6 +203,18 @@ TOOLS: tuple[_Tool, ...] = (
         "/api/v1/agents/{agent_id}/golden-scenarios",
         ("agent_id",),
         GoldenScenariosRegisterRequest,
+    ),
+    _Tool(
+        "draft_golden_scenarios",
+        "Draft golden pairs from the Agent's corpus for the owner to label: one "
+        "pair per chunk, every document covered before any repeats, each pair "
+        "citing the passage its answer was lifted from. Writes no scenario row. "
+        "The drafts arrive as golden_draft.pair events on the job; register the "
+        "ones the owner keeps with register_golden_scenarios." + _POLL_JOB,
+        "POST",
+        "/api/v1/agents/{agent_id}/golden-scenarios/drafts",
+        ("agent_id",),
+        GoldenDraftRequest,
     ),
     _Tool(
         "get_job",

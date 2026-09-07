@@ -437,6 +437,9 @@ PURPOSE_ROUTES: Mapping[str, ModelRoute] = MappingProxyType({
     "agent_turn": _AGENT_TURN,
     # Everything else the direct API serves.
     "scenario_generation": _LUNA,
+    # One draft golden pair per chunk for the owner to label (#203). Its own
+    # purpose so the ledger can say what drafting cost apart from generation.
+    "golden_draft": _LUNA,
     "metadata_enrichment": _LUNA,
     "actor_gate": _LUNA,
     "red_team_prompt": _LUNA,
