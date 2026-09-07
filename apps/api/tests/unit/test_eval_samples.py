@@ -1,0 +1,97 @@
+"""`eval_service.write_eval_samples`: the scored text lands, verbatim, once per row.
+
+The four strings Ragas scores exist only in memory during a run unless this
+function writes them, and the calibration harness (#58) labels nothing else.
+The tests hold the writer to three things: one INSERT per scenario carrying the
+same keys `run_ragas_eval` reads, the strings unaltered, and no connection for
+an empty list.
+"""
+
+from __future__ import annotations
+
+import json
+from unittest.mock import MagicMock
+
+import pytest
+
+from app.services import eval_service as es
+
+RUN_ID = "11111111-1111-1111-1111-111111111111"
+
+
+def _scenario(n: int) -> dict:
+    return {
+        "scenario_id": f"S-{n:03d}",
+        "dataset": "golden" if n % 2 else "exploratory",
+        "question": f"Question {n}?",
+        "reference_answer": f"Reference {n}.",
+        "agent_response": f"Answer {n}, with 'quotes' and a % sign.",
+        "retrieved_contexts": [f"chunk {n}a", f"chunk {n}b"],
+        "stored_retrieved_contexts": ["never this"],
+    }
+
+
+@pytest.fixture
+def connection(monkeypatch):
+    cursor = MagicMock()
+    cursor.__enter__.return_value = cursor
+    cursor.__exit__.return_value = False
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+    connects: list = []
+    monkeypatch.setattr(
+        es.psycopg2, "connect", lambda *a, **kw: connects.append((a, kw)) or conn
+    )
+    return {"conn": conn, "cursor": cursor, "connects": connects}
+
+
+def test_one_row_per_scenario_with_the_scored_strings_verbatim(connection):
+    scenarios = [_scenario(1), _scenario(2), _scenario(3)]
+
+    written = es.write_eval_samples(RUN_ID, scenarios, "postgresql://prod")
+
+    assert written == 3
+    calls = connection["cursor"].execute.call_args_list
+    assert len(calls) == 3
+    for scenario, call in zip(scenarios, calls, strict=True):
+        sql, params = call.args
+        assert "INSERT INTO eval_samples" in sql
+        assert params["eval_run_id"] == RUN_ID
+        assert params["scenario_id"] == scenario["scenario_id"]
+        assert params["dataset"] == scenario["dataset"]
+        assert params["user_input"] == scenario["question"]
+        assert params["response"] == scenario["agent_response"]
+        assert params["reference"] == scenario["reference_answer"]
+        assert json.loads(params["retrieved_contexts"]) == scenario["retrieved_contexts"]
+        assert "never this" not in params["retrieved_contexts"], (
+            "the stored contexts are not what was scored (D1)"
+        )
+    connection["conn"].commit.assert_called_once()
+    connection["conn"].close.assert_called_once()
+
+
+def test_an_empty_agent_retrieval_stays_empty(connection):
+    scenario = _scenario(7)
+    scenario["retrieved_contexts"] = []
+
+    es.write_eval_samples(RUN_ID, [scenario], "postgresql://prod")
+
+    [(_sql, params)] = [c.args for c in connection["cursor"].execute.call_args_list]
+    assert json.loads(params["retrieved_contexts"]) == [], (
+        "an empty agent retrieval must not fall back to the scenario's stored contexts"
+    )
+
+
+def test_an_empty_list_writes_nothing_and_opens_no_connection(connection):
+    assert es.write_eval_samples(RUN_ID, [], "postgresql://prod") == 0
+    assert connection["connects"] == []
+
+
+def test_the_connection_is_closed_when_an_insert_raises(connection):
+    connection["cursor"].execute.side_effect = RuntimeError("boom")
+
+    with pytest.raises(RuntimeError):
+        es.write_eval_samples(RUN_ID, [_scenario(1)], "postgresql://prod")
+
+    connection["conn"].close.assert_called_once()
+    connection["conn"].commit.assert_not_called()

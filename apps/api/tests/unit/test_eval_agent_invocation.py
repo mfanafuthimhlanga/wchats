@@ -2206,3 +2206,37 @@ def test_the_log_line_still_carries_the_exceptions_text():
     assert len(failed) == 1, f"the failure logged {len(failed)} line(s)"
     assert failed[0].kwargs["error"] == SENTINEL
     assert failed[0].kwargs["error_type"] == "_LoudFailure"
+
+
+def test_the_scored_text_is_written_before_scoring_and_is_what_the_scorer_gets(
+    task_wired, monkeypatch
+):
+    """#58: the calibration harness labels what Ragas scored, so the rows
+    `write_eval_samples` receives are the rows `run_ragas_eval` receives, and
+    they land first, so a run that dies inside scoring still leaves its text.
+    """
+    order: list[str] = []
+    written: list = []
+
+    def _fake_samples(run_id, scenarios, conn_str):
+        order.append("samples")
+        written.append((run_id, list(scenarios), conn_str))
+        return len(scenarios)
+
+    monkeypatch.setattr(mod, "write_eval_samples", _fake_samples)
+    scorer = mod.run_ragas_eval
+
+    def _fake_scorer(scenarios, ledger):
+        order.append("score")
+        return scorer(scenarios, ledger)
+
+    monkeypatch.setattr(mod, "run_ragas_eval", _fake_scorer)
+
+    result = _run_task()
+
+    assert order == ["samples", "score"], order
+    run_id, rows, conn_str = written[0]
+    assert run_id == result["run_id"]
+    assert conn_str == PRODUCTION
+    assert rows == task_wired["scored"][0]
+    assert len(rows) == 4

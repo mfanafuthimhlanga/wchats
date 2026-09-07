@@ -1691,6 +1691,76 @@ def write_eval_results(
     )
 
 
+_INSERT_EVAL_SAMPLE = """
+    INSERT INTO eval_samples (
+        id, eval_run_id, scenario_id, dataset,
+        user_input, response, retrieved_contexts, reference
+    )
+    VALUES (
+        %(id)s::uuid, %(eval_run_id)s::uuid, %(scenario_id)s, %(dataset)s,
+        %(user_input)s, %(response)s, %(retrieved_contexts)s::jsonb, %(reference)s
+    )
+"""
+
+
+def _sample_row_params(eval_run_id: str, scenario: Mapping) -> dict:
+    """One scored scenario as INSERT parameters, the four strings Ragas is handed.
+
+    Read off the same keys `run_ragas_eval` reads (`question`, `agent_response`,
+    `retrieved_contexts`, `reference_answer`), so the row is what was scored and
+    not a second rendering of it.
+    """
+    return {
+        "id": str(uuid.uuid4()),
+        "eval_run_id": eval_run_id,
+        "scenario_id": str(scenario.get("scenario_id", "")),
+        "dataset": scenario.get("dataset"),
+        "user_input": str(scenario.get("question", "")),
+        "response": str(scenario.get("agent_response", "")),
+        "retrieved_contexts": json.dumps(
+            [str(c) for c in scenario.get("retrieved_contexts", [])]
+        ),
+        "reference": str(scenario.get("reference_answer", "")),
+    }
+
+
+def write_eval_samples(
+    eval_run_id: str,
+    scenarios: Sequence[Mapping],
+    conn_str: str,
+) -> int:
+    """Insert one eval_samples row per scenario about to be scored, on PRODUCTION.
+
+    Called after the agent turns and before `run_ragas_eval`, with the rows that
+    function is then handed, so a run that dies inside scoring still leaves the
+    text it was scoring. The calibration harness reads these rows to put a
+    scenario in front of a human beside the Judge's verdict on it (#58); nothing
+    on the deploy path reads them.
+
+    Returns the number of rows written. Zero for an empty list, with no
+    connection opened.
+    """
+    if not scenarios:
+        log.info("write_eval_samples.no_rows", eval_run_id=eval_run_id)
+        return 0
+
+    conn = psycopg2.connect(conn_str, connect_timeout=CONNECT_TIMEOUT_S)
+    try:
+        with conn.cursor() as cur:
+            for scenario in scenarios:
+                cur.execute(_INSERT_EVAL_SAMPLE, _sample_row_params(eval_run_id, scenario))
+        conn.commit()
+    finally:
+        conn.close()
+
+    log.info(
+        "write_eval_samples.complete",
+        eval_run_id=eval_run_id,
+        rows_written=len(scenarios),
+    )
+    return len(scenarios)
+
+
 #: The one `eval_runs.status` that means "this run reached the end of its own
 #: body". This module writes exactly two terminal values, 'complete' here and
 #: 'failed' from `_mark_failed_on_production`, and both readers of the latest run
