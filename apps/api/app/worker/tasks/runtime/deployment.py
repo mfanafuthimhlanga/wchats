@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from datetime import datetime, timedelta, timezone
 
 import structlog
@@ -93,6 +94,7 @@ from app.services.deployment_service import (
     _fetch_eval_summary_sync,
     _fetch_red_team_summary_sync,
     _fetch_verified_qa_stats_sync,
+    _scenario_count,
     apply_signal_evidence_gate,
     derive_blast_radius_warnings,
     derive_quality_warnings,
@@ -231,9 +233,51 @@ def _continue_wait(agent_id: str, wait_state: object) -> dict | None:
         return None
 
 
-def _wait_continues(pending: list, waited_s: float) -> bool:
+def rows_the_eval_will_score(scorable_count: int) -> int:
+    """The rows the eval this checklist starts will score, from the count at open.
+
+    Under GENERATION_SKIP_AT_ROWS the dispatch chain generates GENERATED_SUITE_SIZE
+    more before the eval selects, so the eval scores rows that did not exist when
+    the count was read. Above it nothing is added. Either way the eval invokes at
+    most AGENT_INVOCATION_MAX_CALLS_PER_RUN, so a tenant with hundreds of
+    scorable rows is waited on for sixty, not hundreds.
+    """
+    from app.services.eval_service import AGENT_INVOCATION_MAX_CALLS_PER_RUN  # noqa: PLC0415
+    from app.worker.tasks.runtime.eval import (  # noqa: PLC0415
+        GENERATED_SUITE_SIZE,
+        GENERATION_SKIP_AT_ROWS,
+    )
+
+    count = max(0, scorable_count)
+    if count < GENERATION_SKIP_AT_ROWS:
+        count += GENERATED_SUITE_SIZE
+    return min(count, AGENT_INVOCATION_MAX_CALLS_PER_RUN)
+
+
+def checklist_wait_ceiling_s(scorable_count: int) -> int:
+    """How long this checklist will wait: the floor, or the eval's own size (#213).
+
+    31 scenarios scored in about 2680 s on staging at four and at eight in
+    flight, so the judge path is rate-bound and the wait has to grow with the
+    rows the eval scores rather than with anything the worker can do. The
+    constant stays as the floor so a small golden set is not waited on for
+    longer than before.
+    """
+    return max(
+        settings.CHECKLIST_WAIT_CEILING_S,
+        rows_the_eval_will_score(scorable_count) * settings.CHECKLIST_WAIT_PER_SCENARIO_S,
+    )
+
+
+def _ceiling_of(state: dict) -> float:
+    """The ceiling the wait opened with. A state written before #213 carries
+    none and gets the floor, which is the shorter of the two: fail closed."""
+    return state.get("ceiling_s", settings.CHECKLIST_WAIT_CEILING_S)
+
+
+def _wait_continues(pending: list, waited_s: float, ceiling_s: float) -> bool:
     """Still under the ceiling with a half outstanding."""
-    return bool(pending) and waited_s < settings.CHECKLIST_WAIT_CEILING_S
+    return bool(pending) and waited_s < ceiling_s
 
 
 def _hand_off(
@@ -256,6 +300,7 @@ def _hand_off(
         run_id=run_id,
         pending=pending,
         waited_s=round(waited_s, 1),
+        ceiling_s=_ceiling_of(state),
     )
     return {
         "status": "waiting",
@@ -323,7 +368,7 @@ def _log_wait_outcome(agent_id: str, state: dict, waited_s: float) -> None:
             agent_id=agent_id,
             timed_out=timed_out,
             waited_s=round(waited_s, 1),
-            ceiling_s=settings.CHECKLIST_WAIT_CEILING_S,
+            ceiling_s=_ceiling_of(state),
             detail="each named job reads as an absent measurement and blocks",
         )
     if not absent:
@@ -356,8 +401,7 @@ def _require_wait_state(wait_state: object) -> dict:
     A missing key is refused rather than defaulted. Defaulting `since` would
     move the boundary the wait reads runs against, and defaulting `statuses`
     would forget every terminal status already observed and start the wait
-    again, so both would resolve into a report about the wrong runs. The
-    checklist is a deploy gate, so an unreadable continuation stops.
+    again, so both would report on the wrong runs. A deploy gate stops instead.
     """
     if not isinstance(wait_state, dict):
         raise TypeError(
@@ -409,7 +453,29 @@ def _require_wait_state(wait_state: object) -> dict:
             "and the fence that stops a forked chain compares it against a "
             "non-negative integer column."
         )
+    _require_ceiling(wait_state.get("ceiling_s"))
     return dict(wait_state)
+
+
+def _require_ceiling(ceiling_s: object) -> None:
+    """A carried ceiling is a positive number or absent; anything else is refused.
+
+    Absent is a state written before #213 and reads as the floor. A bool is
+    refused by name because it is an int to `isinstance`, and True would wait
+    one second.
+    """
+    if ceiling_s is None:
+        return
+    if (
+        isinstance(ceiling_s, bool)
+        or not isinstance(ceiling_s, (int, float))
+        or not math.isfinite(ceiling_s)
+        or ceiling_s <= 0
+    ):
+        raise ValueError(
+            f"run_deployment_checklist was continued with ceiling_s={ceiling_s!r}, "
+            "which is not a wait this build opened."
+        )
 
 
 def _open_wait(run_id: str, agent_id: str, conn_str: str) -> dict:
@@ -453,6 +519,10 @@ def _open_wait(run_id: str, agent_id: str, conn_str: str) -> dict:
         # Zero passes taken, which is what the freshly inserted row's own column
         # says too (#124). The first pass claims pass 0 and hands pass 1 on.
         "pass_no": 0,
+        # Sized once, when the wait opens, from the eval this checklist is about
+        # to start (#213). Carried so every continuation waits against the same
+        # number and a setting changed mid-wait cannot move it.
+        "ceiling_s": checklist_wait_ceiling_s(_scenario_count(conn_str)),
     }
 
 
@@ -517,10 +587,12 @@ def _stale_after_s() -> float:
     different route.
 
     So the threshold sums what ONE AGENT'S OWN JOBS can make a pass wait for: the
-    eval invocation bound, the red-team bound, the wait ceiling and the decide
-    grace, each read from the module that owns it. Derived rather than
+    eval invocation bound, the red-team bound, the wait ceiling's FLOOR and the
+    decide grace, each read from the module that owns it. Derived rather than
     configured, for the reason BACKLOG 1.33 records: a second number sized by
-    hand beside the first drifts away from it.
+    hand beside the first drifts away from it. Since #213 a wait can open above
+    the floor, and that is fine here: every pass beats before it polls, so the
+    silence a live chain produces is one poll interval, never the wait's length.
 
     THAT SUM IS NOT THE WHOLE QUEUE, AND NO CLOCK HERE COULD BE. `runtime` is
     shared, so a second agent's jobs ahead of this chain's continuation add
@@ -1566,7 +1638,7 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
     run_id = state["run_id"]
     waited_s = _waited_s(state)
     pending = _pending(state)
-    if _wait_continues(pending, waited_s):
+    if _wait_continues(pending, waited_s, _ceiling_of(state)):
         return _hand_off(agent_id, run_id, state, pending, waited_s)
 
     _log_wait_outcome(agent_id, state, waited_s)

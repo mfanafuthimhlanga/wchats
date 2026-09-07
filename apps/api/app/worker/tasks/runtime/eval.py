@@ -218,6 +218,15 @@ def _agent_turn_timeout_s() -> int:
     return AGENT_TURN_TIMEOUT_S
 
 
+#: generate_eval_suite skips when the tenant already holds this many scenarios,
+#: and otherwise asks the generator for GENERATED_SUITE_SIZE more. Named here
+#: because the checklist sizes its wait on the rows the eval will score, and a
+#: tenant under the skip line scores rows that did not exist when the wait
+#: opened (#213).
+GENERATION_SKIP_AT_ROWS = 10
+GENERATED_SUITE_SIZE = 20
+
+
 def eval_run_bound_s() -> float:
     """The wall clock one eval run can spend: every scenario, one turn budget each.
 
@@ -1426,7 +1435,7 @@ def generate_eval_suite(self, agent_id: str) -> dict:
         finally:
             _idm_conn.close()
 
-        if count >= 10:
+        if count >= GENERATION_SKIP_AT_ROWS:
             log.info(
                 "generate_eval_suite.idempotent_skip",
                 agent_id=agent_id,
@@ -1441,7 +1450,7 @@ def generate_eval_suite(self, agent_id: str) -> dict:
     # Generate scenario suite via scenario_service (Claude Haiku — D-12)
     # ------------------------------------------------------------------
     try:
-        count = generate_eval_suite_for_agent(agent_id, tenant_id, conn_str, num_scenarios=20)
+        count = generate_eval_suite_for_agent(agent_id, tenant_id, conn_str, num_scenarios=GENERATED_SUITE_SIZE)
         log.info(
             "generate_eval_suite.complete",
             agent_id=agent_id,
