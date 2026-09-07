@@ -137,6 +137,7 @@ from app.services.eval_service import (
     update_eval_run_status,
     write_eval_result,
     write_eval_results,
+    write_eval_samples,
 )
 from app.services.scenario_service import (
     generate_eval_suite_for_agent,
@@ -1270,9 +1271,9 @@ def run_eval_suite(self, agent_id: str) -> dict:
             update_eval_run_status(run_id, "complete", finished_at=True, conn_str=conn_str)
             results = dict(_NOTHING_SCORED)
         else:
-            # No connection string is passed: scoring reads nothing. It scores the
-            # AGENT'S responses against the contexts the AGENT retrieved, and each
-            # judge call bills this run through the recorder.
+            # The scored text lands before scoring so it outlives a Ragas outage
+            # (#58); scoring then bills this run through the recorder.
+            write_eval_samples(run_id, scored_scenarios, conn_str)
             results = run_ragas_eval(scored_scenarios, _run_ledger(tenant_id, agent_id, run_id, conn_str))
 
             # Observations land on PRODUCTION because the branch below is about
