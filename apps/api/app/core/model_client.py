@@ -119,6 +119,7 @@ Rung: `app.core` imports the standard library, third-party packages and
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import json
 import os
@@ -784,8 +785,14 @@ def attach_async_ledger_hook(
             if _body_is_unreadable(response, context):
                 return
             await response.aread()
-            _record_exchange(
-                response.text, response.request, context, provider, recorder, clock
+            # The recorder opens a psycopg2 connection and commits, which blocks. On
+            # the loop it would stall every other in-flight judge call for the
+            # connect and insert round trip (#206 review), so it runs on a thread.
+            # Every recorder binds a dsn string, one connection per write, so no
+            # connection is shared across threads.
+            await asyncio.to_thread(
+                _record_exchange,
+                response.text, response.request, context, provider, recorder, clock,
             )
         except Exception as exc:
             _log_record_failure(context, exc)
