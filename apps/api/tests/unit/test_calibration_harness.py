@@ -1345,7 +1345,11 @@ class TestTheCeilingIsMeasuredNotChosen:
 
         import inspect
 
-        source = inspect.getsource(cc.compute_correlation)
+        # The loop and the statistics it hands off to; the status is decided in
+        # the second and the first may not reach past it.
+        source = inspect.getsource(cc.compute_correlation) + inspect.getsource(
+            cc.agreement_result
+        )
         assert "0.6" not in source
         assert 'gate["calibrated"]' in source, (
             "the status must come from the two measured intervals and nothing else"
