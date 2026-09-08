@@ -21,7 +21,9 @@ RUN_ID = "11111111-1111-1111-1111-111111111111"
 
 def _scenario(n: int) -> dict:
     return {
-        "scenario_id": f"S-{n:03d}",
+        # `id`, the key the task's scenario fetch and `_placed_score_rows` use;
+        # a `scenario_id` key does not exist on a scored row.
+        "id": f"S-{n:03d}",
         "dataset": "golden" if n % 2 else "exploratory",
         "question": f"Question {n}?",
         "reference_answer": f"Reference {n}.",
@@ -57,7 +59,7 @@ def test_one_row_per_scenario_with_the_scored_strings_verbatim(connection):
         sql, params = call.args
         assert "INSERT INTO eval_samples" in sql
         assert params["eval_run_id"] == RUN_ID
-        assert params["scenario_id"] == scenario["scenario_id"]
+        assert params["scenario_id"] == scenario["id"]
         assert params["dataset"] == scenario["dataset"]
         assert params["user_input"] == scenario["question"]
         assert params["response"] == scenario["agent_response"]
@@ -68,6 +70,25 @@ def test_one_row_per_scenario_with_the_scored_strings_verbatim(connection):
         )
     connection["conn"].commit.assert_called_once()
     connection["conn"].close.assert_called_once()
+
+
+def test_the_scenario_id_comes_from_the_same_key_the_results_row_uses(connection):
+    """Run 7 (2026-09-08) wrote 31 rows with an empty scenario_id because the
+    writer read `scenario_id` off a dict that carries `id`. The results row for
+    the same scenario reads `id` (`_placed_score_rows`), and the calibration
+    sheet joins the two on it.
+    """
+    scenario = _scenario(3)
+    scenario["scenario_id"] = "WRONG-KEY"
+
+    es.write_eval_samples(RUN_ID, [scenario], "postgresql://prod")
+
+    [(_sql, params)] = [c.args for c in connection["cursor"].execute.call_args_list]
+    assert params["scenario_id"] == "S-003"
+    placed = es._placed_score_rows(
+        [{"faithfulness": 0.5}], [0], [scenario], ["faithfulness"]
+    )[0][0]["scenario_id"]
+    assert params["scenario_id"] == placed
 
 
 def test_an_empty_agent_retrieval_stays_empty(connection):
