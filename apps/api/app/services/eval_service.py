@@ -1708,12 +1708,13 @@ def _sample_row_params(eval_run_id: str, scenario: Mapping) -> dict:
 
     Read off the same keys `run_ragas_eval` reads (`question`, `agent_response`,
     `retrieved_contexts`, `reference_answer`), so the row is what was scored and
-    not a second rendering of it.
+    not a second rendering of it. The scenario's id is under `id`, the key
+    `_placed_score_rows` reads for the `eval_results` row, so the two tables join.
     """
     return {
         "id": str(uuid.uuid4()),
         "eval_run_id": eval_run_id,
-        "scenario_id": str(scenario.get("scenario_id", "")),
+        "scenario_id": str(scenario.get("id", "")),
         "dataset": scenario.get("dataset"),
         "user_input": str(scenario.get("question", "")),
         "response": str(scenario.get("agent_response", "")),
