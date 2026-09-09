@@ -1694,11 +1694,12 @@ def write_eval_results(
 _INSERT_EVAL_SAMPLE = """
     INSERT INTO eval_samples (
         id, eval_run_id, scenario_id, dataset,
-        user_input, response, retrieved_contexts, reference
+        user_input, response, retrieved_contexts, reference, turns
     )
     VALUES (
         %(id)s::uuid, %(eval_run_id)s::uuid, %(scenario_id)s, %(dataset)s,
-        %(user_input)s, %(response)s, %(retrieved_contexts)s::jsonb, %(reference)s
+        %(user_input)s, %(response)s, %(retrieved_contexts)s::jsonb, %(reference)s,
+        %(turns)s::jsonb
     )
 """
 
@@ -1710,6 +1711,13 @@ def _sample_row_params(eval_run_id: str, scenario: Mapping) -> dict:
     `retrieved_contexts`, `reference_answer`), so the row is what was scored and
     not a second rendering of it. The scenario's id is under `id`, the key
     `_placed_score_rows` reads for the `eval_results` row, so the two tables join.
+
+    `turns` is the fifth thing and it is not scored (tenant 0028, #227). It is
+    the conversation the question was asked in, carried onto the row so the
+    calibration sheet can show a human what bound the question. Without it a
+    follow-up reaches the labeller with its binding stripped off, and the label
+    is a judgement of an answer to a question nobody asked. `[]` for a
+    single-turn scenario, which is every row the eval scored before #227.
     """
     return {
         "id": str(uuid.uuid4()),
@@ -1722,6 +1730,14 @@ def _sample_row_params(eval_run_id: str, scenario: Mapping) -> dict:
             [str(c) for c in scenario.get("retrieved_contexts", [])]
         ),
         "reference": str(scenario.get("reference_answer", "")),
+        # THE HISTORY THE AGENT WAS ACTUALLY GIVEN, which `_invoke_agent_for_
+        # scenarios` writes over the scenario's raw column on the scored row.
+        # Same rule as `retrieved_contexts` one line up, for the same reason: a
+        # labeller judging an answer has to see the context the model saw, and
+        # the raw column can hold rows the bound dropped or cut.
+        "turns": json.dumps(
+            scenario.get("turns") if isinstance(scenario.get("turns"), list) else []
+        ),
     }
 
 

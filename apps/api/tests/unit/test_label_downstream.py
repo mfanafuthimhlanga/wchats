@@ -61,7 +61,6 @@ import ast
 import dataclasses
 import inspect
 import os
-import re
 import uuid
 from contextlib import contextmanager
 from types import MappingProxyType
@@ -328,11 +327,20 @@ def _after(monkeypatch, silent_ids=()):
 
 
 def _task_sql(name: str) -> str:
-    """One of run_eval_suite's local SQL constants, read out of its source."""
-    source = inspect.getsource(mod.run_eval_suite)
-    match = re.search(rf'{name} = """(.*?)"""', source, re.DOTALL)
-    assert match, f"{name} is no longer a triple-quoted local in run_eval_suite"
-    return match.group(1)
+    """One of the eval task's scenario selectors, the object the task executes.
+
+    Read by name off the module rather than regexed out of a function's source:
+    the three selectors moved to module scope with `_fetch_scenario_rows` (#227),
+    and `getattr` returns the string the task actually formats and sends rather
+    than a copy of it that a refactor could leave behind.
+    """
+    sql = getattr(mod, name, None)
+    assert isinstance(sql, str), (
+        f"{name} is no longer a module-level SQL string in the eval task. The "
+        "assertions below read the query the task sends; find its new name "
+        "rather than deleting them"
+    )
+    return sql
 
 
 # ---------------------------------------------------------------------------

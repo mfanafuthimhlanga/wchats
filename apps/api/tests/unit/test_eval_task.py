@@ -70,11 +70,13 @@ class _Cursor:
         exploratory_rows=(),
         legacy_rows=(),
         dataset_column_missing=False,
+        turns_column_missing=False,
     ):
         self.golden_rows = list(golden_rows)
         self.exploratory_rows = list(exploratory_rows)
         self.legacy_rows = list(legacy_rows)
         self.dataset_column_missing = dataset_column_missing
+        self.turns_column_missing = turns_column_missing
         self.executed: list[str] = []
         self._last: list = []
 
@@ -83,6 +85,11 @@ class _Cursor:
         if "FROM eval_scenarios" not in sql:
             self._last = []
             return
+        # `turns_column_missing=True` stands in for a tenant DB that stopped at
+        # 0027: only the widest rung of `_fetch_scenario_rows` names the column,
+        # so the middle rung answers and the golden split survives (#227).
+        if "turns" in sql and self.turns_column_missing:
+            raise psycopg2.errors.UndefinedColumn('column "turns" does not exist')
         if "dataset" in sql:
             if self.dataset_column_missing:
                 raise psycopg2.errors.UndefinedColumn(
@@ -678,6 +685,92 @@ class TestGoldenSetIsHeldFixed:
         assert result["attempted"] == 1
         assert result["datasets"]["exploratory"]["attempted"] == 1
         assert result["datasets"]["golden"]["attempted"] == 0
+
+    def test_a_tenant_without_the_turns_column_keeps_its_golden_split(
+        self, wired, monkeypatch
+    ):
+        """The middle rung of the ladder, and the reason it exists (#227).
+
+        `turns` arrives in tenant 0028. A database that stopped at 0027 refuses
+        the widest projection, and the first version of this fetch had only one
+        fallback: the pre-0014 query, which has no `dataset` column. So a tenant
+        one migration behind would have lost the golden set as well, and with it
+        the paired per-item delta the whole split exists to produce, while the
+        log said it predated 0014. It never held a multi-turn scenario, because
+        the column that could carry one was not there, so the only honest cost of
+        this rung is nothing.
+        """
+        conn = MagicMock()
+        cursor = _Cursor(
+            golden_rows=wired["cursor"].golden_rows,
+            exploratory_rows=wired["cursor"].exploratory_rows,
+            legacy_rows=[("d0000000-0000-0000-0000-00000000000d", "generated", "LQ", "LA", [], None)],
+            turns_column_missing=True,
+        )
+        conn.cursor.return_value = cursor
+        monkeypatch.setattr(mod.psycopg2, "connect", lambda *a, **kw: conn)
+
+        result = _run()
+
+        assert result["dataset_column_available"] is True, (
+            "a tenant DB missing only `turns` was reported as one that cannot be "
+            "asked about the golden set at all"
+        )
+        assert result["golden_set_present"] is True
+        assert result["datasets"]["golden"]["attempted"] == 2
+        assert result["attempted"] == 4, (
+            f"the run scored {result['attempted']} rows, so it fell through to "
+            "the pre-0014 single query rather than to the projection above it"
+        )
+
+
+# ---------------------------------------------------------------------------
+# One row as the dict every later step reads (tenant 0028, #227)
+# ---------------------------------------------------------------------------
+
+
+class TestTheScenarioRowBecomesAScenario:
+    """`_scenario_dict` reads the row positionally, behind one guard per column.
+
+    `_fetch_scenario_rows` returns rows from whichever projection the tenant
+    database accepted, so the trailing columns are present or absent by REVISION
+    and never by value. A guard that tested truthiness instead of length would
+    read a legitimate `false` or `[]` as a missing column.
+    """
+
+    _ROW_0027 = ("11111111-1111-1111-1111-111111111111", "generated", "Q", "A", [], "golden")
+    _TURNS = [{"role": "user", "content": "I'm setting up Earth Elements locally."}]
+
+    def test_a_pre_0028_row_is_a_single_turn_scenario(self):
+        scenario = mod._scenario_dict(self._ROW_0027)
+
+        assert scenario["turns"] == []
+        assert scenario["ambiguous"] is False
+        assert scenario["dataset"] == "golden"
+
+    def test_a_0028_row_carries_its_conversation_and_its_ambiguity(self):
+        scenario = mod._scenario_dict((*self._ROW_0027, self._TURNS, True))
+
+        assert scenario["turns"] == self._TURNS
+        assert scenario["ambiguous"] is True
+
+    def test_the_conversation_is_bounded_at_the_read(self):
+        """Once, here, so the model's context and the owner's sheet are one list.
+
+        Every later step reads this key: the turn hands it to the model and
+        `write_eval_samples` puts it in front of the owner. Bounding it later
+        would leave the sheet showing turns the model never saw.
+        """
+        from app.worker.tasks.runtime.agent import TURN_HISTORY_MAX_ROW_CHARS
+
+        overlong = [{"role": "user", "content": "x" * (TURN_HISTORY_MAX_ROW_CHARS + 9)}]
+        scenario = mod._scenario_dict((*self._ROW_0027, overlong, False))
+
+        assert len(scenario["turns"][0]["content"]) == TURN_HISTORY_MAX_ROW_CHARS
+
+    def test_a_turns_column_holding_something_else_is_dropped_not_sent(self):
+        assert mod._scenario_dict((*self._ROW_0027, "a string", False))["turns"] == []
+        assert mod._scenario_dict((*self._ROW_0027, None, False))["turns"] == []
 
 
 # ---------------------------------------------------------------------------

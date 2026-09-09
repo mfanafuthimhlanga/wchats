@@ -103,6 +103,40 @@ def test_an_empty_agent_retrieval_stays_empty(connection):
     )
 
 
+def test_the_conversation_the_answer_was_given_in_is_written_beside_it(connection):
+    """The fifth thing on the row, and it is not scored (tenant 0028, #227).
+
+    A follow-up question means nothing without the message that bound it. The
+    owner labels these rows, so a sheet built from a run that dropped the turns
+    asks a human whether an answer was relevant to a question they cannot see the
+    context of.
+    """
+    scenario = _scenario(4)
+    scenario["turns"] = [
+        {"role": "user", "content": "I'm setting up Earth Elements locally."},
+        {"role": "assistant", "content": "Happy to help. What do you need?"},
+    ]
+
+    es.write_eval_samples(RUN_ID, [scenario], "postgresql://prod")
+
+    [(sql, params)] = [c.args for c in connection["cursor"].execute.call_args_list]
+    assert "turns" in sql and "%(turns)s::jsonb" in sql
+    assert json.loads(params["turns"]) == scenario["turns"]
+
+
+def test_a_single_turn_scenario_writes_an_empty_conversation(connection):
+    """`[]`, never null. The column is NOT NULL and `[]` is the honest value.
+
+    Every row the eval scored before #227 is this row, and a writer that omitted
+    the key would make those runs fail the insert rather than record what they
+    were: a question asked with nothing before it.
+    """
+    es.write_eval_samples(RUN_ID, [_scenario(5)], "postgresql://prod")
+
+    [(_sql, params)] = [c.args for c in connection["cursor"].execute.call_args_list]
+    assert json.loads(params["turns"]) == []
+
+
 def test_an_empty_list_writes_nothing_and_opens_no_connection(connection):
     assert es.write_eval_samples(RUN_ID, [], "postgresql://prod") == 0
     assert connection["connects"] == []
