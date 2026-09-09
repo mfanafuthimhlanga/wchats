@@ -1694,6 +1694,28 @@ def write_eval_results(
 _INSERT_EVAL_SAMPLE = """
     INSERT INTO eval_samples (
         id, eval_run_id, scenario_id, dataset,
+        user_input, response, retrieved_contexts, reference, turns
+    )
+    VALUES (
+        %(id)s::uuid, %(eval_run_id)s::uuid, %(scenario_id)s, %(dataset)s,
+        %(user_input)s, %(response)s, %(retrieved_contexts)s::jsonb, %(reference)s,
+        %(turns)s::jsonb
+    )
+"""
+
+#: The pre-0028 shape. Used only when the wide INSERT raises UndefinedColumn.
+#:
+#: THE WRITE HAS TO TOLERATE WHAT THE READ TOLERATES. `run_eval_suite`'s scenario
+#: fetch degrades to a narrower projection on a tenant database behind head, so
+#: such a tenant runs its whole eval and pays for every agent turn. Without this
+#: fallback the run then died here, on the last write before scoring, and was
+#: recorded as `failed` with no `eval_results` and no retry: a night of model
+#: spend for nothing, and a run that had completed before `turns` was added to
+#: the INSERT above. `turns` is the only column 0028 adds that this writer names,
+#: and a sample row without it is the single-turn row every run wrote before #227.
+_INSERT_EVAL_SAMPLE_PRE_0028 = """
+    INSERT INTO eval_samples (
+        id, eval_run_id, scenario_id, dataset,
         user_input, response, retrieved_contexts, reference
     )
     VALUES (
@@ -1710,6 +1732,14 @@ def _sample_row_params(eval_run_id: str, scenario: Mapping) -> dict:
     `retrieved_contexts`, `reference_answer`), so the row is what was scored and
     not a second rendering of it. The scenario's id is under `id`, the key
     `_placed_score_rows` reads for the `eval_results` row, so the two tables join.
+
+    `turns` is the fifth thing and it is not scored (tenant 0028, #227). It is the
+    conversation the question was asked in. NOTHING READS IT YET: the calibration
+    harness selects six named columns and this is not one of them, and PR 2 of
+    #227 is what adds it to that SELECT. It is written now because the run that
+    produced the answer is the only place the conversation exists, and a run
+    scored before the sheet can show it would otherwise be unlabellable. `[]` for
+    a single-turn scenario, which is every row the eval scored before #227.
     """
     return {
         "id": str(uuid.uuid4()),
@@ -1722,6 +1752,14 @@ def _sample_row_params(eval_run_id: str, scenario: Mapping) -> dict:
             [str(c) for c in scenario.get("retrieved_contexts", [])]
         ),
         "reference": str(scenario.get("reference_answer", "")),
+        # THE HISTORY THE AGENT WAS ACTUALLY GIVEN. `_scenario_dict` bounds the
+        # scenario's raw column when the run reads it, so this key already holds
+        # what the model saw. Same rule as `retrieved_contexts` one line up, for
+        # the same reason: a labeller judging an answer has to be shown the
+        # context the model had, and the raw column can hold rows the bound cut.
+        "turns": json.dumps(
+            scenario.get("turns") if isinstance(scenario.get("turns"), list) else []
+        ),
     }
 
 
@@ -1745,11 +1783,34 @@ def write_eval_samples(
         log.info("write_eval_samples.no_rows", eval_run_id=eval_run_id)
         return 0
 
+    params = [_sample_row_params(eval_run_id, scenario) for scenario in scenarios]
     conn = psycopg2.connect(conn_str, connect_timeout=CONNECT_TIMEOUT_S)
-    try:
+
+    def _insert_all(statement: str) -> None:
         with conn.cursor() as cur:
-            for scenario in scenarios:
-                cur.execute(_INSERT_EVAL_SAMPLE, _sample_row_params(eval_run_id, scenario))
+            for row in params:
+                cur.execute(statement, row)
+
+    try:
+        try:
+            _insert_all(_INSERT_EVAL_SAMPLE)
+        except psycopg2.errors.UndefinedColumn:
+            # The aborted transaction must be rolled back before the connection
+            # will accept another statement. Every row is re-sent, and the reason
+            # is the loop rather than the transaction: psycopg2 parses each
+            # statement server-side, so the FIRST execute is the one that raises
+            # and no row was ever written. Restarting the loop on the narrow
+            # statement is what puts the whole set down.
+            conn.rollback()
+            log.warning(
+                "write_eval_samples.turns_column_absent",
+                eval_run_id=eval_run_id,
+                detail=(
+                    "tenant DB predates alembic_tenant 0028 — the scored text is "
+                    "recorded without the conversation it was asked in"
+                ),
+            )
+            _insert_all(_INSERT_EVAL_SAMPLE_PRE_0028)
         conn.commit()
     finally:
         conn.close()

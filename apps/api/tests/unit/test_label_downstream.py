@@ -61,7 +61,6 @@ import ast
 import dataclasses
 import inspect
 import os
-import re
 import uuid
 from contextlib import contextmanager
 from types import MappingProxyType
@@ -73,6 +72,11 @@ import pytest
 from app.domain import eval_result as eval_result_domain
 from app.services import deployment_service, eval_service
 from app.worker.tasks.runtime import eval as mod
+
+# The row builder, not a copy of it: this module drives the same selector, and two
+# hand-written row shapes are how a widened projection ends up covered on one side
+# only. `_named` zips strictly, so a double at the wrong width fails loudly.
+from tests.unit.test_eval_task import scenario_row
 
 PRODUCTION = "postgresql://production/tenant"
 
@@ -97,14 +101,16 @@ LABELLED_ID = "aaaaaaaa-0000-0000-0000-00000000000a"
 OWNER_ANSWER = "Yes — within 14 days of delivery, unopened."
 
 _GOLDEN_ROWS = [
-    ("g0000000-0000-0000-0000-000000000001", "generated", "GQ1", "GA1", [], "golden"),
-    ("g0000000-0000-0000-0000-000000000002", "generated", "GQ2", "GA2", [], "golden"),
+    scenario_row("g0000000-0000-0000-0000-000000000001", "GQ1", "GA1", dataset="golden"),
+    scenario_row("g0000000-0000-0000-0000-000000000002", "GQ2", "GA2", dataset="golden"),
 ]
 _EXPLORATORY_ROWS = [
-    ("11111111-1111-1111-1111-111111111111", "generated", "Q1", "A1", [], None),
-    ("22222222-2222-2222-2222-222222222222", "generated", "Q2", "A2", [], None),
+    scenario_row("11111111-1111-1111-1111-111111111111", "Q1", "A1"),
+    scenario_row("22222222-2222-2222-2222-222222222222", "Q2", "A2"),
 ]
-_LABELLED_ROW = (LABELLED_ID, "mined", "Do you refund?", OWNER_ANSWER, [], None)
+_LABELLED_ROW = scenario_row(
+    LABELLED_ID, "Do you refund?", OWNER_ANSWER, source="mined"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -328,11 +334,20 @@ def _after(monkeypatch, silent_ids=()):
 
 
 def _task_sql(name: str) -> str:
-    """One of run_eval_suite's local SQL constants, read out of its source."""
-    source = inspect.getsource(mod.run_eval_suite)
-    match = re.search(rf'{name} = """(.*?)"""', source, re.DOTALL)
-    assert match, f"{name} is no longer a triple-quoted local in run_eval_suite"
-    return match.group(1)
+    """One of the eval task's scenario selectors, the object the task executes.
+
+    Read by name off the module rather than regexed out of a function's source:
+    the three selectors moved to module scope with `_fetch_scenario_rows` (#227),
+    and `getattr` returns the string the task actually formats and sends rather
+    than a copy of it that a refactor could leave behind.
+    """
+    sql = getattr(mod, name, None)
+    assert isinstance(sql, str), (
+        f"{name} is no longer a module-level SQL string in the eval task. The "
+        "assertions below read the query the task sends; find its new name "
+        "rather than deleting them"
+    )
+    return sql
 
 
 # ---------------------------------------------------------------------------
@@ -390,14 +405,7 @@ class TestALabelledRowEntersTheEval:
 def _pool(n: int) -> list[tuple]:
     """*n* eligible, unlabelled-by-someone-else exploratory rows."""
     return [
-        (
-            f"eeeeeeee-0000-0000-0000-{i:012d}",
-            "generated",
-            f"Q{i}",
-            f"A{i}",
-            [],
-            None,
-        )
+        scenario_row(f"eeeeeeee-0000-0000-0000-{i:012d}", f"Q{i}", f"A{i}")
         for i in range(n)
     ]
 
