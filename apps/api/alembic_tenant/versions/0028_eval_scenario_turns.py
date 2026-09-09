@@ -44,8 +44,13 @@ Context:
 WHY DEFAULTS AND NOT A BACKFILL
     `[]` and `false` describe every existing row correctly. A scenario written
     before 0028 has no prior turns and is not ambiguous, because the eval that
-    wrote it could express neither. Nothing to backfill, and PostgreSQL 11+ adds
-    a defaulted NOT NULL column without rewriting the table.
+    wrote it could express neither.
+
+    OBSERVED 2026-09-09 rather than assumed, because every tenant this migration
+    reaches has a populated `eval_scenarios`. A row inserted at 0027 and then
+    carried up came out `turns = []`, `ambiguous = false`,
+    `resolved_question = NULL`, on the local probe cluster at PostgreSQL 17.6.
+    The reproduction is in `.dev/reference/260909-tenant-0028-observed.md`.
 
 WHY THE READ PATH STILL DEGRADES
     `run_eval_suite._fetch_scenario_rows` tries the widest projection first and
