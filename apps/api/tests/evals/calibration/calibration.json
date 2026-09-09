@@ -1,0 +1,40 @@
+{
+  "artifact_version": 1,
+  "attempted": 30,
+  "beats_chance": false,
+  "ceiling_beats_chance": true,
+  "ceiling_interval": {
+    "high": 1.0,
+    "low": 0.4423076923076923,
+    "point": 0.7913669064748201,
+    "usable": true
+  },
+  "difference_interval": {
+    "high": 1.1585070785070786,
+    "low": 0.40552892377238514,
+    "point": 0.8036872350169145,
+    "usable": true
+  },
+  "harness_version": "compute_correlation.py@1",
+  "judge_identity": {
+    "model": "gpt-5.6-luna",
+    "prompt_version": "ragas-0.4.3",
+    "reasoning_effort": "none"
+  },
+  "judge_interval": {
+    "high": 0.21973094170403587,
+    "low": -0.2608695652173913,
+    "point": -0.012320328542094456,
+    "usable": true
+  },
+  "kappa": -0.012320328542094456,
+  "labels_made_at": "2026-09-09T08:50:44.468446+00:00",
+  "matthews": -0.019462473604038074,
+  "pairs": 29,
+  "reaches_ceiling": false,
+  "reason": "(a) FAILED. The judge's kappa interval [-0.261, 0.220] includes 0, so this corpus does not show it doing better than chance. (b2) FAILED. You agree with yourself more than the judge agrees with you, by 0.804 kappa, and the whole interval [0.406, 1.159] is above 0. The judge is distinguishably worse than you are.",
+  "scored_pairs": 0,
+  "status": "not_calibrated",
+  "valid": 30,
+  "written_at": "2026-09-09T08:52:40.387762+00:00"
+}

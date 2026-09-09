@@ -1,0 +1,2647 @@
+scenario_id,dimension,human_verdict,human_score,notes,dataset,question,response,retrieved_contexts,reference
+05cc11f9-729c-45bd-abb9-1c715b0e167e,faithfulness,pass,,"vague question answered from a guessed project; a follow-up question was the right reply (owner, 2026-09-08)",exploratory,"What command should I run to execute the project’s tests, and what areas do the unit tests cover?","Run:
+
+```bash
+pnpm test
+```
+
+The unit tests cover:
+
+- Cart logic
+- Order validation and submission
+- Delivery-form schema, located under `src/tests/unit/`
+
+CITATIONS:
+- Document: Mellow's Earth Elements — Storefront | Section: Testing","Mellow's Earth Elements — Storefront
+Testing
+```
+pnpm test
+```
+Unit tests cover cart logic, order validation/submission, and the delivery-form schema (
+```
+src/tests/unit/
+```
+).
+
+Sentinel OHS
+Testing
+Unit tests
+```
+cd sentinel-server && npx vitest
+cd sentinel-web && npx vitest
+```
+
+| Run the unit tests (Vitest)   |
+|-------------------------------|
+
+Interview Volt
+The loop
+```
+┌──────────────┐
+        │  GENERATOR   │   me, answering out loud
+        └──────┬───────┘
+               │
+        ┌──────▼───────┐
+        │  EVALUATOR   │   an interviewer that has read my code
+        └──────┬───────┘   and does not accept a hand-wave
+               │
+        ┌──────▼───────┐
+        │   VERIFIED   │   the failure, written back:
+        │   OUTCOME    │   a concept page, a review card,
+        └──────┬───────┘   an answer ladder
+               │
+               └──────────► next session is harder
+```
+Four commands drive it:
+**```
+/mock <lane>
+```**
+**```
+/trap <project>
+```**
+**```
+/grade
+```**
+**```
+/drill
+```**
+,  = 
+Normal screening interview in one lane. Tests whether I canexplainthings — including things I haven't built.
+The adversarial one. The interviewer has read my source and goes straight for the holes. This is the one that earns its keep.
+Scores the session, writes the transcript, files the mistakes, schedules the review.
+Rapid recall from the review queue. Two lines per question, no discussion.
+
+| Tier                   | Harnesses                                                                                             | Coverage                                         |
+|------------------------|-------------------------------------------------------------------------------------------------------|--------------------------------------------------|
+| 1: full hook-block     | Claude Code, Codex, Cursor, Augment, CodeBuddy, Qwen Code, Gemini CLI, Copilot, Antigravity, Windsurf | Pre-exec hook: exit 2 + per-harness deny payload |
+| 2: hook-block, caveats | Hermes, Cline, OpenCode                                                                               |                                                  |","Run `pnpm test`. The unit tests cover cart logic, order validation and submission, and the delivery-form schema. The tests are located in `src/tests/unit/`."
+05cc11f9-729c-45bd-abb9-1c715b0e167e,answer_relevancy,fail,,"vague question answered from a guessed project; a follow-up question was the right reply (owner, 2026-09-08)",exploratory,"What command should I run to execute the project’s tests, and what areas do the unit tests cover?","Run:
+
+```bash
+pnpm test
+```
+
+The unit tests cover:
+
+- Cart logic
+- Order validation and submission
+- Delivery-form schema, located under `src/tests/unit/`
+
+CITATIONS:
+- Document: Mellow's Earth Elements — Storefront | Section: Testing","Mellow's Earth Elements — Storefront
+Testing
+```
+pnpm test
+```
+Unit tests cover cart logic, order validation/submission, and the delivery-form schema (
+```
+src/tests/unit/
+```
+).
+
+Sentinel OHS
+Testing
+Unit tests
+```
+cd sentinel-server && npx vitest
+cd sentinel-web && npx vitest
+```
+
+| Run the unit tests (Vitest)   |
+|-------------------------------|
+
+Interview Volt
+The loop
+```
+┌──────────────┐
+        │  GENERATOR   │   me, answering out loud
+        └──────┬───────┘
+               │
+        ┌──────▼───────┐
+        │  EVALUATOR   │   an interviewer that has read my code
+        └──────┬───────┘   and does not accept a hand-wave
+               │
+        ┌──────▼───────┐
+        │   VERIFIED   │   the failure, written back:
+        │   OUTCOME    │   a concept page, a review card,
+        └──────┬───────┘   an answer ladder
+               │
+               └──────────► next session is harder
+```
+Four commands drive it:
+**```
+/mock <lane>
+```**
+**```
+/trap <project>
+```**
+**```
+/grade
+```**
+**```
+/drill
+```**
+,  = 
+Normal screening interview in one lane. Tests whether I canexplainthings — including things I haven't built.
+The adversarial one. The interviewer has read my source and goes straight for the holes. This is the one that earns its keep.
+Scores the session, writes the transcript, files the mistakes, schedules the review.
+Rapid recall from the review queue. Two lines per question, no discussion.
+
+| Tier                   | Harnesses                                                                                             | Coverage                                         |
+|------------------------|-------------------------------------------------------------------------------------------------------|--------------------------------------------------|
+| 1: full hook-block     | Claude Code, Codex, Cursor, Augment, CodeBuddy, Qwen Code, Gemini CLI, Copilot, Antigravity, Windsurf | Pre-exec hook: exit 2 + per-harness deny payload |
+| 2: hook-block, caveats | Hermes, Cline, OpenCode                                                                               |                                                  |","Run `pnpm test`. The unit tests cover cart logic, order validation and submission, and the delivery-form schema. The tests are located in `src/tests/unit/`."
+0a9c1e5d-9620-478f-acae-b2e498695e73,faithfulness,pass,,"vague question answered from a guessed project; a follow-up question was the right reply (owner, 2026-09-08)",exploratory,"How can I start the app locally, and which command runs the production preview?","To start the app locally, run:
+
+```bash
+pnpm dev
+```
+
+To preview the production build, run:
+
+```bash
+pnpm preview
+```
+
+CITATIONS:
+- Document: Mellow's Earth Elements — Storefront | Section: Getting Started — Scripts","Mellow's Earth Elements — Storefront
+Getting Started
+Scripts
+```
+pnpm dev
+```
+```
+pnpm build
+```
+```
+dist/
+```
+```
+pnpm preview
+```
+```
+pnpm test
+```
+```
+pnpm typecheck
+```
+```
+tsc --noEmit
+```
+```
+pnpm lint
+```
+, Description = 
+Start the Vite dev server
+Preview the production build
+Run the unit tests (Vitest)
+Lint with ESLint
+
+| Preview the production build   |
+|--------------------------------|
+
+Sentinel OHS
+Getting started
+3. Web app
+```
+cd sentinel-web
+npm install
+npm run dev   # Vite on http://localhost:5173
+```
+
+W Chats
+Running locally
+Development targets local processes on a modest machine. There is no Docker path — it was tried and abandoned at 6 GB+ minimum.
+```
+redis-server                                              # broker + SSE pub/sub
+uvicorn app.main:app --reload                             # from apps/api
+celery -A app.worker.celery_app worker -Q pipeline        # ingestion
+celery -A app.worker.celery_app worker -Q runtime         # agent turns, evals, red team
+pnpm dev                                                  # from apps/admin
+```
+```
+cd apps/api && ./.venv/Scripts/python.exe -m pytest tests/unit -q
+```
+You will need a Neon API key, an Anthropic API key, and either Bedrock access or a Voyage key. See
+```
+.env.example
+```
+.
+
+| Start the Vite dev server   |
+|-----------------------------|",Run `pnpm dev` to start the Vite development server. Run `pnpm preview` to preview the production build.
+0a9c1e5d-9620-478f-acae-b2e498695e73,answer_relevancy,fail,,"vague question answered from a guessed project; a follow-up question was the right reply (owner, 2026-09-08)",exploratory,"How can I start the app locally, and which command runs the production preview?","To start the app locally, run:
+
+```bash
+pnpm dev
+```
+
+To preview the production build, run:
+
+```bash
+pnpm preview
+```
+
+CITATIONS:
+- Document: Mellow's Earth Elements — Storefront | Section: Getting Started — Scripts","Mellow's Earth Elements — Storefront
+Getting Started
+Scripts
+```
+pnpm dev
+```
+```
+pnpm build
+```
+```
+dist/
+```
+```
+pnpm preview
+```
+```
+pnpm test
+```
+```
+pnpm typecheck
+```
+```
+tsc --noEmit
+```
+```
+pnpm lint
+```
+, Description = 
+Start the Vite dev server
+Preview the production build
+Run the unit tests (Vitest)
+Lint with ESLint
+
+| Preview the production build   |
+|--------------------------------|
+
+Sentinel OHS
+Getting started
+3. Web app
+```
+cd sentinel-web
+npm install
+npm run dev   # Vite on http://localhost:5173
+```
+
+W Chats
+Running locally
+Development targets local processes on a modest machine. There is no Docker path — it was tried and abandoned at 6 GB+ minimum.
+```
+redis-server                                              # broker + SSE pub/sub
+uvicorn app.main:app --reload                             # from apps/api
+celery -A app.worker.celery_app worker -Q pipeline        # ingestion
+celery -A app.worker.celery_app worker -Q runtime         # agent turns, evals, red team
+pnpm dev                                                  # from apps/admin
+```
+```
+cd apps/api && ./.venv/Scripts/python.exe -m pytest tests/unit -q
+```
+You will need a Neon API key, an Anthropic API key, and either Bedrock access or a Voyage key. See
+```
+.env.example
+```
+.
+
+| Start the Vite dev server   |
+|-----------------------------|",Run `pnpm dev` to start the Vite development server. Run `pnpm preview` to preview the production build.
+14d2ec20-366c-423f-91cb-33c0618d95b3,faithfulness,pass,,,golden,"How is a W Chats agent checked before it goes live, and after?","Before going live, a W Chats agent must:
+
+- Be grounded in the tenant’s own documents.
+- Pass automated evaluations measuring faithfulness, answer relevance, context precision, and context recall.
+- Pass red-team testing for prompt injection, data leakage, hallucinations, and transaction-specific risks.
+- Clear the pre-deployment gate. A critical red-team finding blocks deployment.  
+  *(W Chats, “The four steps”; “Managed deploys: evals and red teaming as gates”)*
+
+After going live, it continues to be checked through a validation chain:
+
+- **Gatekeeper:** checks whether the response answers the question.
+- **Strategist:** checks coherence, brand alignment, and role alignment.
+- **Auditor:** checks whether the response is grounded, with citation spans.
+- **Actor:** checks whether an action should be approved, blocked, or require a human—particularly before anything changes or mutates.
+- Production conversations flagged by the Gatekeeper or Auditor are turned into new evaluation scenarios, so real failures improve the test suite.  
+  *(W Chats, “The validation chain”; “Managed deploys: evals and red teaming as gates”)*
+
+CITATIONS:
+- Document: W Chats | Section: The four steps
+- Document: W Chats | Section: Managed deploys: evals and red teaming as gates
+- Document: W Chats | Section: The validation chain","W Chats
+Managed deploys: evals and red teaming as gates
+**Evals.**
+A scenario-generator agent builds a suite from the tenant's own domain. Runs are scored on four Ragas 0.4.x metrics — Faithfulness, Answer Relevance, Context Precision, Context Recall — and execute against a
+*Neon branch*
+of the tenant database, never the production branch. Celery beat runs them nightly. Production conversations that the Gatekeeper or Auditor flagged are mined back into new scenarios, so the suite grows from real failures.
+**The failure-triage flywheel.**
+An operator grades a failing production trace
+```
+filed
+```
+, and it is promoted into the eval suite with
+```
+source='production'
+```
+and its originating trace id. A filed trace cannot be withdrawn. The eval ledger reports born-in-production scenarios separately from authored ones.
+**Red teaming.**
+Adversarial agents attack the deployed agent across prompt-injection (split into conversation-injection and content-injection variants), data-leakage, and hallucination classes, plus transaction-specific probes — confused-deputy, value-bound evasion, identity-bypass. Findings are severity-classified and stored as first-class rows with strategy/probe/coverage rollups.
+**These are gates, not reports.**
+A live critical red-team finding drives the pre-deployment checklist to
+```
+recommendation='block'
+```
+, and
+```
+POST /approve-deployment
+```
+then returns
+**422**
+. The owner cannot deploy past it.
+
+W Chats
+**A multi-tenant platform for deploying customer-service and transactional AI agents that are defensible before they ever meet a customer.**
+Most ""AI agent"" products let you ship a chatbot and hope. This one refuses to. An agent cannot reach a customer until it has been grounded in the business's own documents, scored by an automated eval suite, and attacked by a red team — and every one of those results is a gate, not a dashboard widget.
+The target user is a non-technical business owner — a salon, a repair shop, an e-commerce store — who needs a support agent on their site without hiring a developer.
+There are two ways to drive it, and they are the same four steps either way:
+- **By hand, in the console.** The owner walks the journey themselves: name the agent, draft its soul, upload documents, run the evals and the red team, clear the gate.
+- **Programmatically, from a command line.** The whole journey is a REST + SSE surface behind `X-API-Key` auth, so a developer's coding agent can create the tenant, stream provisioning progress, ingest a corpus, trigger an eval or red-team run, and poll the deployment gate — without a browser.
+Same gates on both paths. The console is a client of the API, not a privileged one.
+
+W Chats
+The four steps
+The entire product is one journey. The console is built around it, and the API exposes it step for step — so the sequence below is what an owner clicks through, and equally what a coding agent scripts.
+1, Step = Create. 1, What happens = Name the agent and set its temper. A dedicated Neon Postgres project is provisioned for the tenant, migrations run programmatically, and progress streams back over SSE.. 2, Step = Configure. 2, What happens = Draft the agent'ssoul(voice, do-list, do-not-list) and load the documents. Ingestion parses, chunks, enriches, and embeds them.. 3, Step = Test. 3, What happens = Run the evals, then the red team. Both write real rows; both can block.. 4, Step = Deploy. 4, What happens = Clear the pre-deployment gate, then take customers. A copy-paste widget snippet goes on the owner's own site.
+Nothing is public until it clears its gate.
+
+W Chats
+The validation chain
+Four independent judges, each answering a different question. Three run asynchronously after the response streams to the customer; the fourth runs
+*synchronously, before*
+anything mutates.
+```
+pass · fail · needs_clarification
+```
+```
+grounded · ungrounded · partial
+```
+(with citation spans) |
+```
+ship · revise · escalate
+```
+```
+approve · block · require_human
+```
+Gatekeeper, Asks = Does this address the question actually asked?. Gatekeeper, Verdicts = 
+Strategist. Is this coherent, on-brand, aligned with the agent's role?
+Persistent
+```
+ungrounded
+```
+verdicts on a retrieval pattern flag the agent for strategy resynthesis. Every verdict is Pydantic-validated and traced to Langfuse.
+
+W Chats
+Status
+Built in 22 planned phases across three milestones. ~29k lines of Python, 1,103 passing unit tests.
+M1–M11,  = ✅ Control plane, ingestion, hybrid retrieval, reasoning engine + widget, validation chain, evals, red team, pre-deployment checklist, retrieval-strategy synthesis, observability, admin UI. v1.1 — Transactional,  = ✅ Phases 14–17 (tool contracts, Actor validator, integration adapters, identity verification). ⏳ Phase 18 at 9/11 (blast-radius gate, capability UI, transaction red-team, PII firewall). Phase 19 (docs + E2E proof) not started.. v1.2 — Console + agent management,  = ✅ Frontend cutover and the agent-management backend — live metrics, RAG-health instrumentation, the triage flywheel, prompt versioning with canary and rollback. Production hosting,  = ⏸️Paused.Terraform, Bedrock embeddings, connection pooling, S3 uploads and concurrency-safe workers are all written; standing them up needs a real AWS account.
+**Being honest about what that means:**
+the end-to-end path has been proven live — a grounded, cited answer served to a browser through a tunnel — but there is no always-on deployment today, and the v1.2 migrations have not yet been applied to a live database. This is a complete, tested system awaiting infrastructure, not a running service.","Every response passes a three-judge chain. Nightly Ragas evals run with automatic scenario generation, PyRIT red-team agents attack the agent and their high-severity findings block deployment, and an orchestrator reads every signal into a recommendation that a non-technical owner approves."
+14d2ec20-366c-423f-91cb-33c0618d95b3,answer_relevancy,pass,,,golden,"How is a W Chats agent checked before it goes live, and after?","Before going live, a W Chats agent must:
+
+- Be grounded in the tenant’s own documents.
+- Pass automated evaluations measuring faithfulness, answer relevance, context precision, and context recall.
+- Pass red-team testing for prompt injection, data leakage, hallucinations, and transaction-specific risks.
+- Clear the pre-deployment gate. A critical red-team finding blocks deployment.  
+  *(W Chats, “The four steps”; “Managed deploys: evals and red teaming as gates”)*
+
+After going live, it continues to be checked through a validation chain:
+
+- **Gatekeeper:** checks whether the response answers the question.
+- **Strategist:** checks coherence, brand alignment, and role alignment.
+- **Auditor:** checks whether the response is grounded, with citation spans.
+- **Actor:** checks whether an action should be approved, blocked, or require a human—particularly before anything changes or mutates.
+- Production conversations flagged by the Gatekeeper or Auditor are turned into new evaluation scenarios, so real failures improve the test suite.  
+  *(W Chats, “The validation chain”; “Managed deploys: evals and red teaming as gates”)*
+
+CITATIONS:
+- Document: W Chats | Section: The four steps
+- Document: W Chats | Section: Managed deploys: evals and red teaming as gates
+- Document: W Chats | Section: The validation chain","W Chats
+Managed deploys: evals and red teaming as gates
+**Evals.**
+A scenario-generator agent builds a suite from the tenant's own domain. Runs are scored on four Ragas 0.4.x metrics — Faithfulness, Answer Relevance, Context Precision, Context Recall — and execute against a
+*Neon branch*
+of the tenant database, never the production branch. Celery beat runs them nightly. Production conversations that the Gatekeeper or Auditor flagged are mined back into new scenarios, so the suite grows from real failures.
+**The failure-triage flywheel.**
+An operator grades a failing production trace
+```
+filed
+```
+, and it is promoted into the eval suite with
+```
+source='production'
+```
+and its originating trace id. A filed trace cannot be withdrawn. The eval ledger reports born-in-production scenarios separately from authored ones.
+**Red teaming.**
+Adversarial agents attack the deployed agent across prompt-injection (split into conversation-injection and content-injection variants), data-leakage, and hallucination classes, plus transaction-specific probes — confused-deputy, value-bound evasion, identity-bypass. Findings are severity-classified and stored as first-class rows with strategy/probe/coverage rollups.
+**These are gates, not reports.**
+A live critical red-team finding drives the pre-deployment checklist to
+```
+recommendation='block'
+```
+, and
+```
+POST /approve-deployment
+```
+then returns
+**422**
+. The owner cannot deploy past it.
+
+W Chats
+**A multi-tenant platform for deploying customer-service and transactional AI agents that are defensible before they ever meet a customer.**
+Most ""AI agent"" products let you ship a chatbot and hope. This one refuses to. An agent cannot reach a customer until it has been grounded in the business's own documents, scored by an automated eval suite, and attacked by a red team — and every one of those results is a gate, not a dashboard widget.
+The target user is a non-technical business owner — a salon, a repair shop, an e-commerce store — who needs a support agent on their site without hiring a developer.
+There are two ways to drive it, and they are the same four steps either way:
+- **By hand, in the console.** The owner walks the journey themselves: name the agent, draft its soul, upload documents, run the evals and the red team, clear the gate.
+- **Programmatically, from a command line.** The whole journey is a REST + SSE surface behind `X-API-Key` auth, so a developer's coding agent can create the tenant, stream provisioning progress, ingest a corpus, trigger an eval or red-team run, and poll the deployment gate — without a browser.
+Same gates on both paths. The console is a client of the API, not a privileged one.
+
+W Chats
+The four steps
+The entire product is one journey. The console is built around it, and the API exposes it step for step — so the sequence below is what an owner clicks through, and equally what a coding agent scripts.
+1, Step = Create. 1, What happens = Name the agent and set its temper. A dedicated Neon Postgres project is provisioned for the tenant, migrations run programmatically, and progress streams back over SSE.. 2, Step = Configure. 2, What happens = Draft the agent'ssoul(voice, do-list, do-not-list) and load the documents. Ingestion parses, chunks, enriches, and embeds them.. 3, Step = Test. 3, What happens = Run the evals, then the red team. Both write real rows; both can block.. 4, Step = Deploy. 4, What happens = Clear the pre-deployment gate, then take customers. A copy-paste widget snippet goes on the owner's own site.
+Nothing is public until it clears its gate.
+
+W Chats
+The validation chain
+Four independent judges, each answering a different question. Three run asynchronously after the response streams to the customer; the fourth runs
+*synchronously, before*
+anything mutates.
+```
+pass · fail · needs_clarification
+```
+```
+grounded · ungrounded · partial
+```
+(with citation spans) |
+```
+ship · revise · escalate
+```
+```
+approve · block · require_human
+```
+Gatekeeper, Asks = Does this address the question actually asked?. Gatekeeper, Verdicts = 
+Strategist. Is this coherent, on-brand, aligned with the agent's role?
+Persistent
+```
+ungrounded
+```
+verdicts on a retrieval pattern flag the agent for strategy resynthesis. Every verdict is Pydantic-validated and traced to Langfuse.
+
+W Chats
+Status
+Built in 22 planned phases across three milestones. ~29k lines of Python, 1,103 passing unit tests.
+M1–M11,  = ✅ Control plane, ingestion, hybrid retrieval, reasoning engine + widget, validation chain, evals, red team, pre-deployment checklist, retrieval-strategy synthesis, observability, admin UI. v1.1 — Transactional,  = ✅ Phases 14–17 (tool contracts, Actor validator, integration adapters, identity verification). ⏳ Phase 18 at 9/11 (blast-radius gate, capability UI, transaction red-team, PII firewall). Phase 19 (docs + E2E proof) not started.. v1.2 — Console + agent management,  = ✅ Frontend cutover and the agent-management backend — live metrics, RAG-health instrumentation, the triage flywheel, prompt versioning with canary and rollback. Production hosting,  = ⏸️Paused.Terraform, Bedrock embeddings, connection pooling, S3 uploads and concurrency-safe workers are all written; standing them up needs a real AWS account.
+**Being honest about what that means:**
+the end-to-end path has been proven live — a grounded, cited answer served to a browser through a tunnel — but there is no always-on deployment today, and the v1.2 migrations have not yet been applied to a live database. This is a complete, tested system awaiting infrastructure, not a running service.","Every response passes a three-judge chain. Nightly Ragas evals run with automatic scenario generation, PyRIT red-team agents attack the agent and their high-severity findings block deployment, and an orchestrator reads every signal into a recommendation that a non-technical owner approves."
+21e4ac56-ce4e-4d5b-8583-a682d3642796,faithfulness,pass,,"vague question answered from a guessed project; a follow-up question was the right reply (owner, 2026-09-08)",exploratory,What command starts the Vite development server?,"Run:
+
+```bash
+pnpm dev
+```
+
+CITATIONS:
+- Document: Mellow's Earth Elements — Storefront | Section: Getting Started / Scripts","| Start the Vite dev server   |
+|-----------------------------|
+
+Mellow's Earth Elements — Storefront
+Getting Started
+Scripts
+```
+pnpm dev
+```
+```
+pnpm build
+```
+```
+dist/
+```
+```
+pnpm preview
+```
+```
+pnpm test
+```
+```
+pnpm typecheck
+```
+```
+tsc --noEmit
+```
+```
+pnpm lint
+```
+, Description = 
+Start the Vite dev server
+Preview the production build
+Run the unit tests (Vitest)
+Lint with ESLint
+
+Sentinel OHS
+Getting started
+3. Web app
+```
+cd sentinel-web
+npm install
+npm run dev   # Vite on http://localhost:5173
+```
+
+Mellow's Earth Elements — Storefront
+Getting Started
+```
+pnpm install
+pnpm dev
+```
+The dev server runs on
+**http://localhost:8080**
+(falls back to the next free port — e.g. 8081 — if 8080 is taken).
+
+Mellow's Earth Elements — Storefront
+Deployment (Vercel)
+Import the repo, framework
+**Vite**
+. Build settings are in
+```
+vercel.json
+```
+:
+- **Build:** `pnpm build`
+- **Output:** `dist`
+- **Install:** `pnpm install --frozen-lockfile`",The content only includes the heading “Start the Vite dev server” and does not provide the command.
+21e4ac56-ce4e-4d5b-8583-a682d3642796,answer_relevancy,fail,,"vague question answered from a guessed project; a follow-up question was the right reply (owner, 2026-09-08)",exploratory,What command starts the Vite development server?,"Run:
+
+```bash
+pnpm dev
+```
+
+CITATIONS:
+- Document: Mellow's Earth Elements — Storefront | Section: Getting Started / Scripts","| Start the Vite dev server   |
+|-----------------------------|
+
+Mellow's Earth Elements — Storefront
+Getting Started
+Scripts
+```
+pnpm dev
+```
+```
+pnpm build
+```
+```
+dist/
+```
+```
+pnpm preview
+```
+```
+pnpm test
+```
+```
+pnpm typecheck
+```
+```
+tsc --noEmit
+```
+```
+pnpm lint
+```
+, Description = 
+Start the Vite dev server
+Preview the production build
+Run the unit tests (Vitest)
+Lint with ESLint
+
+Sentinel OHS
+Getting started
+3. Web app
+```
+cd sentinel-web
+npm install
+npm run dev   # Vite on http://localhost:5173
+```
+
+Mellow's Earth Elements — Storefront
+Getting Started
+```
+pnpm install
+pnpm dev
+```
+The dev server runs on
+**http://localhost:8080**
+(falls back to the next free port — e.g. 8081 — if 8080 is taken).
+
+Mellow's Earth Elements — Storefront
+Deployment (Vercel)
+Import the repo, framework
+**Vite**
+. Build settings are in
+```
+vercel.json
+```
+:
+- **Build:** `pnpm build`
+- **Output:** `dist`
+- **Install:** `pnpm install --frozen-lockfile`",The content only includes the heading “Start the Vite dev server” and does not provide the command.
+4b0b3432-7024-4f12-a9fb-2a01ccbc01a4,faithfulness,pass,,,golden,What problem does Beekeeper solve?,"Beekeeper solves the problem of autonomous coding agents making unsafe tool and dependency decisions with outdated knowledge. It provides fresh, corroborated threat intelligence and evaluates package installs, file access, network calls, and tool calls before execution—blocking actions that fail policy checks. This helps protect against supply-chain attacks, such as malicious packages published after the agent’s training cutoff. *(Beekeeper documentation, “Why”; “Threat intelligence for autonomous coding agents”)*
+
+CITATIONS:
+- Document: Beekeeper | Section: Why
+- Document: Beekeeper | Section: Threat intelligence for autonomous coding agents","Beekeeper
+Why
+A coding agent's knowledge of which packages are safe is frozen at its training cutoff. It installs
+```
+some-build-tool@1.4.2
+```
+because the task needs it, with no way to know that version published a postinstall credential stealer after that cutoff, and no instinct to treat a routine dependency as a risk. The 2026 supply-chain wave (Nx Console, Shai-Hulud, the npm trusted-publisher OIDC attacks) targets exactly that gap: code that reaches a developer through a trusted, well-meaning install. Beekeeper puts a corroborated threat check in front of the install, synced every two hours, with a second-source requirement and an audit trail.
+
+Beekeeper
+**Threat intelligence for autonomous coding agents.**
+Beekeeper sits between an agent and its tools. It evaluates each package install, file access, network call, and tool call before it runs, against corroboration-based threat intelligence and structural policy, and blocks what does not pass. It is a single static Go binary with no external runtime dependencies.
+The threat is the supply chain, not the model. Your agent installs the dependency the task needs, with no way to know that version shipped a credential stealer after its training cutoff. Beekeeper carries the fresh, corroborated knowledge the model lacks and checks the install before it runs.
+[Harness support](#harness-support)
+and
+[Known gaps](#known-gaps)
+state what it covers and where coverage stops. Read those before you trust it with anything.
+**v1.0.0**
+is the first public release. License: Apache 2.0.
+
+Systems make agents deterministic and reliable - not prompts, not the model.
+Three systems, one loop applied three ways.
+Beekeeper
+The loop
+The agent is the generator, Beekeeper the evaluator, the signed catalogs the evidence. Confirm a threat once and it's written to a local overlay, so the same machine catches the repeat the instant it lands - ahead of the upstream feed. The verified outcome: a tool call that has been checked, not trusted.
+Not the artifact, the
+**reasoning behind it**
+. The situation I read, the option I rejected, the risk I removed, the change it made.
+Situation
+Threat sources disagree constantly. A package one feed flags, another rates clean. A gate that fires on any single hit is a gate developers disable by lunchtime.
+Call
+A tunable, per-ecosystem N-source agreement threshold: one source warns, two enforce, three trigger quarantine. Rejected the obvious
+**""any hit blocks""**
+because a tool that cries wolf gets switched off, and a switched-off guard protects nothing.
+Risk held
+A poisoned catalog weaponizing the gate. Defended structurally: signature-verified catalogs, per-sync delta caps that drop suspicious bulk-blocks to audit-only, and a recursive self-kill entry so a compromised Beekeeper quarantines itself.
+Change
+Enforcement strict enough to stop a real worm, calibrated enough to stay on. The blast radius sets the aggression, not a global default. Most days it looks like nothing happened, which is the point.
+No. 02 Production-grade · most ambitious
+11 layers · M1-M10 shipped
+
+Beekeeper
+What it does
+3. Sentry behavioral correlation (detection-only, opt-in)
+A privileged, opt-in monitor (
+```
+beekeeper protect install
+```
+) correlates process, file, and network events into rules
+```
+SENTRY-001
+```
+through
+```
+SENTRY-008
+```
+: credential-file clusters, credential-CLI bursts, first-outbound phone-home, fresh-extension correlation, exfil-signature fusion, an agent-CLI credential cluster, a generalized exfil fusion, and persistence-location writes. Rules fire for processes descended from an editor (
+```
+code/cursor/windsurf/codium
+```
+) or a known agent CLI (
+```
+claude/codex/cursor-agent/gemini/copilot/qwen/aider/opencode/hermes
+```
+), so a standalone-terminal agent is in scope, not only an editor extension. File-write events are ingested on Linux, macOS, and Windows; DNS query events on Linux and Windows.
+Sentry is detection-only: it writes audit records, it does not quarantine or kill. A catalog hit can tighten correlation on a flagged artifact's process subtree, still detection-only.
+
+Beekeeper
+License
+Apache 2.0. Threat intelligence is inspired by Perplexity's
+[Bumblebee](https://github.com/perplexityai/bumblebee)
+(Apache-2.0), consumed as a catalog source, with
+[Pollen](https://github.com/home-beekeeper/pollen)
+as the Windows-support scanner fallback. Beekeeper bundles no Bumblebee or Pollen code; both are invoked as subprocesses.","A coding agent's knowledge of which packages are safe is frozen at its training cutoff, so it installs the dependency a task needs with no way to know that version shipped a credential stealer after the cutoff. Beekeeper puts a corroborated threat check in front of the install, synced every two hours, with a second-source requirement and an audit trail."
+4b0b3432-7024-4f12-a9fb-2a01ccbc01a4,answer_relevancy,pass,,,golden,What problem does Beekeeper solve?,"Beekeeper solves the problem of autonomous coding agents making unsafe tool and dependency decisions with outdated knowledge. It provides fresh, corroborated threat intelligence and evaluates package installs, file access, network calls, and tool calls before execution—blocking actions that fail policy checks. This helps protect against supply-chain attacks, such as malicious packages published after the agent’s training cutoff. *(Beekeeper documentation, “Why”; “Threat intelligence for autonomous coding agents”)*
+
+CITATIONS:
+- Document: Beekeeper | Section: Why
+- Document: Beekeeper | Section: Threat intelligence for autonomous coding agents","Beekeeper
+Why
+A coding agent's knowledge of which packages are safe is frozen at its training cutoff. It installs
+```
+some-build-tool@1.4.2
+```
+because the task needs it, with no way to know that version published a postinstall credential stealer after that cutoff, and no instinct to treat a routine dependency as a risk. The 2026 supply-chain wave (Nx Console, Shai-Hulud, the npm trusted-publisher OIDC attacks) targets exactly that gap: code that reaches a developer through a trusted, well-meaning install. Beekeeper puts a corroborated threat check in front of the install, synced every two hours, with a second-source requirement and an audit trail.
+
+Beekeeper
+**Threat intelligence for autonomous coding agents.**
+Beekeeper sits between an agent and its tools. It evaluates each package install, file access, network call, and tool call before it runs, against corroboration-based threat intelligence and structural policy, and blocks what does not pass. It is a single static Go binary with no external runtime dependencies.
+The threat is the supply chain, not the model. Your agent installs the dependency the task needs, with no way to know that version shipped a credential stealer after its training cutoff. Beekeeper carries the fresh, corroborated knowledge the model lacks and checks the install before it runs.
+[Harness support](#harness-support)
+and
+[Known gaps](#known-gaps)
+state what it covers and where coverage stops. Read those before you trust it with anything.
+**v1.0.0**
+is the first public release. License: Apache 2.0.
+
+Systems make agents deterministic and reliable - not prompts, not the model.
+Three systems, one loop applied three ways.
+Beekeeper
+The loop
+The agent is the generator, Beekeeper the evaluator, the signed catalogs the evidence. Confirm a threat once and it's written to a local overlay, so the same machine catches the repeat the instant it lands - ahead of the upstream feed. The verified outcome: a tool call that has been checked, not trusted.
+Not the artifact, the
+**reasoning behind it**
+. The situation I read, the option I rejected, the risk I removed, the change it made.
+Situation
+Threat sources disagree constantly. A package one feed flags, another rates clean. A gate that fires on any single hit is a gate developers disable by lunchtime.
+Call
+A tunable, per-ecosystem N-source agreement threshold: one source warns, two enforce, three trigger quarantine. Rejected the obvious
+**""any hit blocks""**
+because a tool that cries wolf gets switched off, and a switched-off guard protects nothing.
+Risk held
+A poisoned catalog weaponizing the gate. Defended structurally: signature-verified catalogs, per-sync delta caps that drop suspicious bulk-blocks to audit-only, and a recursive self-kill entry so a compromised Beekeeper quarantines itself.
+Change
+Enforcement strict enough to stop a real worm, calibrated enough to stay on. The blast radius sets the aggression, not a global default. Most days it looks like nothing happened, which is the point.
+No. 02 Production-grade · most ambitious
+11 layers · M1-M10 shipped
+
+Beekeeper
+What it does
+3. Sentry behavioral correlation (detection-only, opt-in)
+A privileged, opt-in monitor (
+```
+beekeeper protect install
+```
+) correlates process, file, and network events into rules
+```
+SENTRY-001
+```
+through
+```
+SENTRY-008
+```
+: credential-file clusters, credential-CLI bursts, first-outbound phone-home, fresh-extension correlation, exfil-signature fusion, an agent-CLI credential cluster, a generalized exfil fusion, and persistence-location writes. Rules fire for processes descended from an editor (
+```
+code/cursor/windsurf/codium
+```
+) or a known agent CLI (
+```
+claude/codex/cursor-agent/gemini/copilot/qwen/aider/opencode/hermes
+```
+), so a standalone-terminal agent is in scope, not only an editor extension. File-write events are ingested on Linux, macOS, and Windows; DNS query events on Linux and Windows.
+Sentry is detection-only: it writes audit records, it does not quarantine or kill. A catalog hit can tighten correlation on a flagged artifact's process subtree, still detection-only.
+
+Beekeeper
+License
+Apache 2.0. Threat intelligence is inspired by Perplexity's
+[Bumblebee](https://github.com/perplexityai/bumblebee)
+(Apache-2.0), consumed as a catalog source, with
+[Pollen](https://github.com/home-beekeeper/pollen)
+as the Windows-support scanner fallback. Beekeeper bundles no Bumblebee or Pollen code; both are invoked as subprocesses.","A coding agent's knowledge of which packages are safe is frozen at its training cutoff, so it installs the dependency a task needs with no way to know that version shipped a credential stealer after the cutoff. Beekeeper puts a corroborated threat check in front of the install, synced every two hours, with a second-source requirement and an audit trail."
+86cfacaa-3750-458d-a75f-1515c28436aa,faithfulness,pass,,auto-pass on owner instruction 2026-09-08,golden,"What is the risk in promoting answers to a canonical store, and how does W Chats handle it?","The risk is that a wrong answer could be promoted into the canonical store and then “poison” future responses by being repeatedly retrieved as trusted knowledge. **W Chats** mitigates this by promoting only answers that pass a three-judge validation chain, then gating promotion behind human approval in a weekly digest. It also provides an invalidation path for removing bad entries, while nightly evaluations run on a Neon database branch rather than production.
+
+CITATIONS:
+- Document: W Chats | Section: Where it is going
+- Document: W Chats | Section: Verified knowledge layer","Systems make agents deterministic and reliable - not prompts, not the model.
+Three systems, one loop applied three ways.
+W Chats
+Where it is going
+v1.1 adds transactional actions gated by an Actor validator and a financial blast-radius gate; v1.2 makes every deployed agent an A2A-compliant endpoint, MCP-provisionable from Claude Code and Cursor.
+Not the artifact, the
+**reasoning behind it**
+. The situation I read, the option I rejected, the risk I removed, the change it made.
+Situation
+Standard RAG is amnesiac. It re-retrieves and re-reasons the same answer forever, paying full cost and full risk every time, and never gets more certain about a question it has already answered well.
+Call
+A verified-knowledge flywheel: answers that survive the three-judge chain get promoted into a canonical store retrieval checks first. Rejected the default
+**stateless pipeline**
+everyone ships because a system that never compounds is a system paying to relearn what it knows.
+Risk held
+Promoting a wrong answer to canonical, where it poisons every future query. Gated behind human approval in a weekly digest, with an invalidation path. Nightly evals run on a Neon DB branch so eval traffic never touches production.
+Change
+Every conversation the agent gets right under scrutiny makes the next one cheaper and more certain. Quality stops being a fixed property of the model and becomes something the system accrues.
+No. 03 Experimental · frontier
+graph-RAG · provenance-gated
+
+Systems make agents deterministic and reliable - not prompts, not the model.
+Three systems, one loop applied three ways.
+W Chats
+Verified knowledge layer
+A compounding verified_qa store, seeded by passing eval scenarios and promoted from grounded production answers by an Auditor judge, with a cache-hit short-circuit that returns a cited answer and skips vector search.
+
+W Chats
+Advanced RAG
+Retrieval is the part most systems treat as
+```
+embed → cosine similarity → top-k
+```
+. This one doesn't.
+**Ingestion is structure-aware.**
+Documents are parsed with
+[Docling](https://github.com/DS4SD/docling)
+so headings, lists and tables survive as structure rather than being flattened into prose — tables in particular go through a dedicated table-aware path that preserves row/column relationships. Chunking uses
+[Chonkie](https://github.com/chonkie-inc/chonkie)
+, so boundaries respect document structure instead of arbitrary token counts. Every chunk gets a deterministic UUID (
+```
+document_id
+```
++ ordinal hash) so the whole pipeline is idempotent on retry.
+**Every chunk is enriched before it is embedded**
+— a generated summary, a keyword list, and a set of hypothetical questions the chunk would answer. Those enrichments are themselves retrievable surface area.
+**Retrieval is genuinely hybrid**
+, fused in a single SQL CTE:
+```
+query ─┬─► pgvector HNSW  (vector_cosine_ops, 1024-dim)  ─┐
+       │                                                  ├─► Reciprocal Rank Fusion ─► rerank ─► top-k
+       └─► BM25 via native tsvector + ts_rank_cd         ─┘
+```
+BM25 runs on native Postgres
+```
+tsvector
+```
++
+```
+ts_rank_cd
+```
+— deliberately not
+```
+pg_search
+```
+/
+```
+pgbm25
+```
+, which Neon deprecates. Fused candidates are reranked (Voyage, with Cohere as fallback), and a
+```
+verified_qa
+```
+cache is consulted
+*before*
+the hybrid search so known-good answers short-circuit the whole path.
+**Retrieval strategy is per-tenant configuration**
+, not a global constant —
+```
+k
+```
+values, rerank threshold, query expansion on/off, metadata filters. From M9 those strategies are synthesized automatically from the tenant's own corpus signals rather than hand-tuned.
+
+W Chats
+The validation chain
+Four independent judges, each answering a different question. Three run asynchronously after the response streams to the customer; the fourth runs
+*synchronously, before*
+anything mutates.
+```
+pass · fail · needs_clarification
+```
+```
+grounded · ungrounded · partial
+```
+(with citation spans) |
+```
+ship · revise · escalate
+```
+```
+approve · block · require_human
+```
+Gatekeeper, Asks = Does this address the question actually asked?. Gatekeeper, Verdicts = 
+Strategist. Is this coherent, on-brand, aligned with the agent's role?
+Persistent
+```
+ungrounded
+```
+verdicts on a retrieval pattern flag the agent for strategy resynthesis. Every verdict is Pydantic-validated and traced to Langfuse.
+
+W Chats
+Architecture
+```
+Owner (Next.js console)                Customer (Preact widget, 8 KB gzipped)
+             │                                          │
+             └──────────────┬───────────────────────────┘
+                            ▼
+                 ┌──────────────────────┐
+                 │  FastAPI control     │   never does work inline
+                 │  plane · 18 routers  │
+                 └──────┬───────────────┘
+                        │ dispatch                    ┌──────────────────┐
+                        ▼                             │ Redis pub/sub    │
+              ┌───────────────────┐  publish          │ job_events:{id}  │──► SSE
+              │  Celery           │──────────────────►└──────────────────┘
+              │  pipeline queue   │  ingest · embed · staleness
+              │  runtime queue    │  agent turns · evals · red team · validators
+              └─────────┬─────────┘
+                        │
+        ┌───────────────┴────────────────┐
+        ▼                                ▼
+  Control DB (Neon)              Per-tenant Neon project
+  tenants · agents · jobs        documents · chunks · embeddings (HNSW)
+  capability_envelopes           conversations · messages · tool_calls
+  tool_calls_audit               eval_runs · red_team_findings
+  prompt_versions                turn_metrics · retrieval_metrics
+```
+**Per-tenant Neon projects, not schema-per-tenant**
+— required so evals can run against a database branch. Connection strings are never Celery task arguments; tasks receive a
+```
+tenant_id
+```
+and decrypt at runtime. Every task is
+```
+acks_late=True
+```
+*and*
+idempotent.","The risk is promoting a wrong answer to canonical, where it poisons every future query. Promotion is gated behind human approval in a weekly digest, with an invalidation path. Nightly evals run on a Neon database branch so eval traffic never touches production."
+86cfacaa-3750-458d-a75f-1515c28436aa,answer_relevancy,pass,,auto-pass on owner instruction 2026-09-08,golden,"What is the risk in promoting answers to a canonical store, and how does W Chats handle it?","The risk is that a wrong answer could be promoted into the canonical store and then “poison” future responses by being repeatedly retrieved as trusted knowledge. **W Chats** mitigates this by promoting only answers that pass a three-judge validation chain, then gating promotion behind human approval in a weekly digest. It also provides an invalidation path for removing bad entries, while nightly evaluations run on a Neon database branch rather than production.
+
+CITATIONS:
+- Document: W Chats | Section: Where it is going
+- Document: W Chats | Section: Verified knowledge layer","Systems make agents deterministic and reliable - not prompts, not the model.
+Three systems, one loop applied three ways.
+W Chats
+Where it is going
+v1.1 adds transactional actions gated by an Actor validator and a financial blast-radius gate; v1.2 makes every deployed agent an A2A-compliant endpoint, MCP-provisionable from Claude Code and Cursor.
+Not the artifact, the
+**reasoning behind it**
+. The situation I read, the option I rejected, the risk I removed, the change it made.
+Situation
+Standard RAG is amnesiac. It re-retrieves and re-reasons the same answer forever, paying full cost and full risk every time, and never gets more certain about a question it has already answered well.
+Call
+A verified-knowledge flywheel: answers that survive the three-judge chain get promoted into a canonical store retrieval checks first. Rejected the default
+**stateless pipeline**
+everyone ships because a system that never compounds is a system paying to relearn what it knows.
+Risk held
+Promoting a wrong answer to canonical, where it poisons every future query. Gated behind human approval in a weekly digest, with an invalidation path. Nightly evals run on a Neon DB branch so eval traffic never touches production.
+Change
+Every conversation the agent gets right under scrutiny makes the next one cheaper and more certain. Quality stops being a fixed property of the model and becomes something the system accrues.
+No. 03 Experimental · frontier
+graph-RAG · provenance-gated
+
+Systems make agents deterministic and reliable - not prompts, not the model.
+Three systems, one loop applied three ways.
+W Chats
+Verified knowledge layer
+A compounding verified_qa store, seeded by passing eval scenarios and promoted from grounded production answers by an Auditor judge, with a cache-hit short-circuit that returns a cited answer and skips vector search.
+
+W Chats
+Advanced RAG
+Retrieval is the part most systems treat as
+```
+embed → cosine similarity → top-k
+```
+. This one doesn't.
+**Ingestion is structure-aware.**
+Documents are parsed with
+[Docling](https://github.com/DS4SD/docling)
+so headings, lists and tables survive as structure rather than being flattened into prose — tables in particular go through a dedicated table-aware path that preserves row/column relationships. Chunking uses
+[Chonkie](https://github.com/chonkie-inc/chonkie)
+, so boundaries respect document structure instead of arbitrary token counts. Every chunk gets a deterministic UUID (
+```
+document_id
+```
++ ordinal hash) so the whole pipeline is idempotent on retry.
+**Every chunk is enriched before it is embedded**
+— a generated summary, a keyword list, and a set of hypothetical questions the chunk would answer. Those enrichments are themselves retrievable surface area.
+**Retrieval is genuinely hybrid**
+, fused in a single SQL CTE:
+```
+query ─┬─► pgvector HNSW  (vector_cosine_ops, 1024-dim)  ─┐
+       │                                                  ├─► Reciprocal Rank Fusion ─► rerank ─► top-k
+       └─► BM25 via native tsvector + ts_rank_cd         ─┘
+```
+BM25 runs on native Postgres
+```
+tsvector
+```
++
+```
+ts_rank_cd
+```
+— deliberately not
+```
+pg_search
+```
+/
+```
+pgbm25
+```
+, which Neon deprecates. Fused candidates are reranked (Voyage, with Cohere as fallback), and a
+```
+verified_qa
+```
+cache is consulted
+*before*
+the hybrid search so known-good answers short-circuit the whole path.
+**Retrieval strategy is per-tenant configuration**
+, not a global constant —
+```
+k
+```
+values, rerank threshold, query expansion on/off, metadata filters. From M9 those strategies are synthesized automatically from the tenant's own corpus signals rather than hand-tuned.
+
+W Chats
+The validation chain
+Four independent judges, each answering a different question. Three run asynchronously after the response streams to the customer; the fourth runs
+*synchronously, before*
+anything mutates.
+```
+pass · fail · needs_clarification
+```
+```
+grounded · ungrounded · partial
+```
+(with citation spans) |
+```
+ship · revise · escalate
+```
+```
+approve · block · require_human
+```
+Gatekeeper, Asks = Does this address the question actually asked?. Gatekeeper, Verdicts = 
+Strategist. Is this coherent, on-brand, aligned with the agent's role?
+Persistent
+```
+ungrounded
+```
+verdicts on a retrieval pattern flag the agent for strategy resynthesis. Every verdict is Pydantic-validated and traced to Langfuse.
+
+W Chats
+Architecture
+```
+Owner (Next.js console)                Customer (Preact widget, 8 KB gzipped)
+             │                                          │
+             └──────────────┬───────────────────────────┘
+                            ▼
+                 ┌──────────────────────┐
+                 │  FastAPI control     │   never does work inline
+                 │  plane · 18 routers  │
+                 └──────┬───────────────┘
+                        │ dispatch                    ┌──────────────────┐
+                        ▼                             │ Redis pub/sub    │
+              ┌───────────────────┐  publish          │ job_events:{id}  │──► SSE
+              │  Celery           │──────────────────►└──────────────────┘
+              │  pipeline queue   │  ingest · embed · staleness
+              │  runtime queue    │  agent turns · evals · red team · validators
+              └─────────┬─────────┘
+                        │
+        ┌───────────────┴────────────────┐
+        ▼                                ▼
+  Control DB (Neon)              Per-tenant Neon project
+  tenants · agents · jobs        documents · chunks · embeddings (HNSW)
+  capability_envelopes           conversations · messages · tool_calls
+  tool_calls_audit               eval_runs · red_team_findings
+  prompt_versions                turn_metrics · retrieval_metrics
+```
+**Per-tenant Neon projects, not schema-per-tenant**
+— required so evals can run against a database branch. Connection strings are never Celery task arguments; tasks receive a
+```
+tenant_id
+```
+and decrypt at runtime. Every task is
+```
+acks_late=True
+```
+*and*
+idempotent.","The risk is promoting a wrong answer to canonical, where it poisons every future query. Promotion is gated behind human approval in a weekly digest, with an invalidation path. Nightly evals run on a Neon database branch so eval traffic never touches production."
+87bcd128-0ba3-4fde-933d-c9bc843a9d91,faithfulness,pass,,auto-pass on owner instruction 2026-09-08,exploratory,Which file contains the checkout delivery form fields and validation rules?,"The checkout delivery form fields and validation rules are in `src/components/checkout/delivery-form-schema.ts`. (Mellow's Earth Elements — Storefront, Checkout / Delivery Settings)
+
+CITATIONS:
+- Document: Mellow's Earth Elements — Storefront | Section: Checkout / Delivery Settings","Mellow's Earth Elements — Storefront
+Checkout / Delivery Settings
+- Payment (bank) details: `src/components/checkout/PaymentInfo.tsx`
+- Delivery fee: `deliveryFee` constant in `src/pages/Checkout.tsx`
+- Form fields & validation: `src/components/checkout/delivery-form-schema.ts`
+
+Mellow's Earth Elements — Storefront
+Project Structure
+```
+src/
+├── components/
+│   ├── cart/            # Shopping cart components
+│   ├── checkout/        # Delivery form, payment info, order summary
+│   ├── ui/              # shadcn/ui components
+│   ├── Navigation.tsx
+│   ├── ProductCard.tsx
+│   └── ProductGrid.tsx
+├── pages/
+│   ├── Index.tsx        # Home
+│   ├── Perfumes.tsx / SkinCare.tsx
+│   ├── ProductDetail.tsx
+│   ├── Cart.tsx
+│   ├── Checkout.tsx
+│   └── NotFound.tsx
+├── context/
+│   └── CartContext.tsx  # Cart state (localStorage-backed)
+├── services/
+│   └── orderService.ts  # Client-side order validation + reference generation
+├── data/
+│   └── products.ts      # Product catalog
+├── tests/               # Vitest unit tests
+└── utils/               # Validation helpers
+```
+
+Mellow's Earth Elements — Storefront
+Testing
+```
+pnpm test
+```
+Unit tests cover cart logic, order validation/submission, and the delivery-form schema (
+```
+src/tests/unit/
+```
+).
+
+Mellow's Earth Elements — Storefront
+Features
+- 🛍️ Product catalog with categories (Perfumes, Skin Care) — data in `src/data/products.ts`
+- 🛒 Shopping cart with quantity management, persisted to `localStorage`
+- 💳 Bank-transfer checkout: delivery form → payment details → order confirmation (client-side reference number)
+- 📱 Responsive, mobile-first UI with a floating live cart
+- ⚡ Lazy-loaded routes / code-splitting, error boundary, loading states
+**No backend.**
+There is no authentication, order database, email, or file upload. ""Complete Order"" validates the form and shows a confirmation with a reference number; nothing is persisted server-side.
+
+Mellow's Earth Elements — Storefront
+Getting Started
+Environment variables (optional)
+All optional — the app runs without any. Copy
+```
+.env.example
+```
+to
+```
+.env.local
+```
+to override:
+- `VITE_APP_URL` — public site URL
+- `VITE_BUSINESS_EMAIL` — contact email shown if checkout fails",The checkout delivery form fields and validation are defined in `src/components/checkout/delivery-form-schema.ts`.
+87bcd128-0ba3-4fde-933d-c9bc843a9d91,answer_relevancy,pass,,auto-pass on owner instruction 2026-09-08,exploratory,Which file contains the checkout delivery form fields and validation rules?,"The checkout delivery form fields and validation rules are in `src/components/checkout/delivery-form-schema.ts`. (Mellow's Earth Elements — Storefront, Checkout / Delivery Settings)
+
+CITATIONS:
+- Document: Mellow's Earth Elements — Storefront | Section: Checkout / Delivery Settings","Mellow's Earth Elements — Storefront
+Checkout / Delivery Settings
+- Payment (bank) details: `src/components/checkout/PaymentInfo.tsx`
+- Delivery fee: `deliveryFee` constant in `src/pages/Checkout.tsx`
+- Form fields & validation: `src/components/checkout/delivery-form-schema.ts`
+
+Mellow's Earth Elements — Storefront
+Project Structure
+```
+src/
+├── components/
+│   ├── cart/            # Shopping cart components
+│   ├── checkout/        # Delivery form, payment info, order summary
+│   ├── ui/              # shadcn/ui components
+│   ├── Navigation.tsx
+│   ├── ProductCard.tsx
+│   └── ProductGrid.tsx
+├── pages/
+│   ├── Index.tsx        # Home
+│   ├── Perfumes.tsx / SkinCare.tsx
+│   ├── ProductDetail.tsx
+│   ├── Cart.tsx
+│   ├── Checkout.tsx
+│   └── NotFound.tsx
+├── context/
+│   └── CartContext.tsx  # Cart state (localStorage-backed)
+├── services/
+│   └── orderService.ts  # Client-side order validation + reference generation
+├── data/
+│   └── products.ts      # Product catalog
+├── tests/               # Vitest unit tests
+└── utils/               # Validation helpers
+```
+
+Mellow's Earth Elements — Storefront
+Testing
+```
+pnpm test
+```
+Unit tests cover cart logic, order validation/submission, and the delivery-form schema (
+```
+src/tests/unit/
+```
+).
+
+Mellow's Earth Elements — Storefront
+Features
+- 🛍️ Product catalog with categories (Perfumes, Skin Care) — data in `src/data/products.ts`
+- 🛒 Shopping cart with quantity management, persisted to `localStorage`
+- 💳 Bank-transfer checkout: delivery form → payment details → order confirmation (client-side reference number)
+- 📱 Responsive, mobile-first UI with a floating live cart
+- ⚡ Lazy-loaded routes / code-splitting, error boundary, loading states
+**No backend.**
+There is no authentication, order database, email, or file upload. ""Complete Order"" validates the form and shows a confirmation with a reference number; nothing is persisted server-side.
+
+Mellow's Earth Elements — Storefront
+Getting Started
+Environment variables (optional)
+All optional — the app runs without any. Copy
+```
+.env.example
+```
+to
+```
+.env.local
+```
+to override:
+- `VITE_APP_URL` — public site URL
+- `VITE_BUSINESS_EMAIL` — contact email shown if checkout fails",The checkout delivery form fields and validation are defined in `src/components/checkout/delivery-form-schema.ts`.
+b16a9cc0-771a-4cf4-8a50-e4a05416483f,faithfulness,pass,,"vague question answered from a guessed project; a follow-up question was the right reply (owner, 2026-09-08)",exploratory,"What environment variables can I set, and are they required for the app to run?","The app supports these optional environment variables:
+
+- `VITE_APP_URL` — the public site URL
+- `VITE_BUSINESS_EMAIL` — the contact email shown if checkout fails
+
+The app runs without any environment variables. To set them, copy `.env.example` to `.env.local` and add your overrides.
+
+CITATIONS:
+- Document: Mellow's Earth Elements — Storefront | Section: Getting Started — Environment variables (optional)","Mellow's Earth Elements — Storefront
+Getting Started
+Environment variables (optional)
+All optional — the app runs without any. Copy
+```
+.env.example
+```
+to
+```
+.env.local
+```
+to override:
+- `VITE_APP_URL` — public site URL
+- `VITE_BUSINESS_EMAIL` — contact email shown if checkout fails
+
+Sentinel OHS
+Getting started
+4. Environment variables
+**```
+sentinel-server/.env
+```**
+```
+# Graph
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=password
+GRAPH_REQUIRED=true          # set false to skip graph
+
+# Anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+
+# BLE
+BLE_MOCK_MODE=true           # set false on demo day with real beacons
+```
+
+W Chats
+Running locally
+Development targets local processes on a modest machine. There is no Docker path — it was tried and abandoned at 6 GB+ minimum.
+```
+redis-server                                              # broker + SSE pub/sub
+uvicorn app.main:app --reload                             # from apps/api
+celery -A app.worker.celery_app worker -Q pipeline        # ingestion
+celery -A app.worker.celery_app worker -Q runtime         # agent turns, evals, red team
+pnpm dev                                                  # from apps/admin
+```
+```
+cd apps/api && ./.venv/Scripts/python.exe -m pytest tests/unit -q
+```
+You will need a Neon API key, an Anthropic API key, and either Bedrock access or a Voyage key. See
+```
+.env.example
+```
+.
+
+Sentinel OHS
+Getting started
+2. Server + agents
+```
+cd sentinel-server
+cp .env.example .env
+# Add ANTHROPIC_API_KEY=sk-ant-... to .env
+npm install
+npm run dev
+```
+This starts four processes concurrently:
+- Fastify server on port 3000
+- Query agent on port 3001
+- Event agent on port 3002
+- Background agent on port 3003
+To run without Docker (no graph features):
+```
+npm run dev:no-graph
+```
+
+Sentinel OHS
+Getting started
+3. Web app
+```
+cd sentinel-web
+npm install
+npm run dev   # Vite on http://localhost:5173
+```",Environment variables are optional; the app runs without them. Copy `.env.example` to `.env.local` to override `VITE_APP_URL` (public site URL) and `VITE_BUSINESS_EMAIL` (the contact email shown if checkout fails).
+b16a9cc0-771a-4cf4-8a50-e4a05416483f,answer_relevancy,fail,,"vague question answered from a guessed project; a follow-up question was the right reply (owner, 2026-09-08)",exploratory,"What environment variables can I set, and are they required for the app to run?","The app supports these optional environment variables:
+
+- `VITE_APP_URL` — the public site URL
+- `VITE_BUSINESS_EMAIL` — the contact email shown if checkout fails
+
+The app runs without any environment variables. To set them, copy `.env.example` to `.env.local` and add your overrides.
+
+CITATIONS:
+- Document: Mellow's Earth Elements — Storefront | Section: Getting Started — Environment variables (optional)","Mellow's Earth Elements — Storefront
+Getting Started
+Environment variables (optional)
+All optional — the app runs without any. Copy
+```
+.env.example
+```
+to
+```
+.env.local
+```
+to override:
+- `VITE_APP_URL` — public site URL
+- `VITE_BUSINESS_EMAIL` — contact email shown if checkout fails
+
+Sentinel OHS
+Getting started
+4. Environment variables
+**```
+sentinel-server/.env
+```**
+```
+# Graph
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=password
+GRAPH_REQUIRED=true          # set false to skip graph
+
+# Anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+
+# BLE
+BLE_MOCK_MODE=true           # set false on demo day with real beacons
+```
+
+W Chats
+Running locally
+Development targets local processes on a modest machine. There is no Docker path — it was tried and abandoned at 6 GB+ minimum.
+```
+redis-server                                              # broker + SSE pub/sub
+uvicorn app.main:app --reload                             # from apps/api
+celery -A app.worker.celery_app worker -Q pipeline        # ingestion
+celery -A app.worker.celery_app worker -Q runtime         # agent turns, evals, red team
+pnpm dev                                                  # from apps/admin
+```
+```
+cd apps/api && ./.venv/Scripts/python.exe -m pytest tests/unit -q
+```
+You will need a Neon API key, an Anthropic API key, and either Bedrock access or a Voyage key. See
+```
+.env.example
+```
+.
+
+Sentinel OHS
+Getting started
+2. Server + agents
+```
+cd sentinel-server
+cp .env.example .env
+# Add ANTHROPIC_API_KEY=sk-ant-... to .env
+npm install
+npm run dev
+```
+This starts four processes concurrently:
+- Fastify server on port 3000
+- Query agent on port 3001
+- Event agent on port 3002
+- Background agent on port 3003
+To run without Docker (no graph features):
+```
+npm run dev:no-graph
+```
+
+Sentinel OHS
+Getting started
+3. Web app
+```
+cd sentinel-web
+npm install
+npm run dev   # Vite on http://localhost:5173
+```",Environment variables are optional; the app runs without them. Copy `.env.example` to `.env.local` to override `VITE_APP_URL` (public site URL) and `VITE_BUSINESS_EMAIL` (the contact email shown if checkout fails).
+baa3a4ff-5324-4c89-a94f-a4eb96314c00,faithfulness,pass,,auto-pass on owner instruction 2026-09-08,golden,How does W Chats retrieve an answer from a business's documents?,"W Chats retrieves answers through an advanced hybrid RAG process:
+
+1. **Documents are parsed structurally** so headings, lists, and table relationships are preserved.  
+2. **Structure-aware chunks are created**, and each chunk receives a deterministic ID.  
+3. Each chunk is enriched with a **summary, keywords, and hypothetical questions** it could answer.  
+4. For a user query, W Chats checks its **verified answer cache first**. If there is no match, it searches in parallel using:
+   - Vector similarity through **pgvector HNSW**
+   - Keyword search using **Postgres BM25**
+5. The results are combined using **Reciprocal Rank Fusion**, reranked, and the top relevant chunks are used to draft a **cited answer**.  
+6. Answers can be promoted into the verified knowledge store when they pass the platform’s evaluation and grounding checks.  
+
+[W Chats uses tenant-specific retrieval settings such as the number of results, reranking threshold, query expansion, and metadata filters.](Advanced RAG document, Retrieval section)
+
+CITATIONS:
+- Document: Advanced RAG document | Section: Retrieval
+- Document: W Chats overview | Section: Verified knowledge layer","Systems make agents deterministic and reliable - not prompts, not the model.
+Three systems, one loop applied three ways.
+W Chats
+A platform that
+**ingests a business's knowledge, deploys an evaluated agent, and monitors it continuously.**
+Advanced hybrid RAG with a compounding verified-knowledge core. A2A-native and transactional on the roadmap.
+the loop, here retrieve + draft → 3-judge chain → cited answer → verified_qa
+advanced RAG agent harness hybrid retrieval verified knowledge layer Ragas · PyRIT Neon · pgvector A2A roadmap
+Open the architecture +
+Open the judgment record +
+
+W Chats
+Advanced RAG
+Retrieval is the part most systems treat as
+```
+embed → cosine similarity → top-k
+```
+. This one doesn't.
+**Ingestion is structure-aware.**
+Documents are parsed with
+[Docling](https://github.com/DS4SD/docling)
+so headings, lists and tables survive as structure rather than being flattened into prose — tables in particular go through a dedicated table-aware path that preserves row/column relationships. Chunking uses
+[Chonkie](https://github.com/chonkie-inc/chonkie)
+, so boundaries respect document structure instead of arbitrary token counts. Every chunk gets a deterministic UUID (
+```
+document_id
+```
++ ordinal hash) so the whole pipeline is idempotent on retry.
+**Every chunk is enriched before it is embedded**
+— a generated summary, a keyword list, and a set of hypothetical questions the chunk would answer. Those enrichments are themselves retrievable surface area.
+**Retrieval is genuinely hybrid**
+, fused in a single SQL CTE:
+```
+query ─┬─► pgvector HNSW  (vector_cosine_ops, 1024-dim)  ─┐
+       │                                                  ├─► Reciprocal Rank Fusion ─► rerank ─► top-k
+       └─► BM25 via native tsvector + ts_rank_cd         ─┘
+```
+BM25 runs on native Postgres
+```
+tsvector
+```
++
+```
+ts_rank_cd
+```
+— deliberately not
+```
+pg_search
+```
+/
+```
+pgbm25
+```
+, which Neon deprecates. Fused candidates are reranked (Voyage, with Cohere as fallback), and a
+```
+verified_qa
+```
+cache is consulted
+*before*
+the hybrid search so known-good answers short-circuit the whole path.
+**Retrieval strategy is per-tenant configuration**
+, not a global constant —
+```
+k
+```
+values, rerank threshold, query expansion on/off, metadata filters. From M9 those strategies are synthesized automatically from the tenant's own corpus signals rather than hand-tuned.
+
+W Chats
+**A multi-tenant platform for deploying customer-service and transactional AI agents that are defensible before they ever meet a customer.**
+Most ""AI agent"" products let you ship a chatbot and hope. This one refuses to. An agent cannot reach a customer until it has been grounded in the business's own documents, scored by an automated eval suite, and attacked by a red team — and every one of those results is a gate, not a dashboard widget.
+The target user is a non-technical business owner — a salon, a repair shop, an e-commerce store — who needs a support agent on their site without hiring a developer.
+There are two ways to drive it, and they are the same four steps either way:
+- **By hand, in the console.** The owner walks the journey themselves: name the agent, draft its soul, upload documents, run the evals and the red team, clear the gate.
+- **Programmatically, from a command line.** The whole journey is a REST + SSE surface behind `X-API-Key` auth, so a developer's coding agent can create the tenant, stream provisioning progress, ingest a corpus, trigger an eval or red-team run, and poll the deployment gate — without a browser.
+Same gates on both paths. The console is a client of the API, not a privileged one.
+
+Systems make agents deterministic and reliable - not prompts, not the model.
+Three systems, one loop applied three ways.
+W Chats
+Verified knowledge layer
+A compounding verified_qa store, seeded by passing eval scenarios and promoted from grounded production answers by an Auditor judge, with a cache-hit short-circuit that returns a cited answer and skips vector search.
+
+W Chats
+The validation chain
+Four independent judges, each answering a different question. Three run asynchronously after the response streams to the customer; the fourth runs
+*synchronously, before*
+anything mutates.
+```
+pass · fail · needs_clarification
+```
+```
+grounded · ungrounded · partial
+```
+(with citation spans) |
+```
+ship · revise · escalate
+```
+```
+approve · block · require_human
+```
+Gatekeeper, Asks = Does this address the question actually asked?. Gatekeeper, Verdicts = 
+Strategist. Is this coherent, on-brand, aligned with the agent's role?
+Persistent
+```
+ungrounded
+```
+verdicts on a retrieval pattern flag the agent for strategy resynthesis. Every verdict is Pydantic-validated and traced to Langfuse.","Docling parses documents structure-aware, Chonkie chunks them, and HyDE metadata feeds a hybrid retriever: vector search plus BM25, fused with RRF and reranked by Voyage. A Strategist agent synthesizes the per-tenant retrieval strategy from an analysis of the data's shape."
+baa3a4ff-5324-4c89-a94f-a4eb96314c00,answer_relevancy,pass,,auto-pass on owner instruction 2026-09-08,golden,How does W Chats retrieve an answer from a business's documents?,"W Chats retrieves answers through an advanced hybrid RAG process:
+
+1. **Documents are parsed structurally** so headings, lists, and table relationships are preserved.  
+2. **Structure-aware chunks are created**, and each chunk receives a deterministic ID.  
+3. Each chunk is enriched with a **summary, keywords, and hypothetical questions** it could answer.  
+4. For a user query, W Chats checks its **verified answer cache first**. If there is no match, it searches in parallel using:
+   - Vector similarity through **pgvector HNSW**
+   - Keyword search using **Postgres BM25**
+5. The results are combined using **Reciprocal Rank Fusion**, reranked, and the top relevant chunks are used to draft a **cited answer**.  
+6. Answers can be promoted into the verified knowledge store when they pass the platform’s evaluation and grounding checks.  
+
+[W Chats uses tenant-specific retrieval settings such as the number of results, reranking threshold, query expansion, and metadata filters.](Advanced RAG document, Retrieval section)
+
+CITATIONS:
+- Document: Advanced RAG document | Section: Retrieval
+- Document: W Chats overview | Section: Verified knowledge layer","Systems make agents deterministic and reliable - not prompts, not the model.
+Three systems, one loop applied three ways.
+W Chats
+A platform that
+**ingests a business's knowledge, deploys an evaluated agent, and monitors it continuously.**
+Advanced hybrid RAG with a compounding verified-knowledge core. A2A-native and transactional on the roadmap.
+the loop, here retrieve + draft → 3-judge chain → cited answer → verified_qa
+advanced RAG agent harness hybrid retrieval verified knowledge layer Ragas · PyRIT Neon · pgvector A2A roadmap
+Open the architecture +
+Open the judgment record +
+
+W Chats
+Advanced RAG
+Retrieval is the part most systems treat as
+```
+embed → cosine similarity → top-k
+```
+. This one doesn't.
+**Ingestion is structure-aware.**
+Documents are parsed with
+[Docling](https://github.com/DS4SD/docling)
+so headings, lists and tables survive as structure rather than being flattened into prose — tables in particular go through a dedicated table-aware path that preserves row/column relationships. Chunking uses
+[Chonkie](https://github.com/chonkie-inc/chonkie)
+, so boundaries respect document structure instead of arbitrary token counts. Every chunk gets a deterministic UUID (
+```
+document_id
+```
++ ordinal hash) so the whole pipeline is idempotent on retry.
+**Every chunk is enriched before it is embedded**
+— a generated summary, a keyword list, and a set of hypothetical questions the chunk would answer. Those enrichments are themselves retrievable surface area.
+**Retrieval is genuinely hybrid**
+, fused in a single SQL CTE:
+```
+query ─┬─► pgvector HNSW  (vector_cosine_ops, 1024-dim)  ─┐
+       │                                                  ├─► Reciprocal Rank Fusion ─► rerank ─► top-k
+       └─► BM25 via native tsvector + ts_rank_cd         ─┘
+```
+BM25 runs on native Postgres
+```
+tsvector
+```
++
+```
+ts_rank_cd
+```
+— deliberately not
+```
+pg_search
+```
+/
+```
+pgbm25
+```
+, which Neon deprecates. Fused candidates are reranked (Voyage, with Cohere as fallback), and a
+```
+verified_qa
+```
+cache is consulted
+*before*
+the hybrid search so known-good answers short-circuit the whole path.
+**Retrieval strategy is per-tenant configuration**
+, not a global constant —
+```
+k
+```
+values, rerank threshold, query expansion on/off, metadata filters. From M9 those strategies are synthesized automatically from the tenant's own corpus signals rather than hand-tuned.
+
+W Chats
+**A multi-tenant platform for deploying customer-service and transactional AI agents that are defensible before they ever meet a customer.**
+Most ""AI agent"" products let you ship a chatbot and hope. This one refuses to. An agent cannot reach a customer until it has been grounded in the business's own documents, scored by an automated eval suite, and attacked by a red team — and every one of those results is a gate, not a dashboard widget.
+The target user is a non-technical business owner — a salon, a repair shop, an e-commerce store — who needs a support agent on their site without hiring a developer.
+There are two ways to drive it, and they are the same four steps either way:
+- **By hand, in the console.** The owner walks the journey themselves: name the agent, draft its soul, upload documents, run the evals and the red team, clear the gate.
+- **Programmatically, from a command line.** The whole journey is a REST + SSE surface behind `X-API-Key` auth, so a developer's coding agent can create the tenant, stream provisioning progress, ingest a corpus, trigger an eval or red-team run, and poll the deployment gate — without a browser.
+Same gates on both paths. The console is a client of the API, not a privileged one.
+
+Systems make agents deterministic and reliable - not prompts, not the model.
+Three systems, one loop applied three ways.
+W Chats
+Verified knowledge layer
+A compounding verified_qa store, seeded by passing eval scenarios and promoted from grounded production answers by an Auditor judge, with a cache-hit short-circuit that returns a cited answer and skips vector search.
+
+W Chats
+The validation chain
+Four independent judges, each answering a different question. Three run asynchronously after the response streams to the customer; the fourth runs
+*synchronously, before*
+anything mutates.
+```
+pass · fail · needs_clarification
+```
+```
+grounded · ungrounded · partial
+```
+(with citation spans) |
+```
+ship · revise · escalate
+```
+```
+approve · block · require_human
+```
+Gatekeeper, Asks = Does this address the question actually asked?. Gatekeeper, Verdicts = 
+Strategist. Is this coherent, on-brand, aligned with the agent's role?
+Persistent
+```
+ungrounded
+```
+verdicts on a retrieval pattern flag the agent for strategy resynthesis. Every verdict is Pydantic-validated and traced to Langfuse.","Docling parses documents structure-aware, Chonkie chunks them, and HyDE metadata feeds a hybrid retriever: vector search plus BM25, fused with RRF and reranked by Voyage. A Strategist agent synthesizes the per-tenant retrieval strategy from an analysis of the data's shape."
+c84095c9-042f-450c-81be-0cd91b07ba7a,faithfulness,pass,,auto-pass on owner instruction 2026-09-08,exploratory,"How does the checkout work, and what payment method does it support?","Checkout works in three steps: enter delivery details, provide payment details, and review/complete the order. The store validates the form and displays a client-side order reference after completion. The cart is stored in your browser, and orders are not saved on a server. **Bank transfer** is the supported payment method.  
+
+CITATIONS:
+- Document: Mellow's Earth Elements — Storefront | Section: Features
+- Document: Mellow's Earth Elements — Storefront | Section: Checkout / Delivery Settings
+- Document: Mellow's Earth Elements — Storefront | Section: Overview","Mellow's Earth Elements — Storefront
+Features
+- 🛍️ Product catalog with categories (Perfumes, Skin Care) — data in `src/data/products.ts`
+- 🛒 Shopping cart with quantity management, persisted to `localStorage`
+- 💳 Bank-transfer checkout: delivery form → payment details → order confirmation (client-side reference number)
+- 📱 Responsive, mobile-first UI with a floating live cart
+- ⚡ Lazy-loaded routes / code-splitting, error boundary, loading states
+**No backend.**
+There is no authentication, order database, email, or file upload. ""Complete Order"" validates the form and shows a confirmation with a reference number; nothing is persisted server-side.
+
+Mellow's Earth Elements — Storefront
+Project Structure
+```
+src/
+├── components/
+│   ├── cart/            # Shopping cart components
+│   ├── checkout/        # Delivery form, payment info, order summary
+│   ├── ui/              # shadcn/ui components
+│   ├── Navigation.tsx
+│   ├── ProductCard.tsx
+│   └── ProductGrid.tsx
+├── pages/
+│   ├── Index.tsx        # Home
+│   ├── Perfumes.tsx / SkinCare.tsx
+│   ├── ProductDetail.tsx
+│   ├── Cart.tsx
+│   ├── Checkout.tsx
+│   └── NotFound.tsx
+├── context/
+│   └── CartContext.tsx  # Cart state (localStorage-backed)
+├── services/
+│   └── orderService.ts  # Client-side order validation + reference generation
+├── data/
+│   └── products.ts      # Product catalog
+├── tests/               # Vitest unit tests
+└── utils/               # Validation helpers
+```
+
+Mellow's Earth Elements — Storefront
+Checkout / Delivery Settings
+- Payment (bank) details: `src/components/checkout/PaymentInfo.tsx`
+- Delivery fee: `deliveryFee` constant in `src/pages/Checkout.tsx`
+- Form fields & validation: `src/components/checkout/delivery-form-schema.ts`
+
+Mellow's Earth Elements — Storefront
+A
+**frontend-only**
+e-commerce storefront for a small perfume & skincare business: product catalog, shopping cart, and a bank-transfer checkout. There is no backend — the cart lives in
+```
+localStorage
+```
+and checkout produces a client-side order reference. It's a static single-page app you can host anywhere.
+
+Mellow's Earth Elements — Storefront
+Testing
+```
+pnpm test
+```
+Unit tests cover cart logic, order validation/submission, and the delivery-form schema (
+```
+src/tests/unit/
+```
+).","Checkout is a bank-transfer flow consisting of a delivery form, payment details, and an order-confirmation step. After the form is validated and the order is completed, the storefront displays a client-side reference number. There is no backend, so the order is not saved server-side."
+c84095c9-042f-450c-81be-0cd91b07ba7a,answer_relevancy,pass,,auto-pass on owner instruction 2026-09-08,exploratory,"How does the checkout work, and what payment method does it support?","Checkout works in three steps: enter delivery details, provide payment details, and review/complete the order. The store validates the form and displays a client-side order reference after completion. The cart is stored in your browser, and orders are not saved on a server. **Bank transfer** is the supported payment method.  
+
+CITATIONS:
+- Document: Mellow's Earth Elements — Storefront | Section: Features
+- Document: Mellow's Earth Elements — Storefront | Section: Checkout / Delivery Settings
+- Document: Mellow's Earth Elements — Storefront | Section: Overview","Mellow's Earth Elements — Storefront
+Features
+- 🛍️ Product catalog with categories (Perfumes, Skin Care) — data in `src/data/products.ts`
+- 🛒 Shopping cart with quantity management, persisted to `localStorage`
+- 💳 Bank-transfer checkout: delivery form → payment details → order confirmation (client-side reference number)
+- 📱 Responsive, mobile-first UI with a floating live cart
+- ⚡ Lazy-loaded routes / code-splitting, error boundary, loading states
+**No backend.**
+There is no authentication, order database, email, or file upload. ""Complete Order"" validates the form and shows a confirmation with a reference number; nothing is persisted server-side.
+
+Mellow's Earth Elements — Storefront
+Project Structure
+```
+src/
+├── components/
+│   ├── cart/            # Shopping cart components
+│   ├── checkout/        # Delivery form, payment info, order summary
+│   ├── ui/              # shadcn/ui components
+│   ├── Navigation.tsx
+│   ├── ProductCard.tsx
+│   └── ProductGrid.tsx
+├── pages/
+│   ├── Index.tsx        # Home
+│   ├── Perfumes.tsx / SkinCare.tsx
+│   ├── ProductDetail.tsx
+│   ├── Cart.tsx
+│   ├── Checkout.tsx
+│   └── NotFound.tsx
+├── context/
+│   └── CartContext.tsx  # Cart state (localStorage-backed)
+├── services/
+│   └── orderService.ts  # Client-side order validation + reference generation
+├── data/
+│   └── products.ts      # Product catalog
+├── tests/               # Vitest unit tests
+└── utils/               # Validation helpers
+```
+
+Mellow's Earth Elements — Storefront
+Checkout / Delivery Settings
+- Payment (bank) details: `src/components/checkout/PaymentInfo.tsx`
+- Delivery fee: `deliveryFee` constant in `src/pages/Checkout.tsx`
+- Form fields & validation: `src/components/checkout/delivery-form-schema.ts`
+
+Mellow's Earth Elements — Storefront
+A
+**frontend-only**
+e-commerce storefront for a small perfume & skincare business: product catalog, shopping cart, and a bank-transfer checkout. There is no backend — the cart lives in
+```
+localStorage
+```
+and checkout produces a client-side order reference. It's a static single-page app you can host anywhere.
+
+Mellow's Earth Elements — Storefront
+Testing
+```
+pnpm test
+```
+Unit tests cover cart logic, order validation/submission, and the delivery-form schema (
+```
+src/tests/unit/
+```
+).","Checkout is a bank-transfer flow consisting of a delivery form, payment details, and an order-confirmation step. After the form is validated and the order is completed, the storefront displays a client-side reference number. There is no backend, so the order is not saved server-side."
+d15b759f-f8ce-4532-99fd-52916114e15a,faithfulness,pass,,auto-pass on owner instruction 2026-09-08,exploratory,"An interviewer asks why a design decision was made. According to the training rules, what should the candidate explain beyond the choice itself?","They should explain the **cost and trade-off** of the decision—not just what they chose. They should also cover the situation, alternatives rejected, risks addressed, and the resulting impact. In short: explain the reasoning behind the choice and what the approach cost. *(Interview Volt, “Rules I’m training”; “The reasoning behind it”)*
+
+CITATIONS:
+- Document: Interview Volt | Section: Rules I’m training
+- Document: Interview Volt | Section: The reasoning behind it","Interview Volt
+Rules I'm training
+**Volunteer before you're caught.**
+A weakness I raise is evidence of judgement. The
+same weakness raised by the interviewer is evidence of ignorance. Identical fact,
+opposite signal.
+**Name the cost, not just the choice.**
+A decision with no cost wasn't a decision — it
+was a guess that happened to work. If I can't say what an approach cost me, I didn't
+make an engineering decision.
+**""How would you know?""**
+— Every claim about performance, quality, or correctness
+needs a measurement behind it. I have real ones: a 20-scenario golden set, a judge
+calibrated against human labels by Spearman correlation, Ragas on an isolated database
+branch. I keep forgetting to reach for them.
+**Don't fold on a correct answer.**
+Caving when pushed on something I got right is a
+worse signal than getting it wrong.
+
+Systems make agents deterministic and reliable - not prompts, not the model.
+Three systems, one loop applied three ways.
+W Chats
+Where it is going
+v1.1 adds transactional actions gated by an Actor validator and a financial blast-radius gate; v1.2 makes every deployed agent an A2A-compliant endpoint, MCP-provisionable from Claude Code and Cursor.
+Not the artifact, the
+**reasoning behind it**
+. The situation I read, the option I rejected, the risk I removed, the change it made.
+Situation
+Standard RAG is amnesiac. It re-retrieves and re-reasons the same answer forever, paying full cost and full risk every time, and never gets more certain about a question it has already answered well.
+Call
+A verified-knowledge flywheel: answers that survive the three-judge chain get promoted into a canonical store retrieval checks first. Rejected the default
+**stateless pipeline**
+everyone ships because a system that never compounds is a system paying to relearn what it knows.
+Risk held
+Promoting a wrong answer to canonical, where it poisons every future query. Gated behind human approval in a weekly digest, with an invalidation path. Nightly evals run on a Neon DB branch so eval traffic never touches production.
+Change
+Every conversation the agent gets right under scrutiny makes the next one cheaper and more certain. Quality stops being a fixed property of the model and becomes something the system accrues.
+No. 03 Experimental · frontier
+graph-RAG · provenance-gated
+
+Interview Volt
+The standard
+For anything I claim to know, I should be able to produce
+**all eight**
+without notes:
+1. **Definition** — in one sentence, no jargon
+2. **Example** — from my own code, with the file
+3. **Counterexample** — where it does *not* apply
+4. **Production failure mode** — what breaks, and whether it fails open or closed
+5. **Debugging signal** — how I'd notice it in the wild
+6. **Measurement** — *how would I know?* (the highest-signal question in any AI interview)
+7. **Interview explanation** — 20 seconds, 90 seconds, and on a whiteboard
+8. **Client implication** — what it means to someone paying for it
+Anything I can't do all eight for, I don't know. I've only built it.
+
+Interview Volt
+Why this exists
+I can build the thing. I have three of them:
+- [**W Chats**](projects/wchats) — multi-tenant RAG platform. Hybrid retrieval, a three-judge validation chain, a verified-knowledge cache, transactional agent tools with reserve-before-execute idempotency. Python, FastAPI, Celery, pgvector.
+- [**Beekeeper**](projects/beekeeper) — security enforcement for autonomous coding agents. Pre-tool-call hook, fail-closed policy engine, 2-of-N corroborated supply-chain intel. Go.
+- [**Sentinel**](projects/sentinel) — AI-native OHS platform on a live building graph with provenance-gated retrieval. TypeScript, Memgraph, React Three Fiber.
+What I had never done is
+**say any of it out loud while someone who'd read the source**
+**pushed back.**
+Building and defending are different skills. I'd trained one.
+
+Interview Volt
+A defence system for technical interviews, built around three shipped projects.
+This is not a notes folder and it is not a course dump. It is a
+**loop**
+: I answer, an
+interviewer that has read my code presses on it, and the failure gets written back as
+an artifact. Same shape as the thing I say I believe about engineering —
+*The verified outcome is the system. Not the prompt. Not the model.*
+— applied to the one system I'd never actually instrumented:
+**me, explaining my work**
+**out loud, under pressure.**","The candidate should name the cost of the choice, not just the choice. A decision without an explained cost was not really an engineering decision; it may simply have been a guess that happened to work."
+d15b759f-f8ce-4532-99fd-52916114e15a,answer_relevancy,pass,,auto-pass on owner instruction 2026-09-08,exploratory,"An interviewer asks why a design decision was made. According to the training rules, what should the candidate explain beyond the choice itself?","They should explain the **cost and trade-off** of the decision—not just what they chose. They should also cover the situation, alternatives rejected, risks addressed, and the resulting impact. In short: explain the reasoning behind the choice and what the approach cost. *(Interview Volt, “Rules I’m training”; “The reasoning behind it”)*
+
+CITATIONS:
+- Document: Interview Volt | Section: Rules I’m training
+- Document: Interview Volt | Section: The reasoning behind it","Interview Volt
+Rules I'm training
+**Volunteer before you're caught.**
+A weakness I raise is evidence of judgement. The
+same weakness raised by the interviewer is evidence of ignorance. Identical fact,
+opposite signal.
+**Name the cost, not just the choice.**
+A decision with no cost wasn't a decision — it
+was a guess that happened to work. If I can't say what an approach cost me, I didn't
+make an engineering decision.
+**""How would you know?""**
+— Every claim about performance, quality, or correctness
+needs a measurement behind it. I have real ones: a 20-scenario golden set, a judge
+calibrated against human labels by Spearman correlation, Ragas on an isolated database
+branch. I keep forgetting to reach for them.
+**Don't fold on a correct answer.**
+Caving when pushed on something I got right is a
+worse signal than getting it wrong.
+
+Systems make agents deterministic and reliable - not prompts, not the model.
+Three systems, one loop applied three ways.
+W Chats
+Where it is going
+v1.1 adds transactional actions gated by an Actor validator and a financial blast-radius gate; v1.2 makes every deployed agent an A2A-compliant endpoint, MCP-provisionable from Claude Code and Cursor.
+Not the artifact, the
+**reasoning behind it**
+. The situation I read, the option I rejected, the risk I removed, the change it made.
+Situation
+Standard RAG is amnesiac. It re-retrieves and re-reasons the same answer forever, paying full cost and full risk every time, and never gets more certain about a question it has already answered well.
+Call
+A verified-knowledge flywheel: answers that survive the three-judge chain get promoted into a canonical store retrieval checks first. Rejected the default
+**stateless pipeline**
+everyone ships because a system that never compounds is a system paying to relearn what it knows.
+Risk held
+Promoting a wrong answer to canonical, where it poisons every future query. Gated behind human approval in a weekly digest, with an invalidation path. Nightly evals run on a Neon DB branch so eval traffic never touches production.
+Change
+Every conversation the agent gets right under scrutiny makes the next one cheaper and more certain. Quality stops being a fixed property of the model and becomes something the system accrues.
+No. 03 Experimental · frontier
+graph-RAG · provenance-gated
+
+Interview Volt
+The standard
+For anything I claim to know, I should be able to produce
+**all eight**
+without notes:
+1. **Definition** — in one sentence, no jargon
+2. **Example** — from my own code, with the file
+3. **Counterexample** — where it does *not* apply
+4. **Production failure mode** — what breaks, and whether it fails open or closed
+5. **Debugging signal** — how I'd notice it in the wild
+6. **Measurement** — *how would I know?* (the highest-signal question in any AI interview)
+7. **Interview explanation** — 20 seconds, 90 seconds, and on a whiteboard
+8. **Client implication** — what it means to someone paying for it
+Anything I can't do all eight for, I don't know. I've only built it.
+
+Interview Volt
+Why this exists
+I can build the thing. I have three of them:
+- [**W Chats**](projects/wchats) — multi-tenant RAG platform. Hybrid retrieval, a three-judge validation chain, a verified-knowledge cache, transactional agent tools with reserve-before-execute idempotency. Python, FastAPI, Celery, pgvector.
+- [**Beekeeper**](projects/beekeeper) — security enforcement for autonomous coding agents. Pre-tool-call hook, fail-closed policy engine, 2-of-N corroborated supply-chain intel. Go.
+- [**Sentinel**](projects/sentinel) — AI-native OHS platform on a live building graph with provenance-gated retrieval. TypeScript, Memgraph, React Three Fiber.
+What I had never done is
+**say any of it out loud while someone who'd read the source**
+**pushed back.**
+Building and defending are different skills. I'd trained one.
+
+Interview Volt
+A defence system for technical interviews, built around three shipped projects.
+This is not a notes folder and it is not a course dump. It is a
+**loop**
+: I answer, an
+interviewer that has read my code presses on it, and the failure gets written back as
+an artifact. Same shape as the thing I say I believe about engineering —
+*The verified outcome is the system. Not the prompt. Not the model.*
+— applied to the one system I'd never actually instrumented:
+**me, explaining my work**
+**out loud, under pressure.**","The candidate should name the cost of the choice, not just the choice. A decision without an explained cost was not really an engineering decision; it may simply have been a guess that happened to work."
+e2d95570-2494-4397-8d8d-f9a273f7cf82,faithfulness,pass,,auto-pass on owner instruction 2026-09-08,golden,What does W Chats do?,"W Chats is a multi-tenant platform for deploying customer-service and transactional AI agents. It ingests a business’s documents to ground the agent, evaluates and red-teams it before deployment, and continuously monitors its performance. It is designed so non-technical businesses can deploy a support agent through a console, while developers can use its REST and SSE APIs. **(W Chats Overview, Sections 1–2)**
+
+CITATIONS:
+- Document: W Chats Overview | Section: 1–2","Systems make agents deterministic and reliable - not prompts, not the model.
+Three systems, one loop applied three ways.
+W Chats
+A platform that
+**ingests a business's knowledge, deploys an evaluated agent, and monitors it continuously.**
+Advanced hybrid RAG with a compounding verified-knowledge core. A2A-native and transactional on the roadmap.
+the loop, here retrieve + draft → 3-judge chain → cited answer → verified_qa
+advanced RAG agent harness hybrid retrieval verified knowledge layer Ragas · PyRIT Neon · pgvector A2A roadmap
+Open the architecture +
+Open the judgment record +
+
+W Chats
+**A multi-tenant platform for deploying customer-service and transactional AI agents that are defensible before they ever meet a customer.**
+Most ""AI agent"" products let you ship a chatbot and hope. This one refuses to. An agent cannot reach a customer until it has been grounded in the business's own documents, scored by an automated eval suite, and attacked by a red team — and every one of those results is a gate, not a dashboard widget.
+The target user is a non-technical business owner — a salon, a repair shop, an e-commerce store — who needs a support agent on their site without hiring a developer.
+There are two ways to drive it, and they are the same four steps either way:
+- **By hand, in the console.** The owner walks the journey themselves: name the agent, draft its soul, upload documents, run the evals and the red team, clear the gate.
+- **Programmatically, from a command line.** The whole journey is a REST + SSE surface behind `X-API-Key` auth, so a developer's coding agent can create the tenant, stream provisioning progress, ingest a corpus, trigger an eval or red-team run, and poll the deployment gate — without a browser.
+Same gates on both paths. The console is a client of the API, not a privileged one.
+
+W Chats
+Status
+Built in 22 planned phases across three milestones. ~29k lines of Python, 1,103 passing unit tests.
+M1–M11,  = ✅ Control plane, ingestion, hybrid retrieval, reasoning engine + widget, validation chain, evals, red team, pre-deployment checklist, retrieval-strategy synthesis, observability, admin UI. v1.1 — Transactional,  = ✅ Phases 14–17 (tool contracts, Actor validator, integration adapters, identity verification). ⏳ Phase 18 at 9/11 (blast-radius gate, capability UI, transaction red-team, PII firewall). Phase 19 (docs + E2E proof) not started.. v1.2 — Console + agent management,  = ✅ Frontend cutover and the agent-management backend — live metrics, RAG-health instrumentation, the triage flywheel, prompt versioning with canary and rollback. Production hosting,  = ⏸️Paused.Terraform, Bedrock embeddings, connection pooling, S3 uploads and concurrency-safe workers are all written; standing them up needs a real AWS account.
+**Being honest about what that means:**
+the end-to-end path has been proven live — a grounded, cited answer served to a browser through a tunnel — but there is no always-on deployment today, and the v1.2 migrations have not yet been applied to a live database. This is a complete, tested system awaiting infrastructure, not a running service.
+
+W Chats
+Architecture
+```
+Owner (Next.js console)                Customer (Preact widget, 8 KB gzipped)
+             │                                          │
+             └──────────────┬───────────────────────────┘
+                            ▼
+                 ┌──────────────────────┐
+                 │  FastAPI control     │   never does work inline
+                 │  plane · 18 routers  │
+                 └──────┬───────────────┘
+                        │ dispatch                    ┌──────────────────┐
+                        ▼                             │ Redis pub/sub    │
+              ┌───────────────────┐  publish          │ job_events:{id}  │──► SSE
+              │  Celery           │──────────────────►└──────────────────┘
+              │  pipeline queue   │  ingest · embed · staleness
+              │  runtime queue    │  agent turns · evals · red team · validators
+              └─────────┬─────────┘
+                        │
+        ┌───────────────┴────────────────┐
+        ▼                                ▼
+  Control DB (Neon)              Per-tenant Neon project
+  tenants · agents · jobs        documents · chunks · embeddings (HNSW)
+  capability_envelopes           conversations · messages · tool_calls
+  tool_calls_audit               eval_runs · red_team_findings
+  prompt_versions                turn_metrics · retrieval_metrics
+```
+**Per-tenant Neon projects, not schema-per-tenant**
+— required so evals can run against a database branch. Connection strings are never Celery task arguments; tasks receive a
+```
+tenant_id
+```
+and decrypt at runtime. Every task is
+```
+acks_late=True
+```
+*and*
+idempotent.
+
+W Chats
+Repository layout
+```
+apps/api/          FastAPI app, Celery workers, services, both Alembic chains
+apps/admin/        Next.js console
+apps/widget/       Preact customer widget
+.planning/         Phase plans, research, verification and security artifacts
+docs/adr/          Architecture decision records
+prototypes/        Design prototypes for the console
+```
+The
+```
+.planning/
+```
+directory is worth a look if you want to see how this was built: every phase carries its research, its plan, a verification report, and — where relevant — a threat register and a security audit.","W Chats ingests a business's knowledge, deploys an evaluated agent, and monitors it continuously. It is advanced hybrid RAG with a compounding verified-knowledge core, with A2A-native and transactional actions on the roadmap."
+e2d95570-2494-4397-8d8d-f9a273f7cf82,answer_relevancy,pass,,auto-pass on owner instruction 2026-09-08,golden,What does W Chats do?,"W Chats is a multi-tenant platform for deploying customer-service and transactional AI agents. It ingests a business’s documents to ground the agent, evaluates and red-teams it before deployment, and continuously monitors its performance. It is designed so non-technical businesses can deploy a support agent through a console, while developers can use its REST and SSE APIs. **(W Chats Overview, Sections 1–2)**
+
+CITATIONS:
+- Document: W Chats Overview | Section: 1–2","Systems make agents deterministic and reliable - not prompts, not the model.
+Three systems, one loop applied three ways.
+W Chats
+A platform that
+**ingests a business's knowledge, deploys an evaluated agent, and monitors it continuously.**
+Advanced hybrid RAG with a compounding verified-knowledge core. A2A-native and transactional on the roadmap.
+the loop, here retrieve + draft → 3-judge chain → cited answer → verified_qa
+advanced RAG agent harness hybrid retrieval verified knowledge layer Ragas · PyRIT Neon · pgvector A2A roadmap
+Open the architecture +
+Open the judgment record +
+
+W Chats
+**A multi-tenant platform for deploying customer-service and transactional AI agents that are defensible before they ever meet a customer.**
+Most ""AI agent"" products let you ship a chatbot and hope. This one refuses to. An agent cannot reach a customer until it has been grounded in the business's own documents, scored by an automated eval suite, and attacked by a red team — and every one of those results is a gate, not a dashboard widget.
+The target user is a non-technical business owner — a salon, a repair shop, an e-commerce store — who needs a support agent on their site without hiring a developer.
+There are two ways to drive it, and they are the same four steps either way:
+- **By hand, in the console.** The owner walks the journey themselves: name the agent, draft its soul, upload documents, run the evals and the red team, clear the gate.
+- **Programmatically, from a command line.** The whole journey is a REST + SSE surface behind `X-API-Key` auth, so a developer's coding agent can create the tenant, stream provisioning progress, ingest a corpus, trigger an eval or red-team run, and poll the deployment gate — without a browser.
+Same gates on both paths. The console is a client of the API, not a privileged one.
+
+W Chats
+Status
+Built in 22 planned phases across three milestones. ~29k lines of Python, 1,103 passing unit tests.
+M1–M11,  = ✅ Control plane, ingestion, hybrid retrieval, reasoning engine + widget, validation chain, evals, red team, pre-deployment checklist, retrieval-strategy synthesis, observability, admin UI. v1.1 — Transactional,  = ✅ Phases 14–17 (tool contracts, Actor validator, integration adapters, identity verification). ⏳ Phase 18 at 9/11 (blast-radius gate, capability UI, transaction red-team, PII firewall). Phase 19 (docs + E2E proof) not started.. v1.2 — Console + agent management,  = ✅ Frontend cutover and the agent-management backend — live metrics, RAG-health instrumentation, the triage flywheel, prompt versioning with canary and rollback. Production hosting,  = ⏸️Paused.Terraform, Bedrock embeddings, connection pooling, S3 uploads and concurrency-safe workers are all written; standing them up needs a real AWS account.
+**Being honest about what that means:**
+the end-to-end path has been proven live — a grounded, cited answer served to a browser through a tunnel — but there is no always-on deployment today, and the v1.2 migrations have not yet been applied to a live database. This is a complete, tested system awaiting infrastructure, not a running service.
+
+W Chats
+Architecture
+```
+Owner (Next.js console)                Customer (Preact widget, 8 KB gzipped)
+             │                                          │
+             └──────────────┬───────────────────────────┘
+                            ▼
+                 ┌──────────────────────┐
+                 │  FastAPI control     │   never does work inline
+                 │  plane · 18 routers  │
+                 └──────┬───────────────┘
+                        │ dispatch                    ┌──────────────────┐
+                        ▼                             │ Redis pub/sub    │
+              ┌───────────────────┐  publish          │ job_events:{id}  │──► SSE
+              │  Celery           │──────────────────►└──────────────────┘
+              │  pipeline queue   │  ingest · embed · staleness
+              │  runtime queue    │  agent turns · evals · red team · validators
+              └─────────┬─────────┘
+                        │
+        ┌───────────────┴────────────────┐
+        ▼                                ▼
+  Control DB (Neon)              Per-tenant Neon project
+  tenants · agents · jobs        documents · chunks · embeddings (HNSW)
+  capability_envelopes           conversations · messages · tool_calls
+  tool_calls_audit               eval_runs · red_team_findings
+  prompt_versions                turn_metrics · retrieval_metrics
+```
+**Per-tenant Neon projects, not schema-per-tenant**
+— required so evals can run against a database branch. Connection strings are never Celery task arguments; tasks receive a
+```
+tenant_id
+```
+and decrypt at runtime. Every task is
+```
+acks_late=True
+```
+*and*
+idempotent.
+
+W Chats
+Repository layout
+```
+apps/api/          FastAPI app, Celery workers, services, both Alembic chains
+apps/admin/        Next.js console
+apps/widget/       Preact customer widget
+.planning/         Phase plans, research, verification and security artifacts
+docs/adr/          Architecture decision records
+prototypes/        Design prototypes for the console
+```
+The
+```
+.planning/
+```
+directory is worth a look if you want to see how this was built: every phase carries its research, its plan, a verification report, and — where relevant — a threat register and a security audit.","W Chats ingests a business's knowledge, deploys an evaluated agent, and monitors it continuously. It is advanced hybrid RAG with a compounding verified-knowledge core, with A2A-native and transactional actions on the roadmap."
+ed969581-d5f3-46eb-932c-29f3fc2ac76d,faithfulness,pass,,"vague question answered from a guessed project; a follow-up question was the right reply (owner, 2026-09-08)",exploratory,Can I use `npm` instead of `pnpm` for the Vercel install and build commands?,"The documentation specifies `pnpm install --frozen-lockfile` for installation and `pnpm build` for the Vercel build command. It does not state whether replacing them with `npm` commands is supported, so I can’t confirm that npm will work without additional project configuration.  
+
+CITATIONS:
+- Document: Mellow's Earth Elements — Storefront | Section: Deployment (Vercel)","Mellow's Earth Elements — Storefront
+Deployment (Vercel)
+Import the repo, framework
+**Vite**
+. Build settings are in
+```
+vercel.json
+```
+:
+- **Build:** `pnpm build`
+- **Output:** `dist`
+- **Install:** `pnpm install --frozen-lockfile`
+
+Mellow's Earth Elements — Storefront
+Getting Started
+```
+pnpm install
+pnpm dev
+```
+The dev server runs on
+**http://localhost:8080**
+(falls back to the next free port — e.g. 8081 — if 8080 is taken).
+
+Sentinel OHS
+Getting started
+3. Web app
+```
+cd sentinel-web
+npm install
+npm run dev   # Vite on http://localhost:5173
+```
+
+Mellow's Earth Elements — Storefront
+Getting Started
+Scripts
+```
+pnpm dev
+```
+```
+pnpm build
+```
+```
+dist/
+```
+```
+pnpm preview
+```
+```
+pnpm test
+```
+```
+pnpm typecheck
+```
+```
+tsc --noEmit
+```
+```
+pnpm lint
+```
+, Description = 
+Start the Vite dev server
+Preview the production build
+Run the unit tests (Vitest)
+Lint with ESLint
+
+Beekeeper
+Why
+A coding agent's knowledge of which packages are safe is frozen at its training cutoff. It installs
+```
+some-build-tool@1.4.2
+```
+because the task needs it, with no way to know that version published a postinstall credential stealer after that cutoff, and no instinct to treat a routine dependency as a risk. The 2026 supply-chain wave (Nx Console, Shai-Hulud, the npm trusted-publisher OIDC attacks) targets exactly that gap: code that reaches a developer through a trusted, well-meaning install. Beekeeper puts a corroborated threat check in front of the install, synced every two hours, with a second-source requirement and an audit trail.",The provided content specifies `pnpm build` for the build command and `pnpm install --frozen-lockfile` for installation. It does not provide instructions for using `npm` instead.
+ed969581-d5f3-46eb-932c-29f3fc2ac76d,answer_relevancy,fail,,"vague question answered from a guessed project; a follow-up question was the right reply (owner, 2026-09-08)",exploratory,Can I use `npm` instead of `pnpm` for the Vercel install and build commands?,"The documentation specifies `pnpm install --frozen-lockfile` for installation and `pnpm build` for the Vercel build command. It does not state whether replacing them with `npm` commands is supported, so I can’t confirm that npm will work without additional project configuration.  
+
+CITATIONS:
+- Document: Mellow's Earth Elements — Storefront | Section: Deployment (Vercel)","Mellow's Earth Elements — Storefront
+Deployment (Vercel)
+Import the repo, framework
+**Vite**
+. Build settings are in
+```
+vercel.json
+```
+:
+- **Build:** `pnpm build`
+- **Output:** `dist`
+- **Install:** `pnpm install --frozen-lockfile`
+
+Mellow's Earth Elements — Storefront
+Getting Started
+```
+pnpm install
+pnpm dev
+```
+The dev server runs on
+**http://localhost:8080**
+(falls back to the next free port — e.g. 8081 — if 8080 is taken).
+
+Sentinel OHS
+Getting started
+3. Web app
+```
+cd sentinel-web
+npm install
+npm run dev   # Vite on http://localhost:5173
+```
+
+Mellow's Earth Elements — Storefront
+Getting Started
+Scripts
+```
+pnpm dev
+```
+```
+pnpm build
+```
+```
+dist/
+```
+```
+pnpm preview
+```
+```
+pnpm test
+```
+```
+pnpm typecheck
+```
+```
+tsc --noEmit
+```
+```
+pnpm lint
+```
+, Description = 
+Start the Vite dev server
+Preview the production build
+Run the unit tests (Vitest)
+Lint with ESLint
+
+Beekeeper
+Why
+A coding agent's knowledge of which packages are safe is frozen at its training cutoff. It installs
+```
+some-build-tool@1.4.2
+```
+because the task needs it, with no way to know that version published a postinstall credential stealer after that cutoff, and no instinct to treat a routine dependency as a risk. The 2026 supply-chain wave (Nx Console, Shai-Hulud, the npm trusted-publisher OIDC attacks) targets exactly that gap: code that reaches a developer through a trusted, well-meaning install. Beekeeper puts a corroborated threat check in front of the install, synced every two hours, with a second-source requirement and an audit trail.",The provided content specifies `pnpm build` for the build command and `pnpm install --frozen-lockfile` for installation. It does not provide instructions for using `npm` instead.
+f28f6c3f-6ad2-4f3c-a326-56e43c639a74,faithfulness,pass,,auto-pass on owner instruction 2026-09-08,golden,Why does Beekeeper not block a package the moment one source flags it?,"Beekeeper uses corroboration to avoid false positives and prevent a single compromised or inaccurate catalog from weaponizing the blocking system. A single source triggers a warning, while two signed sources are required to block; three or more sources trigger blocking plus quarantine. Unsigned sources can warn but cannot block on their own. [Beekeeper | What it does — Catalog corroboration]
+
+This design is intended to keep the protection enabled: an “any hit blocks” policy could generate enough false alarms that developers disable it. [Systems make agents deterministic and reliable - not prompts, not the model. | The loop]
+
+CITATIONS:
+- Document: Beekeeper | Section: What it does — Catalog corroboration
+- Document: Systems make agents deterministic and reliable - not prompts, not the model. | Section: The loop","Beekeeper
+What it does
+2. Catalog corroboration (the supply-chain layer)
+Block decisions require a second factor:
+1, Action = warn. 2, Action = block. 3+, Action = block + quarantine
+Only signed sources count toward a block; an unsigned source can warn but never block alone. An adversary controlling one catalog source can raise warnings but cannot force a block. Sources are Bumblebee, OSV, and Socket. Per-severity thresholds let a
+```
+critical
+```
+match escalate at a lower count, guarded against a single poisoned or wildcard entry. The package-manager nudge catalog-matches
+```
+npm
+```
+,
+```
+pnpm
+```
+,
+```
+bun
+```
+, and
+```
+yarn
+```
+installs before they run, including chained (
+```
+cd x && npm install ...
+```
+) and env-prefixed commands. Unlisted managers (
+```
+deno
+```
+,
+```
+mvn
+```
+,
+```
+nuget
+```
+) currently parse as ""no package identified"" and are allowed; the behavioral layer is the second signal there.
+On a catalog-sync delta, a read-only cross-reference checks your already-installed packages against the new intelligence. A corroborated hit can move to a reversible quarantine (a directory move plus a restore manifest). This is opt-in and dry-run by default: a fresh install quarantines nothing, and the permanent purge is always human-gated.
+On a confirmed incident, Beekeeper also records the package to a local, append-only, owner-only adjudicated corpus (v1.4.0). Off the hot path (only during a
+```
+catalogs sync
+```
+), an adjudication engine assigns the outcome and writes a confirmed-malicious package to a local catalog overlay, so that machine enforces it immediately, ahead of the upstream feed. Local-only: nothing leaves the machine (see
+[docs/THREAT-MODEL.md §13](https://github.com/home-beekeeper/beekeeper/blob/main/docs/THREAT-MODEL.md)
+).
+
+Systems make agents deterministic and reliable - not prompts, not the model.
+Three systems, one loop applied three ways.
+Beekeeper
+The loop
+The agent is the generator, Beekeeper the evaluator, the signed catalogs the evidence. Confirm a threat once and it's written to a local overlay, so the same machine catches the repeat the instant it lands - ahead of the upstream feed. The verified outcome: a tool call that has been checked, not trusted.
+Not the artifact, the
+**reasoning behind it**
+. The situation I read, the option I rejected, the risk I removed, the change it made.
+Situation
+Threat sources disagree constantly. A package one feed flags, another rates clean. A gate that fires on any single hit is a gate developers disable by lunchtime.
+Call
+A tunable, per-ecosystem N-source agreement threshold: one source warns, two enforce, three trigger quarantine. Rejected the obvious
+**""any hit blocks""**
+because a tool that cries wolf gets switched off, and a switched-off guard protects nothing.
+Risk held
+A poisoned catalog weaponizing the gate. Defended structurally: signature-verified catalogs, per-sync delta caps that drop suspicious bulk-blocks to audit-only, and a recursive self-kill entry so a compromised Beekeeper quarantines itself.
+Change
+Enforcement strict enough to stop a real worm, calibrated enough to stay on. The blast radius sets the aggression, not a global default. Most days it looks like nothing happened, which is the point.
+No. 02 Production-grade · most ambitious
+11 layers · M1-M10 shipped
+
+| Sources flagging a package   | Action             |
+|------------------------------|--------------------|
+| 1                            | warn               |
+| 2                            | block              |
+| 3+                           | block + quarantine |
+
+Beekeeper
+Why
+A coding agent's knowledge of which packages are safe is frozen at its training cutoff. It installs
+```
+some-build-tool@1.4.2
+```
+because the task needs it, with no way to know that version published a postinstall credential stealer after that cutoff, and no instinct to treat a routine dependency as a risk. The 2026 supply-chain wave (Nx Console, Shai-Hulud, the npm trusted-publisher OIDC attacks) targets exactly that gap: code that reaches a developer through a trusted, well-meaning install. Beekeeper puts a corroborated threat check in front of the install, synced every two hours, with a second-source requirement and an audit trail.
+
+Beekeeper
+**Threat intelligence for autonomous coding agents.**
+Beekeeper sits between an agent and its tools. It evaluates each package install, file access, network call, and tool call before it runs, against corroboration-based threat intelligence and structural policy, and blocks what does not pass. It is a single static Go binary with no external runtime dependencies.
+The threat is the supply chain, not the model. Your agent installs the dependency the task needs, with no way to know that version shipped a credential stealer after its training cutoff. Beekeeper carries the fresh, corroborated knowledge the model lacks and checks the install before it runs.
+[Harness support](#harness-support)
+and
+[Known gaps](#known-gaps)
+state what it covers and where coverage stops. Read those before you trust it with anything.
+**v1.0.0**
+is the first public release. License: Apache 2.0.","A gate that fires on any single hit is a gate developers disable by lunchtime, and a switched-off guard protects nothing. Beekeeper uses a tunable, per-ecosystem agreement threshold: one source warns, two enforce, three trigger quarantine."
+f28f6c3f-6ad2-4f3c-a326-56e43c639a74,answer_relevancy,pass,,auto-pass on owner instruction 2026-09-08,golden,Why does Beekeeper not block a package the moment one source flags it?,"Beekeeper uses corroboration to avoid false positives and prevent a single compromised or inaccurate catalog from weaponizing the blocking system. A single source triggers a warning, while two signed sources are required to block; three or more sources trigger blocking plus quarantine. Unsigned sources can warn but cannot block on their own. [Beekeeper | What it does — Catalog corroboration]
+
+This design is intended to keep the protection enabled: an “any hit blocks” policy could generate enough false alarms that developers disable it. [Systems make agents deterministic and reliable - not prompts, not the model. | The loop]
+
+CITATIONS:
+- Document: Beekeeper | Section: What it does — Catalog corroboration
+- Document: Systems make agents deterministic and reliable - not prompts, not the model. | Section: The loop","Beekeeper
+What it does
+2. Catalog corroboration (the supply-chain layer)
+Block decisions require a second factor:
+1, Action = warn. 2, Action = block. 3+, Action = block + quarantine
+Only signed sources count toward a block; an unsigned source can warn but never block alone. An adversary controlling one catalog source can raise warnings but cannot force a block. Sources are Bumblebee, OSV, and Socket. Per-severity thresholds let a
+```
+critical
+```
+match escalate at a lower count, guarded against a single poisoned or wildcard entry. The package-manager nudge catalog-matches
+```
+npm
+```
+,
+```
+pnpm
+```
+,
+```
+bun
+```
+, and
+```
+yarn
+```
+installs before they run, including chained (
+```
+cd x && npm install ...
+```
+) and env-prefixed commands. Unlisted managers (
+```
+deno
+```
+,
+```
+mvn
+```
+,
+```
+nuget
+```
+) currently parse as ""no package identified"" and are allowed; the behavioral layer is the second signal there.
+On a catalog-sync delta, a read-only cross-reference checks your already-installed packages against the new intelligence. A corroborated hit can move to a reversible quarantine (a directory move plus a restore manifest). This is opt-in and dry-run by default: a fresh install quarantines nothing, and the permanent purge is always human-gated.
+On a confirmed incident, Beekeeper also records the package to a local, append-only, owner-only adjudicated corpus (v1.4.0). Off the hot path (only during a
+```
+catalogs sync
+```
+), an adjudication engine assigns the outcome and writes a confirmed-malicious package to a local catalog overlay, so that machine enforces it immediately, ahead of the upstream feed. Local-only: nothing leaves the machine (see
+[docs/THREAT-MODEL.md §13](https://github.com/home-beekeeper/beekeeper/blob/main/docs/THREAT-MODEL.md)
+).
+
+Systems make agents deterministic and reliable - not prompts, not the model.
+Three systems, one loop applied three ways.
+Beekeeper
+The loop
+The agent is the generator, Beekeeper the evaluator, the signed catalogs the evidence. Confirm a threat once and it's written to a local overlay, so the same machine catches the repeat the instant it lands - ahead of the upstream feed. The verified outcome: a tool call that has been checked, not trusted.
+Not the artifact, the
+**reasoning behind it**
+. The situation I read, the option I rejected, the risk I removed, the change it made.
+Situation
+Threat sources disagree constantly. A package one feed flags, another rates clean. A gate that fires on any single hit is a gate developers disable by lunchtime.
+Call
+A tunable, per-ecosystem N-source agreement threshold: one source warns, two enforce, three trigger quarantine. Rejected the obvious
+**""any hit blocks""**
+because a tool that cries wolf gets switched off, and a switched-off guard protects nothing.
+Risk held
+A poisoned catalog weaponizing the gate. Defended structurally: signature-verified catalogs, per-sync delta caps that drop suspicious bulk-blocks to audit-only, and a recursive self-kill entry so a compromised Beekeeper quarantines itself.
+Change
+Enforcement strict enough to stop a real worm, calibrated enough to stay on. The blast radius sets the aggression, not a global default. Most days it looks like nothing happened, which is the point.
+No. 02 Production-grade · most ambitious
+11 layers · M1-M10 shipped
+
+| Sources flagging a package   | Action             |
+|------------------------------|--------------------|
+| 1                            | warn               |
+| 2                            | block              |
+| 3+                           | block + quarantine |
+
+Beekeeper
+Why
+A coding agent's knowledge of which packages are safe is frozen at its training cutoff. It installs
+```
+some-build-tool@1.4.2
+```
+because the task needs it, with no way to know that version published a postinstall credential stealer after that cutoff, and no instinct to treat a routine dependency as a risk. The 2026 supply-chain wave (Nx Console, Shai-Hulud, the npm trusted-publisher OIDC attacks) targets exactly that gap: code that reaches a developer through a trusted, well-meaning install. Beekeeper puts a corroborated threat check in front of the install, synced every two hours, with a second-source requirement and an audit trail.
+
+Beekeeper
+**Threat intelligence for autonomous coding agents.**
+Beekeeper sits between an agent and its tools. It evaluates each package install, file access, network call, and tool call before it runs, against corroboration-based threat intelligence and structural policy, and blocks what does not pass. It is a single static Go binary with no external runtime dependencies.
+The threat is the supply chain, not the model. Your agent installs the dependency the task needs, with no way to know that version shipped a credential stealer after its training cutoff. Beekeeper carries the fresh, corroborated knowledge the model lacks and checks the install before it runs.
+[Harness support](#harness-support)
+and
+[Known gaps](#known-gaps)
+state what it covers and where coverage stops. Read those before you trust it with anything.
+**v1.0.0**
+is the first public release. License: Apache 2.0.","A gate that fires on any single hit is a gate developers disable by lunchtime, and a switched-off guard protects nothing. Beekeeper uses a tunable, per-ecosystem agreement threshold: one source warns, two enforce, three trigger quarantine."
+fd56f78e-3944-42bc-9a72-367441eded40,faithfulness,pass,,auto-pass on owner instruction 2026-09-08,exploratory,How should the candidate respond if they discover a weakness in their own work before the interviewer points it out?,"The candidate should proactively acknowledge the weakness before the interviewer identifies it. They should explain:
+
+- What the weakness is.
+- What it cost or limited in the work.
+- How they discovered it.
+- What they did—or plan to do—to address it.
+- How they would measure whether the improvement worked.
+
+This signals judgment and self-awareness rather than ignorance. They should also avoid abandoning a position that is actually correct merely because the interviewer challenges it.
+
+CITATIONS:
+- Document: Interview Volt | Section: Rules I'm training","Interview Volt
+Rules I'm training
+**Volunteer before you're caught.**
+A weakness I raise is evidence of judgement. The
+same weakness raised by the interviewer is evidence of ignorance. Identical fact,
+opposite signal.
+**Name the cost, not just the choice.**
+A decision with no cost wasn't a decision — it
+was a guess that happened to work. If I can't say what an approach cost me, I didn't
+make an engineering decision.
+**""How would you know?""**
+— Every claim about performance, quality, or correctness
+needs a measurement behind it. I have real ones: a 20-scenario golden set, a judge
+calibrated against human labels by Spearman correlation, Ragas on an isolated database
+branch. I keep forgetting to reach for them.
+**Don't fold on a correct answer.**
+Caving when pushed on something I got right is a
+worse signal than getting it wrong.
+
+Interview Volt
+Status
+Honest, because the whole vault is built on being honest about my own code:
+- Scaffolded and populated. **Not yet drilled.**
+- The claim ledger found three false claims on my portfolio site and one headline feature that isn't wired to the path it claims to be on. Fixing those is the point.
+- This repo proves nothing about my engineering. The three projects do that. This is the harness that makes me able to *talk* about them.
+
+Interview Volt
+A defence system for technical interviews, built around three shipped projects.
+This is not a notes folder and it is not a course dump. It is a
+**loop**
+: I answer, an
+interviewer that has read my code presses on it, and the failure gets written back as
+an artifact. Same shape as the thing I say I believe about engineering —
+*The verified outcome is the system. Not the prompt. Not the model.*
+— applied to the one system I'd never actually instrumented:
+**me, explaining my work**
+**out loud, under pressure.**
+
+Interview Volt
+Why this exists
+I can build the thing. I have three of them:
+- [**W Chats**](projects/wchats) — multi-tenant RAG platform. Hybrid retrieval, a three-judge validation chain, a verified-knowledge cache, transactional agent tools with reserve-before-execute idempotency. Python, FastAPI, Celery, pgvector.
+- [**Beekeeper**](projects/beekeeper) — security enforcement for autonomous coding agents. Pre-tool-call hook, fail-closed policy engine, 2-of-N corroborated supply-chain intel. Go.
+- [**Sentinel**](projects/sentinel) — AI-native OHS platform on a live building graph with provenance-gated retrieval. TypeScript, Memgraph, React Three Fiber.
+What I had never done is
+**say any of it out loud while someone who'd read the source**
+**pushed back.**
+Building and defending are different skills. I'd trained one.
+
+Interview Volt
+The standard
+For anything I claim to know, I should be able to produce
+**all eight**
+without notes:
+1. **Definition** — in one sentence, no jargon
+2. **Example** — from my own code, with the file
+3. **Counterexample** — where it does *not* apply
+4. **Production failure mode** — what breaks, and whether it fails open or closed
+5. **Debugging signal** — how I'd notice it in the wild
+6. **Measurement** — *how would I know?* (the highest-signal question in any AI interview)
+7. **Interview explanation** — 20 seconds, 90 seconds, and on a whiteboard
+8. **Client implication** — what it means to someone paying for it
+Anything I can't do all eight for, I don't know. I've only built it.","They should volunteer the weakness before being caught. Raising a weakness demonstrates judgment, whereas having the interviewer identify the same weakness signals ignorance; the fact is identical but the signal is opposite."
+fd56f78e-3944-42bc-9a72-367441eded40,answer_relevancy,pass,,auto-pass on owner instruction 2026-09-08,exploratory,How should the candidate respond if they discover a weakness in their own work before the interviewer points it out?,"The candidate should proactively acknowledge the weakness before the interviewer identifies it. They should explain:
+
+- What the weakness is.
+- What it cost or limited in the work.
+- How they discovered it.
+- What they did—or plan to do—to address it.
+- How they would measure whether the improvement worked.
+
+This signals judgment and self-awareness rather than ignorance. They should also avoid abandoning a position that is actually correct merely because the interviewer challenges it.
+
+CITATIONS:
+- Document: Interview Volt | Section: Rules I'm training","Interview Volt
+Rules I'm training
+**Volunteer before you're caught.**
+A weakness I raise is evidence of judgement. The
+same weakness raised by the interviewer is evidence of ignorance. Identical fact,
+opposite signal.
+**Name the cost, not just the choice.**
+A decision with no cost wasn't a decision — it
+was a guess that happened to work. If I can't say what an approach cost me, I didn't
+make an engineering decision.
+**""How would you know?""**
+— Every claim about performance, quality, or correctness
+needs a measurement behind it. I have real ones: a 20-scenario golden set, a judge
+calibrated against human labels by Spearman correlation, Ragas on an isolated database
+branch. I keep forgetting to reach for them.
+**Don't fold on a correct answer.**
+Caving when pushed on something I got right is a
+worse signal than getting it wrong.
+
+Interview Volt
+Status
+Honest, because the whole vault is built on being honest about my own code:
+- Scaffolded and populated. **Not yet drilled.**
+- The claim ledger found three false claims on my portfolio site and one headline feature that isn't wired to the path it claims to be on. Fixing those is the point.
+- This repo proves nothing about my engineering. The three projects do that. This is the harness that makes me able to *talk* about them.
+
+Interview Volt
+A defence system for technical interviews, built around three shipped projects.
+This is not a notes folder and it is not a course dump. It is a
+**loop**
+: I answer, an
+interviewer that has read my code presses on it, and the failure gets written back as
+an artifact. Same shape as the thing I say I believe about engineering —
+*The verified outcome is the system. Not the prompt. Not the model.*
+— applied to the one system I'd never actually instrumented:
+**me, explaining my work**
+**out loud, under pressure.**
+
+Interview Volt
+Why this exists
+I can build the thing. I have three of them:
+- [**W Chats**](projects/wchats) — multi-tenant RAG platform. Hybrid retrieval, a three-judge validation chain, a verified-knowledge cache, transactional agent tools with reserve-before-execute idempotency. Python, FastAPI, Celery, pgvector.
+- [**Beekeeper**](projects/beekeeper) — security enforcement for autonomous coding agents. Pre-tool-call hook, fail-closed policy engine, 2-of-N corroborated supply-chain intel. Go.
+- [**Sentinel**](projects/sentinel) — AI-native OHS platform on a live building graph with provenance-gated retrieval. TypeScript, Memgraph, React Three Fiber.
+What I had never done is
+**say any of it out loud while someone who'd read the source**
+**pushed back.**
+Building and defending are different skills. I'd trained one.
+
+Interview Volt
+The standard
+For anything I claim to know, I should be able to produce
+**all eight**
+without notes:
+1. **Definition** — in one sentence, no jargon
+2. **Example** — from my own code, with the file
+3. **Counterexample** — where it does *not* apply
+4. **Production failure mode** — what breaks, and whether it fails open or closed
+5. **Debugging signal** — how I'd notice it in the wild
+6. **Measurement** — *how would I know?* (the highest-signal question in any AI interview)
+7. **Interview explanation** — 20 seconds, 90 seconds, and on a whiteboard
+8. **Client implication** — what it means to someone paying for it
+Anything I can't do all eight for, I don't know. I've only built it.","They should volunteer the weakness before being caught. Raising a weakness demonstrates judgment, whereas having the interviewer identify the same weakness signals ignorance; the fact is identical but the signal is opposite."
