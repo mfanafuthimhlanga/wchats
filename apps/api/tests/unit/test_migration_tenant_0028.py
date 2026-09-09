@@ -35,6 +35,13 @@ through the production path (`migrations.run_tenant_migrations`). Observed:
     revision after downgrade                             0027, columns 0
     revision after re-upgrade                            0028, columns 4
 
+Both tables were EMPTY in that run, so it did not exercise the case every tenant
+presents. A second run seeded one `eval_scenarios` row and one `eval_samples` row
+at 0027 and carried them up. Observed: the upgrade returned with no error, and
+the pre-existing rows read `turns = []`, `ambiguous = false`,
+`resolved_question = NULL`. Both runs are written up in
+`.dev/reference/260909-tenant-0028-observed.md`.
+
 The statements are read by patching `alembic.op.execute`, never by reading the
 migration as text; the revision graph comes from the 0023 sibling's helper.
 """
@@ -158,9 +165,19 @@ def test_every_not_null_column_arrives_with_a_default():
     backfill: a scenario written before 0028 has no prior turns and is not
     ambiguous, because the eval that wrote it could express neither.
     """
-    for statement in _statements("upgrade"):
-        if "ADD COLUMN" not in statement or "NOT NULL" not in statement:
-            continue
+    checked = [
+        statement
+        for statement in _statements("upgrade")
+        if "ADD COLUMN" in statement and "NOT NULL" in statement
+    ]
+    # THE FLOOR, because a loop over nothing passes. Three of the four columns
+    # are NOT NULL; a rename that stopped this filter matching would otherwise
+    # leave the assertion below with no subject and the test green (FM-025).
+    assert len(checked) == 3, (
+        f"expected 3 NOT NULL columns to check, found {len(checked)}. Either the "
+        "migration changed or this filter stopped matching its statements"
+    )
+    for statement in checked:
         assert "DEFAULT" in statement, (
             f"a NOT NULL column is added with no default: {statement}"
         )
@@ -251,4 +268,7 @@ def test_downgrade_reverses_every_column_upgrade_added():
         for m in [re.search(r"ALTER TABLE ([A-Z_]+) DROP COLUMN IF EXISTS ([A-Z_]+)", statement)]
         if m
     }
+    # Two empty sets are equal, so the comparison alone passes when neither
+    # regex matches anything. The count is what makes it an observation (FM-004).
+    assert len(added) == 4, f"read {sorted(added)} added columns, expected 4"
     assert added == dropped, f"added {sorted(added)}, dropped {sorted(dropped)}"

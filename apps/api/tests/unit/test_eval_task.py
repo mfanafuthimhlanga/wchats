@@ -88,7 +88,12 @@ class _Cursor:
         # `turns_column_missing=True` stands in for a tenant DB that stopped at
         # 0027: only the widest rung of `_fetch_scenario_rows` names the column,
         # so the middle rung answers and the golden split survives (#227).
-        if "turns" in sql and self.turns_column_missing:
+        #
+        # The match is the PROJECTION, not the substring "turns": a bare `in sql`
+        # would also fire on a comment, on `returns`, and on any later column
+        # whose name contains it, which is a double branching on the text of the
+        # thing under test rather than on the behaviour it stands for (FM-002).
+        if self.turns_column_missing and "turns, ambiguous" in sql:
             raise psycopg2.errors.UndefinedColumn('column "turns" does not exist')
         if "dataset" in sql:
             if self.dataset_column_missing:
