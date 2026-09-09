@@ -37,6 +37,9 @@ dependencies = [
     # Revisit when ragas ships a 0.5.x that drops the legacy vertexai import.
     "langchain-community<0.4",
     "instructor>=1.0.0,<2.0.0",
+    # Transitive through instructor and ragas, pinned here because CI resolves with pip,
+    # not the lock: openai 3.x passes httpx2 clients and model_client builds httpx ones.
+    "openai>=2.45.0,<3.0.0",
     "python-jose[cryptography]==3.5.0",
     "PyJWT[cryptography]==2.12.1",
     "svix==1.93.0",
