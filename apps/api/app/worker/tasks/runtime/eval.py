@@ -330,30 +330,32 @@ class _EvalEventSink:
 _HISTORY_ROLES = ("user", "assistant")
 
 
-def _scenario_history(turns) -> list[dict]:
+# THE SAME TWO BOUNDS AS THE CHAT PATH, IN THE SAME ORDER. `_read_turn_history`
+# filters roles in its WHERE, takes the newest `TURN_HISTORY_MAX_MESSAGES`, then
+# drops empty rows and cuts each to `TURN_HISTORY_MAX_ROW_CHARS`. Applying the
+# count bound last instead let forty real messages plus ten blank ones reach a
+# model call as forty rows where the chat path sends thirty, and reach ten turns
+# further back than production would, so the order is part of the bound.
+#
+# A scenario's turns come out of a JSONB column an author, a miner or a drafter
+# wrote, so anything that is not a `{"role", "content"}` mapping with a string
+# body is dropped rather than coerced, and every drop is counted in a log line: a
+# multi-turn scenario silently reduced to a single-turn one would score as a
+# single-turn row and report as one, which is not a measurement anyone can read.
+#
+# ONE DELIBERATE DIVERGENCE. Emptiness is measured on the TRUNCATED string, where
+# the chat path measures it on the whole row before cutting. That is what makes
+# this idempotent, which both callers need: `_scenario_dict` bounds a row at the
+# read so the run carries what the model will see, and `_run_one_eval_turn` bounds
+# it again at the seam so a caller that skipped the read is still bounded. Measured
+# on the whole string, a row whose first four thousand characters are blank
+# survives one pass and is dropped by the next, which is precisely the drift
+# between the two callers that idempotence exists to prevent.
+def _scenario_history(turns: object, *, scenario_id: str = "") -> list[dict]:
     """A scenario's prior turns as the loop's `history` argument, bounded.
-
-    Same shape and the SAME TWO BOUNDS as the chat path's `_read_turn_history`:
-    at most `TURN_HISTORY_MAX_MESSAGES` rows, each cut to
-    `TURN_HISTORY_MAX_ROW_CHARS` characters, oldest first, empty content
-    dropped. The bounds are the reason this is a function and not a cast. What
-    the eval measures has to be what the customer is served, and a scenario
-    whose turns column holds sixty messages of four thousand characters each
-    would put a context through the agent that no live conversation can reach,
-    then score the answer as if it were representative.
-
-    Anything that is not a `{"role", "content"}` mapping is dropped rather than
-    coerced. A malformed row is a scenario an author wrote wrong; carrying it
-    into the model call would make the failure show up as a quality score.
 
     Returns `[]` for None, for a non-list, and for a list with nothing usable in
     it, which is the single-turn scenario every row before tenant 0028 is.
-
-    IDEMPOTENT, and both callers rely on it. Every row this returns passes the
-    filter again unchanged and the tail slice of a list already under the cap is
-    that list, so `_scenario_dict` bounds a row once at the read and
-    `_run_one_eval_turn` bounds it again at the seam, where the second pass
-    changes nothing and a future caller that skipped the first is still bounded.
     """
     from app.worker.tasks.runtime.agent import (  # noqa: PLC0415
         TURN_HISTORY_MAX_MESSAGES,
@@ -361,22 +363,48 @@ def _scenario_history(turns) -> list[dict]:
     )
 
     if not isinstance(turns, list):
+        # None is ordinary: a pre-0028 projection has no such key. Anything else
+        # means the column is not holding a JSON array, which `ADD COLUMN IF NOT
+        # EXISTS` will step over in silence if a tenant already had a `turns`
+        # column of another type, so it is said out loud once per scenario rather
+        # than read as "this scenario has no history".
+        if turns is not None:
+            log.warning(
+                "eval_scenario_history.turns_not_an_array",
+                scenario_id=scenario_id,
+                python_type=type(turns).__name__,
+                detail="the turns column is not a JSON array; the row runs single-turn",
+            )
         return []
-    history: list[dict] = []
-    for row in turns:
-        if not isinstance(row, Mapping):
-            continue
-        role = row.get("role")
-        content = row.get("content")
-        if role not in _HISTORY_ROLES or not isinstance(content, str):
-            continue
-        if not content.strip():
-            continue
-        history.append({"role": role, "content": content[:TURN_HISTORY_MAX_ROW_CHARS]})
+    addressable = [
+        row
+        for row in turns
+        if isinstance(row, Mapping)
+        and row.get("role") in _HISTORY_ROLES
+        and isinstance(row.get("content"), str)
+    ]
     # The NEWEST rows, matching the chat path's `ORDER BY seq DESC LIMIT`. The
     # end of a conversation is what binds its last question; the beginning is
     # what a long conversation can afford to lose.
-    return history[-TURN_HISTORY_MAX_MESSAGES:]
+    history = []
+    for row in addressable[-TURN_HISTORY_MAX_MESSAGES:]:
+        content = row["content"][:TURN_HISTORY_MAX_ROW_CHARS]
+        if content.strip():
+            history.append({"role": row["role"], "content": content})
+    dropped = len(turns) - len(history)
+    if dropped:
+        log.warning(
+            "eval_scenario_history.turns_dropped",
+            scenario_id=scenario_id,
+            dropped=dropped,
+            carried=len(history),
+            detail=(
+                "turns this scenario stored did not reach the model call: a role "
+                "the chat path cannot produce, a row that is not a message, or "
+                "the count bound"
+            ),
+        )
+    return history
 
 
 def _drive_eval_turn(turn, *, question: str, history: list, run_id: str) -> dict:
@@ -885,27 +913,40 @@ _PRE_0014_SQL = """
     LIMIT %(limit)s
 """
 
+#: Every column the scenario selector can ask for, in ONE order, as names rather
+#: than as a SQL fragment.
+#:
+#: A RUNG IS A PREFIX OF THIS TUPLE, and that is what makes "a rung may only drop
+#: trailing columns" a property of the data rather than a comment somebody has to
+#: obey. `_fetch_scenario_rows` zips this tuple with each row and `_scenario_dict`
+#: reads the result BY NAME, so reordering these names moves the SELECT list and
+#: the mapping together. Swapping `question` and `reference_answer` here used to
+#: put a reference where a question belongs, silently, on every tenant, which is
+#: audit defect D1 restored; now it renames both halves of one pair and changes
+#: nothing.
+_SCENARIO_COLUMNS = (
+    "id",
+    "source",
+    "question",
+    "reference_answer",
+    "retrieved_contexts",
+    "dataset",
+    "turns",
+    "ambiguous",
+)
+
 #: What the golden / exploratory pair can ask a tenant database for, widest
 #: first. One entry per tenant-schema generation this code still meets: a
 #: database at 0028 or later holds the conversation a scenario was asked in, and
 #: one that stopped at 0014 does not.
-#:
-#: A RUNG MAY ONLY DROP TRAILING COLUMNS. `_scenario_dict` reads the row
-#: positionally behind a `len(row) >` guard per optional column, so reordering a
-#: projection puts a question where a reference belongs and every score in the
-#: run describes the wrong text.
 _DATASET_PROJECTIONS = (
-    (
-        "0028",
-        "id, source, question, reference_answer, retrieved_contexts, dataset, "
-        "turns, ambiguous",
-    ),
-    ("0014", "id, source, question, reference_answer, retrieved_contexts, dataset"),
+    ("0028", _SCENARIO_COLUMNS),
+    ("0014", _SCENARIO_COLUMNS[:6]),
 )
 
 #: The pre-0014 projection. No `dataset` column exists to split on, so it is one
 #: query and every row it returns is exploratory.
-_PRE_0014_COLUMNS = "id, source, question, reference_answer, retrieved_contexts"
+_PRE_0014_COLUMNS = _SCENARIO_COLUMNS[:5]
 
 
 # THE LADDER, AND WHY DEGRADING IS NOT THE SAME AS FAILING. A tenant database
@@ -918,9 +959,12 @@ _PRE_0014_COLUMNS = "id, source, question, reference_answer, retrieved_contexts"
 # What each rung costs, stated so no log has to be inferred:
 #
 #   - 0028 is the whole thing.
-#   - 0014 loses `turns` and `ambiguous`, which costs nothing real: a database
-#     without the columns holds no scenario that could have used them, and every
-#     row runs single-turn exactly as it did before #227.
+#   - 0014 loses `turns` and `ambiguous`. A database without the columns holds no
+#     scenario that could have used them, so every row runs single-turn exactly as
+#     it did before #227. THE WRITE PATH HAS TO AGREE, or this rung is worse than
+#     failing outright: `write_eval_samples` names `turns` too, and until it grew
+#     the same fallback a 0027 tenant ran every turn, paid for every one, and then
+#     died on the last write before scoring.
 #   - pre-0014 loses the golden set as well. That one costs the paired per-item
 #     delta the split exists to produce, so `dataset_column_available` comes back
 #     False and travels to the report, where "no golden rows" and "no way to
@@ -930,12 +974,23 @@ _PRE_0014_COLUMNS = "id, source, question, reference_answer, retrieved_contexts"
 # reason: tenants are migrated at provision time and again on every deploy
 # (`railway.api.toml` preDeployCommand), so a rung below the first is a database
 # the deploy did not reach.
-def _fetch_scenario_rows(conn_str: str, *, agent_id: str) -> tuple[list, bool]:
+def _named(columns: tuple, rows) -> list[dict]:
+    """Each row keyed by the column that produced it.
+
+    `zip` stops at the shorter side deliberately. PostgreSQL cannot return fewer
+    columns than the SELECT names, so a short row only ever comes from a test
+    double, and truncating it leaves the optional keys absent, which is the same
+    state a narrower rung produces.
+    """
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def _fetch_scenario_rows(conn_str: str, *, agent_id: str) -> tuple[list[dict], bool]:
     """The rows this run will score, and whether the golden split could be asked for.
 
-    Returns `(rows, dataset_column_available)`. The caller owns the retry: this
-    raises whatever psycopg2 raised, and only the Celery task can call
-    `self.retry`.
+    Returns `(rows, dataset_column_available)`, each row keyed by column name. The
+    caller owns the retry: this raises whatever psycopg2 raised, and only the
+    Celery task can call `self.retry`.
     """
     conn = psycopg2.connect(conn_str, connect_timeout=5)
     try:
@@ -943,15 +998,16 @@ def _fetch_scenario_rows(conn_str: str, *, agent_id: str) -> tuple[list, bool]:
             try:
                 with conn.cursor() as cur:
                     cur.execute(
-                        _GOLDEN_SQL.format(columns=columns), {"golden": DATASET_GOLDEN}
+                        _GOLDEN_SQL.format(columns=", ".join(columns)),
+                        {"golden": DATASET_GOLDEN},
                     )
                     rows = list(cur.fetchall())
                     cur.execute(
-                        _EXPLORATORY_SQL.format(columns=columns),
+                        _EXPLORATORY_SQL.format(columns=", ".join(columns)),
                         {"golden": DATASET_GOLDEN, "limit": EXPLORATORY_SAMPLE_SIZE},
                     )
                     rows.extend(cur.fetchall())
-                return rows, True
+                return _named(columns, rows), True
             except psycopg2.errors.UndefinedColumn:
                 conn.rollback()
                 log.warning(
@@ -973,26 +1029,28 @@ def _fetch_scenario_rows(conn_str: str, *, agent_id: str) -> tuple[list, bool]:
         )
         with conn.cursor() as cur:
             cur.execute(
-                _PRE_0014_SQL.format(columns=_PRE_0014_COLUMNS),
+                _PRE_0014_SQL.format(columns=", ".join(_PRE_0014_COLUMNS)),
                 {"limit": EXPLORATORY_SAMPLE_SIZE},
             )
-            return list(cur.fetchall()), False
+            return _named(_PRE_0014_COLUMNS, cur.fetchall()), False
     finally:
         conn.close()
 
 
-def _scenario_dict(row) -> dict:
+def _scenario_dict(row: Mapping) -> dict:
     """One `eval_scenarios` row as the dict every later step reads.
 
-    POSITIONAL, WITH A LENGTH GUARD PER OPTIONAL COLUMN. `_fetch_scenario_rows`
-    hands back rows from whichever projection the tenant database accepted, so
-    the trailing columns are present or absent by revision and never by value.
+    BY NAME. `_fetch_scenario_rows` keys each row with the projection that
+    produced it, so a column the tenant database could not offer is an ABSENT KEY
+    and never a value in the wrong slot. The five the selector always names are
+    read with `[]`, because their absence is a bug rather than an older schema;
+    the three that arrive by revision are read with `.get()`.
     """
     return {
-        "id": str(row[0]),
-        "source": row[1],
-        "question": row[2],
-        "reference_answer": row[3],
+        "id": str(row["id"]),
+        "source": row["source"],
+        "question": row["question"],
+        "reference_answer": row["reference_answer"],
         # NOT `retrieved_contexts`, AND THE NAME IS THE GUARD. run_ragas_eval
         # reads `retrieved_contexts` off each sample; this column holds the
         # chunks the SCENARIO was written from, which for a source='generated'
@@ -1003,26 +1061,29 @@ def _scenario_dict(row) -> dict:
         # against them was D1 itself. The key is carried under a name the
         # scorer does not read so that reconnecting the two is an edit
         # somebody has to make on purpose.
-        "stored_retrieved_contexts": row[4] if isinstance(row[4], list) else [],
+        "stored_retrieved_contexts": (
+            row["retrieved_contexts"]
+            if isinstance(row.get("retrieved_contexts"), list)
+            else []
+        ),
         # NULL (never designated) resolves to exploratory — membership of
         # the golden set is asserted, never inherited.
-        "dataset": dataset_of(row[5] if len(row) > 5 else None),
+        "dataset": dataset_of(row.get("dataset")),
         # The conversation this question is asked in, oldest first (tenant 0028,
         # #227). Absent on a pre-0028 projection and `[]` on every row written
         # before that migration, both of which mean the single-turn scenario the
         # eval has always run.
         #
-        # BOUNDED HERE, ONCE, at the read. Every later step reads this key: the
-        # turn hands it to the model, and `write_eval_samples` puts it in front
-        # of the owner. Bounding it at the read is what makes those the same
-        # list, so the conversation a labeller reads is the conversation the
-        # model was given, the same rule `retrieved_contexts` follows one metric
-        # over. Bounding it later would leave the sheet showing turns the model
-        # never saw.
-        "turns": _scenario_history(row[6] if len(row) > 6 else None),
+        # BOUNDED HERE, at the read, so the key the run carries is the history
+        # the model will be given. `write_eval_samples` copies this same list
+        # onto the sample row, which is what the calibration sheet will read
+        # (the sheet's own SELECT arrives with PR 2 of #227). The seam bounds it
+        # again, because `_scenario_history` is idempotent and a caller that
+        # skipped this read must still be bounded.
+        "turns": _scenario_history(row.get("turns"), scenario_id=str(row["id"])),
         # True when a correct reply is a clarifying question (#226). Read here
         # so the row carries it; the check that uses it is PR 2.
-        "ambiguous": bool(row[7]) if len(row) > 7 else False,
+        "ambiguous": bool(row.get("ambiguous")),
         # NO `agent_response` KEY. This is where D1 lived:
         #     # For M6: use reference_answer as proxy agent_response …
         #     "agent_response": row[3],   # row[3] IS reference_answer

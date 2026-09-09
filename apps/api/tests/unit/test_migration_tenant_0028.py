@@ -210,12 +210,19 @@ def test_upgrade_comments_every_column_it_adds():
 
 
 def test_upgrade_touches_no_other_table():
+    seen: set[str] = set()
     for statement in _statements("upgrade"):
         ddl = _ddl_only(statement)
         named = set(re.findall(r"\bTABLE\s+(?:IF NOT EXISTS\s+)?([A-Z_]+)", ddl))
         named |= set(re.findall(r"\bCOLUMN\s+([A-Z_]+)\.", ddl))
-        named -= TABLES
-        assert not named, f"upgrade names a table outside {sorted(TABLES)}: {statement}"
+        seen |= named
+        assert not named - TABLES, (
+            f"upgrade names a table outside {sorted(TABLES)}: {statement}"
+        )
+    # THE FLOOR. `assert not named` alone passes for a statement the regex cannot
+    # read, so a rewrite that stopped matching would leave every statement
+    # unexamined and the test green (FM-025).
+    assert seen == TABLES, f"the regex read {sorted(seen)}, not {sorted(TABLES)}"
 
 
 def test_upgrade_creates_and_drops_nothing():
@@ -224,7 +231,12 @@ def test_upgrade_creates_and_drops_nothing():
     A CREATE or a DROP here would be a second change riding along with the one
     the revision is named for, and the downgrade below only reverses columns.
     """
-    for statement in _statements("upgrade"):
+    statements = _statements("upgrade")
+    # The floor again: eight statements, four ALTERs and four comments. A filter
+    # or a regex that stopped matching would otherwise pass over nothing.
+    assert len(statements) == 8, f"0028 issues {len(statements)} statements, not 8"
+    assert sum("ALTER TABLE" in s for s in statements) == 4
+    for statement in statements:
         ddl = _ddl_only(statement)
         assert not re.search(r"\b(CREATE|DROP|TRUNCATE|DELETE|UPDATE)\b", ddl), statement
 

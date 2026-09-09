@@ -182,8 +182,9 @@ def wired(monkeypatch):
     cursor = _Cursor(
         golden_rows=golden_rows,
         exploratory_rows=exploratory_rows,
+        # FIVE columns, the width of the pre-0014 projection this list answers.
         legacy_rows=[
-            ("11111111-1111-1111-1111-111111111111", "generated", "Q1", "A1", [], None),
+            ("11111111-1111-1111-1111-111111111111", "generated", "Q1", "A1", []),
         ],
     )
     conn = MagicMock()
@@ -669,14 +670,7 @@ class TestGoldenSetIsHeldFixed:
         conn = MagicMock()
         cursor = _Cursor(
             legacy_rows=[
-                (
-                    "11111111-1111-1111-1111-111111111111",
-                    "generated",
-                    "Q1",
-                    "A1",
-                    [],
-                    None,
-                ),
+                ("11111111-1111-1111-1111-111111111111", "generated", "Q1", "A1", []),
             ],
             dataset_column_missing=True,
         )
@@ -709,7 +703,7 @@ class TestGoldenSetIsHeldFixed:
         cursor = _Cursor(
             golden_rows=wired["cursor"].golden_rows,
             exploratory_rows=wired["cursor"].exploratory_rows,
-            legacy_rows=[("d0000000-0000-0000-0000-00000000000d", "generated", "LQ", "LA", [], None)],
+            legacy_rows=[("d0000000-0000-0000-0000-00000000000d", "generated", "LQ", "LA", [])],
             turns_column_missing=True,
         )
         conn.cursor.return_value = cursor
@@ -735,16 +729,23 @@ class TestGoldenSetIsHeldFixed:
 
 
 class TestTheScenarioRowBecomesAScenario:
-    """`_scenario_dict` reads the row positionally, behind one guard per column.
+    """`_scenario_dict` reads the row BY NAME, off the projection that filled it.
 
-    `_fetch_scenario_rows` returns rows from whichever projection the tenant
-    database accepted, so the trailing columns are present or absent by REVISION
-    and never by value. A guard that tested truthiness instead of length would
-    read a legitimate `false` or `[]` as a missing column.
+    `_fetch_scenario_rows` keys each row with the column list of whichever rung
+    the tenant database accepted, so a column that database could not offer is an
+    absent key rather than a value in the wrong slot.
     """
 
-    _ROW_0027 = ("11111111-1111-1111-1111-111111111111", "generated", "Q", "A", [], "golden")
+    _ROW_0027 = dict(
+        zip(
+            mod._SCENARIO_COLUMNS[:6],
+            ("11111111-1111-1111-1111-111111111111", "generated", "Q", "A", [], "golden"),
+        )
+    )
     _TURNS = [{"role": "user", "content": "I'm setting up Earth Elements locally."}]
+
+    def _row(self, **overrides) -> dict:
+        return {**self._ROW_0027, **overrides}
 
     def test_a_pre_0028_row_is_a_single_turn_scenario(self):
         scenario = mod._scenario_dict(self._ROW_0027)
@@ -754,28 +755,122 @@ class TestTheScenarioRowBecomesAScenario:
         assert scenario["dataset"] == "golden"
 
     def test_a_0028_row_carries_its_conversation_and_its_ambiguity(self):
-        scenario = mod._scenario_dict((*self._ROW_0027, self._TURNS, True))
+        scenario = mod._scenario_dict(self._row(turns=self._TURNS, ambiguous=True))
 
         assert scenario["turns"] == self._TURNS
         assert scenario["ambiguous"] is True
 
     def test_the_conversation_is_bounded_at_the_read(self):
-        """Once, here, so the model's context and the owner's sheet are one list.
+        """Once, here, so the run carries the history the model will be given.
 
-        Every later step reads this key: the turn hands it to the model and
-        `write_eval_samples` puts it in front of the owner. Bounding it later
-        would leave the sheet showing turns the model never saw.
+        The turn hands this key to the model and `write_eval_samples` copies it
+        onto the sample row. Bounding it later would leave the two disagreeing.
         """
         from app.worker.tasks.runtime.agent import TURN_HISTORY_MAX_ROW_CHARS
 
         overlong = [{"role": "user", "content": "x" * (TURN_HISTORY_MAX_ROW_CHARS + 9)}]
-        scenario = mod._scenario_dict((*self._ROW_0027, overlong, False))
+        scenario = mod._scenario_dict(self._row(turns=overlong))
 
         assert len(scenario["turns"][0]["content"]) == TURN_HISTORY_MAX_ROW_CHARS
 
     def test_a_turns_column_holding_something_else_is_dropped_not_sent(self):
-        assert mod._scenario_dict((*self._ROW_0027, "a string", False))["turns"] == []
-        assert mod._scenario_dict((*self._ROW_0027, None, False))["turns"] == []
+        assert mod._scenario_dict(self._row(turns="a string"))["turns"] == []
+        assert mod._scenario_dict(self._row(turns=None))["turns"] == []
+
+
+class TestTheProjectionAndTheReadCannotDisagree:
+    """The coupling that used to be a comment somebody had to obey.
+
+    On main the SELECT list and the row-to-dict conversion sat adjacent inside
+    `run_eval_suite`. Extracting them put 125 lines between the two, and while
+    the row was read positionally, swapping two names in a projection put each
+    scenario's reference answer to the agent as its question and scored the answer
+    against the question text: audit defect D1, on every tenant, with 77 tests
+    still green. These hold the structure that makes that unrepresentable.
+    """
+
+    def test_every_rung_is_a_prefix_of_one_column_order(self):
+        for revision, columns in mod._DATASET_PROJECTIONS:
+            assert columns == mod._SCENARIO_COLUMNS[: len(columns)], (
+                f"the {revision} rung is not a prefix of _SCENARIO_COLUMNS, so it "
+                "reorders columns rather than dropping trailing ones"
+            )
+        assert mod._PRE_0014_COLUMNS == mod._SCENARIO_COLUMNS[: len(mod._PRE_0014_COLUMNS)]
+
+    def test_the_rungs_narrow_and_the_widest_is_the_whole_order(self):
+        widths = [len(columns) for _rev, columns in mod._DATASET_PROJECTIONS]
+        assert widths == sorted(widths, reverse=True), (
+            f"the rungs are not widest first: {widths}"
+        )
+        assert mod._DATASET_PROJECTIONS[0][1] == mod._SCENARIO_COLUMNS
+        assert len(mod._PRE_0014_COLUMNS) < min(widths)
+
+    def test_the_read_names_every_column_the_widest_rung_asks_for(self):
+        """A column selected and never read is a column paid for and ignored.
+
+        `stored_retrieved_contexts` is the one rename, and it is deliberate:
+        `run_ragas_eval` reads `retrieved_contexts` off a sample, so the scenario's
+        own column is carried under a name the scorer does not read.
+        """
+        scenario = mod._scenario_dict(
+            dict(
+                zip(
+                    mod._SCENARIO_COLUMNS,
+                    ("id-1", "generated", "Q", "A", ["chunk"], "golden", [], False),
+                )
+            )
+        )
+        read = set(scenario) | {"retrieved_contexts"}
+        assert set(mod._SCENARIO_COLUMNS) <= read, (
+            f"selected but never read: {set(mod._SCENARIO_COLUMNS) - read}"
+        )
+
+    def test_a_real_eight_column_row_reaches_the_scored_set_with_its_turns(
+        self, wired, monkeypatch
+    ):
+        """The widest projection, end to end through the task.
+
+        Every other double in this module returns six-column rows, so the two
+        columns 0028 adds were covered only by direct calls on `_scenario_dict`.
+        This drives `run_eval_suite` over rows the shape PostgreSQL returns at
+        0028 and follows one scenario's turns to the rows the scorer is handed.
+        """
+        lead_in = [{"role": "user", "content": "I'm setting up Earth Elements locally."}]
+        eight = [
+            (f"a000000{n}-0000-0000-0000-00000000000{n}", "generated", f"Q{n}", f"A{n}",
+             [], "golden" if n < 2 else None, lead_in if n == 0 else [], n == 3)
+            for n in range(4)
+        ]
+        conn = MagicMock()
+        conn.cursor.return_value = _Cursor(
+            golden_rows=eight[:2], exploratory_rows=eight[2:]
+        )
+        monkeypatch.setattr(mod.psycopg2, "connect", lambda *a, **kw: conn)
+
+        _run()
+
+        [(args, _kwargs)] = wired["ragas"]
+        scored = {row["id"]: row for row in args[0]}
+        assert len(scored) == 4
+        assert scored["a0000000-0000-0000-0000-000000000000"]["turns"] == lead_in, (
+            "the scenario's conversation did not survive the fetch, the dict "
+            "conversion and the invocation to the rows the scorer scores"
+        )
+        assert all(
+            scored[key]["turns"] == [] for key in scored if not key.endswith("000000")
+        )
+        assert scored["a0000003-0000-0000-0000-000000000003"]["ambiguous"] is True
+
+    def test_a_label_column_is_in_no_projection(self):
+        """Moved here from test_label_downstream when the SELECT list left the SQL.
+
+        That file asserts the label columns are in no WHERE clause. The SELECT list
+        is now a tuple of names, so this is where a label column would appear.
+        """
+        for column in ("label_trust_tier", "labelled_by", "labelled_at"):
+            assert column not in mod._SCENARIO_COLUMNS, (
+                f"{column} is selected by the eval's scenario query"
+            )
 
 
 # ---------------------------------------------------------------------------

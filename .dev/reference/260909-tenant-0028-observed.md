@@ -5,19 +5,18 @@ Two findings from landing tenant migration 0028 (`turns` and `ambiguous` on
 any future column added to the nightly eval's scenario query. The second is the migration
 measurement, so the next reader does not repeat it.
 
-## Adding a column to the scenario SELECT costs a tenant its golden set, unless a rung is added with it
+## A new column in the scenario SELECT is three changes, and shipping one of them is worse than shipping none
 
 `run_eval_suite` fetches scenarios with two queries, golden and exploratory, and falls back
 to a single pre-0014 query when PostgreSQL raises `UndefinedColumn`. That fallback has no
 `dataset` column, so it returns every row as exploratory.
 
-Name a new column in the two queries and nothing else, and a tenant database one migration
-behind takes the fallback. It keeps evaluating, which is the intent, but it loses the
-golden set, and with it the paired per-item delta that is the only way a regression between
-two runs can be seen. The log then says the database predates 0014, which is false.
-
-The fetch now walks projections widest first (`_fetch_scenario_rows`, `_DATASET_PROJECTIONS`
-in `apps/api/app/worker/tasks/runtime/eval.py`):
+**Change one, the read ladder.** Name a new column in the two queries and nothing else, and a
+tenant database one migration behind takes the pre-0014 fallback: it loses the golden set,
+and with it the paired per-item delta that is the only way a regression between two runs can
+be seen, while the log says the database predates 0014, which is false. So the fetch walks
+projections widest first (`_fetch_scenario_rows` in
+`apps/api/app/worker/tasks/runtime/eval.py`):
 
 | Rung | Columns | Costs |
 |---|---|---|
@@ -25,13 +24,26 @@ in `apps/api/app/worker/tasks/runtime/eval.py`):
 | 0014 | `dataset` | `turns` and `ambiguous`, which a database without them holds no row using |
 | pre-0014 | neither | the golden split, so `dataset_column_available` returns False |
 
-**A new column belongs in a new top rung, never appended to the existing one.** A rung may
-only drop trailing columns: `_scenario_dict` reads the row positionally behind a
-`len(row) >` guard per optional column, so reordering a projection puts a question where a
-reference belongs.
+**Change two, the write path, and this is the one that bites.** `write_eval_samples` names
+`turns` too. A tolerant read plus an intolerant write is strictly worse than no tolerance at
+all: the 0027 tenant now runs every scenario, pays for every agent turn, and dies on the last
+write before scoring, where `run_eval_suite` records the run `failed` with no `eval_results`
+and no retry. Measured against the probe cluster at 0027: `write_eval_samples` raised
+`UndefinedColumn`, and the same rows on the pre-0028 INSERT went down. `_INSERT_EVAL_SAMPLE`
+now has `_INSERT_EVAL_SAMPLE_PRE_0028` behind it, matching `insert_eval_run`'s pre-0013
+fallback in the same module. **Grep every writer for the column, not just the readers.**
 
-The test is `test_a_tenant_without_the_turns_column_keeps_its_golden_split` in
-`tests/unit/test_eval_task.py`, which fails when the middle rung is deleted.
+**Change three, the coupling between the projection and the read.** The rows are keyed by the
+projection that produced them (`_named`), and `_SCENARIO_COLUMNS` is one tuple of names each
+rung is a prefix of, so the SELECT list and the mapping move together. Before that, the row
+was read positionally 125 lines from the projection that filled it: swapping two names in a
+projection put each scenario's reference answer to the agent as its question and scored the
+answer against the question text, which is audit defect D1, on every tenant, with 77 tests
+still green. A rung that is not a prefix now fails
+`test_every_rung_is_a_prefix_of_one_column_order`.
+
+The ladder's own test is `test_a_tenant_without_the_turns_column_keeps_its_golden_split`,
+which fails when the middle rung is deleted.
 
 ## The migration, measured
 
@@ -75,7 +87,20 @@ column an author, a miner or a drafter wrote, so an unfiltered read could put a 
 prompt or sixty long messages through the model, which no live conversation reaches, and then
 report the score as representative.
 
-It is bounded at the READ (`_scenario_dict`), not at the seam, because two readers need the
-same list: the model gets it as `history`, and `write_eval_samples` puts it in front of the
-owner to label. Bounding it later would show a labeller turns the model never saw. The
-function is idempotent, so the seam bounds it again for a caller that skipped the read.
+**The order of the two bounds is part of the bound.** `_read_turn_history` takes
+`LIMIT TURN_HISTORY_MAX_MESSAGES` in SQL and drops empty rows afterwards, so blank rows spend
+their places. Dropping empties first and counting last let forty real messages followed by ten
+blank ones travel as forty rows where the chat path sends thirty, and reach ten turns further
+back. Filter roles, take the newest forty, then drop empties and cut.
+
+**Emptiness is measured after the cut, which is one deliberate divergence from the chat
+path.** Measured before it, a row whose first 4000 characters are whitespace survives one pass
+and is dropped by the next, so the function is not idempotent, and the two callers
+(`_scenario_dict` at the read, `_run_one_eval_turn` at the seam) disagree about what the model
+was given. Both callers need idempotence, so the strip test reads the truncated string.
+
+Every dropped turn is logged (`eval_scenario_history.turns_dropped`), and a `turns` column
+that is not a JSON array is logged separately, because `ADD COLUMN IF NOT EXISTS` steps over a
+pre-existing column of another type in silence and stamps 0028 anyway. Observed: a hand-added
+`turns TEXT` at 0027 survived `alembic upgrade head` as `text`, nullable, no default. Without
+the log line every scenario on that tenant would run single-turn forever with nothing said.
