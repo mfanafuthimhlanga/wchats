@@ -1796,9 +1796,11 @@ def write_eval_samples(
             _insert_all(_INSERT_EVAL_SAMPLE)
         except psycopg2.errors.UndefinedColumn:
             # The aborted transaction must be rolled back before the connection
-            # will accept another statement. Every row is re-sent, not just the
-            # one that raised: the first rows went down inside the transaction
-            # this rollback discards.
+            # will accept another statement. Every row is re-sent, and the reason
+            # is the loop rather than the transaction: psycopg2 parses each
+            # statement server-side, so the FIRST execute is the one that raises
+            # and no row was ever written. Restarting the loop on the narrow
+            # statement is what puts the whole set down.
             conn.rollback()
             log.warning(
                 "write_eval_samples.turns_column_absent",

@@ -73,6 +73,11 @@ from app.domain import eval_result as eval_result_domain
 from app.services import deployment_service, eval_service
 from app.worker.tasks.runtime import eval as mod
 
+# The row builder, not a copy of it: this module drives the same selector, and two
+# hand-written row shapes are how a widened projection ends up covered on one side
+# only. `_named` zips strictly, so a double at the wrong width fails loudly.
+from tests.unit.test_eval_task import scenario_row
+
 PRODUCTION = "postgresql://production/tenant"
 
 # The tier the shipped label writer stamps, read out of the RUN RECORD's own
@@ -96,14 +101,16 @@ LABELLED_ID = "aaaaaaaa-0000-0000-0000-00000000000a"
 OWNER_ANSWER = "Yes — within 14 days of delivery, unopened."
 
 _GOLDEN_ROWS = [
-    ("g0000000-0000-0000-0000-000000000001", "generated", "GQ1", "GA1", [], "golden"),
-    ("g0000000-0000-0000-0000-000000000002", "generated", "GQ2", "GA2", [], "golden"),
+    scenario_row("g0000000-0000-0000-0000-000000000001", "GQ1", "GA1", dataset="golden"),
+    scenario_row("g0000000-0000-0000-0000-000000000002", "GQ2", "GA2", dataset="golden"),
 ]
 _EXPLORATORY_ROWS = [
-    ("11111111-1111-1111-1111-111111111111", "generated", "Q1", "A1", [], None),
-    ("22222222-2222-2222-2222-222222222222", "generated", "Q2", "A2", [], None),
+    scenario_row("11111111-1111-1111-1111-111111111111", "Q1", "A1"),
+    scenario_row("22222222-2222-2222-2222-222222222222", "Q2", "A2"),
 ]
-_LABELLED_ROW = (LABELLED_ID, "mined", "Do you refund?", OWNER_ANSWER, [], None)
+_LABELLED_ROW = scenario_row(
+    LABELLED_ID, "Do you refund?", OWNER_ANSWER, source="mined"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -398,14 +405,7 @@ class TestALabelledRowEntersTheEval:
 def _pool(n: int) -> list[tuple]:
     """*n* eligible, unlabelled-by-someone-else exploratory rows."""
     return [
-        (
-            f"eeeeeeee-0000-0000-0000-{i:012d}",
-            "generated",
-            f"Q{i}",
-            f"A{i}",
-            [],
-            None,
-        )
+        scenario_row(f"eeeeeeee-0000-0000-0000-{i:012d}", f"Q{i}", f"A{i}")
         for i in range(n)
     ]
 

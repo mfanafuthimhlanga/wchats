@@ -50,6 +50,45 @@ TENANT_ID = "11111111-1111-1111-1111-111111111111"
 # ---------------------------------------------------------------------------
 
 
+def scenario_row(
+    row_id: str,
+    question: str,
+    reference: str,
+    *,
+    source: str = "generated",
+    contexts=(),
+    dataset=None,
+    turns=(),
+    ambiguous: bool = False,
+) -> tuple:
+    """One `eval_scenarios` row at the WIDEST projection's width.
+
+    Built here rather than typed out at each fixture, for two reasons. `_named`
+    zips the projection's names onto the row strictly, so a double answering six
+    of eight columns is a loud failure now rather than two absent keys; and a
+    column added to `_SCENARIO_COLUMNS` is then one edit here instead of a dozen
+    literals, which is what left `turns` and `ambiguous` covered by a single test
+    when they arrived.
+
+    Imported by test_label_downstream, which drives the same selector.
+    """
+    values = (
+        row_id,
+        source,
+        question,
+        reference,
+        list(contexts),
+        dataset,
+        list(turns),
+        ambiguous,
+    )
+    assert len(values) == len(mod._SCENARIO_COLUMNS), (
+        f"the widest projection is {len(mod._SCENARIO_COLUMNS)} columns and this "
+        f"builder makes {len(values)}; a new column has to arrive in both"
+    )
+    return values
+
+
 class _Cursor:
     """Cursor double serving the task's raw psycopg2 reads.
 
@@ -172,12 +211,12 @@ def wired(monkeypatch):
     # A fixture that stays under the floor would make every test in this module a
     # test of the fail-closed branch, which is not what any of them are about.
     golden_rows = [
-        ("g0000000-0000-0000-0000-000000000001", "generated", "GQ1", "GA1", [], "golden"),
-        ("g0000000-0000-0000-0000-000000000002", "generated", "GQ2", "GA2", [], "golden"),
+        scenario_row("g0000000-0000-0000-0000-000000000001", "GQ1", "GA1", dataset="golden"),
+        scenario_row("g0000000-0000-0000-0000-000000000002", "GQ2", "GA2", dataset="golden"),
     ]
     exploratory_rows = [
-        ("11111111-1111-1111-1111-111111111111", "generated", "Q1", "A1", [], None),
-        ("22222222-2222-2222-2222-222222222222", "generated", "Q2", "A2", [], None),
+        scenario_row("11111111-1111-1111-1111-111111111111", "Q1", "A1"),
+        scenario_row("22222222-2222-2222-2222-222222222222", "Q2", "A2"),
     ]
     cursor = _Cursor(
         golden_rows=golden_rows,
@@ -700,9 +739,14 @@ class TestGoldenSetIsHeldFixed:
         this rung is nothing.
         """
         conn = MagicMock()
+        # SIX COLUMNS, because the 0014 rung is what answers here. A database
+        # without `turns` cannot return it, and `_named` zips strictly, so a
+        # double handing eight values to a six-name projection is a failure
+        # rather than two keys nobody notices.
+        narrow = len(mod._DATASET_PROJECTIONS[1][1])
         cursor = _Cursor(
-            golden_rows=wired["cursor"].golden_rows,
-            exploratory_rows=wired["cursor"].exploratory_rows,
+            golden_rows=[row[:narrow] for row in wired["cursor"].golden_rows],
+            exploratory_rows=[row[:narrow] for row in wired["cursor"].exploratory_rows],
             legacy_rows=[("d0000000-0000-0000-0000-00000000000d", "generated", "LQ", "LA", [])],
             turns_column_missing=True,
         )
@@ -739,7 +783,7 @@ class TestTheScenarioRowBecomesAScenario:
     _ROW_0027 = dict(
         zip(
             mod._SCENARIO_COLUMNS[:6],
-            ("11111111-1111-1111-1111-111111111111", "generated", "Q", "A", [], "golden"),
+            scenario_row("11111111-1111-1111-1111-111111111111", "Q", "A", dataset="golden")[:6],
         )
     )
     _TURNS = [{"role": "user", "content": "I'm setting up Earth Elements locally."}]
@@ -808,21 +852,43 @@ class TestTheProjectionAndTheReadCannotDisagree:
     def test_the_read_names_every_column_the_widest_rung_asks_for(self):
         """A column selected and never read is a column paid for and ignored.
 
-        `stored_retrieved_contexts` is the one rename, and it is deliberate:
-        `run_ragas_eval` reads `retrieved_contexts` off a sample, so the scenario's
-        own column is carried under a name the scorer does not read.
+        THE KEYS IT ASKS THE ROW FOR, not the keys it returns. The first version
+        of this test compared `_SCENARIO_COLUMNS` against the OUTPUT dict, which
+        passes because seven of the eight names happen to survive into the output
+        and the eighth was hardcoded as an exception. A read that asked the row for
+        `turnz` while the projection selected `turns` left it green.
         """
-        scenario = mod._scenario_dict(
+
+        class _Recording(dict):
+            def __init__(self, row):
+                super().__init__(row)
+                self.asked: set[str] = set()
+
+            def __getitem__(self, key):
+                self.asked.add(key)
+                return super().__getitem__(key)
+
+            def get(self, key, default=None):
+                self.asked.add(key)
+                return super().get(key, default)
+
+        row = _Recording(
             dict(
                 zip(
                     mod._SCENARIO_COLUMNS,
-                    ("id-1", "generated", "Q", "A", ["chunk"], "golden", [], False),
+                    scenario_row("id-1", "Q", "A", contexts=["chunk"], dataset="golden"),
+                    strict=True,
                 )
             )
         )
-        read = set(scenario) | {"retrieved_contexts"}
-        assert set(mod._SCENARIO_COLUMNS) <= read, (
-            f"selected but never read: {set(mod._SCENARIO_COLUMNS) - read}"
+        mod._scenario_dict(row)
+
+        assert set(mod._SCENARIO_COLUMNS) <= row.asked, (
+            f"selected but never read: {set(mod._SCENARIO_COLUMNS) - row.asked}"
+        )
+        assert not row.asked - set(mod._SCENARIO_COLUMNS), (
+            "the read asks the row for a key no projection selects: "
+            f"{row.asked - set(mod._SCENARIO_COLUMNS)}"
         )
 
     def test_a_real_eight_column_row_reaches_the_scored_set_with_its_turns(
@@ -837,8 +903,12 @@ class TestTheProjectionAndTheReadCannotDisagree:
         """
         lead_in = [{"role": "user", "content": "I'm setting up Earth Elements locally."}]
         eight = [
-            (f"a000000{n}-0000-0000-0000-00000000000{n}", "generated", f"Q{n}", f"A{n}",
-             [], "golden" if n < 2 else None, lead_in if n == 0 else [], n == 3)
+            scenario_row(
+                f"a000000{n}-0000-0000-0000-00000000000{n}", f"Q{n}", f"A{n}",
+                dataset="golden" if n < 2 else None,
+                turns=lead_in if n == 0 else [],
+                ambiguous=n == 3,
+            )
             for n in range(4)
         ]
         conn = MagicMock()
@@ -860,6 +930,43 @@ class TestTheProjectionAndTheReadCannotDisagree:
             scored[key]["turns"] == [] for key in scored if not key.endswith("000000")
         )
         assert scored["a0000003-0000-0000-0000-000000000003"]["ambiguous"] is True
+
+    def test_a_row_of_the_wrong_width_is_a_failure_not_two_absent_keys(self):
+        """`_named` zips strictly, and the strictness is aimed at doubles.
+
+        PostgreSQL cannot return a different number of columns from the ones the
+        SELECT names, so a mismatch here is always a double that has not kept up
+        with a widened projection. A lenient zip made that silent, and it is why
+        `turns` and `ambiguous` reached the branch head covered by one test.
+        """
+        short = ("id-1", "generated", "Q", "A", [], "golden")
+        with pytest.raises(ValueError):
+            mod._named(mod._SCENARIO_COLUMNS, [short])
+        with pytest.raises(ValueError):
+            mod._named(mod._PRE_0014_COLUMNS, [short])
+
+        assert mod._named(mod._SCENARIO_COLUMNS[:6], [short]) == [
+            dict(zip(mod._SCENARIO_COLUMNS[:6], short, strict=True))
+        ]
+
+    def test_a_row_missing_a_column_every_rung_selects_is_loud(self):
+        """Absence by bug and absence by revision must not look alike.
+
+        The five columns every projection names are read with `[]`, so a row
+        without one raises here rather than yielding a scenario with an empty
+        question. `_scenario_dict` runs before the `eval_runs` row is inserted, so
+        the task dies leaving no run recorded and the next beat is the retry.
+        """
+        row = dict(
+            zip(
+                mod._SCENARIO_COLUMNS,
+                scenario_row("id-1", "Q", "A", dataset="golden"),
+                strict=True,
+            )
+        )
+        for required in ("id", "source", "question", "reference_answer", "retrieved_contexts"):
+            with pytest.raises(KeyError):
+                mod._scenario_dict({k: v for k, v in row.items() if k != required})
 
     def test_a_label_column_is_in_no_projection(self):
         """Moved here from test_label_downstream when the SELECT list left the SQL.

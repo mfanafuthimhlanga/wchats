@@ -172,9 +172,9 @@ class TestATenantThatPredates0028StillKeepsItsRun:
         assert written == 2
         narrow = [sql for sql in seen if "%(turns)s::jsonb" not in sql]
         assert len(narrow) == 2, (
-            f"{len(narrow)} rows were re-sent on the pre-0028 INSERT, not 2. Every "
-            "row has to go again: the ones already sent were inside the "
-            "transaction the rollback discards"
+            f"{len(narrow)} rows were re-sent on the pre-0028 INSERT, not 2. The "
+            "first execute is the one that raises, so nothing was written; the "
+            "whole set only lands if the loop restarts"
         )
         assert all("INSERT INTO eval_samples" in sql for sql in narrow)
         connection["conn"].rollback.assert_called_once()

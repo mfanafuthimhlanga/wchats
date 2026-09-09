@@ -343,14 +343,22 @@ _HISTORY_ROLES = ("user", "assistant")
 # multi-turn scenario silently reduced to a single-turn one would score as a
 # single-turn row and report as one, which is not a measurement anyone can read.
 #
-# ONE DELIBERATE DIVERGENCE. Emptiness is measured on the TRUNCATED string, where
-# the chat path measures it on the whole row before cutting. That is what makes
-# this idempotent, which both callers need: `_scenario_dict` bounds a row at the
-# read so the run carries what the model will see, and `_run_one_eval_turn` bounds
-# it again at the seam so a caller that skipped the read is still bounded. Measured
-# on the whole string, a row whose first four thousand characters are blank
-# survives one pass and is dropped by the next, which is precisely the drift
-# between the two callers that idempotence exists to prevent.
+# TWO DELIBERATE DIVERGENCES, both in the direction of sending less than the chat
+# path would, which is the safe direction for a measurement.
+#
+# Emptiness is measured on the TRUNCATED string, where the chat path measures it on
+# the whole row before cutting. That is what makes this idempotent, which both
+# callers need: `_scenario_dict` bounds a row at the read so the run carries what
+# the model will see, and `_run_one_eval_turn` bounds it again at the seam so a
+# caller that skipped the read is still bounded. Measured on the whole string, a row
+# whose first four thousand characters are blank survives one pass and is dropped by
+# the next, which is precisely the drift between the two callers that idempotence
+# exists to prevent.
+#
+# A non-string body is DROPPED, where `_read_turn_history` coerces with
+# `str(content)`. Its source is a `messages.content` column; this one's is JSONB an
+# author wrote, so a number or an object here is a scenario written wrong rather
+# than a value to render.
 def _scenario_history(turns: object, *, scenario_id: str = "") -> list[dict]:
     """A scenario's prior turns as the loop's `history` argument, bounded.
 
@@ -444,6 +452,7 @@ def _run_one_eval_turn(
     run_id: str,
     question: str,
     turns=None,
+    scenario_id: str = "",
     prompt_version_id: str | None,
 ) -> dict:
     """Put one scenario question to the customer agent. Returns `run_agent_loop`'s dict.
@@ -459,10 +468,8 @@ def _run_one_eval_turn(
         Every identity-gated skill therefore refuses, which is the correct
         posture for a question that arrived with no IDV session, and it is the
         posture a mined production scenario carries no evidence against.
-      * `history` is THIS SCENARIO'S OWN `turns` (tenant 0028, #227), bounded by
-        `_scenario_history`, through a fresh conversation id per scenario. The rows
-        stay independent because the history belongs to the row being scored, so
-        nothing scenario 11 said reaches scenario 12; a row with no turns runs as before.
+      * `history` is THIS SCENARIO'S OWN `turns` (tenant 0028, #227) bounded by
+        `_scenario_history`, so the rows stay independent; fresh conversation id.
       * `job_id=run_id`, the eval run's own id and the id `_run_ledger` bills
         the judges under. A synthesised uuid per scenario names no job, so
         `model_calls WHERE job_id = <run_id>` returned the judge half of a run and
@@ -516,7 +523,8 @@ def _run_one_eval_turn(
             ledger=ledger_recorder(conn_str),
         )
 
-    return _drive_eval_turn(turn, question=question, history=_scenario_history(turns), run_id=run_id)
+    history = _scenario_history(turns, scenario_id=scenario_id)
+    return _drive_eval_turn(turn, question=question, history=history, run_id=run_id)
 
 
 def _retrieved_contexts(turn: dict, record: dict) -> list[str]:
@@ -668,7 +676,7 @@ def _invoke_agent_for_scenarios(
             try:
                 turn = _run_one_eval_turn(
                     agent_id=agent_id, conn_str=conn_str, run_id=run_id, turns=scenario.get("turns"),
-                    question=scenario.get("question", ""), prompt_version_id=prompt_version_id,
+                    scenario_id=record["scenario_id"], question=scenario.get("question", ""), prompt_version_id=prompt_version_id,
                 )
             except Exception as exc:
                 # EXCLUDED AND COUNTED, never scored 0 — the lesson
@@ -961,10 +969,13 @@ _PRE_0014_COLUMNS = _SCENARIO_COLUMNS[:5]
 #   - 0028 is the whole thing.
 #   - 0014 loses `turns` and `ambiguous`. A database without the columns holds no
 #     scenario that could have used them, so every row runs single-turn exactly as
-#     it did before #227. THE WRITE PATH HAS TO AGREE, or this rung is worse than
-#     failing outright: `write_eval_samples` names `turns` too, and until it grew
-#     the same fallback a 0027 tenant ran every turn, paid for every one, and then
-#     died on the last write before scoring.
+#     it did before #227. THE WRITE PATH HAS TO AGREE ON THIS RUNG, or it is worse
+#     than failing outright: `write_eval_samples` names `turns` too, and until it
+#     grew the same fallback a 0027 tenant ran every turn, paid for every one, and
+#     then died on the last write before scoring. Parity stops there and it stops
+#     for a reason: `eval_samples` was created by 0027, so a database below that
+#     has no table to write to under any schema, which was as true before #227 as
+#     it is now.
 #   - pre-0014 loses the golden set as well. That one costs the paired per-item
 #     delta the split exists to produce, so `dataset_column_available` comes back
 #     False and travels to the report, where "no golden rows" and "no way to
@@ -977,12 +988,16 @@ _PRE_0014_COLUMNS = _SCENARIO_COLUMNS[:5]
 def _named(columns: tuple, rows) -> list[dict]:
     """Each row keyed by the column that produced it.
 
-    `zip` stops at the shorter side deliberately. PostgreSQL cannot return fewer
-    columns than the SELECT names, so a short row only ever comes from a test
-    double, and truncating it leaves the optional keys absent, which is the same
-    state a narrower rung produces.
+    STRICT, and the strictness is aimed at test doubles rather than at
+    PostgreSQL. PostgreSQL cannot return a different number of columns from the
+    ones the SELECT names, so a width mismatch here is always a double answering
+    a projection it has not kept up with. A lenient zip made that silent: the
+    doubles in this module's tests answered six of the widest rung's eight
+    columns, `turns` and `ambiguous` came back ABSENT rather than wrong, and the
+    two columns #227 added were covered by one test out of fifty. The next column
+    widened into `_SCENARIO_COLUMNS` would have gone the same way.
     """
-    return [dict(zip(columns, row)) for row in rows]
+    return [dict(zip(columns, row, strict=True)) for row in rows]
 
 
 def _fetch_scenario_rows(conn_str: str, *, agent_id: str) -> tuple[list[dict], bool]:
@@ -1062,9 +1077,7 @@ def _scenario_dict(row: Mapping) -> dict:
         # scorer does not read so that reconnecting the two is an edit
         # somebody has to make on purpose.
         "stored_retrieved_contexts": (
-            row["retrieved_contexts"]
-            if isinstance(row.get("retrieved_contexts"), list)
-            else []
+            row["retrieved_contexts"] if isinstance(row["retrieved_contexts"], list) else []
         ),
         # NULL (never designated) resolves to exploratory — membership of
         # the golden set is asserted, never inherited.

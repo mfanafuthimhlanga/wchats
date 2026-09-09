@@ -33,6 +33,11 @@ and no retry. Measured against the probe cluster at 0027: `write_eval_samples` r
 now has `_INSERT_EVAL_SAMPLE_PRE_0028` behind it, matching `insert_eval_run`'s pre-0013
 fallback in the same module. **Grep every writer for the column, not just the readers.**
 
+The write tolerates one schema generation and the read tolerates two, which is not a gap:
+`eval_samples` was created by 0027, so a database below that has no table to write to under
+any schema. The parity that matters is per rung, and the rung that exists on both sides is
+0027 against 0028.
+
 **Change three, the coupling between the projection and the read.** The rows are keyed by the
 projection that produced them (`_named`), and `_SCENARIO_COLUMNS` is one tuple of names each
 rung is a prefix of, so the SELECT list and the mapping move together. Before that, the row

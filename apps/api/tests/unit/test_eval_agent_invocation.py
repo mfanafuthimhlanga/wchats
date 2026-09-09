@@ -61,6 +61,7 @@ from app.domain.pii_firewall import PII_DEFLECTION
 from app.services import eval_service
 from app.worker.tasks.runtime import eval as mod
 from tests.agent_loop_doubles import canned_turn_result
+from tests.unit.test_eval_task import scenario_row
 
 _EVAL_PY = Path(mod.__file__).with_suffix(".py")
 
@@ -840,7 +841,7 @@ def test_one_scenarios_turns_never_reach_the_next_scenario():
     """
     seen: list[tuple[str, list]] = []
 
-    def _turn_for(*, agent_id, conn_str, run_id, question, turns, prompt_version_id):
+    def _turn_for(*, agent_id, conn_str, run_id, question, turns, scenario_id, prompt_version_id):
         seen.append((question, list(turns)))
         return _turn(f"ANSWER to {question}", contexts=["CTX"])
 
@@ -1129,7 +1130,7 @@ def _invoke(scenarios, turn_for, side_effects_for=None):
     """Drive the real loop with the SDK turn doubled at one boundary."""
     calls: list[str] = []
 
-    def _fake_turn(*, agent_id, conn_str, run_id, question, turns, prompt_version_id):
+    def _fake_turn(*, agent_id, conn_str, run_id, question, turns, scenario_id, prompt_version_id):
         calls.append(question)
         return turn_for(question)
 
@@ -1547,7 +1548,7 @@ def test_an_attempt_is_attributed_to_the_scenario_that_made_it_and_no_other():
     """
     from app.services import agent_tools
 
-    def _turn_for(*, agent_id, conn_str, run_id, question, turns, prompt_version_id):
+    def _turn_for(*, agent_id, conn_str, run_id, question, turns, scenario_id, prompt_version_id):
         if question == "Question 0?":
             agent_tools.record_suppressed_side_effect(
                 "transactional.adapter", {"skill": "issue_refund", "amount": 40.0}
@@ -1999,11 +2000,15 @@ def task_wired(monkeypatch):
     # FOUR rows, not two: eval_service.MIN_SCORED_OBSERVATIONS is the absolute
     # floor under a measurement and a two-row run is below it, so a two-row
     # fixture would put every test here on the fail-closed branch.
+    # Built by the shared builder, at the WIDEST projection's width. `_named` zips
+    # the projection's names onto the row strictly, so a double that answers six of
+    # eight columns is a loud failure rather than two keys nobody notices.
     rows = [
-        ("s0", "generated", "Question 0?", "Reference 0.", ["STORED 0"], "golden"),
-        ("s1", "generated", "Question 1?", "Reference 1.", ["STORED 1"], None),
-        ("s2", "generated", "Question 2?", "Reference 2.", ["STORED 2"], "golden"),
-        ("s3", "generated", "Question 3?", "Reference 3.", ["STORED 3"], None),
+        scenario_row(
+            f"s{n}", f"Question {n}?", f"Reference {n}.",
+            contexts=[f"STORED {n}"], dataset="golden" if n % 2 == 0 else None,
+        )
+        for n in range(4)
     ]
 
     class _Cursor:
@@ -2066,7 +2071,7 @@ def task_wired(monkeypatch):
         ),
     )
 
-    def _fake_turn(*, agent_id, conn_str, run_id, question, turns, prompt_version_id):
+    def _fake_turn(*, agent_id, conn_str, run_id, question, turns, scenario_id, prompt_version_id):
         return _turn(f"AGENT ANSWER to {question}", contexts=[f"AGENT CTX {question}"])
 
     monkeypatch.setattr(mod, "_run_one_eval_turn", _fake_turn)
@@ -2158,7 +2163,7 @@ def test_a_run_below_the_floor_writes_no_scores_and_so_cannot_report_a_pass(
         lambda run_id, scores, conn_str: written.append((run_id, scores, conn_str)),
     )
 
-    def _mostly_dead(*, agent_id, conn_str, run_id, question, turns, prompt_version_id):
+    def _mostly_dead(*, agent_id, conn_str, run_id, question, turns, scenario_id, prompt_version_id):
         if question == "Question 0?":
             return _turn(f"AGENT ANSWER to {question}", contexts=["CTX"])
         raise TimeoutError("SDK subprocess never answered")
@@ -2201,7 +2206,7 @@ def test_a_run_where_nothing_reached_the_scorer_does_not_claim_agent_sourced_sco
     about rows that do not exist, which a future consumer could read as evidence
     of an agent-sourced measurement.
     """
-    def _all_dead(*, agent_id, conn_str, run_id, question, turns, prompt_version_id):
+    def _all_dead(*, agent_id, conn_str, run_id, question, turns, scenario_id, prompt_version_id):
         raise TimeoutError("SDK subprocess never answered")
 
     monkeypatch.setattr(mod, "_run_one_eval_turn", _all_dead)
