@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import json
 import pathlib
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -40,6 +41,68 @@ def _samples(n: int) -> list[dict]:
         }
         for i in range(1, n + 1)
     ]
+
+
+class TestTheHarnessReadsWhatTheWriterWrote:
+    """`fetch_samples` had no test at all, and its tuple unpack matched the SELECT
+    by inspection only. Adding two columns to that SELECT is exactly the edit that
+    breaks such an unpack, and on a tenant behind 0028 it would raise where the
+    harness used to work."""
+
+    WIDE = (
+        "S-001", "golden", "How do I start it?", "pnpm dev.", ["c1"], "Run pnpm dev.",
+        [{"role": "user", "content": "Setting up Earth Elements."}],
+        "How do I start Earth Elements?",
+    )
+
+    def _conn(self, monkeypatch, rows, missing_column=False):
+        import psycopg2
+
+        seen: list[str] = []
+
+        class _Cursor:
+            def execute(self, sql, params=None):
+                seen.append(sql)
+                if missing_column and "resolved_question" in sql:
+                    raise psycopg2.errors.UndefinedColumn("column turns does not exist")
+
+            def fetchall(self):
+                return [r[:6] for r in rows] if missing_column else list(rows)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        conn = MagicMock()
+        conn.cursor.return_value = _Cursor()
+        monkeypatch.setattr(psycopg2, "connect", lambda *a, **kw: conn)
+        return conn, seen
+
+    def test_every_selected_column_lands_on_the_dict(self, monkeypatch):
+        self._conn(monkeypatch, [self.WIDE])
+
+        [sample] = cr.fetch_samples("run-1", "postgresql://tenant")
+
+        assert sample["scenario_id"] == "S-001"
+        assert sample["question"] == "How do I start it?"
+        assert sample["reference"] == "Run pnpm dev."
+        assert sample["turns"] == [{"role": "user", "content": "Setting up Earth Elements."}]
+        assert sample["resolved_question"] == "How do I start Earth Elements?"
+
+    def test_a_tenant_behind_0028_still_gets_a_sheet(self, monkeypatch):
+        """The writer degrades for the same reason; a harness that raised here
+        would refuse to label a run it could have labelled."""
+        conn, seen = self._conn(monkeypatch, [self.WIDE], missing_column=True)
+
+        [sample] = cr.fetch_samples("run-1", "postgresql://tenant")
+
+        assert sample["turns"] == []
+        assert sample["resolved_question"] == ""
+        assert sample["question"] == "How do I start it?"
+        conn.rollback.assert_called_once()
+        assert len(seen) == 2, "the narrow SELECT was never sent"
 
 
 class TestTheSheetShowsWhatBoundTheQuestion:

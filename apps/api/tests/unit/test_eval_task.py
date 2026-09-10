@@ -822,6 +822,71 @@ class TestTheScenarioRowBecomesAScenario:
         assert mod._scenario_dict(self._row(turns=None))["turns"] == []
 
 
+class TestTheRewriteReachesTheJudgeAndTheSampleRow:
+    """The wiring, not the parts (#227 PR 2).
+
+    `annotate_resolved_questions` annotates in place and hands the same list back,
+    and `run_eval_suite` folds it into the `write_eval_samples(...)` call so the
+    rows the sheet records are the rows the Judge scores. Both halves had unit
+    tests and the SEAM between them had none: replacing the argument with
+    `[dict(s) for s in scored_scenarios]` disabled the whole feature, left the
+    calibration sheet showing a rewrite the Judge never used, and 307 tests stayed
+    green. Deleting the call outright was caught only by ruff noticing an unused
+    import, which is an accident rather than a gate.
+    """
+
+    LEAD_IN = [{"role": "user", "content": "I'm setting up Earth Elements locally."}]
+    REWRITE = "How do I start the dev server for Earth Elements?"
+
+    def _run_with_a_follow_up(self, wired, monkeypatch):
+        """One multi-turn scenario through the task, with the model call doubled.
+
+        `resolve_question` is the seam, not `annotate_resolved_questions`: doubling
+        the annotator would double the thing under test.
+        """
+        from app.services import question_resolution
+
+        monkeypatch.setattr(
+            question_resolution,
+            "resolve_question",
+            lambda question, turns, **kw: self.REWRITE,
+        )
+        conn = MagicMock()
+        conn.cursor.return_value = _Cursor(
+            golden_rows=[
+                scenario_row("f0000000-0000-0000-0000-00000000000f", "how do I start it?",
+                             "Run pnpm dev.", dataset="golden", turns=self.LEAD_IN),
+                *wired["cursor"].golden_rows[:1],
+            ],
+            exploratory_rows=wired["cursor"].exploratory_rows,
+        )
+        monkeypatch.setattr(mod.psycopg2, "connect", lambda *a, **kw: conn)
+        _run()
+        [(args, _kwargs)] = wired["ragas"]
+        return {row["id"]: row for row in args[0]}
+
+    def test_the_rows_the_judge_scores_carry_the_rewrite(self, wired, monkeypatch):
+        scored = self._run_with_a_follow_up(wired, monkeypatch)
+
+        assert scored["f0000000-0000-0000-0000-00000000000f"]["resolved_question"] == (
+            self.REWRITE
+        ), (
+            "the scenarios handed to run_ragas_eval carry no rewrite, so relevancy "
+            "scored the raw follow-up and #227 is not fixed"
+        )
+
+    def test_a_single_turn_row_in_the_same_run_is_left_alone(self, wired, monkeypatch):
+        """The rewrite reaches the row that needed it and no other."""
+        scored = self._run_with_a_follow_up(wired, monkeypatch)
+
+        others = [
+            row for key, row in scored.items()
+            if key != "f0000000-0000-0000-0000-00000000000f"
+        ]
+        assert others, "the run scored only the multi-turn row, so this proves nothing"
+        assert all("resolved_question" not in row for row in others)
+
+
 class TestTheProjectionAndTheReadCannotDisagree:
     """The coupling that used to be a comment somebody had to obey.
 

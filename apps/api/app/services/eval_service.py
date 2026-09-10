@@ -155,13 +155,20 @@ _METRIC_ASCORE_ARGS: Mapping[str, tuple[str, ...]] = MappingProxyType({
 #: carries turns (#227 PR 2). Relevancy alone, and the shortness of this tuple is
 #: the point.
 #:
-#: All four metrics above name `user_input`, and all four read it off ONE
-#: validated sample, so swapping the sample's own text would move the input of
-#: every metric at once, faithfulness included. Faithfulness is gated
-#: (`GATED_METRIC_KEYS`) and its calibration was measured on raw questions, so a
-#: change here that moved it would move a deploy gate as a side effect of fixing
-#: relevancy. Overriding per metric keeps that impossible: for the other three the
-#: bytes handed to the judge are the bytes that were handed before this existed.
+#: SAY THE UNCOMFORTABLE HALF FIRST: relevancy is itself gated
+#: (`GATED_METRIC_KEYS`, threshold `EVAL_RELEVANCY_THRESHOLD`), so this tuple
+#: changes the input of a metric that gates a deploy. That is the point of #227
+#: and not a side effect: relevancy was scoring answers against text that did not
+#: say what was asked, and #58 measured that Judge failing. The plan's Risks
+#: section carries the consequence, that the calibration artifact was measured on
+#: raw questions and the first multi-turn run's rows join the next labelling sheet.
+#:
+#: What the tuple's SHORTNESS buys is the other gated metric. All four metrics
+#: above name `user_input` and all four read it off ONE validated sample, so
+#: swapping the sample's own text would have moved faithfulness too, and
+#: faithfulness had no owner fail in #58: there is nothing wrong with it to fix.
+#: Overriding per metric keeps it untouched, and for all three unlisted metrics
+#: the bytes handed to the judge are the bytes handed before this existed.
 #:
 #: The ROW's `user_input` is never overridden either, only the metric's kwargs.
 #: `SAMPLE_KEY_COLUMNS` attributes a returned judge row to a scenario on

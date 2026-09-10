@@ -1,11 +1,12 @@
 """Only relevancy is scored against the rewritten question (#227 PR 2).
 
-All four Ragas metrics name `user_input` in `_METRIC_ASCORE_ARGS`, and all four
-read it off ONE validated sample. So the obvious way to score a follow-up, putting
-the rewritten question into the sample, would move the input of every metric at
-once. Faithfulness is gated, its calibration was measured on raw questions, and a
-change that moved it would move a deploy gate as a side effect of fixing
-relevancy.
+Relevancy is gated, and this changes its input on purpose: it was scoring answers
+against text that did not say what was asked, which is what #58 measured failing.
+
+What must NOT move is the other gated metric. All four Ragas metrics name
+`user_input` in `_METRIC_ASCORE_ARGS`, and all four read it off ONE validated
+sample, so putting the rewrite into the sample would have moved faithfulness too,
+and faithfulness had no owner fail in #58: there is nothing wrong with it to fix.
 
 `RESOLVED_INPUT_METRICS` is the whole guard, and these tests are what make it one:
 relevancy sees the rewrite, the other three see the bytes they saw before this
@@ -91,10 +92,11 @@ def test_the_two_lists_between_them_cover_every_metric():
 
 @pytest.mark.parametrize("metric", RAW_INPUT_METRICS)
 def test_every_other_metric_sees_the_question_byte_for_byte(metric):
-    """Faithfulness is the one that matters here, and it is gated.
+    """Faithfulness is the one that matters here: gated, and not the one being fixed.
 
-    Its calibration was measured on raw questions. If this test can be made to
-    fail by a change to the resolution path, that change moved a deploy gate.
+    Relevancy's input moves in this PR by design. If a change to the resolution
+    path can make THIS test fail, it moved the OTHER deploy gate as well, which
+    nothing in #227 asked for.
     """
     scored, _rows = _score([RESOLVED])
 

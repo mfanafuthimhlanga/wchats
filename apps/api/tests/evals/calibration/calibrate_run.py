@@ -94,6 +94,14 @@ _SAMPLES_SQL = """
     ORDER BY scenario_id
 """
 
+#: The pre-0028 shape. Used only when the wide SELECT raises UndefinedColumn.
+_SAMPLES_PRE_0028_SQL = """
+    SELECT scenario_id, dataset, user_input, response, retrieved_contexts, reference
+    FROM eval_samples
+    WHERE eval_run_id = %(run_id)s::uuid
+    ORDER BY scenario_id
+"""
+
 _VERDICTS_SQL = """
     SELECT scenario_id, metric, score, binary_verdict, judge_identity
     FROM eval_results
@@ -126,9 +134,20 @@ def fetch_samples(run_id: str, dsn: str) -> list[dict]:
 
     conn = psycopg2.connect(dsn, connect_timeout=10)
     try:
-        with conn.cursor() as cur:
-            cur.execute(_SAMPLES_SQL, {"run_id": run_id})
-            rows = cur.fetchall()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(_SAMPLES_SQL, {"run_id": run_id})
+                rows = cur.fetchall()
+        except psycopg2.errors.UndefinedColumn:
+            # A tenant behind 0028 has no `turns` and no `resolved_question`. The
+            # writer degrades for the same reason (`_INSERT_EVAL_SAMPLE_PRE_0028`),
+            # and a harness that raised here would refuse to build a sheet for a
+            # run it could have labelled. The aborted transaction has to be rolled
+            # back before the connection accepts another statement.
+            conn.rollback()
+            with conn.cursor() as cur:
+                cur.execute(_SAMPLES_PRE_0028_SQL, {"run_id": run_id})
+                rows = [(*row, None, None) for row in cur.fetchall()]
     finally:
         conn.close()
     return [
@@ -236,7 +255,9 @@ def write_sheet(samples: Sequence[Mapping], path: pathlib.Path) -> tuple[int, li
         f"{len(GATED_METRICS)} metric(s), verdict column empty.",
         "Fill human_verdict with pass or fail per row. faithfulness asks whether the",
         "response is supported by the retrieved contexts; answer_relevancy asks whether",
-        "it answers the question. The Judge's own verdicts are not on this sheet.",
+        "it answers the question. WHERE resolved_question IS FILLED, JUDGE AGAINST THAT",
+        "ONE: it is what the Judge was scored on, and labelling the raw question there",
+        "compares two different measurements. The Judge's verdicts are not on this sheet.",
     ]
 
 

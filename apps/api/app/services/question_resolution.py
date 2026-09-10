@@ -22,12 +22,14 @@ happen is a worse measurement, not a lost run.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 
 import structlog
+from celery.exceptions import SoftTimeLimitExceeded
 
 from app.core.log_bounds import log_failure
-from app.core.model_client import LedgerContext, route_for
+from app.core.model_client import LedgerContext, UnknownPurpose, route_for
 from app.services.tool_loop import ForcedToolCallTruncated, forced_tool_arguments
 
 log = structlog.get_logger(__name__)
@@ -83,16 +85,31 @@ _SYSTEM_PROMPT = (
 )
 
 
-def _conversation(question: str, turns: Sequence[Mapping]) -> str:
-    """The turns and the question as one block, oldest first, roles named."""
-    lines = [
-        f"{str(turn.get('role', '')).upper()}: {turn.get('content', '')}"
+def _conversation(turns: Sequence[Mapping]) -> str:
+    """The prior turns as one block, oldest first, roles named.
+
+    EACH CONTENT IS JSON-ENCODED, so a newline inside one turn cannot forge a
+    second role line and a customer cannot write one message that reads as two.
+
+    A row that is not a mapping is DROPPED rather than rendered. `_scenario_dict`
+    guarantees the shape on the production path, so this is the same
+    defence-in-depth the sheet's `_rendered_turns` applies: without it a scenario
+    written wrong raises inside the caller's `try` and is counted as a model
+    failure, which is a malformed row wearing a provider's clothes.
+    """
+    return "\n".join(
+        f"{str(turn.get('role', '')).upper()}: {json.dumps(str(turn.get('content', '')))}"
         for turn in turns[-RESOLUTION_MAX_TURNS:]
-    ]
-    lines.append(f"CUSTOMER (the message to rewrite): {question}")
-    return "\n".join(lines)
+        if isinstance(turn, Mapping)
+    )
 
 
+# TWO EXCEPTIONS ARE RE-RAISED, and neither is one row's problem. `UnknownPurpose`
+# is a typo in the route table, raised before anything is built so it never reaches
+# the ledger; degrading it to a warning per row would score a whole run on raw
+# questions and say so only in a log. `SoftTimeLimitExceeded` is Celery telling the
+# task to wind up, and swallowing it keeps the loop calling the provider through
+# the shutdown it was told about. Everything else is one scenario's bad luck.
 def resolve_question(
     question: str,
     turns: Sequence[Mapping],
@@ -101,13 +118,11 @@ def resolve_question(
 ) -> str | None:
     """One scenario's question, rewritten to stand alone. None when it did not.
 
-    Returns None for a scenario with no turns, because there is nothing to
-    resolve against and the raw question already stands alone. Returns None on
-    every failure too: no tool call, a truncated one, an empty string, or any
-    exception from the provider. The caller scores the raw question in all four
-    cases, which is the behaviour that predates #227.
+    Returns None for a scenario with no turns and on every failure: no tool call,
+    a truncated one, an empty string, or any provider error. The caller scores the
+    raw question in all of them, which is what the eval did before #227.
     """
-    if not turns:
+    if not turns or not any(isinstance(turn, Mapping) for turn in turns):
         return None
     try:
         completion = ledger.client(RESOLUTION_PURPOSE).chat.completions.create(  # type: ignore[call-overload]  # a dict tool schema, not the SDK's TypedDict
@@ -116,7 +131,13 @@ def resolve_question(
             max_completion_tokens=RESOLUTION_MAX_TOKENS,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": _conversation(question, turns)},
+                {"role": "user", "content": _conversation(turns)},
+                # THE MESSAGE TO REWRITE IS ITS OWN MESSAGE, not the last line of
+                # the block above. A turn's content is customer-authored text out
+                # of a JSONB column, and inside one block it could forge both a
+                # role line and the marker naming the final message. A message
+                # boundary is structural and no content can produce one.
+                {"role": "user", "content": "MESSAGE TO REWRITE:\n" + question},
             ],
             tools=[_RESOLVE_TOOL],
             tool_choice={
@@ -135,6 +156,8 @@ def resolve_question(
     except ForcedToolCallTruncated as exc:
         log_failure(log, "resolve_question.truncated", exc)
         return None
+    except (UnknownPurpose, SoftTimeLimitExceeded):
+        raise
     except Exception as exc:  # noqa: BLE001 — one scenario, and the raw question still scores
         log_failure(log, "resolve_question.failed", exc)
         return None
