@@ -887,6 +887,121 @@ class TestTheRewriteReachesTheJudgeAndTheSampleRow:
         assert all("resolved_question" not in row for row in others)
 
 
+class TestTheRunRecordsWhichQuestionRelevancyScored:
+    """The stamp, driven through the task rather than called directly (#233).
+
+    `question_resolution_provenance` has its own unit tests and they cover the
+    counting. Three things only the task can show, and each is a real way to
+    build this wrong:
+
+    - that `run_eval_suite` calls `update_eval_run_config` a SECOND time at all,
+    - that it hands the deriver `scored_scenarios`, the list the annotator wrote
+      the rewrites into, rather than `valid_scenarios`, which are the rows before
+      the agent turn and carry no `resolved_question` at all,
+    - that the patch names only its own key, so the observed `agent_invocation`
+      object the first patch wrote survives the second one.
+
+    The counts asserted here come out of a run whose rewrites were doubled one
+    success and one failure, so a stamp derived from anything but those rows
+    reports a different pair of numbers.
+    """
+
+    FOLLOW_UP = "f0000000-0000-0000-0000-00000000000f"
+    UNRESOLVABLE = "f0000000-0000-0000-0000-00000000000e"
+    LEAD_IN = [{"role": "user", "content": "I'm setting up Earth Elements locally."}]
+
+    def _run_a_mixed_conversation(self, wired, monkeypatch, *, relevancy=0.9):
+        """Two multi-turn rows, one rewritten and one that fell back, plus singles.
+
+        `resolve_question` is doubled rather than the annotator, and the judge
+        double scores the rows it was handed rather than a fixed id, so the
+        record has something to be derived FROM.
+        """
+        from app.services import question_resolution
+
+        monkeypatch.setattr(
+            question_resolution,
+            "resolve_question",
+            lambda question, turns, **kw: (
+                None if "deliver" in question else "How do I start the dev server?"
+            ),
+        )
+        monkeypatch.setattr(
+            mod,
+            "run_ragas_eval",
+            lambda scenarios, ledger: _ragas_return(
+                [
+                    {"scenario_id": s["id"], "answer_relevancy": relevancy,
+                     "faithfulness": 0.8, "context_precision": 0.7, "context_recall": 0.6}
+                    for s in scenarios
+                ]
+            ),
+        )
+        conn = MagicMock()
+        conn.cursor.return_value = _Cursor(
+            golden_rows=[
+                scenario_row(self.FOLLOW_UP, "how do I start it?", "Run pnpm dev.",
+                             dataset="golden", turns=self.LEAD_IN),
+                scenario_row(self.UNRESOLVABLE, "and do you deliver?", "Yes.",
+                             dataset="golden", turns=self.LEAD_IN),
+            ],
+            exploratory_rows=wired["cursor"].exploratory_rows,
+        )
+        monkeypatch.setattr(mod.psycopg2, "connect", lambda *a, **kw: conn)
+        _run()
+        return [patch for _run_id, patch, _conn in wired["config_patched"]]
+
+    def test_the_run_config_carries_what_relevancy_was_measured_against(
+        self, wired, monkeypatch
+    ):
+        patches = self._run_a_mixed_conversation(wired, monkeypatch)
+
+        [counts] = [p["question_resolution"] for p in patches if "question_resolution" in p]
+        assert counts == {
+            "relevancy_scored": 4,
+            "multi_turn": 2,
+            "rewritten": 1,
+            "raw_question_fallback": 1,
+        }, (
+            "the run does not record which question its gated relevancy column "
+            "was scored against, so a collector cannot tell a rewrite from a "
+            "fallback (#233)"
+        )
+
+    def test_the_stamp_does_not_disturb_the_invocation_provenance(
+        self, wired, monkeypatch
+    ):
+        """Two patches, and the second names only its own key.
+
+        Merging the two into one call would land the same config, so nothing
+        clobbers today. What this holds is the shape that keeps it that way: the
+        stamp patch carries `question_resolution` alone, so it can never be the
+        write that replaces the observed `agent_invocation` object with a stale
+        one. `||` is a shallow merge and that object is replaced whole.
+        """
+        patches = self._run_a_mixed_conversation(wired, monkeypatch)
+
+        assert [sorted(p) for p in patches] == [
+            ["agent_invocation", "agent_invoked", "dimensions_not_exercised",
+             "scored_response_source"],
+            ["question_resolution"],
+        ]
+
+    def test_a_row_the_judge_scored_no_relevancy_for_is_not_counted(
+        self, wired, monkeypatch
+    ):
+        """A relevancy outage leaves the other three metrics and no denominator.
+
+        The run still completes and still writes its rows; what it must not do is
+        claim two rewrites were measured when relevancy measured nothing.
+        """
+        patches = self._run_a_mixed_conversation(wired, monkeypatch, relevancy=None)
+
+        [counts] = [p["question_resolution"] for p in patches if "question_resolution" in p]
+        assert counts["relevancy_scored"] == 0
+        assert counts["rewritten"] == 0
+
+
 class TestTheProjectionAndTheReadCannotDisagree:
     """The coupling that used to be a comment somebody had to obey.
 
