@@ -2244,6 +2244,12 @@ def test_the_row_exists_before_the_first_turn_and_is_corrected_after_the_last(
     The correction lands BEFORE scoring, too: the invocation is the expensive,
     unrepeatable half, and a judge outage must not take the record of what the
     agent did down with it.
+
+    A SECOND patch lands AFTER scoring, and it is the opposite rule for the
+    opposite reason. `question_resolution_provenance` describes the rows the
+    judge returned, so it cannot be written before those rows exist, and writing
+    it first would leave a run that died in between describing scores nobody
+    wrote (#233). Two patches, two directions, one sequence.
     """
     order: list[str] = []
 
@@ -2279,10 +2285,13 @@ def test_the_row_exists_before_the_first_turn_and_is_corrected_after_the_last(
         "turn",
         "patch",
         "score",
+        "patch",
     ], (
         f"the run's write order is {order}. 'insert' must precede every 'turn' "
-        "(the row is the idempotency key), and 'patch' must precede 'score' (a "
-        "judge outage must not take the record of what the agent did with it)."
+        "(the row is the idempotency key); the FIRST 'patch' must precede 'score' "
+        "(a judge outage must not take the record of what the agent did with it); "
+        "and the SECOND must follow it (it describes scores, so it cannot be "
+        "written before they exist)."
     )
 
 
