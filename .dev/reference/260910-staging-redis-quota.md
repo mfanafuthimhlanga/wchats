@@ -1,0 +1,70 @@
+# Staging Redis is out of requests, and this box cannot tell you when it comes back
+
+Staging's Upstash Redis (`firm-calf-277244.upstash.io`) has spent its request allowance.
+Every command fails, so every Celery worker, the beat schedule and the SSE fan-out on
+staging fail with it. This note says how to check the state without opening a browser, and
+which single fact still needs one.
+
+## Check it from here
+
+`REDIS_URL` on any staging service is the connection string. Pipe it into a probe rather
+than printing it:
+
+```bash
+railway variables -s worker-runtime -e staging --kv \
+  | apps/api/.venv/Scripts/python.exe -c "
+import sys, redis
+url = next(l.split('=',1)[1].strip() for l in sys.stdin if l.startswith('REDIS_URL='))
+try:
+    print('PING ->', redis.Redis.from_url(url, socket_connect_timeout=10).ping())
+except Exception as e:
+    print(type(e).__name__, e)
+"
+```
+
+Exhausted looks like this, observed 2026-09-10 19:31 SAST:
+
+```
+ResponseError: max requests limit exceeded. Limit: 500000, Usage: 500000.
+```
+
+One `PING` costs one request, and the quota rejects it rather than serving it, so the probe
+is safe to repeat.
+
+Service state is a separate read and touches no deployment:
+
+```bash
+railway status --json
+```
+
+On 2026-09-10 that reported `beat` and `api-service` with no active deployment, and
+`worker-pipeline` and `worker-runtime` with one `CRASHED` instance each, stopped.
+
+## What the limit is
+
+Upstash counts requests **monthly**
+(https://upstash.com/docs/redis/troubleshooting/max_requests_limit). The doc gives no reset
+date and no way to read the current period, so the reset window is only visible in the
+Upstash console.
+
+## Why this box cannot read the reset date
+
+The staging services carry `REDIS_URL` and nothing else Redis-shaped. Upstash's management
+API needs an account email and an API key, and neither exists in this environment, so there
+is no CLI route to the usage figure or the billing period. Checking the reset date means
+opening the Upstash console.
+
+## What burns the allowance
+
+Idle Celery polling. On 2026-09-09 a merge to `main` redeployed the four staging services
+from `EXITED` to `RUNNING` at 19:09, and the allowance was gone by 19:39. Both workers
+crashed terminally within three minutes of that and produced nothing afterwards; `beat` and
+`api-service` kept running for eleven more hours before anyone stopped them.
+
+A merge to `main` is a deploy, and a deploy restarts every parked service. Keep staging down
+until the allowance resets.
+
+```bash
+railway down -y -s <service> -e staging     # stop one; says "No deployments found" if already crashed
+railway up --detach -y -s <service> -e staging   # bring one back
+```
