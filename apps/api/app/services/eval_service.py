@@ -151,6 +151,24 @@ _METRIC_ASCORE_ARGS: Mapping[str, tuple[str, ...]] = MappingProxyType({
     "context_recall": ("user_input", "retrieved_contexts", "reference"),
 })
 
+#: The metrics whose `user_input` becomes the RESOLVED question when a scenario
+#: carries turns (#227 PR 2). Relevancy alone, and the shortness of this tuple is
+#: the point.
+#:
+#: All four metrics above name `user_input`, and all four read it off ONE
+#: validated sample, so swapping the sample's own text would move the input of
+#: every metric at once, faithfulness included. Faithfulness is gated
+#: (`GATED_METRIC_KEYS`) and its calibration was measured on raw questions, so a
+#: change here that moved it would move a deploy gate as a side effect of fixing
+#: relevancy. Overriding per metric keeps that impossible: for the other three the
+#: bytes handed to the judge are the bytes that were handed before this existed.
+#:
+#: The ROW's `user_input` is never overridden either, only the metric's kwargs.
+#: `SAMPLE_KEY_COLUMNS` attributes a returned judge row to a scenario on
+#: `(user_input, reference)`, so a row carrying a rewritten question would match
+#: no scenario and the whole run would come back unattributed.
+RESOLVED_INPUT_METRICS: tuple[str, ...] = ("answer_relevancy",)
+
 
 # ---------------------------------------------------------------------------
 # What this harness measures — and what it does not (audit D1)
@@ -1342,35 +1360,49 @@ def _build_ragas_metrics(ledger: LedgerContext, embeddings) -> list:
     ]
 
 
+def _resolved_inputs(valid_scenarios: Sequence[Mapping]) -> list[str | None]:
+    """One rewrite per sample, in sample order, None where a scenario had no turns.
+
+    Built from `valid_scenarios` because `samples` came out of the same filter in
+    the same order, and `_score_samples` zips the two strictly, so a drift between
+    them raises rather than scoring a rewrite against somebody else's answer.
+    """
+    return [s.get("resolved_question") or None for s in valid_scenarios]
+
+
+# SAMPLES RUN CONCURRENTLY UNDER A BOUND; the metrics within a sample run in
+# sequence. OBSERVED 2026-09-06 on staging (run 978689db, agent ee8087ed): one
+# awaited call at a time over 31 scenarios and four metrics logged nothing between
+# `run_ragas_eval.start` and the checklist's 45 minute ceiling, and the eval did
+# not finish (#205). One Faithfulness score is 5 to 7 s from this box at effort
+# none, and the other three metrics each make their own calls.
+# `settings.EVAL_SCORING_CONCURRENCY` samples in flight keeps the whole run inside
+# the ceiling and inside the provider's rate limits at this volume. Rows come back
+# in sample order whatever order the calls finish in.
+#
+# A progress line every `_SCORING_PROGRESS_EVERY` samples carries the count and the
+# elapsed seconds, so a slow run and a stuck one no longer look the same.
 async def _score_samples(
-    metrics: list, samples: list, concurrency: int | None = None
+    metrics: list,
+    samples: list,
+    concurrency: int | None = None,
+    resolved_inputs: Sequence[str | None] | None = None,
 ) -> list[dict]:
     """Score every validated sample against every metric, one row per sample.
 
     A metric that raises for one sample yields None for that cell and nothing
     else: a failed measurement is `unknown`, never a zero, and never a reason to
     lose the three metrics that did return. The row carries user_input and
-    reference because attribute_returned_rows matches on that pair.
-
-    SAMPLES RUN CONCURRENTLY UNDER A BOUND; the metrics within a sample run in
-    sequence. OBSERVED 2026-09-06 on staging (run 978689db, agent ee8087ed): one
-    awaited call at a time over 31 scenarios and four metrics logged nothing
-    between `run_ragas_eval.start` and the checklist's 45 minute ceiling, and the
-    eval did not finish (#205). One Faithfulness score is 5 to 7 s from this box
-    at effort none, and the other three metrics each make their own calls.
-    `settings.EVAL_SCORING_CONCURRENCY` samples in flight keeps the whole run
-    inside the ceiling and inside the provider's rate limits at this volume.
-    Rows come back in sample order whatever order the calls finish in.
-
-    A progress line every `_SCORING_PROGRESS_EVERY` samples carries the count and
-    the elapsed seconds, so a slow run and a stuck one no longer look the same.
+    reference because attribute_returned_rows matches on that pair, so the
+    rewrite in `resolved_inputs` reaches `RESOLVED_INPUT_METRICS` and never the
+    row.
     """
     bound = concurrency if concurrency is not None else settings.EVAL_SCORING_CONCURRENCY
     gate = asyncio.Semaphore(max(1, bound))
     started = time.monotonic()
     done = 0
 
-    async def score_one(sample) -> dict:
+    async def score_one(sample, resolved: str | None) -> dict:
         nonlocal done
         async with gate:
             row: dict = {
@@ -1382,6 +1414,8 @@ async def _score_samples(
                     name: getattr(sample, name)
                     for name in _METRIC_ASCORE_ARGS[metric.name]
                 }
+                if resolved and metric.name in RESOLVED_INPUT_METRICS:
+                    kwargs["user_input"] = resolved
                 try:
                     value = (await metric.ascore(**kwargs)).value
                 except Exception as exc:  # noqa: BLE001 — one metric, one sample
@@ -1400,7 +1434,10 @@ async def _score_samples(
                 )
             return row
 
-    return list(await asyncio.gather(*(score_one(sample) for sample in samples)))
+    # `strict=True`: a wrong-length list would pair a rewrite with somebody else's
+    # sample, which is a scored measurement about the wrong question.
+    resolved = list(resolved_inputs) if resolved_inputs is not None else [None] * len(samples)
+    return list(await asyncio.gather(*(score_one(s, r) for s, r in zip(samples, resolved, strict=True))))
 
 
 def _placed_score_rows(
@@ -1525,7 +1562,7 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
 
     metrics = _build_ragas_metrics(ledger, _VoyageRagasEmbedding())
 
-    df = pd.DataFrame(asyncio.run(_score_samples(metrics, list(dataset.samples))))
+    df = pd.DataFrame(asyncio.run(_score_samples(metrics, list(dataset.samples), resolved_inputs=_resolved_inputs(valid_scenarios))))
 
     # Build per-scenario score dicts. The metric names come from the one
     # METRIC_KEYS tuple rather than a local literal list: audit D3 is a second
@@ -1694,12 +1731,12 @@ def write_eval_results(
 _INSERT_EVAL_SAMPLE = """
     INSERT INTO eval_samples (
         id, eval_run_id, scenario_id, dataset,
-        user_input, response, retrieved_contexts, reference, turns
+        user_input, response, retrieved_contexts, reference, turns, resolved_question
     )
     VALUES (
         %(id)s::uuid, %(eval_run_id)s::uuid, %(scenario_id)s, %(dataset)s,
         %(user_input)s, %(response)s, %(retrieved_contexts)s::jsonb, %(reference)s,
-        %(turns)s::jsonb
+        %(turns)s::jsonb, %(resolved_question)s
     )
 """
 
@@ -1760,6 +1797,13 @@ def _sample_row_params(eval_run_id: str, scenario: Mapping) -> dict:
         "turns": json.dumps(
             scenario.get("turns") if isinstance(scenario.get("turns"), list) else []
         ),
+        # NULL twice over, and the row itself says which: a single-turn scenario
+        # had nothing to resolve, and a multi-turn one whose rewrite failed is
+        # scored on its raw question. `turns` on this same row tells the two
+        # apart, and `annotate_resolved_questions` logs the failure count so a run
+        # where every rewrite failed does not read like a run with no multi-turn
+        # scenarios in it.
+        "resolved_question": str(scenario.get("resolved_question") or "").strip() or None,
     }
 
 

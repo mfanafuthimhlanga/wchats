@@ -432,6 +432,13 @@ PURPOSE_ROUTES: Mapping[str, ModelRoute] = MappingProxyType({
     "judge_context_precision": _JUDGE,
     "judge_context_recall": _JUDGE,
     "judge_retrieval_faithfulness": _JUDGE,
+    # Added by #227 PR 2. Not a judge: it rewrites a multi-turn scenario's last
+    # customer message as a standalone question so answer relevancy is scored
+    # against what was actually asked. Its own purpose because it is its own
+    # spend, one call per multi-turn scored row, and a rollup that folded it into
+    # `judge_answer_relevancy` would report the Judge as costing more than it
+    # does. Same route as the judges, because it runs in the same scoring pass.
+    "eval_question_resolution": _JUDGE,
     # The customer turn, added by ticket #48 when it left the SDK harness for the
     # owned loop in `app.services.agent_loop`.
     "agent_turn": _AGENT_TURN,
