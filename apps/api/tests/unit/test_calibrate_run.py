@@ -42,6 +42,51 @@ def _samples(n: int) -> list[dict]:
     ]
 
 
+class TestTheSheetShowsWhatBoundTheQuestion:
+    """#227 PR 2. A follow-up reaches the labeller with its conversation.
+
+    The owner labels relevancy by reading the question and the answer. For a
+    multi-turn scenario the question alone is not what was asked, so the sheet
+    carries the conversation it was asked in and the rewrite relevancy was
+    actually scored against. Both are empty for the single-turn rows that are the
+    whole corpus before #227, so an older run's sheet reads as it did.
+    """
+
+    def _row(self, tmp_path, **extra) -> dict:
+        sample = {**_samples(1)[0], **extra}
+        path = tmp_path / "sheet.csv"
+        cr.write_sheet([sample], path)
+        with path.open(newline="", encoding="utf-8") as fh:
+            return next(iter(csv.DictReader(fh)))
+
+    def test_the_conversation_renders_oldest_first_with_its_roles(self, tmp_path):
+        row = self._row(
+            tmp_path,
+            turns=[
+                {"role": "user", "content": "I'm setting up Earth Elements."},
+                {"role": "assistant", "content": "Happy to help."},
+            ],
+            resolved_question="How do I start the dev server for Earth Elements?",
+        )
+
+        assert row["turns"] == (
+            "USER: I'm setting up Earth Elements.\nASSISTANT: Happy to help."
+        )
+        assert row["resolved_question"] == (
+            "How do I start the dev server for Earth Elements?"
+        )
+
+    def test_a_single_turn_row_leaves_both_cells_empty(self, tmp_path):
+        row = self._row(tmp_path)
+
+        assert row["turns"] == ""
+        assert row["resolved_question"] == ""
+
+    def test_a_turns_value_that_is_not_a_conversation_renders_empty(self, tmp_path):
+        assert self._row(tmp_path, turns="not a list")["turns"] == ""
+        assert self._row(tmp_path, turns=[7, None])["turns"] == ""
+
+
 def _verdicts(samples: list[dict], passed_by_row) -> dict:
     """passed_by_row(scenario_id, metric) -> bool | None."""
     out = {}

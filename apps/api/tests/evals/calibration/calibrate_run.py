@@ -74,6 +74,10 @@ SHEET_COLUMNS = (
     "response",
     "retrieved_contexts",
     "reference",
+    # Added by #227 PR 2. Empty for the single-turn scenarios that are the whole
+    # corpus before it, so an older run's sheet reads exactly as it did.
+    "turns",
+    "resolved_question",
 )
 
 #: The judge's score on the 1-5 scale `compute_correlation` reports Spearman
@@ -83,7 +87,8 @@ STORED_PASS_SCORE = 5
 STORED_FAIL_SCORE = 1
 
 _SAMPLES_SQL = """
-    SELECT scenario_id, dataset, user_input, response, retrieved_contexts, reference
+    SELECT scenario_id, dataset, user_input, response, retrieved_contexts, reference,
+           turns, resolved_question
     FROM eval_samples
     WHERE eval_run_id = %(run_id)s::uuid
     ORDER BY scenario_id
@@ -134,9 +139,31 @@ def fetch_samples(run_id: str, dsn: str) -> list[dict]:
             "response": response,
             "retrieved_contexts": list(contexts or []),
             "reference": reference,
+            # The conversation the question was asked in, and the question
+            # rewritten to stand alone in it (tenant 0028, #227). A labeller shown
+            # a follow-up with its binding stripped off is being asked to judge an
+            # answer to a question nobody asked.
+            "turns": list(turns or []),
+            "resolved_question": resolved_question or "",
         }
-        for sid, dataset, user_input, response, contexts, reference in rows
+        for sid, dataset, user_input, response, contexts, reference, turns, resolved_question in rows
     ]
+
+
+def _rendered_turns(turns) -> str:
+    """The conversation as one cell, oldest first, one message per line.
+
+    Empty for a single-turn scenario, which is every row the eval scored before
+    #227, so an older run's sheet reads exactly as it did.
+    """
+    if not isinstance(turns, list):
+        return ""
+    lines = []
+    for turn in turns:
+        if not isinstance(turn, dict):
+            continue
+        lines.append(f"{str(turn.get('role', '')).upper()}: {turn.get('content', '')}")
+    return "\n".join(lines)
 
 
 def fetch_verdicts(run_id: str, dsn: str) -> dict[tuple[str, str], dict]:
@@ -199,6 +226,8 @@ def write_sheet(samples: Sequence[Mapping], path: pathlib.Path) -> tuple[int, li
                         "response": sample["response"],
                         "retrieved_contexts": "\n\n".join(sample["retrieved_contexts"]),
                         "reference": sample["reference"],
+                        "turns": _rendered_turns(sample.get("turns")),
+                        "resolved_question": sample.get("resolved_question") or "",
                     }
                 )
     rows = len(samples) * len(GATED_METRICS)
