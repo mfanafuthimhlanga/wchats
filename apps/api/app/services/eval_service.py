@@ -101,6 +101,7 @@ from app.domain.eval_result import (
     InvalidEvalResult,
     Invocation,
     Measurement,
+    QuestionResolution,
     ScenarioFailure,
     cost_of_run,
     metrics_of,
@@ -2608,6 +2609,49 @@ def dataset_outcomes(
     }
 
 
+def _invocation_of(invocation: Mapping) -> Invocation:
+    """The summariser's observation as the record's counter block.
+
+    `_INVOCATION_COUNTS` is indexed rather than `.get`-ed: a summary missing one
+    of them is a defect in `summarise_agent_invocation`, and a zero substituted
+    here would be a count the run never made.
+    """
+    return Invocation(
+        status=invocation["status"],
+        **{name: invocation[name] for name in _INVOCATION_COUNTS},
+        deflection_detectors=invocation.get("deflection_detectors") or {},
+    )
+
+
+def _failures_of(invocation: Mapping) -> list[ScenarioFailure]:
+    """The turns that raised, as the record holds them.
+
+    The summariser's own list, not a second walk over the records. It counted
+    `failed` off the same pass, and the record refuses to hold more failures than
+    that count.
+    """
+    return [
+        ScenarioFailure.from_payload(failure)
+        for failure in invocation.get("failures") or []
+    ]
+
+
+def _question_resolution_of(patch: Mapping) -> QuestionResolution:
+    """The counts out of `question_resolution_provenance`'s config patch.
+
+    THE PATCH IS PASSED IN RATHER THAN RECOMPUTED, which is the same rule
+    `build_eval_result` follows for the per-dataset counts. The task stamps this
+    object on `eval_runs.config` and hands the identical object here, so the
+    config and the record carry one derivation between them and cannot drift.
+    Recomputing the counts from `scenarios` would be the second walk that rule
+    exists to refuse.
+
+    An empty patch is four zeros, which is the run that resolved no question:
+    every single-turn run, and every run that scored nothing at all.
+    """
+    return QuestionResolution.from_payload(patch.get("question_resolution") or {})
+
+
 def build_eval_result(
     *,
     run_id: str,
@@ -2618,6 +2662,7 @@ def build_eval_result(
     ledger: Sequence[ModelCall],
     scenarios: Sequence[Mapping],
     judge_records: Sequence[JudgeRecord],
+    question_resolution: Mapping,
 ) -> EvalResult:
     """Assemble the run's record from the summaries the task already holds. Pure.
 
@@ -2626,6 +2671,9 @@ def build_eval_result(
     Both count the same fetched rows by the same rule, so taking one number from
     each would be two derivations of one figure, the defect this record exists to
     remove, reintroduced inside the thing removing it.
+
+    `_question_resolution_of` obeys that same rule the other way round, and its
+    docstring says how.
 
     Args:
         run_id:            UUID string of the eval_runs row.
@@ -2639,6 +2687,8 @@ def build_eval_result(
                            scenario belongs to.
         judge_records:     what the Judge decided, one per (scenario, metric).
                            The per-dataset verdict counts come off these.
+        question_resolution: question_resolution_provenance()'s config patch,
+                           handed over rather than recomputed.
 
     Raises:
         InvalidEvalResult: a summary carried a shape the record refuses, which is
@@ -2651,22 +2701,13 @@ def build_eval_result(
         judge_identity=run_judge_identity(judge_records),
         requested_model=AGENT_TURN_MODEL,
         served_model=served_agent_model(ledger),
-        invocation=Invocation(
-            status=invocation["status"],
-            **{name: invocation[name] for name in _INVOCATION_COUNTS},
-            deflection_detectors=invocation.get("deflection_detectors") or {},
-        ),
+        invocation=_invocation_of(invocation),
         datasets=dataset_outcomes(
             validity, dataset_verdict_counts(scenarios, judge_records)
         ),
         cost=cost_of_run(ledger),
-        # The summariser's own list, not a second walk over the records. It
-        # counted `failed` off the same pass, and the record refuses to hold
-        # more failures than that count.
-        failures=[
-            ScenarioFailure.from_payload(failure)
-            for failure in invocation.get("failures") or []
-        ],
+        failures=_failures_of(invocation),
+        question_resolution=_question_resolution_of(question_resolution),
     )
 
 

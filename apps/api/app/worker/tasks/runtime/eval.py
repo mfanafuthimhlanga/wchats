@@ -1140,6 +1140,52 @@ def _scenario_dict(row: Mapping) -> dict:
     }
 
 
+def _score_run(
+    *,
+    tenant_id: str,
+    agent_id: str,
+    run_id: str,
+    scored_scenarios: list,
+    conn_str: str,
+) -> tuple[dict, dict]:
+    """Score the answered turns, persist what the Judge said, close the run.
+
+    The whole of `run_eval_suite`'s measured path, lifted out so the task body
+    stays under its complexity pin and so the ordering below has room to be
+    explained where it happens.
+
+    THE ORDER IS THE POINT, and each step is placed against a death in the middle
+    of it:
+
+      1. `write_eval_samples` first, so the scored text outlives a Ragas outage
+         (#58). The questions are resolved before it writes, so the samples table
+         and the Judge hold one string rather than two (#227 PR 2).
+      2. `run_ragas_eval`, the expensive half.
+      3. `write_eval_results` on PRODUCTION, because the eval branch is about to
+         be destroyed. It is the JUDGE RECORDS that go there, not `scores`.
+      4. The question-resolution counts, AFTER the rows they describe, so a death
+         in between leaves the run saying nothing rather than describing scores
+         that were never written (#233).
+      5. Terminal status last.
+
+    Step 4 is DERIVED ONCE AND STAMPED TWICE (#235). The counts go on
+    `eval_runs.config` for a reader holding only the row, and the same object is
+    returned for `build_eval_result`, so the record the deploy gate reads and the
+    config can never disagree about which question relevancy was scored against.
+
+    Returns:
+        (results, question_resolution): `run_ragas_eval`'s payload, and the
+        config patch `question_resolution_provenance` produced.
+    """
+    write_eval_samples(run_id, annotate_resolved_questions(scored_scenarios, ledger=_run_ledger(tenant_id, agent_id, run_id, conn_str)), conn_str)
+    results = run_ragas_eval(scored_scenarios, _run_ledger(tenant_id, agent_id, run_id, conn_str))
+    write_eval_results(run_id, results["judge_records"], conn_str)
+    question_resolution = question_resolution_provenance(scored_scenarios, results["scores"])
+    update_eval_run_config(run_id, question_resolution, conn_str)
+    update_eval_run_status(run_id, "complete", finished_at=True, conn_str=conn_str)
+    return results, question_resolution
+
+
 # ---------------------------------------------------------------------------
 # EVL-02 / EVL-03 / EVL-05: run_eval_suite — per-agent eval run (D-10 LOCKED)
 # ---------------------------------------------------------------------------
@@ -1500,26 +1546,18 @@ def run_eval_suite(self, agent_id: str) -> dict:
         # `results["scores"]` and `results["judge_records"]` an `object` that
         # summarise_run_validity and write_eval_results reject.
         results: dict
+        # An empty patch builds the record's four zeros, and for a run below the
+        # measurement floor that is the reading: it scored no relevancy, so it
+        # resolved no question (#235).
+        question_resolution: dict = {}
         if invocation["status"] != AGENT_INVOCATION_MEASURED:
             _log_below_measurement_floor(agent_id, run_id, invocation)
             update_eval_run_status(run_id, "complete", finished_at=True, conn_str=conn_str)
             results = dict(_NOTHING_SCORED)
         else:
-            # The scored text lands before scoring so it outlives a Ragas outage
-            # (#58), rewritten first so both readers hold one string (#227 PR 2).
-            write_eval_samples(run_id, annotate_resolved_questions(scored_scenarios, ledger=_run_ledger(tenant_id, agent_id, run_id, conn_str)), conn_str)
-            results = run_ragas_eval(scored_scenarios, _run_ledger(tenant_id, agent_id, run_id, conn_str))
-
-            # Observations land on PRODUCTION because the branch below is about
-            # to be destroyed, and it is the JUDGE RECORDS that go, not `scores`.
-            write_eval_results(run_id, results["judge_records"], conn_str)
-
-            # Which question the gated relevancy column was measured against,
-            # after the rows it describes so a death in between leaves the run
-            # saying nothing rather than describing scores never written (#233).
-            update_eval_run_config(run_id, question_resolution_provenance(scored_scenarios, results["scores"]), conn_str)
-            update_eval_run_status(
-                run_id, "complete", finished_at=True, conn_str=conn_str
+            results, question_resolution = _score_run(
+                tenant_id=tenant_id, agent_id=agent_id, run_id=run_id,
+                scored_scenarios=scored_scenarios, conn_str=conn_str,
             )
 
         # (attempted, valid, scored) for the run and for each dataset. Computed
@@ -1548,6 +1586,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
             ledger=read_run_ledger(run_id, conn_str),
             scenarios=scenarios,
             judge_records=results["judge_records"],
+            question_resolution=question_resolution,
         )
         result_recorded = write_eval_result(run_id, result, conn_str)
 

@@ -240,3 +240,83 @@ def test_the_patch_names_the_one_config_key_it_merges():
     patch = question_resolution_provenance([scenario("s1")], [score("s1")])
 
     assert list(patch) == ["question_resolution"]
+
+
+def test_the_config_and_the_record_get_the_same_object():
+    """ONE DERIVATION, TWO HOMES (#235).
+
+    `_score_run` stamps the counts on `eval_runs.config` and returns the same
+    object for `build_eval_result`. Asserting identity rather than equality is
+    the point: two equal dicts could still be two walks over the scenarios, and
+    two walks are free to disagree the moment one of them changes. The deploy
+    gate reads the record and a human reads the config, and they may never
+    describe different measurements.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from app.worker.tasks.runtime import eval as eval_task
+
+    scored_scenarios = [scenario("s1")]
+    scores = [score("s1")]
+
+    with patch.multiple(
+        eval_task,
+        write_eval_samples=MagicMock(),
+        annotate_resolved_questions=MagicMock(return_value=scored_scenarios),
+        _run_ledger=MagicMock(return_value=[]),
+        run_ragas_eval=MagicMock(
+            return_value={"scores": scores, "judge_records": []}
+        ),
+        write_eval_results=MagicMock(),
+        update_eval_run_config=MagicMock(),
+        update_eval_run_status=MagicMock(),
+    ):
+        _, returned = eval_task._score_run(
+            tenant_id="t1",
+            agent_id="a1",
+            run_id="r1",
+            scored_scenarios=scored_scenarios,
+            conn_str="postgresql://test/tenant",
+        )
+        stamped = eval_task.update_eval_run_config.call_args.args[1]
+
+    assert stamped is returned, (
+        "the config patch and the object handed to build_eval_result must be "
+        "one object, or the record and the row are two derivations"
+    )
+    assert list(returned) == ["question_resolution"]
+    assert returned["question_resolution"]["relevancy_scored"] == 1
+
+
+def test_the_producers_key_names_are_the_ones_the_record_reads():
+    """FM-012, caught by its own detector during this branch's own review.
+
+    The four key names are spelled TWICE: `question_resolution_provenance` writes
+    them and `QuestionResolution.from_payload` reads them back with `.get(name, 0)`.
+    Nothing but this test holds the two spellings to each other, and the failure is
+    silent and fail-OPEN: rename `raw_question_fallback` on one side and the record
+    reads zero, the deploy gate sees nothing to distrust, and the run ships.
+
+    So this drives the REAL producer into the REAL reader. The hand-built patches
+    elsewhere in the suite cannot catch a producer rename, because they spell the
+    keys themselves.
+    """
+    from app.services.eval_service import _question_resolution_of
+
+    scenarios = [
+        scenario("s1"),
+        scenario("s2", turns=[{"role": "user", "content": "cape town?"}], resolved="what does it cost to ship to Cape Town?"),
+        scenario("s3", turns=[{"role": "user", "content": "and durban?"}], resolved=None),
+    ]
+    rows = [score("s1"), score("s2"), score("s3")]
+
+    patch = question_resolution_provenance(scenarios, rows)
+    counts = _question_resolution_of(patch)
+
+    assert counts.relevancy_scored == 3
+    assert counts.multi_turn == 2
+    assert counts.rewritten == 1
+    assert counts.raw_question_fallback == 1, (
+        "the count the deploy gate divides on; a key spelled differently on "
+        "either side reads as zero here and ships a run nobody measured"
+    )

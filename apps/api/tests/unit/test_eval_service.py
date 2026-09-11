@@ -2284,6 +2284,9 @@ def _built(**overrides):
         "ledger": [],
         "scenarios": _RECORD_SCENARIOS,
         "judge_records": _record_judge_records(),
+        # The single-turn default: nothing was resolved, so the record's four
+        # counts are zero. TestQuestionResolutionOnTheRecord overrides it.
+        "question_resolution": {},
     }
     fields.update(overrides)
     return build_eval_result(**fields)
@@ -2520,6 +2523,68 @@ class TestDatasetVerdictCounts:
         )
         assert counts["golden"] == (1, 0, 0)
         assert counts["exploratory"] == (0, 1, 0)
+
+
+class TestQuestionResolutionOnTheRecord:
+    """The record carries which question relevancy was scored against (#235).
+
+    The counts are HANDED OVER, never recomputed here. The task stamps the same
+    patch on `eval_runs.config`, so a test that let this function derive its own
+    would stop the two homes from being provably one derivation.
+    """
+
+    def test_the_patch_reaches_the_record_unchanged(self):
+        record = _built(
+            question_resolution={
+                "question_resolution": {
+                    "relevancy_scored": 12,
+                    "multi_turn": 4,
+                    "rewritten": 3,
+                    "raw_question_fallback": 1,
+                }
+            }
+        )
+        assert record.question_resolution.relevancy_scored == 12
+        assert record.question_resolution.multi_turn == 4
+        assert record.question_resolution.rewritten == 3
+        assert record.question_resolution.raw_question_fallback == 1
+
+    def test_an_empty_patch_is_four_zeros(self):
+        """The single-turn run, and the run that scored nothing at all."""
+        from app.domain.eval_result import NO_QUESTION_RESOLUTION
+
+        assert _built().question_resolution == NO_QUESTION_RESOLUTION
+
+    def test_the_counts_are_not_recomputed_from_the_scenarios(self):
+        """The record reports what it was handed, so the config and the record
+        cannot drift. A function deriving its own numbers here would reintroduce
+        the second derivation `build_eval_result` exists to remove."""
+        record = _built(
+            question_resolution={
+                "question_resolution": {
+                    "relevancy_scored": 999,
+                    "multi_turn": 0,
+                    "rewritten": 0,
+                    "raw_question_fallback": 0,
+                }
+            }
+        )
+        assert record.question_resolution.relevancy_scored == 999
+
+    def test_the_record_round_trips_with_the_counts(self):
+        from app.domain.eval_result import EvalResult
+
+        record = _built(
+            question_resolution={
+                "question_resolution": {
+                    "relevancy_scored": 8,
+                    "multi_turn": 5,
+                    "rewritten": 1,
+                    "raw_question_fallback": 4,
+                }
+            }
+        )
+        assert EvalResult.from_payload(record.payload) == record
 
 
 class TestRunJudgeIdentity:
