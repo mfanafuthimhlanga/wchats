@@ -201,3 +201,105 @@ class TestTheBatchKeepsOnlyVouchedDrafts:
     def test_the_batch_drafts_nothing_from_no_chunks(self, mock_factory):
         assert svc.draft_golden_pairs([], ledger()) == ([], 0)
         assert mock_factory.return_value.chat.completions.create.call_count == 0
+
+
+def _draft_with_lead_in(lead_in, question="How much is delivery?"):
+    return completion(
+        tool_calls=[tool_call("submit_golden_draft", {
+            "question": question, "reference_answer": ANSWER,
+            "citation": CITATION, "lead_in": lead_in,
+        })],
+        finish_reason="tool_calls",
+    )
+
+
+class TestALeadInHasToBindItsQuestion:
+    """#227. The lead-in exists so a follow-up has something to be bound BY.
+
+    Both halves matter and each fails differently. A lead-in that never names the
+    subject binds nothing, and the question is as ambiguous as it was without it.
+    A question that names the subject again needed no lead-in, so storing turns
+    beside it claims a binding the question does not use, and the eval then
+    reports a multi-turn measurement it never made.
+    """
+
+    def test_a_lead_in_that_names_the_subject_binds_a_follow_up(self):
+        assert svc.lead_in_binds_the_question(
+            "I'm ordering from the Cape Town store.",
+            "How much is delivery?",
+            "Cape Town store",
+        )
+
+    def test_a_lead_in_that_names_nothing_binds_nothing(self):
+        assert not svc.lead_in_binds_the_question(
+            "I have a question.", "How much is delivery?", "Cape Town store"
+        )
+
+    def test_a_question_that_names_the_subject_needed_no_lead_in(self):
+        assert not svc.lead_in_binds_the_question(
+            "I'm ordering from the Cape Town store.",
+            "How much is delivery from the Cape Town store?",
+            "Cape Town store",
+        )
+
+    def test_a_title_of_nothing_but_short_words_binds_nothing(self):
+        """`_words` keeps words of three letters or more, so a title of "a to z"
+        has no words to find and every lead-in would "name" it vacuously."""
+        assert not svc.lead_in_binds_the_question("anything", "any question", "a to z")
+
+
+class TestTheDrafterAsksForAConversationOnlyWhenOneIsNeeded:
+    @patch("app.core.model_client.make_client")
+    def test_a_bound_lead_in_becomes_the_drafts_turns(self, mock_factory):
+        mock_factory.return_value.chat.completions.create.return_value = (
+            _draft_with_lead_in("I'm ordering from doc a.")
+        )
+
+        draft = svc.draft_pair_from_chunk(_chunk("a", 0), ledger(), True)
+
+        assert draft["turns"] == [
+            {"role": "user", "content": "I'm ordering from doc a."}
+        ]
+
+    @patch("app.core.model_client.make_client")
+    def test_an_unbound_lead_in_is_dropped_and_the_pair_is_kept(self, mock_factory):
+        """The draft is still a good single-turn golden pair, and the owner reads
+        every one of these before it becomes a contract term."""
+        mock_factory.return_value.chat.completions.create.return_value = (
+            _draft_with_lead_in("I have a question.")
+        )
+
+        draft = svc.draft_pair_from_chunk(_chunk("a", 0), ledger(), True)
+
+        assert draft is not None
+        assert draft["turns"] == []
+        assert draft["question"] == "How much is delivery?"
+
+    @patch("app.core.model_client.make_client")
+    def test_a_draft_with_no_lead_in_carries_no_turns(self, mock_factory):
+        mock_factory.return_value.chat.completions.create.return_value = _draft()
+
+        assert svc.draft_pair_from_chunk(_chunk("a", 0), ledger())["turns"] == []
+
+    @patch("app.core.model_client.make_client")
+    def test_the_lead_in_rules_reach_the_model_only_when_asked_for(self, mock_factory):
+        """A one-document corpus has one subject, so every question is already
+        unambiguous and a lead-in would be invented rather than needed."""
+        mock_factory.return_value.chat.completions.create.return_value = _draft()
+
+        svc.draft_pair_from_chunk(_chunk("a", 0), ledger(), False)
+        without = mock_factory.return_value.chat.completions.create.call_args.kwargs
+        svc.draft_pair_from_chunk(_chunk("a", 0), ledger(), True)
+        with_rules = mock_factory.return_value.chat.completions.create.call_args.kwargs
+
+        assert "lead_in" not in without["messages"][0]["content"]
+        assert "lead_in" in with_rules["messages"][0]["content"], (
+            "the drafter asked for a lead-in in its tool schema and never told "
+            "the model when to write one"
+        )
+
+    @patch("app.core.model_client.make_client")
+    def test_the_tool_never_requires_the_lead_in(self, mock_factory):
+        """Required, a single-document corpus could not draft at all."""
+        assert "lead_in" not in svc.DRAFT_TOOL["function"]["parameters"]["required"]
+        assert "lead_in" in svc.DRAFT_TOOL["function"]["parameters"]["properties"]

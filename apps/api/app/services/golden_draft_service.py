@@ -51,6 +51,14 @@ DRAFT_TOOL = {
                         "copied character for character."
                     ),
                 },
+                "lead_in": {
+                    "type": "string",
+                    "description": (
+                        "Only when asked for one. The customer's earlier message, "
+                        "naming the document's subject, that the question is a "
+                        "follow-up to."
+                    ),
+                },
             },
             "required": ["question", "reference_answer", "citation"],
         },
@@ -71,6 +79,21 @@ _SYSTEM_PROMPT = (
     "5. The citation is the exact part of the passage the answer was lifted from, "
     "copied character for character. It must be findable in the passage.\n\n"
     "Call submit_golden_draft with the question, the reference answer and the citation."
+)
+
+#: Appended when the corpus holds more than one document (#227).
+#:
+#: A one-document corpus needs no lead-in: every question is about the only
+#: subject there is. With several, "how do I start the dev server" is answerable
+#: only once the customer has said which product they mean, and a golden pair
+#: that omits the saying is a pair the agent is expected to answer from nothing.
+_LEAD_IN_RULES = (
+    "\n\n6. This business has several documents, so a bare question can be "
+    "ambiguous. Also write `lead_in`: the customer's EARLIER message, one "
+    "sentence, naming this document's subject in the customer's own words.\n"
+    "7. Then write the question as a FOLLOW-UP to that message. It must not "
+    "name the subject again, because the lead-in already did. A question that "
+    "stands alone without the lead-in is the wrong question here."
 )
 
 #: The pick needs ids and order, not text. Content is fetched for the picked
@@ -218,13 +241,38 @@ def answer_grounded_in_chunk(answer: str, content: str) -> bool:
     return sum(1 for w in words if w in present) / len(words) >= ANSWER_GROUNDING_FLOOR
 
 
-def draft_pair_from_chunk(chunk: dict, ledger: LedgerContext) -> dict | None:
+def lead_in_binds_the_question(lead_in: str, question: str, document: str) -> bool:
+    """Whether a lead-in does the job a lead-in exists to do.
+
+    Two conditions, and both are about the pair rather than the prose. The
+    lead-in has to NAME the document's subject, or it binds nothing and the
+    follow-up is still ambiguous. The question has to NOT name it, or the pair is
+    single-turn wearing a conversation and the turns column claims a binding the
+    question never needed.
+
+    Titles carry extensions and separators a customer would not say, so the test
+    is the title's own words rather than the title: every word of three letters
+    or more in the lead-in, none of them in the question. A title made entirely
+    of short words binds nothing either way and is refused.
+    """
+    title_words = set(_words(document))
+    if not title_words:
+        return False
+    return title_words <= set(_words(lead_in)) and not (title_words & set(_words(question)))
+
+
+def draft_pair_from_chunk(
+    chunk: dict, ledger: LedgerContext, ask_for_lead_in: bool = False
+) -> dict | None:
     """One drafted pair from one chunk, or None when the model returned no draft."""
     response = ledger.client(PURPOSE).chat.completions.create(  # type: ignore[call-overload]  # a dict tool schema, not the SDK's TypedDict
         model=route_for(PURPOSE).model,
         max_completion_tokens=800,
         messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {
+                "role": "system",
+                "content": _SYSTEM_PROMPT + (_LEAD_IN_RULES if ask_for_lead_in else ""),
+            },
             {
                 "role": "user",
                 "content": (
@@ -243,8 +291,18 @@ def draft_pair_from_chunk(chunk: dict, ledger: LedgerContext) -> dict | None:
         # The tool schema names the three as required strings; the reader checks
         # only that the arguments are an object, so a null or a number lands here.
         return None
+    lead_in = str(arguments.get("lead_in") or "").strip()
+    # A lead-in that fails either half is DROPPED, not the pair with it. The
+    # draft is still a good single-turn golden pair, and the owner reads every
+    # one of these before it becomes a contract term.
+    turns = (
+        [{"role": "user", "content": lead_in}]
+        if lead_in and lead_in_binds_the_question(lead_in, str(fields["question"]), chunk["document"])
+        else []
+    )
     return {
         **fields,
+        "turns": turns,
         "source_document_id": chunk["document_id"],
         "source_document": chunk["document"],
         "source_chunk_id": chunk["chunk_id"],
@@ -262,7 +320,9 @@ def _reason_to_drop(draft: dict | None, content: str) -> str | None:
     return None
 
 
-def draft_golden_pairs(chunks: list[dict], ledger: LedgerContext) -> tuple[list[dict], int]:
+def draft_golden_pairs(
+    chunks: list[dict], ledger: LedgerContext, ask_for_lead_in: bool = False
+) -> tuple[list[dict], int]:
     """Draft one pair per chunk and keep the ones the chunk itself vouches for.
 
     Returns (kept, dropped). A draft is dropped when the model returned none,
@@ -271,12 +331,18 @@ def draft_golden_pairs(chunks: list[dict], ledger: LedgerContext) -> tuple[list[
     found is the invention the golden set exists to catch, so it never reaches
     the owner. Anything that raises for one chunk, the call or the checks, drops
     that chunk only.
+
+    `ask_for_lead_in` asks for a conversation around the question, and the caller
+    sets it from the corpus rather than from a preference: one document means one
+    subject and a bare question is already unambiguous (#227). A lead-in that
+    does not bind its question is dropped on its own, leaving a single-turn pair
+    rather than no pair.
     """
     kept: list[dict] = []
     dropped = 0
     for chunk in chunks:
         try:
-            draft = draft_pair_from_chunk(chunk, ledger)
+            draft = draft_pair_from_chunk(chunk, ledger, ask_for_lead_in)
             reason = _reason_to_drop(draft, chunk["content"])
         except Exception as exc:  # noqa: BLE001 — one chunk, one draft
             log_failure(log, "golden_draft.chunk_failed", exc, chunk_id=chunk["chunk_id"])
