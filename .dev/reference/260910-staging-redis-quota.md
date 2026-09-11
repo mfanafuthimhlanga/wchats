@@ -56,13 +56,30 @@ opening the Upstash console.
 
 ## What burns the allowance
 
-Idle Celery polling. On 2026-09-09 a merge to `main` redeployed the four staging services
-from `EXITED` to `RUNNING` at 19:09, and the allowance was gone by 19:39. Both workers
-crashed terminally within three minutes of that and produced nothing afterwards; `beat` and
-`api-service` kept running for eleven more hours before anyone stopped them.
+Idle Celery polling, but slowly, and the thirty minute reading below is wrong.
 
-A merge to `main` is a deploy, and a deploy restarts every parked service. Keep staging down
-until the allowance resets.
+One idle `runtime` worker sends **87 Redis commands a minute**, measured 2026-09-11 against
+a local `redis-server` with the same app and the same start command: 57 `brpop` at one per
+second plus 30 `publish` from the 2 second worker heartbeat. Two workers spend 500,000 in
+about two days. Thirty minutes of two idle workers is roughly 5,000 commands, so the
+2026-09-09 deploy cannot have spent the allowance on its own; it finished an allowance that
+was already nearly gone, and the eleven hours `beat` and `api-service` then ran unattended
+are the larger part of the bill. Issue #237 carries the full table and the two settings that
+cut it by an order of magnitude.
+
+What actually happened on 2026-09-09: a merge to `main` redeployed the four staging services
+from `EXITED` to `RUNNING` at 19:09, both workers crashed terminally on the quota error by
+19:42, and `beat` and `api-service` ran on until 06:18.
+
+A merge to `main` is a deploy, and a deploy restarts every parked service. Even with both
+settings in #237 applied, two idle workers spend 29 days of a 30 day allowance, so staging
+stays parked when nobody is using it.
+
+## Reset observed
+
+`PING` returned True on 2026-09-11 at 08:00 SAST, where the same probe returned the quota
+error on 2026-09-10 at 19:31. The allowance resets; the date it resets on is still only
+visible in the console.
 
 ```bash
 railway down -y -s <service> -e staging     # stop one; says "No deployments found" if already crashed
