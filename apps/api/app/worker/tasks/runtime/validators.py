@@ -98,6 +98,34 @@ def _ledger_for(agent: Agent, agent_id: str, job_id: str) -> LedgerContext:
     )
 
 
+def _validation_payload(
+    verdict, agent_id: str, conversation_id: str, question: str
+) -> dict:
+    """What a `*.complete` validation event carries, in ONE place.
+
+    Two tasks emit this shape and `mine_production_scenarios` reads both, so a
+    key added to one emit and not the other is a miner that works for half the
+    flagged turns.
+
+    `agent_id` is what the VAL-06 counting queries filter on. `conversation_id`
+    and `question` are what the miner needs and never had: it recovered them
+    through a `jobs.conversation_id` column that has never existed in the schema
+    or the model, so it raised `UndefinedColumn` on every run with something to
+    mine, `run_eval_suite`'s best-effort `except` logged `mine_failed`, and no
+    mined scenario was ever written (#238).
+
+    The EVENT is the only record of which turn was flagged. By the time anything
+    mines it the customer may have sent five more messages, so neither the first
+    nor the last message of the conversation identifies the one that failed.
+    """
+    return {
+        **verdict.model_dump(),
+        "agent_id": agent_id,
+        "conversation_id": conversation_id,
+        "question": question,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Tenant DB helper — verified_qa_candidates insert (D-19 / D-20)
 # ---------------------------------------------------------------------------
@@ -175,6 +203,7 @@ def run_gatekeeper(
     job_id: str,
     response_text: str,
     question: str,
+    conversation_id: str = "",
 ) -> dict:
     """Run the Gatekeeper judge synchronously and emit a 'gatekeeper.complete' event.
 
@@ -188,6 +217,11 @@ def run_gatekeeper(
         job_id:        UUID string of the runtime chat job.
         response_text: The agent's response to evaluate.
         question:      The user's original question.
+        conversation_id: UUID string of the conversation this turn belongs to,
+            for the event payload (see `_validation_payload`). Defaults to ""
+            because a deploy leaves queued messages serialised with the old
+            argument list, and refusing those would cost a turn's validation to
+            save one mined scenario.
 
     Returns:
         {"status": "already_complete"}  — idempotent path
@@ -241,17 +275,8 @@ def run_gatekeeper(
                 verdict_dict=verdict.model_dump(),
             )
 
-            # --------------------------------------------------------------
-            # Emit gatekeeper.complete with verdict payload + agent_id
-            # agent_id included for VAL-06 counting queries
-            # --------------------------------------------------------------
-            emit(
-                job_id,
-                "gatekeeper.complete",
-                {**verdict.model_dump(), "agent_id": agent_id},
-                db,
-                _redis,
-            )
+            emit(job_id, "gatekeeper.complete",
+                 _validation_payload(verdict, agent_id, conversation_id, question), db, _redis)
 
             log.info(
                 "run_gatekeeper.complete",
@@ -382,13 +407,8 @@ def run_auditor(
             # Emit auditor.complete BEFORE count query so this verdict is
             # included in the 24h window (per plan spec — emit before count)
             # --------------------------------------------------------------
-            emit(
-                job_id,
-                "auditor.complete",
-                {**verdict.model_dump(), "agent_id": agent_id},
-                db,
-                _redis,
-            )
+            emit(job_id, "auditor.complete",
+                 _validation_payload(verdict, agent_id, conversation_id, question), db, _redis)
 
             # --------------------------------------------------------------
             # D-19: Insert verified_qa_candidate when grounded + above threshold
