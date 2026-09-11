@@ -31,6 +31,7 @@ from app.domain.eval_result import (
     COST_UNKNOWN,
     EVAL_DATASETS,
     METRIC_KEYS,
+    NO_QUESTION_RESOLUTION,
     Cost,
     DatasetOutcome,
     EvalResult,
@@ -38,6 +39,7 @@ from app.domain.eval_result import (
     Invocation,
     InvocationStatus,
     Measurement,
+    QuestionResolution,
     ScenarioFailure,
     cost_of_run,
 )
@@ -633,7 +635,81 @@ class TestThePayloadRoundTrips:
             "failures",
             "context_proxy_version",
             "rule_version",
+            "question_resolution",
         }
+
+
+# ---------------------------------------------------------------------------
+# Question resolution (#235)
+# ---------------------------------------------------------------------------
+
+
+class TestQuestionResolutionOnTheRecord:
+    """Which question the gated relevancy column was scored against."""
+
+    def test_the_counts_survive_the_round_trip(self):
+        record = _result(
+            question_resolution=QuestionResolution(
+                relevancy_scored=31, multi_turn=6, rewritten=5, raw_question_fallback=1
+            )
+        )
+        assert record.payload["question_resolution"] == {
+            "relevancy_scored": 31,
+            "multi_turn": 6,
+            "rewritten": 5,
+            "raw_question_fallback": 1,
+        }
+        assert EvalResult.from_payload(record.payload) == record
+
+    def test_a_stored_record_without_the_key_reads_as_four_zeros(self):
+        """Not a default standing in for a reading. Every run before #227 was
+        single-turn, so it resolved nothing, which is what four zeros say. The
+        deploy gate may therefore pass such a record without blocking, and
+        `_relevancy_provenance_cause` documents why that differs from
+        `agent_invoked`, where absence means nobody looked."""
+        payload = _result().payload
+        payload.pop("question_resolution")
+        rebuilt = EvalResult.from_payload(payload)
+        assert rebuilt.question_resolution == NO_QUESTION_RESOLUTION
+
+    def test_the_default_is_the_shared_absence(self):
+        assert _result().question_resolution is NO_QUESTION_RESOLUTION
+
+    def test_more_multi_turn_rows_than_relevancy_scored_is_refused(self):
+        """multi_turn is a subset of the rows relevancy came back for."""
+        with pytest.raises(InvalidEvalResult) as exc:
+            QuestionResolution(
+                relevancy_scored=2, multi_turn=3, rewritten=3, raw_question_fallback=0
+            )
+        assert "subset" in str(exc.value)
+
+    def test_more_rewrites_than_multi_turn_rows_is_refused(self):
+        """A single-turn row resolves nothing, so it can never be a rewrite."""
+        with pytest.raises(InvalidEvalResult) as exc:
+            QuestionResolution(
+                relevancy_scored=9, multi_turn=2, rewritten=3, raw_question_fallback=0
+            )
+        assert "subset" in str(exc.value)
+
+    def test_the_two_halves_must_add_up_to_the_multi_turn_rows(self):
+        """A multi-turn row was either rewritten or it fell back. A stored row
+        where the three disagree was not written by
+        `question_resolution_provenance`, and the share the deploy gate reads off
+        it would be uninterpretable."""
+        with pytest.raises(InvalidEvalResult) as exc:
+            QuestionResolution(
+                relevancy_scored=9, multi_turn=4, rewritten=3, raw_question_fallback=0
+            )
+        assert "either rewritten or it fell back" in str(exc.value)
+
+    def test_a_negative_count_is_refused(self):
+        with pytest.raises(InvalidEvalResult):
+            QuestionResolution(relevancy_scored=-1)
+
+    def test_a_record_given_something_else_entirely_is_refused(self):
+        with pytest.raises(InvalidEvalResult) as exc:
+            _result(question_resolution={"relevancy_scored": 3})
+        assert "QuestionResolution" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
