@@ -682,6 +682,7 @@ def _record_counts(record: EvalResult | None, *, measured: bool) -> dict:
             "context_proxy_version": None,
             "failing_scenarios": None,
             "unmeasured_scenarios": None,
+            "question_resolution": None,
         }
     return {
         # attempted, the VALID denominator, and what actually scored.
@@ -695,6 +696,11 @@ def _record_counts(record: EvalResult | None, *, measured: bool) -> dict:
         "context_proxy_version": record.context_proxy_version,
         "failing_scenarios": record.scenarios_failed if measured else None,
         "unmeasured_scenarios": record.scenarios_unmeasured if measured else None,
+        # Travels on a refusal like the three denominators, and unlike the two
+        # verdict counts. It describes which QUESTION the run put to the Judge,
+        # not how well the agent answered, so there is no quality claim here for
+        # the orchestrator to narrate beside a block (#235).
+        "question_resolution": record.question_resolution.payload,
     }
 
 
@@ -1263,11 +1269,11 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
                            dataset. The judge produced no valid observation.
         unavailable:       the query could not be executed. We did not look.
 
-    Returns dict with keys: eval_signal, signal_detail, agent_invoked,
-    last_run_at, last_run_status, scenario_count, valid_scenario_count,
-    scored_scenario_count, denominator_source, result, pass_rates,
-    pass_rates_dataset, metrics, datasets, invocation, cost,
-    context_proxy_version, failing_scenarios, unmeasured_scenarios, calibration.
+    Returns dict with keys: eval_signal, signal_detail, agent_invoked, last_run_at,
+    last_run_status, scenario_count, valid_scenario_count, scored_scenario_count,
+    denominator_source, result, pass_rates, pass_rates_dataset, metrics, datasets,
+    invocation, cost, context_proxy_version, failing_scenarios,
+    unmeasured_scenarios, calibration, question_resolution.
     """
     conn = psycopg2.connect(conn_str, connect_timeout=10)
     try:
@@ -2321,8 +2327,27 @@ def _agent_not_invoked_warning(eval_summary: dict) -> DeploymentWarning:
 
 
 #: The warning a 'measured' signal carrying no quality evidence produces. One id
-#: for both causes, because the remedy is one thing: run a fresh eval.
+#: for all three causes, because the remedy is one thing: run a fresh eval.
 EVAL_QUALITY_UNMEASURED_WARNING_ID = "eval_quality_unmeasured"
+
+#: How much of a run's relevancy number may rest on questions the resolver failed
+#: to rewrite before the number stops being evidence. A MAJORITY, which is the
+#: literal reading of #235's "came mostly from rewrites that failed".
+#:
+#: It is not a tuned figure and must not be read as one. Nothing has yet measured
+#: how far a relevancy score moves when a follow-up is scored raw instead of
+#: resolved; #58's first calibration is where that number would come from, and
+#: until it exists a half is the one threshold that can be defended without
+#: inventing precision. The direction of the error is known even so: a raw
+#: follow-up ("what about the second one?") names nothing, so relevancy scored on
+#: it measures the agent against a question with no content.
+#:
+#: The cost of being wrong is asymmetric and points this way. `_eval_evidence_warnings`
+#: turns this warning into `blocked`, not into `ship_with_warnings`, so the owner
+#: cannot acknowledge past it, and a threshold set low would strand deploys over
+#: a handful of failed rewrites. A majority is late enough that the relevancy
+#: number really is mostly about questions that named nothing.
+MAX_RAW_QUESTION_FALLBACK_SHARE = 0.5
 
 
 def _unmeasured_gated_metrics(eval_summary: dict) -> list[str]:
@@ -2357,13 +2382,71 @@ def _unmeasured_gated_metrics(eval_summary: dict) -> list[str]:
     return missing
 
 
+def _relevancy_provenance_cause(eval_summary: dict) -> str | None:
+    """Refuse a relevancy number mostly measured on unresolved follow-ups, or None.
+
+    THE NUMBER EXISTS AND IT IS NOT ABOUT WHAT IT CLAIMS. A multi-turn scenario
+    asks its question inside a conversation, so `resolve_question` rewrites it
+    into a standalone question before the Judge scores relevancy against it. A
+    rewrite that fails leaves the raw follow-up to be scored, and "what about the
+    second one?" names nothing to be relevant to. The run still reports a
+    relevancy figure, which is why this is missing evidence in the same sense as
+    the other two causes rather than a low score.
+
+    ABSENCE IS A READING HERE, AND THAT IS NOT THE DOCTRINE NEXT DOOR.
+    `_agent_invoked_from_run_config` refuses None because absence there means
+    nobody looked. A summary with no `question_resolution` is a record written
+    before #235, and every scenario before #227 was single-turn, so nothing was
+    resolved and nothing could have fallen back. Four zeros is what those runs
+    actually did. The two differ because this fact is written by
+    `build_eval_result` inside one record rather than by a separate config write:
+    a present record either carries the counts or predates them, and there is no
+    third state where the write failed and the absence hides a real fallback.
+
+    A non-mapping or non-integer value is read the same way, which is the
+    hand-built-summary defence `apply_signal_evidence_gate`'s "A MISSING key"
+    paragraph describes. The real producer is `QuestionResolution.payload`, whose
+    counts are validated on construction and on the way back out of storage.
+
+    `relevancy_scored` at zero returns None rather than dividing. That run scored
+    relevancy on nothing, which `_unmeasured_gated_metrics` already refuses by
+    name; reporting it twice would give one run two causes and tell the owner the
+    second-best one.
+    """
+    provenance = eval_summary.get("question_resolution")
+    if not isinstance(provenance, Mapping):
+        return None
+    scored = provenance.get("relevancy_scored")
+    fallback = provenance.get("raw_question_fallback")
+    # Written out rather than looped so the reader narrows to int for the
+    # comparison below. bool is excluded first: True is an int and is not a count.
+    if isinstance(scored, bool) or not isinstance(scored, int):
+        return None
+    if isinstance(fallback, bool) or not isinstance(fallback, int):
+        return None
+    if scored <= 0 or fallback <= scored * MAX_RAW_QUESTION_FALLBACK_SHARE:
+        return None
+    return (
+        f"{fallback} of the {scored} answers it scored for relevance were judged "
+        "against follow-up questions it could not rewrite to stand on their own"
+    )
+
+
 def _quality_evidence_warning(eval_summary: dict) -> DeploymentWarning | None:
     """Refuse a 'measured' signal that carries no quality evidence, or None.
 
-    TWO CAUSES, ONE REMEDY. A gated metric no dataset measured, and a run whose
-    per-scenario verdicts could not be read at all. Both are missing evidence
-    and neither is a low score, so both refuse rather than being narrated as
-    quality.
+    THREE CAUSES, ONE REMEDY. A gated metric no dataset measured, a run whose
+    per-scenario verdicts could not be read at all, and a relevancy number mostly
+    measured against follow-ups the resolver could not rewrite. All three are
+    missing evidence and none is a low score, so all three refuse rather than
+    being narrated as quality.
+
+    THE ORDER IS THE SPECIFICITY ORDER, and it decides which cause an owner is
+    sent after when a run has more than one. "Nothing scored relevancy" and "most
+    of what scored relevancy was measured on a raw follow-up" cannot both be
+    true, because the second needs `relevancy_scored` above zero; but a run can
+    lose its verdict column AND fall back on most of its rewrites, and the
+    unreadable column is the coarser failure, so it is named first.
 
     `failing_scenarios is None` is the second. The count is read off the stored
     `binary_verdict` column, so None means the column could not be read and NOT
@@ -2383,6 +2466,8 @@ def _quality_evidence_warning(eval_summary: dict) -> DeploymentWarning | None:
         )
     elif eval_summary.get("failing_scenarios") is None:
         cause = "its per-question results could not be read"
+    elif (provenance := _relevancy_provenance_cause(eval_summary)) is not None:
+        cause = provenance
     else:
         return None
     return DeploymentWarning(

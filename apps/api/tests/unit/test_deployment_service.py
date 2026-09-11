@@ -70,6 +70,7 @@ from app.domain.eval_result import (
     EvalResult,
     Invocation,
     Measurement,
+    QuestionResolution,
 )
 from app.domain.judge_identity import JudgeIdentity
 from app.services.calibration_service import SUMMARY_KEYS
@@ -4331,3 +4332,221 @@ class TestTheRedTeamCollectorAgainstTheProbeCluster:
         self._run(probe_conn, agent_a, "running", 10)
 
         assert self._summary(probe_conn, agent_a)["signal"] == "no_runs"
+
+
+# ---------------------------------------------------------------------------
+# Relevancy provenance: a number measured on questions that name nothing (#235)
+# ---------------------------------------------------------------------------
+
+
+class TestRelevancyProvenanceGate:
+    """A relevancy score mostly measured on unresolved follow-ups is not evidence.
+
+    A multi-turn scenario asks its question inside a conversation, so the
+    question alone names nothing until `resolve_question` rewrites it. A rewrite
+    that fails leaves the raw follow-up to be scored, and the run still reports a
+    relevancy figure. These tests pin WHICH share turns that figure from a
+    shipping number into a refusal, and pin the refusal reaching `block` rather
+    than `ship_with_warnings`, which the owner could acknowledge past.
+    """
+
+    def _gate(self, resolution):
+        """(recommendation, warnings, summary) for a measured run carrying `resolution`."""
+        record = _record(question_resolution=resolution)
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
+            record=record,
+        )
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            summary = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+        assert summary["eval_signal"] == EVAL_SIGNAL_MEASURED, (
+            "the fixture must reach the gate as a measured run, or these tests "
+            "would be pinning some other refusal"
+        )
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", summary, _measured_red_team()
+        )
+        return recommendation, warnings, summary
+
+    def test_the_counts_travel_on_the_summary(self):
+        _, _, summary = self._gate(
+            QuestionResolution(
+                relevancy_scored=10, multi_turn=4, rewritten=3, raw_question_fallback=1
+            )
+        )
+        assert summary["question_resolution"] == {
+            "relevancy_scored": 10,
+            "multi_turn": 4,
+            "rewritten": 3,
+            "raw_question_fallback": 1,
+        }
+
+    def test_a_majority_measured_on_raw_follow_ups_blocks_the_deploy(self):
+        """Six of ten scored answers judged against a question naming nothing."""
+        recommendation, warnings, _ = self._gate(
+            QuestionResolution(
+                relevancy_scored=10, multi_turn=8, rewritten=2, raw_question_fallback=6
+            )
+        )
+        assert recommendation == "block", (
+            "most of the relevancy number was measured against follow-ups the "
+            "resolver could not rewrite, so the number is not evidence"
+        )
+        assert [w.warning_id for w in warnings] == [EVAL_QUALITY_UNMEASURED_WARNING_ID]
+        assert "6 of the 10 answers it scored for relevance" in warnings[0].message
+
+    def test_the_refusal_is_a_block_and_not_an_acknowledgeable_warning(self):
+        """`ship_with_warnings` is a SHIPPABLE state the approve route lets
+        through once the owner acknowledges it. An unmeasured relevancy number
+        may not be acknowledged past."""
+        recommendation, warnings, _ = self._gate(
+            QuestionResolution(
+                relevancy_scored=10, multi_turn=10, rewritten=0, raw_question_fallback=10
+            )
+        )
+        assert recommendation == "block"
+        assert recommendation != "ship_with_warnings"
+        assert warnings[0].severity_level == "warning"
+
+    def test_a_minority_of_failed_rewrites_still_ships(self):
+        """One failed rewrite in ten scored answers leaves nine measured on
+        questions that stood on their own. Blocking there would strand deploys
+        over a handful of resolver misses."""
+        recommendation, warnings, _ = self._gate(
+            QuestionResolution(
+                relevancy_scored=10, multi_turn=4, rewritten=3, raw_question_fallback=1
+            )
+        )
+        assert recommendation == "ship"
+        assert warnings == []
+
+    def test_exactly_half_is_not_a_majority(self):
+        """The boundary, pinned. Five of ten is not mostly, and a threshold
+        written `<` rather than `<=` would refuse here."""
+        recommendation, warnings, _ = self._gate(
+            QuestionResolution(
+                relevancy_scored=10, multi_turn=5, rewritten=0, raw_question_fallback=5
+            )
+        )
+        assert recommendation == "ship"
+        assert warnings == []
+
+    def test_one_past_half_refuses(self):
+        """The other side of the same boundary, so the pair proves the
+        comparison is live rather than the fixture always shipping."""
+        recommendation, _, _ = self._gate(
+            QuestionResolution(
+                relevancy_scored=10, multi_turn=6, rewritten=0, raw_question_fallback=6
+            )
+        )
+        assert recommendation == "block"
+
+    def test_an_all_single_turn_run_ships(self):
+        """multi_turn at zero: nothing was resolved because nothing needed to be."""
+        recommendation, warnings, _ = self._gate(
+            QuestionResolution(relevancy_scored=30)
+        )
+        assert recommendation == "ship"
+        assert warnings == []
+
+    def test_a_record_written_before_the_field_existed_ships(self):
+        """ABSENCE IS A READING HERE, and deliberately not the fail-closed
+        doctrine `agent_invoked` follows. Every scenario before #227 was
+        single-turn, so a record with no counts resolved nothing. Refusing it
+        would block every deploy in the history of the tree over a question that
+        never arose."""
+        recommendation, warnings, _ = self._gate(QuestionResolution())
+        assert recommendation == "ship"
+        assert warnings == []
+
+    def test_a_run_that_scored_no_relevancy_is_refused_by_name_not_by_share(self):
+        """`relevancy_scored` at zero divides by nothing. That run is already
+        refused as an unmeasured gated metric, and reporting it twice would send
+        the owner after the second-best cause."""
+        record = _record(
+            datasets={
+                "exploratory": _outcome(
+                    attempted=10, valid=10, scored=10, faithfulness=0.92
+                )
+            },
+            question_resolution=QuestionResolution(),
+        )
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
+            record=record,
+        )
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            summary = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", summary, _measured_red_team()
+        )
+        assert recommendation == "block"
+        assert "no answers were scored for answer relevancy" in warnings[0].message
+
+    def test_a_summary_built_by_hand_without_the_key_does_not_crash_the_gate(self):
+        """The hand-built-summary shape `apply_signal_evidence_gate` defends
+        against. A missing key reads as no fallback rather than raising."""
+        from app.services.deployment_service import _relevancy_provenance_cause
+
+        assert _relevancy_provenance_cause({}) is None
+        assert _relevancy_provenance_cause({"question_resolution": None}) is None
+        assert _relevancy_provenance_cause({"question_resolution": "9 of 10"}) is None
+        assert (
+            _relevancy_provenance_cause(
+                {
+                    "question_resolution": {
+                        "relevancy_scored": True,
+                        "raw_question_fallback": True,
+                    }
+                }
+            )
+            is None
+        ), "True is an int and is not a count"
+
+    def test_an_unreadable_verdict_column_is_named_before_the_fallback_share(self):
+        """FM-004, caught by its own detector during this branch's own review.
+
+        `_quality_evidence_warning` claims its causes are in specificity order,
+        and until this test that claim was prose. The zero-relevancy test above
+        cannot pin it: at `relevancy_scored` zero the share cause returns None
+        whatever the order, so reordering the chain leaves it green.
+
+        A run CAN be in both states at once. `failing_scenarios is None` means the
+        verdict column could not be read, which is the coarser failure and the one
+        that names what is wrong, so it is the one the owner is sent after.
+        """
+        from app.services.deployment_service import _quality_evidence_warning
+        from app.services.eval_service import GATED_METRIC_KEYS
+
+        both = {
+            "datasets": {
+                "exploratory": {
+                    "metrics": {
+                        name: {"value": 0.9, "observations": 5, "measured": True}
+                        for name in GATED_METRIC_KEYS
+                    }
+                }
+            },
+            "failing_scenarios": None,
+            "question_resolution": {
+                "relevancy_scored": 10,
+                "multi_turn": 9,
+                "rewritten": 0,
+                "raw_question_fallback": 9,
+            },
+        }
+
+        warning = _quality_evidence_warning(both)
+
+        assert warning is not None
+        assert "its per-question results could not be read" in warning.message
+        assert "could not rewrite" not in warning.message, (
+            "both causes are live on this payload; the coarser one is the claim "
+            "the owner acts on"
+        )
