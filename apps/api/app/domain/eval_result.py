@@ -180,14 +180,20 @@ def _as_status(value: Any) -> InvocationStatus:
         ) from None
 
 
-def _require_count(name: str, value: Any) -> None:
-    """A count is a non-negative int. bool is checked first: True counts as one."""
+def _require_count(name: str, value: Any, owner: str = "EvalResult") -> None:
+    """A count is a non-negative int. bool is checked first: True counts as one.
+
+    `owner` names the record in the message. It defaults to EvalResult because
+    that is what every caller was until QuestionResolution arrived, and a refusal
+    reaching a log saying "EvalResult needs relevancy_scored at zero or above"
+    sends a reader to the wrong type.
+    """
     if isinstance(value, bool) or not isinstance(value, int):
         raise InvalidEvalResult(
-            f"EvalResult needs {name} as an int, got {type(value).__name__}"
+            f"{owner} needs {name} as an int, got {type(value).__name__}"
         )
     if value < 0:
-        raise InvalidEvalResult(f"EvalResult needs {name} at zero or above, got {value}")
+        raise InvalidEvalResult(f"{owner} needs {name} at zero or above, got {value}")
 
 
 def _require_text(name: str, value: Any) -> str:
@@ -217,10 +223,12 @@ def _require_optional_text(name: str, value: Any) -> None:
         )
 
 
-def _at_most(smaller: str, larger: str, values: Mapping[str, int]) -> None:
+def _at_most(
+    smaller: str, larger: str, values: Mapping[str, int], owner: str = "EvalResult"
+) -> None:
     if values[smaller] > values[larger]:
         raise InvalidEvalResult(
-            f"EvalResult reports {values[smaller]} {smaller} over {values[larger]} "
+            f"{owner} reports {values[smaller]} {smaller} over {values[larger]} "
             f"{larger}. {smaller} is a subset of {larger}."
         )
 
@@ -887,14 +895,15 @@ class QuestionResolution:
             )
         }
         for name, value in counts.items():
-            _require_count(name, value)
-        _at_most("multi_turn", "relevancy_scored", counts)
-        _at_most("rewritten", "multi_turn", counts)
+            _require_count(name, value, "QuestionResolution")
+        _at_most("multi_turn", "relevancy_scored", counts, "QuestionResolution")
+        _at_most("rewritten", "multi_turn", counts, "QuestionResolution")
         # Definitional, not defensive. `question_resolution_provenance` computes
         # the fallback as `multi_turn - rewritten`, so a stored row where the
-        # three disagree was not written by it. Letting that through would hand
-        # `_relevancy_provenance_cause` a fallback share it cannot interpret,
-        # and that share blocks a deploy.
+        # three disagree was not written by it. It is this equation plus
+        # `multi_turn <= relevancy_scored` that bounds the fallback by BOTH
+        # denominators the deploy gate divides it by, and each of those shares
+        # blocks a deploy (`_relevancy_provenance_cause`).
         if self.raw_question_fallback != self.multi_turn - self.rewritten:
             raise InvalidEvalResult(
                 f"QuestionResolution reports {self.raw_question_fallback} raw "

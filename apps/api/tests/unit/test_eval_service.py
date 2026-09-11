@@ -2571,6 +2571,33 @@ class TestQuestionResolutionOnTheRecord:
         )
         assert record.question_resolution.relevancy_scored == 999
 
+    def test_handing_over_the_counts_instead_of_the_envelope_is_refused(self):
+        """The one mistake this parameter's shape invites, made loud.
+
+        `build_eval_result` takes the CONFIG PATCH, the
+        `{"question_resolution": {...}}` envelope, not the four counts. Passing
+        the counts used to cost nothing: the key lookup missed, `from_payload`
+        read four zeros, and the record shipped saying the run resolved no
+        question, which is the reading the deploy gate treats as nothing to
+        distrust.
+        """
+        from app.domain.eval_result import InvalidEvalResult
+
+        with pytest.raises(InvalidEvalResult) as exc:
+            _built(
+                question_resolution={
+                    "relevancy_scored": 12,
+                    "multi_turn": 4,
+                    "rewritten": 3,
+                    "raw_question_fallback": 1,
+                }
+            )
+        assert "envelope" in str(exc.value)
+
+    def test_an_empty_patch_is_still_accepted(self):
+        """The run that scored nothing passes `{}`, and that is not the mistake."""
+        _built(question_resolution={})
+
     def test_the_record_round_trips_with_the_counts(self):
         from app.domain.eval_result import EvalResult
 

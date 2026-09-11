@@ -672,8 +672,16 @@ class TestQuestionResolutionOnTheRecord:
         rebuilt = EvalResult.from_payload(payload)
         assert rebuilt.question_resolution == NO_QUESTION_RESOLUTION
 
-    def test_the_default_is_the_shared_absence(self):
-        assert _result().question_resolution is NO_QUESTION_RESOLUTION
+    def test_a_record_built_without_the_counts_resolved_nothing(self):
+        """The default is four zeros, and four zeros is what NO_QUESTION_RESOLUTION
+        means. `from_payload` allocates its own instance, so this is equality
+        rather than identity: the shared object is an allocation convenience for
+        the default, never a thing a reader may compare with `is`."""
+        assert _result().question_resolution == NO_QUESTION_RESOLUTION
+        assert _result().payload["question_resolution"] == {
+            "relevancy_scored": 0, "multi_turn": 0, "rewritten": 0,
+            "raw_question_fallback": 0,
+        }
 
     def test_more_multi_turn_rows_than_relevancy_scored_is_refused(self):
         """multi_turn is a subset of the rows relevancy came back for."""
@@ -681,7 +689,8 @@ class TestQuestionResolutionOnTheRecord:
             QuestionResolution(
                 relevancy_scored=2, multi_turn=3, rewritten=3, raw_question_fallback=0
             )
-        assert "subset" in str(exc.value)
+        assert "3 multi_turn over 2 relevancy_scored" in str(exc.value)
+        assert str(exc.value).startswith("QuestionResolution")
 
     def test_more_rewrites_than_multi_turn_rows_is_refused(self):
         """A single-turn row resolves nothing, so it can never be a rewrite."""
@@ -689,7 +698,7 @@ class TestQuestionResolutionOnTheRecord:
             QuestionResolution(
                 relevancy_scored=9, multi_turn=2, rewritten=3, raw_question_fallback=0
             )
-        assert "subset" in str(exc.value)
+        assert "3 rewritten over 2 multi_turn" in str(exc.value)
 
     def test_the_two_halves_must_add_up_to_the_multi_turn_rows(self):
         """A multi-turn row was either rewritten or it fell back. A stored row
@@ -702,9 +711,13 @@ class TestQuestionResolutionOnTheRecord:
             )
         assert "either rewritten or it fell back" in str(exc.value)
 
-    def test_a_negative_count_is_refused(self):
-        with pytest.raises(InvalidEvalResult):
+    def test_a_negative_count_is_refused_and_names_its_own_record(self):
+        """The shared validators default to naming EvalResult, so a refusal from
+        here read "EvalResult needs relevancy_scored at zero or above" and sent a
+        reader to the wrong type."""
+        with pytest.raises(InvalidEvalResult) as exc:
             QuestionResolution(relevancy_scored=-1)
+        assert "QuestionResolution needs relevancy_scored at zero or above" in str(exc.value)
 
     def test_a_record_given_something_else_entirely_is_refused(self):
         with pytest.raises(InvalidEvalResult) as exc:
