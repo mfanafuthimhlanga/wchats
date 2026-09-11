@@ -193,7 +193,9 @@ def store_scenarios(scenarios: list[dict], tenant_conn_str: str) -> int:
         scenarios: List of scenario dicts (from generate_scenarios_from_chunks or
                    mine_production_scenarios). Each must have: question,
                    reference_answer, source, dataset. Optional: scenario_category,
-                   retrieved_contexts, id.
+                   retrieved_contexts, turns, id. `turns` is the conversation a
+                   mined question was asked in (0028); absent, it writes `[]`,
+                   the column's own default, so a generated row stays single-turn.
         tenant_conn_str: Decrypted Neon connection string for the tenant DB.
 
     Returns:
@@ -218,8 +220,8 @@ def store_scenarios(scenarios: list[dict], tenant_conn_str: str) -> int:
                     """
                     INSERT INTO eval_scenarios
                       (id, source, question, reference_answer, retrieved_contexts,
-                       scenario_category, dataset, created_at)
-                    VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, NOW())
+                       scenario_category, dataset, turns, created_at)
+                    VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, NOW())
                     ON CONFLICT DO NOTHING
                     """,
                     (
@@ -230,6 +232,7 @@ def store_scenarios(scenarios: list[dict], tenant_conn_str: str) -> int:
                         json.dumps(s.get("retrieved_contexts", [])),
                         s.get("scenario_category"),
                         dataset,
+                        json.dumps(s.get("turns") or []),
                     ),
                 )
                 inserted += cur.rowcount
@@ -404,6 +407,67 @@ def _fetch_messages_for_conversation(
     return [{"role": row[0], "content": row[1]} for row in rows]
 
 
+def _turns_before(messages: list[dict], question: str) -> tuple[list[dict], bool]:
+    """The conversation up to the flagged question, and whether it was found.
+
+    Matched from the END. A customer who asks the same thing twice was flagged on
+    the later one, and the turns that bind it are the longer list; taking the
+    first match would hand the scenario a shorter conversation than the one the
+    agent actually answered in.
+
+    NOT BOUNDED HERE. `_scenario_history` cuts rows and characters when the eval
+    reads the row back, which is the read that repeats on every turn. This write
+    happens once per flagged question.
+
+    Returns ([], False) when no user message carries that text, which is a
+    different state from ([], True) for a conversation whose opening message was
+    the one flagged. The caller counts the first and reports it, because a
+    scenario silently demoted to single-turn is a scenario scored on a question
+    nothing binds.
+    """
+    needle = question.strip()
+    for i in range(len(messages) - 1, -1, -1):
+        message = messages[i]
+        if message.get("role") != "user":
+            continue
+        if str(message.get("content") or "").strip() != needle:
+            continue
+        return [
+            {"role": prior["role"], "content": prior["content"]}
+            for prior in messages[:i]
+            if prior.get("role") in ("user", "assistant")
+            and str(prior.get("content") or "").strip()
+        ], True
+    return [], False
+
+
+# ---------------------------------------------------------------------------
+# Mining a production failure into a scenario
+# ---------------------------------------------------------------------------
+# THE EVENT NAMES THE FLAGGED TURN, AND NOTHING ELSE CAN.
+#
+# This used to read `jobs.conversation_id` to find the conversation, and take
+# that conversation's FIRST user message as the question. The column has never
+# existed in the schema or the model, so the function raised `UndefinedColumn`
+# on every run that had anything to mine, `run_eval_suite`'s best-effort
+# `except` logged `mine_failed`, and no mined scenario was ever written (#238).
+# The one test covering it passed a MagicMock as the control DB and set
+# `job_row.conversation_id` on a mock it made itself, so the query could not
+# fail and the column it invented was never checked against a database.
+#
+# Both are now on the event, written the moment the turn failed. Neither the
+# first nor the last message of the conversation identifies the flagged one: by
+# mining time the customer may have sent five more, and the opening message is
+# rarely the turn that failed.
+#
+# An event written before #238 carries no `conversation_id` and is skipped. The
+# linkage is not recoverable for it, and the log says how many were dropped so
+# an empty backlog is not read as an agent that never failed.
+#
+# `turns` is every message before the flagged question, oldest first, in the
+# shape migration 0028 documents. A flagged follow-up is only answerable inside
+# the conversation that bound it, so mining the question alone produced a row
+# the agent could not have answered and the Judge could not fairly score (#227).
 def mine_production_scenarios(
     agent_id: str,
     tenant_conn_str: str,
@@ -412,22 +476,13 @@ def mine_production_scenarios(
 ) -> list[dict]:
     """Mine production conversations with Gatekeeper/Auditor failures into eval scenarios.
 
-    Implements the cross-DB join strategy (RESEARCH §6):
-      Step 1: Query the control DB job_events for flagged validation events
-              (gatekeeper.complete / auditor.complete with fail/ungrounded/partial
-              verdict) for the given agent_id within the lookback window.
-              Extract distinct job_ids and the question from the payload.
-      Step 2: neither conversation_id nor question reaches the job_events
-              payload. validators.py takes both as Celery task args and emits
-              verdict.model_dump() plus agent_id, so this step recovers the
-              question through the job's conversation linkage and drops any
-              flagged job whose conversation it cannot reach.
+    One control-DB query for the flagged events, then one tenant-DB read per
+    conversation for the turns that preceded the flagged question. See the
+    comment above this function for why the event carries both.
 
-    Note: Mined scenarios have reference_answer='' because there is no ground truth
-    for production failures. The run_eval_suite task filters scenarios with empty
-    reference_answer before building the Ragas EvaluationDataset.
-
-    Mined scenarios have source='mined' (D-16 LOCKED).
+    Mined scenarios have reference_answer='' because there is no ground truth for
+    a production failure; `run_eval_suite` filters those before building the
+    Ragas EvaluationDataset. source='mined' (D-16 LOCKED).
 
     Args:
         agent_id: UUID string of the agent.
@@ -447,8 +502,10 @@ def mine_production_scenarios(
     flagged_rows = control_db.execute(
         text("""
             SELECT DISTINCT
-                je.job_id            AS job_id,
-                je.payload->>'verdict' AS verdict
+                je.job_id                      AS job_id,
+                je.payload->>'verdict'         AS verdict,
+                je.payload->>'conversation_id' AS conversation_id,
+                je.payload->>'question'        AS question
             FROM job_events je
             WHERE je.event_type IN ('gatekeeper.complete', 'auditor.complete')
               AND je.payload->>'agent_id' = :agent_id
@@ -467,10 +524,10 @@ def mine_production_scenarios(
         )
         return []
 
-    # Step 2: For each flagged job, attempt to get conversation context from tenant DB
-    # The jobs table in the control DB may link job_id → conversation_id
+    # Step 2: the conversation each flagged turn happened in, from the tenant DB.
     mined: list[dict] = []
     seen_job_ids: set[str] = set()
+    unlinked = unlocated = 0
 
     for row in flagged_rows:
         job_id = str(row.job_id)
@@ -478,45 +535,38 @@ def mine_production_scenarios(
             continue
         seen_job_ids.add(job_id)
 
-        # Try to get conversation_id from jobs table in control DB
-        job_row = control_db.execute(
-            text(
-                "SELECT conversation_id FROM jobs WHERE id = :job_id LIMIT 1"
-            ),
-            {"job_id": job_id},
-        ).fetchone()
-
-        conversation_id = None
-        if job_row and getattr(job_row, "conversation_id", None):
-            conversation_id = str(job_row.conversation_id)
-
-        if conversation_id:
-            # Step 2b: Fetch actual messages from tenant DB
-            messages = _fetch_messages_for_conversation(tenant_conn_str, conversation_id)
-            # Extract the user turn as the question
-            user_messages = [m["content"] for m in messages if m["role"] == "user"]
-            question = user_messages[0] if user_messages else ""
-        else:
-            # No conversation linkage available — use job_id as a proxy key
-            # but we cannot reconstruct the question without the messages table
-            question = ""
-
-        if not question:
-            # Skip scenarios where we cannot recover a meaningful question
+        conversation_id = (row.conversation_id or "").strip()
+        question = (row.question or "").strip()
+        if not conversation_id or not question:
+            # An event from before #238, or one whose turn carried neither.
+            unlinked += 1
             continue
+
+        messages = _fetch_messages_for_conversation(tenant_conn_str, conversation_id)
+        turns, located = _turns_before(messages, question)
+        if not located:
+            unlocated += 1
 
         mined.append(
             {
                 "question": question,
                 "reference_answer": "",  # honest about missing ground truth (D-16)
                 "retrieved_contexts": [],
+                "turns": turns,
                 "source": "mined",
                 "scenario_category": "production_failure",
                 "dataset": DATASET_EXPLORATORY,
             }
         )
 
-    log.info("scenario_service.mined", agent_id=agent_id, count=len(mined))
+    log.info(
+        "scenario_service.mined",
+        agent_id=agent_id,
+        count=len(mined),
+        multi_turn=sum(1 for m in mined if m["turns"]),
+        unlinked=unlinked,
+        unlocated=unlocated,
+    )
     return mined
 
 
@@ -530,6 +580,7 @@ def insert_authored_golden_scenario(
     question: str,
     reference_answer: str,
     provenance: str,
+    turns: list[dict] | None = None,
 ) -> str:
     """Insert one owner-authored golden pair. The only writer of dataset='golden'.
 
@@ -554,6 +605,8 @@ def insert_authored_golden_scenario(
         reference_answer: The pair's reference answer, verbatim from the request.
         provenance: Origin tag derived by the route from the authenticated
             caller and its credential kind. Never a caller-supplied human name.
+        turns: The conversation the question was asked in, oldest first (0028).
+            None and [] both write the empty conversation every pre-#227 row has.
 
     Returns:
         The new scenario's UUID (str). The row joins the golden dataset.
@@ -575,9 +628,9 @@ def insert_authored_golden_scenario(
             """
             INSERT INTO eval_scenarios
               (id, source, question, reference_answer, retrieved_contexts,
-               provenance, dataset, created_at)
-            VALUES (%s, 'authored', %s, %s, '[]'::jsonb, %s, %s, NOW())
+               provenance, dataset, turns, created_at)
+            VALUES (%s, 'authored', %s, %s, '[]'::jsonb, %s, %s, %s::jsonb, NOW())
             """,
-            (scenario_id, question, reference_answer, provenance, DATASET_GOLDEN),
+            (scenario_id, question, reference_answer, provenance, DATASET_GOLDEN, json.dumps(turns or [])),
         )
     return scenario_id
