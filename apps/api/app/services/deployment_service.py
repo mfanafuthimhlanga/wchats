@@ -2347,7 +2347,31 @@ EVAL_QUALITY_UNMEASURED_WARNING_ID = "eval_quality_unmeasured"
 #: cannot acknowledge past it, and a threshold set low would strand deploys over
 #: a handful of failed rewrites. A majority is late enough that the relevancy
 #: number really is mostly about questions that named nothing.
+#:
+#: 0.5 is exact in binary, so `scored * 0.5` is not a rounding question and the
+#: boundary tests mean what they say. A threshold that is not a dyadic fraction
+#: would have to be written as an integer comparison instead.
 MAX_RAW_QUESTION_FALLBACK_SHARE = 0.5
+
+#: The other half of the same question, and the half that can actually fire on
+#: the corpus this repo has. `raw_question_fallback` is bounded by `multi_turn`,
+#: so the share above cannot refuse anything until multi-turn rows are a majority
+#: of the WHOLE run. Ten authored multi-turn goldens beside a thirty row
+#: exploratory sample is 25 percent, so a resolver failing on all ten of them
+#: would have shipped in silence. This reads the resolver's own failure rate,
+#: whose denominator is what it attempted.
+#:
+#: Untuned in the same way and for the same reason (#58).
+MAX_RESOLVER_FAILURE_SHARE = 0.5
+
+#: How many rewrites the resolver must have ATTEMPTED before its failure rate is
+#: a rate at all. Two failures out of two is not evidence of a broken resolver,
+#: and blocking a deploy on it would strand one over a single flaky rewrite.
+#:
+#: Ten, because that is the small-sample floor this repo already holds: #19
+#: requires ten authored golden pairs before a calibration may run, on the same
+#: reasoning. A floor under a denominator, not a tuned threshold.
+MIN_MULTI_TURN_FOR_RESOLVER_RATE = 10
 
 
 def _unmeasured_gated_metrics(eval_summary: dict) -> list[str]:
@@ -2382,8 +2406,78 @@ def _unmeasured_gated_metrics(eval_summary: dict) -> list[str]:
     return missing
 
 
+def _readable_question_resolution(provenance: object) -> tuple[int, int, int] | None:
+    """(relevancy_scored, multi_turn, raw_question_fallback), or None if unreadable.
+
+    The real producer is `QuestionResolution.payload`, whose counts are validated
+    on construction and again on the way back out of storage, so every value here
+    is already an int in production. This exists for the caller the module keeps
+    defending against: a summary built by hand, a second collector, a caller that
+    copied the dict and dropped a key.
+
+    bool is excluded before int because True is an int and is not a count, and
+    each name is tested separately rather than in a loop so the reader narrows to
+    int for the arithmetic the caller does.
+    """
+    if not isinstance(provenance, Mapping):
+        return None
+    scored = provenance.get("relevancy_scored", 0)
+    multi_turn = provenance.get("multi_turn", 0)
+    fallback = provenance.get("raw_question_fallback", 0)
+    if isinstance(scored, bool) or not isinstance(scored, int):
+        return None
+    if isinstance(multi_turn, bool) or not isinstance(multi_turn, int):
+        return None
+    if isinstance(fallback, bool) or not isinstance(fallback, int):
+        return None
+    return scored, multi_turn, fallback
+
+
+def _contaminated_number_cause(scored: int, fallback: int) -> str | None:
+    """Is the relevancy NUMBER mostly about questions that named nothing?
+
+    The share of what relevancy actually scored. This is the rule #235 asks for
+    in its own words, and it protects the figure a deploy is approved on: a mean
+    over rows where most inputs named nothing is not a measurement of the agent.
+
+    It cannot fire on its own for a mostly single-turn corpus, which is why
+    `_resolver_failure_cause` sits beside it.
+    """
+    if fallback <= scored * MAX_RAW_QUESTION_FALLBACK_SHARE:
+        return None
+    return (
+        f"{fallback} of the {scored} answers it scored for relevance were judged "
+        "against follow-up questions it could not rewrite to stand on their own"
+    )
+
+
+def _resolver_failure_cause(multi_turn: int, fallback: int) -> str | None:
+    """Did the RESOLVER fail on most of what it attempted?
+
+    THE RULE THAT CAN ACTUALLY FIRE HERE. `raw_question_fallback` is bounded by
+    `multi_turn`, so a share of `relevancy_scored` needs multi-turn rows to be a
+    majority of the whole run before it refuses anything. Ten authored multi-turn
+    goldens beside a thirty row exploratory sample is a quarter, so a resolver
+    that failed on all ten would ship in silence under that rule alone.
+
+    The denominator here is what the resolver attempted, and the floor under it
+    is what makes a failure rate a rate: two failures out of two is not evidence
+    of a broken resolver, and blocking a deploy on it would strand one over a
+    single flaky rewrite.
+    """
+    if multi_turn < MIN_MULTI_TURN_FOR_RESOLVER_RATE:
+        return None
+    if fallback <= multi_turn * MAX_RESOLVER_FAILURE_SHARE:
+        return None
+    return (
+        f"it could not rewrite {fallback} of the {multi_turn} follow-up questions "
+        "it tried to turn into standalone ones, so their relevance scores are "
+        "about questions that named nothing"
+    )
+
+
 def _relevancy_provenance_cause(eval_summary: dict) -> str | None:
-    """Refuse a relevancy number mostly measured on unresolved follow-ups, or None.
+    """Refuse a relevancy number measured on unresolved follow-ups, or None.
 
     THE NUMBER EXISTS AND IT IS NOT ABOUT WHAT IT CLAIMS. A multi-turn scenario
     asks its question inside a conversation, so `resolve_question` rewrites it
@@ -2393,42 +2487,42 @@ def _relevancy_provenance_cause(eval_summary: dict) -> str | None:
     relevancy figure, which is why this is missing evidence in the same sense as
     the other two causes rather than a low score.
 
+    TWO QUESTIONS, NOT ONE, and either refuses. `_contaminated_number_cause` asks
+    whether the figure is mostly about such rows; `_resolver_failure_cause` asks
+    whether the resolver is broken, which the first cannot see on a mostly
+    single-turn corpus. Each message names its own denominator.
+
     ABSENCE IS A READING HERE, AND THAT IS NOT THE DOCTRINE NEXT DOOR.
     `_agent_invoked_from_run_config` refuses None because absence there means
     nobody looked. A summary with no `question_resolution` is a record written
     before #235, and every scenario before #227 was single-turn, so nothing was
     resolved and nothing could have fallen back. Four zeros is what those runs
-    actually did. The two differ because this fact is written by
-    `build_eval_result` inside one record rather than by a separate config write:
-    a present record either carries the counts or predates them, and there is no
-    third state where the write failed and the absence hides a real fallback.
+    did. The two differ because this fact is written by `build_eval_result`
+    inside one record rather than by a separate config write: a present record
+    either carries the counts or predates them, and there is no third state where
+    a failed write hides a real fallback.
 
-    A non-mapping or non-integer value is read the same way, which is the
-    hand-built-summary defence `apply_signal_evidence_gate`'s "A MISSING key"
-    paragraph describes. The real producer is `QuestionResolution.payload`, whose
-    counts are validated on construction and on the way back out of storage.
+    ABSENT IS NOT UNREADABLE, though, and the two are answered differently. A key
+    that is PRESENT and cannot be read is corrupt or hand-built, not old, and it
+    refuses. A gate that cannot read its evidence has not been satisfied.
 
     `relevancy_scored` at zero returns None rather than dividing. That run scored
     relevancy on nothing, which `_unmeasured_gated_metrics` already refuses by
-    name; reporting it twice would give one run two causes and tell the owner the
-    second-best one.
+    name; reporting it twice would tell the owner the second-best cause.
     """
-    provenance = eval_summary.get("question_resolution")
-    if not isinstance(provenance, Mapping):
+    if "question_resolution" not in eval_summary:
         return None
-    scored = provenance.get("relevancy_scored")
-    fallback = provenance.get("raw_question_fallback")
-    # Written out rather than looped so the reader narrows to int for the
-    # comparison below. bool is excluded first: True is an int and is not a count.
-    if isinstance(scored, bool) or not isinstance(scored, int):
+    provenance = eval_summary["question_resolution"]
+    if provenance is None:
         return None
-    if isinstance(fallback, bool) or not isinstance(fallback, int):
+    counts = _readable_question_resolution(provenance)
+    if counts is None:
+        return "its record of which questions were scored could not be read"
+    scored, multi_turn, fallback = counts
+    if scored <= 0:
         return None
-    if scored <= 0 or fallback <= scored * MAX_RAW_QUESTION_FALLBACK_SHARE:
-        return None
-    return (
-        f"{fallback} of the {scored} answers it scored for relevance were judged "
-        "against follow-up questions it could not rewrite to stand on their own"
+    return _contaminated_number_cause(scored, fallback) or _resolver_failure_cause(
+        multi_turn, fallback
     )
 
 
@@ -2847,15 +2941,15 @@ def apply_signal_evidence_gate(
     were prose in a system prompt and nothing else; run against the shipped
     code, this function returned 'ship' for all three.
 
-    SIX NOW. `_quality_evidence_warning` refuses a 'measured' signal whose gated
-    metrics were measured on no dataset, and one whose per-scenario verdicts
-    could not be read. Both became reachable when the collector stopped
-    computing its own averages over `eval_results` and started lifting the run's
-    own record (#51 slice 4): 'measured' is now a claim that the run wrote a
-    record, and a record can be present and hold no gated number. It reads the
-    per-DATASET measurements rather than the run-level ones, because a run whose
-    two halves both scored has no run-level reading at all and refusing it would
-    block every tenant with a designated golden set over numbers it does hold.
+    SIX NOW, AND `_quality_evidence_warning` CARRIES THREE OF THEM: gated metrics
+    measured on no dataset, per-scenario verdicts that could not be read, and a
+    relevancy number mostly measured against follow-ups the resolver could not
+    rewrite (#235). The first two became reachable when the collector stopped
+    averaging `eval_results` and started lifting the run's own record (#51 slice
+    4): 'measured' is now a claim that the run wrote a record, and a record can
+    be present and hold no gated number. It reads the per-DATASET measurements
+    rather than the run-level ones, because a run whose two halves both scored
+    has no run-level reading and refusing it would block every golden tenant.
 
     FIVE: `agent_invoked is not True` (audit D1, P3). A signal that says
     'measured' is a claim that a run produced scores, not a claim that the

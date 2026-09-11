@@ -4398,18 +4398,21 @@ class TestRelevancyProvenanceGate:
         assert [w.warning_id for w in warnings] == [EVAL_QUALITY_UNMEASURED_WARNING_ID]
         assert "6 of the 10 answers it scored for relevance" in warnings[0].message
 
-    def test_the_refusal_is_a_block_and_not_an_acknowledgeable_warning(self):
-        """`ship_with_warnings` is a SHIPPABLE state the approve route lets
-        through once the owner acknowledges it. An unmeasured relevancy number
-        may not be acknowledged past."""
+    def test_the_refusal_reaches_block_rather_than_ship_with_warnings(self):
+        """The two outcomes differ in whether the owner can proceed.
+
+        `ship_with_warnings` is SHIPPABLE: the approve route lets it through once
+        the warnings are acknowledged. `block` is not. This pins which of the two
+        the evidence gate reaches; that `block` is what the approve route refuses
+        is `apply_signal_evidence_gate`'s own contract and is tested with it.
+        """
         recommendation, warnings, _ = self._gate(
             QuestionResolution(
                 relevancy_scored=10, multi_turn=10, rewritten=0, raw_question_fallback=10
             )
         )
         assert recommendation == "block"
-        assert recommendation != "ship_with_warnings"
-        assert warnings[0].severity_level == "warning"
+        assert [w.warning_id for w in warnings] == [EVAL_QUALITY_UNMEASURED_WARNING_ID]
 
     def test_a_minority_of_failed_rewrites_still_ships(self):
         """One failed rewrite in ten scored answers leaves nine measured on
@@ -4457,15 +4460,45 @@ class TestRelevancyProvenanceGate:
         doctrine `agent_invoked` follows. Every scenario before #227 was
         single-turn, so a record with no counts resolved nothing. Refusing it
         would block every deploy in the history of the tree over a question that
-        never arose."""
-        recommendation, warnings, _ = self._gate(QuestionResolution())
+        never arose.
+
+        The key is REMOVED from the stored payload rather than set to zeros,
+        because those are different rows and only one of them is what a pre-#235
+        tenant actually holds. A record built today always carries the key, so
+        constructing `QuestionResolution()` would take the other path and pin
+        nothing about absence.
+        """
+        payload = _record().payload
+        del payload["question_resolution"]
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
+            record=payload,
+        )
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            summary = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+        assert summary["question_resolution"] == {
+            "relevancy_scored": 0, "multi_turn": 0, "rewritten": 0,
+            "raw_question_fallback": 0,
+        }
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", summary, _measured_red_team()
+        )
         assert recommendation == "ship"
         assert warnings == []
 
     def test_a_run_that_scored_no_relevancy_is_refused_by_name_not_by_share(self):
-        """`relevancy_scored` at zero divides by nothing. That run is already
-        refused as an unmeasured gated metric, and reporting it twice would send
-        the owner after the second-best cause."""
+        """`relevancy_scored` at zero divides by nothing.
+
+        This pins the zero denominator, NOT the order of the chain: at zero the
+        share cause returns None whichever arm is asked first, so deleting the
+        third `elif` leaves this green. The ordering is pinned by
+        `test_an_unreadable_verdict_column_is_named_before_the_fallback_share`,
+        which puts a payload in both states at once.
+        """
         record = _record(
             datasets={
                 "exploratory": _outcome(
@@ -4489,25 +4522,82 @@ class TestRelevancyProvenanceGate:
         assert recommendation == "block"
         assert "no answers were scored for answer relevancy" in warnings[0].message
 
-    def test_a_summary_built_by_hand_without_the_key_does_not_crash_the_gate(self):
-        """The hand-built-summary shape `apply_signal_evidence_gate` defends
-        against. A missing key reads as no fallback rather than raising."""
+    def test_an_absent_key_ships_and_an_unreadable_one_refuses(self):
+        """ABSENT AND UNREADABLE ARE DIFFERENT CLAIMS.
+
+        An absent key is a record written before #235, when every scenario was
+        single-turn, so four zeros is an honest reading and it ships. A key that
+        is PRESENT and cannot be read is corrupt or hand-built, not old, and a
+        gate that cannot read its evidence has not been satisfied. Reading the
+        second as the first was this branch's own fail-open: it shipped on
+        `{"relevancy_scored": True}` while the comment beside it said True is not
+        a count, which is a reason to refuse written as a reason to pass.
+        """
         from app.services.deployment_service import _relevancy_provenance_cause
 
         assert _relevancy_provenance_cause({}) is None
         assert _relevancy_provenance_cause({"question_resolution": None}) is None
-        assert _relevancy_provenance_cause({"question_resolution": "9 of 10"}) is None
-        assert (
+
+        unreadable = "could not be read"
+        assert unreadable in (_relevancy_provenance_cause({"question_resolution": "9 of 10"}) or "")
+        assert unreadable in (
             _relevancy_provenance_cause(
-                {
-                    "question_resolution": {
-                        "relevancy_scored": True,
-                        "raw_question_fallback": True,
-                    }
-                }
+                {"question_resolution": {"relevancy_scored": True,
+                                         "raw_question_fallback": True}}
             )
-            is None
-        ), "True is an int and is not a count"
+            or ""
+        ), "True is an int and is not a count, so this evidence is unreadable"
+
+    def test_a_resolver_that_failed_on_every_attempt_blocks_a_single_turn_corpus(self):
+        """THE CASE THE SHARE OF `relevancy_scored` CANNOT REACH.
+
+        `raw_question_fallback` is bounded by `multi_turn`, so a rule reading only
+        the share of the whole run needs multi-turn rows to be a majority of it.
+        Ten authored multi-turn goldens beside thirty single-turn exploratory rows
+        is a quarter, so before the resolver rate existed this run shipped with a
+        relevancy number in which every single rewrite had failed.
+        """
+        recommendation, warnings, _ = self._gate(
+            QuestionResolution(
+                relevancy_scored=40, multi_turn=10, rewritten=0, raw_question_fallback=10
+            )
+        )
+        assert recommendation == "block"
+        assert "10 of the 10 follow-up questions" in warnings[0].message
+
+    def test_the_resolver_rate_needs_enough_attempts_to_be_a_rate(self):
+        """Nine failures out of nine ships, because nine is under the floor.
+
+        Two out of two is not evidence of a broken resolver and blocking a deploy
+        on it would strand one over a single flaky rewrite. The floor is a floor
+        under a DENOMINATOR, so the run still ships on the share rule, which nine
+        of forty does not reach either.
+        """
+        recommendation, warnings, _ = self._gate(
+            QuestionResolution(
+                relevancy_scored=40, multi_turn=9, rewritten=0, raw_question_fallback=9
+            )
+        )
+        assert recommendation == "ship"
+        assert warnings == []
+
+    def test_a_resolver_at_exactly_half_of_enough_attempts_ships(self):
+        """The resolver rate's own boundary, from both sides with the next test."""
+        recommendation, warnings, _ = self._gate(
+            QuestionResolution(
+                relevancy_scored=40, multi_turn=20, rewritten=10, raw_question_fallback=10
+            )
+        )
+        assert recommendation == "ship"
+        assert warnings == []
+
+    def test_a_resolver_one_past_half_of_enough_attempts_blocks(self):
+        recommendation, _, _ = self._gate(
+            QuestionResolution(
+                relevancy_scored=40, multi_turn=20, rewritten=9, raw_question_fallback=11
+            )
+        )
+        assert recommendation == "block"
 
     def test_an_unreadable_verdict_column_is_named_before_the_fallback_share(self):
         """FM-004, caught by its own detector during this branch's own review.
