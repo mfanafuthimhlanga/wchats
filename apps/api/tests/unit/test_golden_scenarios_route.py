@@ -17,6 +17,7 @@ Route:
     8. 401 when no credential is presented
 """
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -112,6 +113,7 @@ class TestGoldenWriter:
             "Nine to five.",
             "authored:api_key:golden.md",
             "golden",
+            "[]",
         )
         # the caller owns the transaction: the writer must not commit
         conn.commit.assert_not_called()
@@ -122,15 +124,19 @@ class TestGoldenWriter:
 # ---------------------------------------------------------------------------
 
 
+LEAD_IN = [{"role": "user", "content": "I'm setting up Earth Elements."}]
+OTHER_LEAD_IN = [{"role": "user", "content": "I'm setting up Sentinel."}]
+
+
 class TestRegisterGoldenSync:
     def test_skips_known_questions_and_counts_the_total(self):
         conn, cursor = _make_fake_conn()
-        cursor.fetchall.return_value = [("known question",)]
+        cursor.fetchall.return_value = [("known question", [])]
         with patch("app.api.v1.evals.psycopg2") as fake_psycopg2:
             fake_psycopg2.connect.return_value = conn
             registered, skipped, total = _register_golden_sync(
                 "postgresql://x",
-                [("known question", "a"), ("new question", "b")],
+                [("known question", "a", []), ("new question", "b", [])],
                 "authored:api_key:inline",
             )
         assert registered == 1
@@ -138,6 +144,77 @@ class TestRegisterGoldenSync:
         assert total == 2
         conn.commit.assert_called_once()
         conn.close.assert_called_once()
+
+    def test_one_question_in_two_conversations_is_two_golden_pairs(self):
+        """#227. "How do I start the dev server?" is one pair per project.
+
+        Keying on the question text alone skipped the second and every one after
+        it, so the owner's file registered fewer pairs than it contained and the
+        response named them as duplicates of a pair that answers a different
+        question.
+        """
+        conn, cursor = _make_fake_conn()
+        cursor.fetchall.return_value = []
+        with patch("app.api.v1.evals.psycopg2") as fake_psycopg2:
+            fake_psycopg2.connect.return_value = conn
+            registered, skipped, total = _register_golden_sync(
+                "postgresql://x",
+                [
+                    ("how do I start it?", "pnpm dev", LEAD_IN),
+                    ("how do I start it?", "uv run", OTHER_LEAD_IN),
+                ],
+                "authored:api_key:inline",
+            )
+        assert registered == 2, (
+            "the second pair was skipped as a duplicate, so a golden question "
+            "can only ever belong to one conversation"
+        )
+        assert skipped == []
+        assert total == 2
+
+    def test_the_same_question_in_the_same_conversation_is_still_a_duplicate(self):
+        conn, cursor = _make_fake_conn()
+        cursor.fetchall.return_value = [("how do I start it?", LEAD_IN)]
+        with patch("app.api.v1.evals.psycopg2") as fake_psycopg2:
+            fake_psycopg2.connect.return_value = conn
+            registered, skipped, _total = _register_golden_sync(
+                "postgresql://x",
+                [("how do I start it?", "pnpm dev", LEAD_IN)],
+                "authored:api_key:inline",
+            )
+        assert registered == 0
+        assert skipped == ["how do I start it?"]
+
+    def test_a_stored_conversation_read_back_as_json_text_still_matches(self):
+        """psycopg2 hands jsonb back as a list, but a driver or a view can give
+        the raw text. Keying the two differently would re-register the pair."""
+        conn, cursor = _make_fake_conn()
+        cursor.fetchall.return_value = [("how do I start it?", json.dumps(LEAD_IN))]
+        with patch("app.api.v1.evals.psycopg2") as fake_psycopg2:
+            fake_psycopg2.connect.return_value = conn
+            registered, skipped, _total = _register_golden_sync(
+                "postgresql://x",
+                [("how do I start it?", "pnpm dev", LEAD_IN)],
+                "authored:api_key:inline",
+            )
+        assert registered == 0
+        assert skipped == ["how do I start it?"]
+
+    def test_the_writer_is_given_the_conversation(self):
+        conn, cursor = _make_fake_conn()
+        cursor.fetchall.return_value = []
+        with patch("app.api.v1.evals.psycopg2") as fake_psycopg2:
+            fake_psycopg2.connect.return_value = conn
+            _register_golden_sync(
+                "postgresql://x",
+                [("how do I start it?", "pnpm dev", LEAD_IN)],
+                "authored:api_key:inline",
+            )
+        _sql, params = cursor.execute.call_args[0]
+        assert json.dumps(LEAD_IN) in params, (
+            "the conversation never reached the row, so the golden pair asks a "
+            "follow-up with nothing to bind it"
+        )
 
     def test_rolls_back_the_whole_batch_on_failure(self):
         conn, cursor = _make_fake_conn()
@@ -147,7 +224,7 @@ class TestRegisterGoldenSync:
             with pytest.raises(InvalidScenario):
                 _register_golden_sync(
                     "postgresql://x",
-                    [("good question", "a"), ("empty answer", "  ")],
+                    [("good question", "a", []), ("empty answer", "  ", [])],
                     "authored:api_key:inline",
                 )
         conn.rollback.assert_called_once()
