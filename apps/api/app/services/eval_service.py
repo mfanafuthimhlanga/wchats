@@ -2636,20 +2636,41 @@ def _failures_of(invocation: Mapping) -> list[ScenarioFailure]:
     ]
 
 
-def _question_resolution_of(patch: Mapping) -> QuestionResolution:
+def _question_resolution_of(config_patch: Mapping) -> QuestionResolution:
     """The counts out of `question_resolution_provenance`'s config patch.
 
     THE PATCH IS PASSED IN RATHER THAN RECOMPUTED, which is the same rule
     `build_eval_result` follows for the per-dataset counts. The task stamps this
-    object on `eval_runs.config` and hands the identical object here, so the
-    config and the record carry one derivation between them and cannot drift.
-    Recomputing the counts from `scenarios` would be the second walk that rule
-    exists to refuse.
+    object on `eval_runs.config` and hands the identical object here, so the two
+    homes hold ONE DERIVATION. Recomputing the counts from `scenarios` would be
+    the second walk that rule exists to refuse.
+
+    One derivation is not one persistence. The config stamp is a separate write
+    that can fail without raising, so the row and the record can hold different
+    AMOUNTS of the same counts; `_score_run` logs that case and the record is the
+    authority. This function is about where the numbers come from, not about how
+    many of them survive.
 
     An empty patch is four zeros, which is the run that resolved no question:
     every single-turn run, and every run that scored nothing at all.
+
+    THE ARGUMENT IS THE ENVELOPE, NOT THE COUNTS, and handing over the counts is
+    the one mistake this shape invites. It used to cost nothing to make: the key
+    lookup missed, `from_payload` read four zeros, and the record shipped saying
+    a run resolved nothing. A non-empty mapping that does not carry the key is
+    therefore a caller defect and is refused rather than defaulted.
+
+    Raises:
+        InvalidEvalResult: a non-empty mapping with no `question_resolution` key.
     """
-    return QuestionResolution.from_payload(patch.get("question_resolution") or {})
+    if config_patch and "question_resolution" not in config_patch:
+        raise InvalidEvalResult(
+            "build_eval_result takes question_resolution_provenance()'s config "
+            "patch, the {'question_resolution': {...}} envelope, and got a "
+            f"mapping carrying {sorted(config_patch)}. Four zeros here would say "
+            "the run resolved no question, which is a shipping signal."
+        )
+    return QuestionResolution.from_payload(config_patch.get("question_resolution") or {})
 
 
 def build_eval_result(

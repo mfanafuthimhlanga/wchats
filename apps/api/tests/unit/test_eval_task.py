@@ -948,7 +948,7 @@ class TestTheRunRecordsWhichQuestionRelevancyScored:
             exploratory_rows=wired["cursor"].exploratory_rows,
         )
         monkeypatch.setattr(mod.psycopg2, "connect", lambda *a, **kw: conn)
-        _run()
+        self.report = _run()
         return [patch for _run_id, patch, _conn in wired["config_patched"]]
 
     def test_the_run_config_carries_what_relevancy_was_measured_against(
@@ -986,6 +986,30 @@ class TestTheRunRecordsWhichQuestionRelevancyScored:
              "scored_response_source"],
             ["question_resolution"],
         ]
+
+    def test_the_run_record_carries_the_same_counts_as_the_config(
+        self, wired, monkeypatch
+    ):
+        """The wiring into `build_eval_result`, which nothing else reaches.
+
+        Every other test of this fact stops at the config patch, and the
+        `_score_run` identity test calls that helper directly rather than through
+        the task, so the keyword on the `build_eval_result` call was reachable by
+        no test at all. Wiring it to `{}` left 518 tests green while the record
+        read four zeros and the deploy gate found nothing to distrust, which is
+        the whole of #235 silently off.
+
+        `_run_report` returns the record's payload, so the counts the config
+        carries and the counts the record carries are read from one run here.
+        """
+        patches = self._run_a_mixed_conversation(wired, monkeypatch)
+
+        [counts] = [p["question_resolution"] for p in patches if "question_resolution" in p]
+        assert self.report["question_resolution"] == counts, (
+            "the record and the config describe one measurement; a record "
+            "reading zeros here ships a run whose relevancy was never checked"
+        )
+        assert self.report["question_resolution"]["raw_question_fallback"] == 1
 
     def test_a_row_the_judge_scored_no_relevancy_for_is_not_counted(
         self, wired, monkeypatch

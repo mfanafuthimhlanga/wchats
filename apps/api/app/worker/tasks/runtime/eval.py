@@ -1170,8 +1170,16 @@ def _score_run(
 
     Step 4 is DERIVED ONCE AND STAMPED TWICE (#235). The counts go on
     `eval_runs.config` for a reader holding only the row, and the same object is
-    returned for `build_eval_result`, so the record the deploy gate reads and the
-    config can never disagree about which question relevancy was scored against.
+    returned for `build_eval_result`.
+
+    ONE DERIVATION IS NOT ONE PERSISTENCE, and the difference matters to whoever
+    reads the row. `update_eval_run_config` never raises: it returns False on a
+    missing column and False on any other write failure. So the two homes hold
+    one set of counts but can still end up holding DIFFERENT AMOUNTS of it, and
+    the record is the authority. The deploy gate reads the record; the config is
+    the human-readable copy and it is best effort. A failed stamp is logged here
+    rather than swallowed, because the alternative is a row that silently says
+    nothing about a run whose record refuses a deploy.
 
     Returns:
         (results, question_resolution): `run_ragas_eval`'s payload, and the
@@ -1181,7 +1189,15 @@ def _score_run(
     results = run_ragas_eval(scored_scenarios, _run_ledger(tenant_id, agent_id, run_id, conn_str))
     write_eval_results(run_id, results["judge_records"], conn_str)
     question_resolution = question_resolution_provenance(scored_scenarios, results["scores"])
-    update_eval_run_config(run_id, question_resolution, conn_str)
+    if not update_eval_run_config(run_id, question_resolution, conn_str):
+        # The record still carries them, so the gate is unaffected. What is lost
+        # is the row a human reads, and losing it quietly is how the two came to
+        # be described as unable to disagree.
+        log.warning(
+            "score_run.question_resolution_not_stamped",
+            run_id=run_id,
+            **question_resolution["question_resolution"],
+        )
     update_eval_run_status(run_id, "complete", finished_at=True, conn_str=conn_str)
     return results, question_resolution
 
