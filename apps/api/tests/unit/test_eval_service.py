@@ -2867,3 +2867,76 @@ class TestReadRunLedger:
 
         monkeypatch.setattr(eval_service.psycopg2, "connect", _boom)
         assert eval_service.read_run_ledger("run-1", "postgresql://production") == []
+
+
+class TestTheRewritesReachTheScoringLoop:
+    """The one line that hands the rewrites to the Judge, and nothing else pins it.
+
+    `_resolved_inputs` has a single caller, inside `run_ragas_eval`. Every other
+    test either calls `_score_samples` directly or doubles `run_ragas_eval`
+    whole, so setting that keyword to `None` at the call site left 853 tests
+    green while every rewrite was computed, written, counted and shown on the
+    sheet, then discarded before the Judge saw it. Observed 2026-09-12 by
+    mutation. This test drives the real producer and reads what the loop was
+    handed.
+    """
+
+    def test_run_ragas_eval_hands_the_scoring_loop_one_rewrite_per_sample(
+        self, monkeypatch
+    ):
+        scenarios = [
+            {
+                "id": "s0",
+                "question": "how do I start the dev server?",
+                "reference_answer": "pnpm dev",
+                "retrieved_contexts": [],
+                "agent_response": "pnpm dev",
+                "dataset": "golden",
+                "turns": [{"role": "user", "content": "I'm setting up Mellow locally."}],
+                "resolved_question": "How do I start Mellow's dev server?",
+            },
+            {
+                "id": "s1",
+                "question": "what is the refund window?",
+                "reference_answer": "30 days",
+                "retrieved_contexts": [],
+                "agent_response": "30 days",
+                "dataset": "exploratory",
+                "turns": [],
+                "resolved_question": None,
+            },
+            {
+                "id": "s2",
+                "question": "and the second one?",
+                "reference_answer": "14 days",
+                "retrieved_contexts": [],
+                "agent_response": "14 days",
+                "dataset": "exploratory",
+                "turns": [{"role": "user", "content": "Tell me about the two plans."}],
+                "resolved_question": "   ",
+            },
+        ]
+        handed = {}
+
+        async def _capture_score_samples(metrics, samples, resolved_inputs=None):  # noqa: ARG001
+            handed["resolved_inputs"] = resolved_inputs
+            handed["sample_count"] = len(samples)
+            return []
+
+        monkeypatch.setattr(
+            eval_service, "_build_instructor_llm", _fake_ragas_instructor_llm
+        )
+        monkeypatch.setattr(eval_service, "_VoyageRagasEmbedding", _FakeRagasEmbedding)
+        monkeypatch.setattr(eval_service, "_score_samples", _capture_score_samples)
+
+        eval_service.run_ragas_eval(scenarios, ledger())
+
+        assert handed["sample_count"] == 3
+        assert handed["resolved_inputs"] == [
+            "How do I start Mellow's dev server?",
+            None,
+            None,
+        ], (
+            "the scoring loop was not handed one rewrite per sample in sample "
+            "order, with None for a scenario that has no usable rewrite"
+        )
