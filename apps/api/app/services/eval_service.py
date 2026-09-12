@@ -906,10 +906,10 @@ def summarise_agent_invocation(
         "valid": valid,
         "attempted": attempted,
         "responded": responded,
-        # Rows that reached run_ragas_eval. Smaller than `responded` by exactly
-        # the rows excluded for having no retrieved context — see `no_retrieval`
-        # below — and it, not `responded`, is the denominator the metrics were
-        # computed over.
+        # Rows that reached run_ragas_eval: the denominator the metrics were
+        # computed over. Smaller than `responded` by the rows with no retrieved
+        # context (`no_retrieval`) and by the ambiguous rows the rule decided
+        # (#226), whose verdicts ride on the validity report instead.
         "scorable": scorable,
         "failed": failed,
         "empty": empty,
@@ -952,8 +952,8 @@ def summarise_agent_invocation(
         "retrieved_context_unparsed": sum(
             int(r.get("retrieve_unparsed") or 0) for r in records
         ),
-        # Responded, called retrieve zero times. EXCLUDED FROM SCORING and
-        # counted here: Faithfulness / ContextPrecision / ContextRecall over an
+        # Responded, called retrieve zero times. EXCLUDED FROM RAGAS SCORING and
+        # counted here (an ambiguous row that asked lands here too, #226): Faithfulness / ContextPrecision / ContextRecall over an
         # empty context list are structurally 0 or NaN, and a 0 for an answer the
         # agent gave correctly from its system prompt is the "zero is not a low
         # score" error one metric over. It is a bucket, not a failure — an agent
@@ -1961,7 +1961,7 @@ _SAMPLE_INSERT_LADDER: tuple[tuple[str, str, str], ...] = (
         _INSERT_EVAL_SAMPLE_PRE_0029,
         "write_eval_samples.turns_column_absent",
         "tenant DB predates alembic_tenant 0028 — the scored text is recorded "
-        "without the conversation it was asked in",
+        "without the conversation it was asked in or the rewrite it was scored on",
     ),
     (_INSERT_EVAL_SAMPLE_PRE_0028, "", ""),
 )

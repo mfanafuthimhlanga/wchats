@@ -3,47 +3,69 @@
 An ambiguous scenario is one whose correct reply is a clarifying question rather
 than an answer: "which project?" to "how do I start the dev server" when nothing
 named one. The four Ragas metrics measure the wrong thing for such a row, so its
-verdict is this rule and not a Judge. A rule can be mutated and observed to fail;
+verdict is a rule and not a Judge. A rule can be mutated and observed to fail;
 a model's opinion on "is this a question" cannot.
 
-The rule is small on purpose. It decides that a response ASKS when its last
-sentence is a question and the whole response is short enough that the question
-is the reply rather than a courtesy tacked onto an answer. Both halves are
-needed: "Run pnpm dev from the repo root. Anything else?" ends in a question and
-is an answer. The word cap is the second lock, and `CLARIFYING_MAX_WORDS` says
-what it is set to and why.
+TWO RULES, FOR TWO KINDS OF TEXT.
+
+`turn_asked_to_clarify` reads the agent's turn. The agent has a `clarify` tool
+whose whole job is to ask the customer a question, so a call to it in the
+turn's tool log is exact evidence of asking, in any language and any markdown.
+A turn that also retrieved is an answer with a question on it, and is not
+asking. Free text is never read for the agent's verdict: "Run pnpm dev.
+Anything else?" ends in a question mark and is an answer, and a bulleted list
+of the four projects with the question above it does not end in one and is
+asking.
+
+`is_clarifying_question` reads a reference answer the owner wrote, where there
+is no tool log. It holds the reference to the shape of a question so a pair
+cannot demand a behaviour its own reference would fail: after trailing
+emphasis, quotes and brackets are dropped, the text ends in a question mark and
+is at most `CLARIFYING_MAX_WORDS` long.
 """
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable, Mapping
 
-#: A reply longer than this is an answer with a question on the end, not a
+#: A reference longer than this is an answer with a question on the end, not a
 #: clarifying question. Forty words is two sentences of asking; the shortest
-#: real answers in the calibration sheet (#58) run past sixty. Untuned, and the
+#: real answers on the calibration sheet (#58) run past sixty. Untuned, and the
 #: first ambiguous run's rows are what tunes it.
 CLARIFYING_MAX_WORDS = 40
 
-#: The key an ambiguous scenario carries once the check has run on its response.
+#: The key an ambiguous scenario carries once the check has run on its turn.
 #: Its presence on a scored row is what keeps the row out of the Ragas set.
 CLARIFYING_CHECK_KEY = "clarifying_check"
 
-_SENTENCE_END = re.compile(r"[.!?]")
+#: The tool an agent calls to ask the customer a question, and the one it calls
+#: to answer from the corpus. Names as `agent_tool_definitions` registers them.
+CLARIFY_TOOL = "clarify"
+RETRIEVE_TOOL = "retrieve"
+
+#: Question marks in the scripts a South African tenant's customers write in,
+#: plus the fullwidth and Arabic forms. A Greek question mark is `;`.
+_QUESTION_MARKS = "?؟？;"
+_TRAILING_DECORATION = "\"')]}»*_` \n\t"
 
 
-def is_clarifying_question(response: str) -> bool:
-    """True when `response` asks rather than answers.
+def turn_asked_to_clarify(tool_calls_log: Iterable[Mapping]) -> bool:
+    """True when the turn called `clarify` and never `retrieve`.
 
-    Empty text is not a question. Trailing quotes and brackets are stripped so
-    `"Which project?"` reads the same as `Which project?`.
+    Read off the tool log the loop already walks for retrieved contexts, so the
+    verdict comes from what the agent DID rather than from how the model
+    phrased it.
     """
-    text = response.strip().rstrip("\"')]}»")
-    if not text:
+    names = {str(tc.get("tool_name", "")) for tc in tool_calls_log}
+    return CLARIFY_TOOL in names and RETRIEVE_TOOL not in names
+
+
+def is_clarifying_question(text: str) -> bool:
+    """True when `text` reads as a short question. For owner-written references."""
+    stripped = text.strip().rstrip(_TRAILING_DECORATION)
+    if not stripped or stripped[-1] not in _QUESTION_MARKS:
         return False
-    if not text.endswith("?"):
-        return False
-    return len(text.split()) <= CLARIFYING_MAX_WORDS
+    return len(stripped.split()) <= CLARIFYING_MAX_WORDS
 
 
 def clarifying_verdicts(rows: Iterable[Mapping]) -> dict[str, bool]:

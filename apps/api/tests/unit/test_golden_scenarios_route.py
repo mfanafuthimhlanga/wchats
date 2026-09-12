@@ -457,3 +457,38 @@ class TestAnAmbiguousGoldenPair:
 
         assert GoldenPair(question="q", reference_answer="a").ambiguous is False
         assert GoldenPair(question="q", reference_answer="a?", ambiguous=True).ambiguous is True
+
+
+class TestTheFlagReachesTheWriterFromTheRoute:
+    async def test_ambiguous_travels_on_the_pair_tuple(self):
+        """Replacing `p.ambiguous` with False at the route left every test green (review M2)."""
+        tenant = _make_fake_tenant()
+        agent = _make_agent(tenant)
+        app.dependency_overrides[get_current_tenant] = lambda: tenant
+        app.dependency_overrides[get_credential_kind] = lambda: "api_key"
+        mock_db = AsyncMock()
+        mock_db.get = AsyncMock(return_value=agent)
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+        try:
+            with (
+                patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://x"),
+                patch(
+                    "app.api.v1.evals._register_golden_sync", return_value=(2, [], 2)
+                ) as sync_mock,
+            ):
+                response = await _post_pairs(
+                    agent.id,
+                    {
+                        "pairs": [
+                            {"question": "how do I start it?", "reference_answer": "Which project?", "ambiguous": True},
+                            {"question": "q2", "reference_answer": "a2"},
+                        ]
+                    },
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 201
+        pairs = sync_mock.call_args[0][1]
+        assert [p[3] for p in pairs] == [True, False]
+        assert pairs[0][:3] == ("how do I start it?", "Which project?", [])

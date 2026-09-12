@@ -1,9 +1,9 @@
 """The deterministic check for an ambiguous scenario (#226, ADR 0012).
 
-A rule, not a Judge, so every branch here is one the eval can be observed to
-take. The two halves are separate locks: a response ends in a question, and it
-is short enough that the question is the reply rather than a courtesy on the
-end of an answer.
+Two rules, and the reason there are two is the first finding of the adversarial
+review: the agent has a `clarify` tool, so the agent's verdict is read off what
+it DID, and free text is read only for the owner's reference, which has no tool
+log.
 """
 
 from __future__ import annotations
@@ -16,42 +16,57 @@ from app.services.clarifying_check import (
     clarifying_verdicts,
     is_clarifying_question,
     split_checked_rows,
+    turn_asked_to_clarify,
 )
 
 
-class TestIsClarifyingQuestion:
+class TestTheAgentsVerdictComesOffTheToolLog:
+    def test_a_clarify_call_with_no_retrieve_is_asking(self):
+        assert turn_asked_to_clarify([{"tool_name": "clarify", "result": "Which project?"}]) is True
+
+    def test_a_turn_that_retrieved_is_answering_even_if_it_also_asked(self):
+        log = [{"tool_name": "retrieve", "result": "..."}, {"tool_name": "clarify", "result": "?"}]
+        assert turn_asked_to_clarify(log) is False
+
+    def test_a_turn_with_no_tool_calls_is_not_asking(self):
+        """Free text is never read for the agent: 'Anything else?' is an answer."""
+        assert turn_asked_to_clarify([]) is False
+
+    def test_other_tools_do_not_count_either_way(self):
+        assert turn_asked_to_clarify([{"tool_name": "escalate"}]) is False
+        assert turn_asked_to_clarify([{"tool_name": "escalate"}, {"tool_name": "clarify"}]) is True
+
+
+class TestTheReferenceRule:
     @pytest.mark.parametrize(
-        "response",
+        "text",
         [
             "Which project are you setting up?",
             "Happy to help. Is this for Mellow's Earth Elements or the widget?",
             '"Which project?"',
+            "**Which project are you setting up?**",
+            "_Which project?_",
             "  Which project?  \n",
-            "Could you tell me which plan you are on, the monthly or the annual one?",
+            "أي مشروع؟",
+            "どのプロジェクトですか？",
         ],
     )
-    def test_a_short_reply_that_ends_by_asking_is_a_clarifying_question(self, response):
-        assert is_clarifying_question(response) is True
+    def test_a_short_reference_that_ends_by_asking_passes(self, text):
+        assert is_clarifying_question(text) is True
 
     @pytest.mark.parametrize(
-        "response",
+        "text",
         [
             "",
             "   ",
             "Run pnpm dev from the repo root.",
-            "Run pnpm dev from the repo root. Let me know if that works",
             "Which project? Run pnpm dev either way.",
         ],
     )
-    def test_a_reply_that_answers_is_not(self, response):
-        assert is_clarifying_question(response) is False
+    def test_a_reference_that_answers_is_refused(self, text):
+        assert is_clarifying_question(text) is False
 
-    def test_an_answer_with_a_courtesy_question_on_the_end_is_an_answer(self):
-        """The word cap is the second lock. Without it this passes."""
-        answer = " ".join(["word"] * CLARIFYING_MAX_WORDS) + " Anything else I can help with?"
-        assert is_clarifying_question(answer) is False
-
-    def test_the_cap_is_inclusive(self):
+    def test_the_cap_is_inclusive_and_exact(self):
         at_cap = " ".join(["which"] * (CLARIFYING_MAX_WORDS - 1)) + " one?"
         over = " ".join(["which"] * CLARIFYING_MAX_WORDS) + " one?"
         assert is_clarifying_question(at_cap) is True
@@ -63,12 +78,9 @@ class TestTheVerdictsComeOffTheKey:
         rows = [
             {"id": "s0", CLARIFYING_CHECK_KEY: True},
             {"id": "s1", CLARIFYING_CHECK_KEY: False},
-            {"id": "s2"},
+            {"id": "s2", "ambiguous": True},
         ]
         assert clarifying_verdicts(rows) == {"s0": True, "s1": False}
-
-    def test_a_row_without_the_key_is_never_read_as_a_fail(self):
-        assert clarifying_verdicts([{"id": "s2", "ambiguous": True}]) == {}
 
     def test_split_keeps_input_order_on_both_sides(self):
         rows = [

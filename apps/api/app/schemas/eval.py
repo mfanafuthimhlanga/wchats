@@ -36,10 +36,14 @@ class GoldenPair(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     reference_answer: str = Field(min_length=1, max_length=8000)
     turns: list[ConversationTurn] = Field(default_factory=list, max_length=40)
-    #: True when the correct reply is a clarifying question rather than an answer
-    #: (#226). The reference answer of such a pair IS the clarifying question,
-    #: and the writer refuses one that does not read as a question.
-    ambiguous: bool = False
+    ambiguous: bool = Field(
+        False,
+        description=(
+            "True when the correct reply is a clarifying question rather than an "
+            "answer (#226). The reference_answer is then that question: at most "
+            "40 words, ending in a question mark, or the pair is refused."
+        ),
+    )
 
 
 class GoldenScenariosRegisterRequest(BaseModel):

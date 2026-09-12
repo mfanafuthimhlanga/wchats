@@ -1999,3 +1999,62 @@ class TestTheCheckedRowsNeverReachTheJudge:
 
     def test_a_run_below_the_floor_reports_no_verdicts(self):
         assert mod._NOTHING_SCORED["clarifying_verdicts"] == {}
+
+
+class TestTheRuleVerdictsReachTheRecordThroughTheTask:
+    """The wiring the six function-body mutations did not cover (review M1).
+
+    Dropping the third argument of `summarise_run_validity` in `run_eval_suite`
+    threw every rule verdict away with 134 tests green. This drives the task with
+    an invocation that returns one judged row and two checked rows and reads the
+    stored record: the golden dataset must count all three as scored and the
+    answered one as failed.
+    """
+
+    def test_checked_rows_are_scored_and_judged_in_the_stored_record(self, wired, monkeypatch):
+        rows3 = [
+            scenario_row(f"b000000{n}-0000-0000-0000-00000000000{n}", f"Q{n}", "Which project?",
+                         dataset="golden", turns=[], ambiguous=n > 0)
+            for n in range(3)
+        ]
+        conn = MagicMock()
+        conn.cursor.return_value = _Cursor(golden_rows=rows3, exploratory_rows=[])
+        monkeypatch.setattr(mod.psycopg2, "connect", lambda *a, **kw: conn)
+
+        def _invoke(*, agent_id, conn_str, run_id, scenarios, prompt_version_id):
+            judged = {**scenarios[0], "agent_response": "pnpm dev", "retrieved_contexts": ["CTX"]}
+            asked = {**scenarios[1], "agent_response": "Which one?", "retrieved_contexts": [], "clarifying_check": True}
+            answered = {**scenarios[2], "agent_response": "pnpm dev", "retrieved_contexts": [], "clarifying_check": False}
+            records = [
+                {"scenario_id": s["id"], "responded": True, "scorable": s is scenarios[0], "error": None,
+                 "retrieve_calls": 1 if s is scenarios[0] else 0, "retrieve_at_cap": False,
+                 "retrieve_unparsed": 0, "retrieved_chunks": 1 if s is scenarios[0] else 0,
+                 "side_effects": [], "pii_detector": None}
+                for s in scenarios
+            ]
+            summary = mod.summarise_agent_invocation(
+                records, valid=3, ceiling_skipped=0, ceiling_skipped_golden=0,
+                per_turn_timeout_s=90, audit_capture_char_cap=1800, retrieved_context_chunk_char_cap=2000,
+            )
+            summary["status"] = "measured"
+            return [judged, asked, answered], summary
+
+        monkeypatch.setattr(mod, "_invoke_agent_for_scenarios", _invoke)
+        monkeypatch.setattr(mod, "annotate_resolved_questions", lambda rows, *, ledger: rows)
+        monkeypatch.setattr(mod, "write_eval_samples", lambda run_id, rows, conn_str: len(rows))
+
+        def _ragas(rows, ledger):
+            assert len(rows) == 1 and "clarifying_check" not in rows[0], "a checked row reached Ragas"
+            scores = [{"scenario_id": rows[0]["id"], "faithfulness": 0.95, "answer_relevancy": 0.95,
+                       "context_precision": 0.95, "context_recall": 0.95}]
+            return {"scores": scores, "judge_records": build_judge_records(scores)}
+
+        monkeypatch.setattr(mod, "run_ragas_eval", _ragas)
+
+        _run()
+
+        [(_run_id, record, _conn)] = wired["record"]
+        golden = record.datasets["golden"]
+        assert (golden.scored, golden.scenarios_passed, golden.scenarios_failed) == (3, 2, 1), (
+            "the rule's verdicts did not reach the stored record through the task"
+        )

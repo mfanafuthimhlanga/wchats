@@ -855,7 +855,8 @@ async def register_golden_scenarios(
 
     Security:
         IDOR check on agent (404 on foreign or missing agent).
-        Refusals map through _golden_refusal: 422 for an empty pair (golden
+        Refusals map through _golden_refusal: 422 for an empty pair or an
+        ambiguous pair whose reference is not a clarifying question (golden
         rows gate deploys, so one is never stored), 409 for a pre-0024 DB.
     """
     agent = await db.get(Agent, agent_id)

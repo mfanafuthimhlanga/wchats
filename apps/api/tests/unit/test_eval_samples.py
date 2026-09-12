@@ -297,3 +297,22 @@ def test_the_connection_is_closed_when_an_insert_raises(connection):
 
     connection["conn"].close.assert_called_once()
     connection["conn"].commit.assert_not_called()
+
+
+class TestTheRuleVerdictLandsInItsColumn:
+    """`clarifying_check` is the ambiguous row's whole result (#226, tenant 0029)."""
+
+    def test_a_checked_row_binds_its_verdict_and_an_ordinary_row_binds_null(self):
+        checked = {**_scenario(1), "ambiguous": True, "clarifying_check": False}
+        plain = _scenario(2)
+
+        assert es._sample_row_params(RUN_ID, checked)["clarifying_check"] is False
+        assert es._sample_row_params(RUN_ID, {**checked, "clarifying_check": True})["clarifying_check"] is True
+        assert es._sample_row_params(RUN_ID, plain)["clarifying_check"] is None
+
+    def test_the_wide_insert_names_the_column_and_binds_the_value(self, connection):
+        es.write_eval_samples(RUN_ID, [{**_scenario(1), "clarifying_check": True}], "postgresql://prod")
+
+        sql, params = connection["cursor"].execute.call_args[0]
+        assert "clarifying_check" in sql
+        assert params["clarifying_check"] is True
