@@ -189,6 +189,13 @@ def annotate_resolved_questions(
     row they are both NULL and the reader tells them apart by `turns`, which is
     why the counts below are logged: a run where every rewrite failed and a run
     with no multi-turn scenarios must not look the same in the log.
+
+    THESE COUNTS ARE OVER THE ROWS HANDED IN, AND THE RUN RECORD'S ARE NOT.
+    `eval_service.question_resolution_provenance` stamps `multi_turn` /
+    `rewritten` / `raw_question_fallback` on `eval_runs.config` over the rows the
+    judge returned a relevancy for, which is a subset. The two disagree on any
+    run the judge did not fully answer, and that is the difference between what
+    was tried and what was measured (#233).
     """
     attempted = failed = 0
     for row in rows:

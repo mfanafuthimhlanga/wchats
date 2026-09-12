@@ -163,3 +163,24 @@ def test_relevancy_is_the_only_metric_that_takes_the_rewrite():
     """
     assert eval_service.RESOLVED_INPUT_METRICS == ("answer_relevancy",)
     assert set(eval_service.RESOLVED_INPUT_METRICS) <= set(eval_service.METRIC_KEYS)
+
+
+def test_a_rewrite_of_nothing_but_whitespace_never_reaches_relevancy():
+    """Three readers of `resolved_question` have to agree on what a rewrite is.
+
+    `write_eval_samples` writes a whitespace rewrite as NULL and
+    `question_resolution_provenance` counts it as a fallback (#233). A bare
+    truthiness test in `_resolved_inputs` would score relevancy against a
+    question of spaces while both records said the raw question scored, and the
+    run would carry no trace of the disagreement.
+    """
+    resolved = eval_service._resolved_inputs([{"resolved_question": "   "}])
+    assert resolved == [None], (
+        "a blank rewrite survived _resolved_inputs, so the judge scores "
+        "whitespace while the sample row and the run record both say otherwise"
+    )
+
+    scored, _rows = _score(resolved)
+
+    [call] = scored["answer_relevancy"].calls
+    assert call["user_input"] == RAW

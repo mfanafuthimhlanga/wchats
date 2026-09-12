@@ -130,6 +130,7 @@ from app.services.eval_service import (
     dataset_of,
     insert_eval_run,
     invocation_provenance,
+    question_resolution_provenance,
     read_run_ledger,
     run_ragas_eval,
     summarise_agent_invocation,
@@ -167,6 +168,35 @@ _NOTHING_SCORED = {
     "scores": [], "judge_records": [],
     "sent": 0, "returned": 0, "unattributed": 0,
 }
+
+
+def _log_below_measurement_floor(agent_id: str, run_id: str, invocation: dict) -> None:
+    """Why this run writes no scores, at the grain the floor was decided on.
+
+    Every field `summarise_agent_invocation` weighed is named, because "below the
+    floor" without the numbers cannot be told from a judge outage in a log, and
+    the run that produced it is over.
+
+    Extracted from `run_eval_suite` when the question-resolution patch joined it,
+    to pay for the line rather than raise the pin (#233).
+    """
+    log.warning(
+        "run_eval_suite.below_measurement_floor",
+        agent_id=agent_id,
+        run_id=run_id,
+        invocation_status=invocation["status"],
+        attempted=invocation["attempted"],
+        responded=invocation["responded"],
+        scorable=invocation["scorable"],
+        response_rate=invocation["response_rate"],
+        min_response_rate=invocation["min_response_rate"],
+        min_scored_observations=invocation["min_scored_observations"],
+        detail=(
+            "no eval_results written and no judge call billed. A run below the "
+            "floor is not a measurement, and writing its scores would make the "
+            "deploy gate read it as one"
+        ),
+    )
 
 
 def _run_ledger(tenant_id: str, agent_id: str, run_id: str, conn_str: str) -> LedgerContext:
@@ -1471,23 +1501,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
         # summarise_run_validity and write_eval_results reject.
         results: dict
         if invocation["status"] != AGENT_INVOCATION_MEASURED:
-            log.warning(
-                "run_eval_suite.below_measurement_floor",
-                agent_id=agent_id,
-                run_id=run_id,
-                invocation_status=invocation["status"],
-                attempted=invocation["attempted"],
-                responded=invocation["responded"],
-                scorable=invocation["scorable"],
-                response_rate=invocation["response_rate"],
-                min_response_rate=invocation["min_response_rate"],
-                min_scored_observations=invocation["min_scored_observations"],
-                detail=(
-                    "no eval_results written and no judge call billed. A run below the "
-                    "floor is not a measurement, and writing its scores would make the "
-                    "deploy gate read it as one"
-                ),
-            )
+            _log_below_measurement_floor(agent_id, run_id, invocation)
             update_eval_run_status(run_id, "complete", finished_at=True, conn_str=conn_str)
             results = dict(_NOTHING_SCORED)
         else:
@@ -1499,6 +1513,11 @@ def run_eval_suite(self, agent_id: str) -> dict:
             # Observations land on PRODUCTION because the branch below is about
             # to be destroyed, and it is the JUDGE RECORDS that go, not `scores`.
             write_eval_results(run_id, results["judge_records"], conn_str)
+
+            # Which question the gated relevancy column was measured against,
+            # after the rows it describes so a death in between leaves the run
+            # saying nothing rather than describing scores never written (#233).
+            update_eval_run_config(run_id, question_resolution_provenance(scored_scenarios, results["scores"]), conn_str)
             update_eval_run_status(
                 run_id, "complete", finished_at=True, conn_str=conn_str
             )

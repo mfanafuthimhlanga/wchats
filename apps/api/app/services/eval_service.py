@@ -1032,6 +1032,67 @@ def invocation_provenance(agent_invocation: dict | None) -> dict:
     }
 
 
+def question_resolution_provenance(
+    scenarios: Sequence[Mapping],
+    score_rows: Sequence[Mapping],
+) -> dict:
+    """The `eval_runs.config` key saying which question relevancy was scored on.
+
+    `answer_relevancy` is gated, and since #227 PR 2 it is scored against a
+    model-rewritten question for every scenario carrying turns. A run that does
+    not record that cannot be read back: 0.91 over raw questions, 0.91 over
+    rewrites, and 0.91 over rows whose rewrite failed and fell back are one
+    number, and the deploy gate reads the number.
+
+    THE DENOMINATOR IS WHAT THE JUDGE RETURNED, NOT WHAT WAS SENT. A row counts
+    only when it carries an attributed relevancy value, because that value is the
+    observation these counts qualify: `_placed_score_rows` drops a returned row it
+    cannot attribute and `_score_samples` yields None for a metric that raised.
+    `multi_turn` and `rewritten` are then read off the scenario each surviving row
+    names. Counting the input list instead would describe what the run meant to
+    measure while reading as what it measured, the D1 shape the measurement-layer
+    audit is named after. `annotate_resolved_questions` logs that wider count over
+    the rows it was handed, and the two differ by whatever the judge left
+    unanswered.
+
+    `relevancy_scored` carries its metric's name because two other counts on this
+    run mean different things: `EvalResult.scored` is rows where ANY metric
+    returned, and `summarise_run_validity` reports a per-dataset
+    `answer_relevancy.observations` that drops a row belonging to no fetched
+    dataset.
+    """
+    by_id = {str(s.get("id", "")): s for s in scenarios}
+    relevancy_scored = multi_turn = rewritten = 0
+    for row in score_rows:
+        scenario = by_id.get(str(row.get("scenario_id", "")))
+        if scenario is None:
+            continue
+        # `value == value` is the NaN check `_placed_score_rows` already applies.
+        # It is repeated rather than assumed: a NaN is not an observation, and a
+        # denominator that counted one would put a row under a measurement that
+        # never returned.
+        if not any(
+            (value := row.get(metric)) is not None and value == value
+            for metric in RESOLVED_INPUT_METRICS
+        ):
+            continue
+        relevancy_scored += 1
+        turns = scenario.get("turns")
+        if not isinstance(turns, list) or not turns:
+            continue
+        multi_turn += 1
+        if str(scenario.get("resolved_question") or "").strip():
+            rewritten += 1
+    return {
+        "question_resolution": {
+            "relevancy_scored": relevancy_scored,
+            "multi_turn": multi_turn,
+            "rewritten": rewritten,
+            "raw_question_fallback": multi_turn - rewritten,
+        }
+    }
+
+
 # ---------------------------------------------------------------------------
 # Attributing a returned score to the scenario it is about
 # ---------------------------------------------------------------------------
@@ -1373,8 +1434,15 @@ def _resolved_inputs(valid_scenarios: Sequence[Mapping]) -> list[str | None]:
     Built from `valid_scenarios` because `samples` came out of the same filter in
     the same order, and `_score_samples` zips the two strictly, so a drift between
     them raises rather than scoring a rewrite against somebody else's answer.
+
+    STRIPPED, and by the same rule the two readers downstream apply.
+    `write_eval_samples` writes a whitespace rewrite as NULL and
+    `question_resolution_provenance` counts it as a fallback, so a bare truthiness
+    test here would hand the judge a question of spaces while both records said
+    the raw question scored. `resolve_question` already strips before returning,
+    which makes this the second lock rather than the first.
     """
-    return [s.get("resolved_question") or None for s in valid_scenarios]
+    return [str(s.get("resolved_question") or "").strip() or None for s in valid_scenarios]
 
 
 # SAMPLES RUN CONCURRENTLY UNDER A BOUND; the metrics within a sample run in

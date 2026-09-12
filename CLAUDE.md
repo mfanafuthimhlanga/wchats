@@ -21,8 +21,9 @@ work   off main, days not weeks:  feat/<scope> · fix/<scope> · chore/<scope> �
   than a squash.
 - Stacked PRs are normal here. Merge in dependency order, base before head, and delete a merged
   branch only once nothing is stacked on it.
-- **A merge to `main` is a deploy.** Railway redeploys from `main` on every merge
-  (`.dev/reference/260902-credential-locations.md`).
+- **A merge to `main` is a deploy**, and the redeploy unparks services somebody stopped on
+  purpose. Read `railway status --json` first (`.dev/reference/260902-credential-locations.md`,
+  `.dev/reference/260910-staging-redis-quota.md`).
 
 ## Gates
 
