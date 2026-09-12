@@ -1,0 +1,77 @@
+{
+  "source_file": "260912-multi-turn-staging.json",
+  "pairs": [
+    {
+      "question": "how do I start the dev server?",
+      "reference_answer": "Run `pnpm dev` from the storefront's repo root. That starts the Vite development server; `pnpm preview` serves the production build after `pnpm build`.",
+      "turns": [
+        {"role": "user", "content": "I'm setting up Mellow's Earth Elements storefront locally."},
+        {"role": "assistant", "content": "Happy to help with the storefront. What do you need?"}
+      ]
+    },
+    {
+      "question": "what command runs the tests?",
+      "reference_answer": "Run `pnpm test`. The unit tests cover cart logic, order validation and submission, and the delivery-form schema under `src/tests/unit/`.",
+      "turns": [
+        {"role": "user", "content": "I'm working on the Mellow's Earth Elements storefront."},
+        {"role": "assistant", "content": "Sure. What would you like to know about the storefront?"}
+      ]
+    },
+    {
+      "question": "and how do I run the unit tests there?",
+      "reference_answer": "Sentinel OHS runs its unit tests with vitest in each package: `cd sentinel-server && npx vitest` and `cd sentinel-web && npx vitest`.",
+      "turns": [
+        {"role": "user", "content": "I've cloned Sentinel OHS and want to check my changes."},
+        {"role": "assistant", "content": "Good. Which part of Sentinel are you changing, the server or the web app?"},
+        {"role": "user", "content": "Both, actually."}
+      ]
+    },
+    {
+      "question": "do I need any environment variables to run it?",
+      "reference_answer": "No. Every environment variable is optional and the storefront runs without any. Copy `.env.example` to `.env.local` to override `VITE_APP_URL` or `VITE_BUSINESS_EMAIL`.",
+      "turns": [
+        {"role": "user", "content": "I'm trying to get the Mellow's Earth Elements storefront running on my laptop."},
+        {"role": "assistant", "content": "Let's get it running. What's the first thing you're stuck on?"}
+      ]
+    },
+    {
+      "question": "which file holds the delivery form fields?",
+      "reference_answer": "The checkout delivery form fields and their validation rules are defined in `src/components/checkout/delivery-form-schema.ts`.",
+      "turns": [
+        {"role": "user", "content": "I'm changing the checkout flow in the Mellow's Earth Elements storefront."},
+        {"role": "assistant", "content": "Okay. Which part of checkout, delivery, payment, or the order summary?"},
+        {"role": "user", "content": "Delivery."}
+      ]
+    },
+    {
+      "question": "how do I start the dev server?",
+      "reference_answer": "Which project are you setting up, the Mellow's Earth Elements storefront or Sentinel OHS?",
+      "turns": [],
+      "ambiguous": true
+    },
+    {
+      "question": "what command runs the tests?",
+      "reference_answer": "Which project do you mean, the Mellow's Earth Elements storefront or Sentinel OHS?",
+      "turns": [],
+      "ambiguous": true
+    },
+    {
+      "question": "do I need any environment variables to run it?",
+      "reference_answer": "Which app are you trying to run, the storefront or Sentinel?",
+      "turns": [],
+      "ambiguous": true
+    },
+    {
+      "question": "where is the checkout code?",
+      "reference_answer": "Which project's checkout are you asking about?",
+      "turns": [],
+      "ambiguous": true
+    },
+    {
+      "question": "how is it deployed?",
+      "reference_answer": "Which project are you asking about, the storefront, Sentinel OHS, W Chats or Beekeeper?",
+      "turns": [],
+      "ambiguous": true
+    }
+  ]
+}
