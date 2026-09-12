@@ -180,14 +180,20 @@ def _as_status(value: Any) -> InvocationStatus:
         ) from None
 
 
-def _require_count(name: str, value: Any) -> None:
-    """A count is a non-negative int. bool is checked first: True counts as one."""
+def _require_count(name: str, value: Any, owner: str = "EvalResult") -> None:
+    """A count is a non-negative int. bool is checked first: True counts as one.
+
+    `owner` names the record in the message. It defaults to EvalResult because
+    that is what every caller was until QuestionResolution arrived, and a refusal
+    reaching a log saying "EvalResult needs relevancy_scored at zero or above"
+    sends a reader to the wrong type.
+    """
     if isinstance(value, bool) or not isinstance(value, int):
         raise InvalidEvalResult(
-            f"EvalResult needs {name} as an int, got {type(value).__name__}"
+            f"{owner} needs {name} as an int, got {type(value).__name__}"
         )
     if value < 0:
-        raise InvalidEvalResult(f"EvalResult needs {name} at zero or above, got {value}")
+        raise InvalidEvalResult(f"{owner} needs {name} at zero or above, got {value}")
 
 
 def _require_text(name: str, value: Any) -> str:
@@ -217,10 +223,12 @@ def _require_optional_text(name: str, value: Any) -> None:
         )
 
 
-def _at_most(smaller: str, larger: str, values: Mapping[str, int]) -> None:
+def _at_most(
+    smaller: str, larger: str, values: Mapping[str, int], owner: str = "EvalResult"
+) -> None:
     if values[smaller] > values[larger]:
         raise InvalidEvalResult(
-            f"EvalResult reports {values[smaller]} {smaller} over {values[larger]} "
+            f"{owner} reports {values[smaller]} {smaller} over {values[larger]} "
             f"{larger}. {smaller} is a subset of {larger}."
         )
 
@@ -834,6 +842,119 @@ def _require_failures(failures: Sequence[ScenarioFailure], failed: int) -> None:
 
 
 @dataclass(frozen=True)
+class QuestionResolution:
+    """Which question the run's gated relevancy column was scored against (#235).
+
+    A multi-turn scenario asks its question in a conversation, so the question
+    alone ("what about the second one?") names nothing. `resolve_question`
+    rewrites it into a standalone question before the Judge sees it, and a
+    rewrite that fails leaves the raw follow-up to be scored instead. Both
+    produce a relevancy number and the two numbers are not the same claim, which
+    is why the counts travel with the record rather than being recoverable from
+    it.
+
+    THE FOUR ARE NESTED, NOT PARALLEL. `rewritten` and `raw_question_fallback`
+    partition `multi_turn`, and `multi_turn` is a subset of `relevancy_scored`.
+    A single-turn scenario is in `relevancy_scored` and in neither of the other
+    two, because its raw question was already standalone and nothing was
+    resolved.
+
+    Args:
+        relevancy_scored:      rows the Judge returned a relevancy number for.
+                               The denominator, and narrower than
+                               `EvalResult.scored`, which counts a row ANY metric
+                               returned for.
+        multi_turn:            of those, rows whose scenario carries turns, so a
+                               resolution was attempted.
+        rewritten:             of those, rows where the resolution produced a
+                               standalone question and the Judge scored it.
+        raw_question_fallback: of those, rows where it did not, so the Judge
+                               scored the follow-up as written. These are the
+                               rows whose relevancy number is about a question
+                               that names nothing.
+
+    Raises:
+        InvalidEvalResult: a count is negative or not an int, a nested count
+            exceeds the one it sits inside, or the two halves of `multi_turn`
+            do not add up to it.
+    """
+
+    relevancy_scored: int = 0
+    multi_turn: int = 0
+    rewritten: int = 0
+    raw_question_fallback: int = 0
+
+    def __post_init__(self) -> None:
+        counts = {
+            name: getattr(self, name)
+            for name in (
+                "relevancy_scored",
+                "multi_turn",
+                "rewritten",
+                "raw_question_fallback",
+            )
+        }
+        for name, value in counts.items():
+            _require_count(name, value, "QuestionResolution")
+        _at_most("multi_turn", "relevancy_scored", counts, "QuestionResolution")
+        _at_most("rewritten", "multi_turn", counts, "QuestionResolution")
+        # Definitional, not defensive. `question_resolution_provenance` computes
+        # the fallback as `multi_turn - rewritten`, so a stored row where the
+        # three disagree was not written by it. It is this equation plus
+        # `multi_turn <= relevancy_scored` that bounds the fallback by BOTH
+        # denominators the deploy gate divides it by, and each of those shares
+        # blocks a deploy (`_relevancy_provenance_cause`).
+        if self.raw_question_fallback != self.multi_turn - self.rewritten:
+            raise InvalidEvalResult(
+                f"QuestionResolution reports {self.raw_question_fallback} raw "
+                f"question fallback(s) over {self.multi_turn} multi-turn row(s) "
+                f"of which {self.rewritten} were rewritten. A multi-turn row was "
+                "either rewritten or it fell back, so the two are "
+                f"{self.multi_turn - self.rewritten}."
+            )
+
+    @property
+    def payload(self) -> dict:
+        """The four counts as JSON, the shape `eval_runs.config` already holds.
+
+        Identical to the inner object `eval_service.question_resolution_provenance`
+        stamps on the config, so the record and the config say the same thing in
+        the same words rather than in two shapes a reader has to reconcile.
+        """
+        return {
+            "relevancy_scored": self.relevancy_scored,
+            "multi_turn": self.multi_turn,
+            "rewritten": self.rewritten,
+            "raw_question_fallback": self.raw_question_fallback,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: Mapping) -> QuestionResolution:
+        """Rebuild the counts from a stored record.
+
+        An absent key reads as zero, and for this record that is a reading
+        rather than a default. See `EvalResult.question_resolution` for why
+        absence is honest here and dishonest for `agent_invoked`.
+        """
+        if not isinstance(payload, Mapping):
+            raise InvalidEvalResult(
+                f"QuestionResolution needs a mapping, got {type(payload).__name__}"
+            )
+        return cls(
+            relevancy_scored=payload.get("relevancy_scored", 0),
+            multi_turn=payload.get("multi_turn", 0),
+            rewritten=payload.get("rewritten", 0),
+            raw_question_fallback=payload.get("raw_question_fallback", 0),
+        )
+
+
+#: A run that resolved no question: every count zero. One shared object, because
+#: QuestionResolution is frozen and every such run is the same absence. It is
+#: also what a single-turn corpus produces, which is every run before #227.
+NO_QUESTION_RESOLUTION = QuestionResolution()
+
+
+@dataclass(frozen=True)
 class EvalResult:
     """One eval run's measurement: who ran, what answered, what scored, what it cost.
 
@@ -870,6 +991,22 @@ class EvalResult:
                                computed over. Defaults to CONTEXT_PROXY_VERSION,
                                the shape this build produces (#84).
         rule_version:          which construction rules built the record.
+        question_resolution:   which question the gated relevancy column was
+                               scored against. Defaults to
+                               NO_QUESTION_RESOLUTION, and HERE THAT DEFAULT IS
+                               A READING RATHER THAN A GUESS. Every scenario
+                               before #227 was single-turn, so every record
+                               written before this field existed resolved
+                               nothing, which is what four zeros say. Contrast
+                               `agent_invoked`, where absence means nobody
+                               looked and the gate refuses it
+                               (`deployment_service._agent_invoked_from_run_config`).
+                               The difference is that this field is written by
+                               `build_eval_result` as part of one record rather
+                               than by a separate config write, so a present
+                               record either carries the counts or predates
+                               them; there is no third state where the write
+                               failed and the absence means something else.
 
     Raises:
         InvalidEvalResult: an empty id, an unknown dataset name, a member that is
@@ -890,6 +1027,7 @@ class EvalResult:
     failures: Sequence[ScenarioFailure] = ()
     context_proxy_version: str = CONTEXT_PROXY_VERSION
     rule_version: int = EVAL_RULE_VERSION
+    question_resolution: QuestionResolution = NO_QUESTION_RESOLUTION
 
     def __post_init__(self) -> None:
         for name in ("run_id", "agent_id", "requested_model", "context_proxy_version"):
@@ -904,6 +1042,11 @@ class EvalResult:
         if not isinstance(self.cost, Cost):
             raise InvalidEvalResult(
                 f"EvalResult needs a Cost, got {type(self.cost).__name__}"
+            )
+        if not isinstance(self.question_resolution, QuestionResolution):
+            raise InvalidEvalResult(
+                "EvalResult needs question_resolution as a QuestionResolution, got "
+                f"{type(self.question_resolution).__name__}"
             )
         if self.judge_identity is not None and not isinstance(
             self.judge_identity, JudgeIdentity
@@ -990,7 +1133,9 @@ class EvalResult:
             {"run_id", "agent_id", "prompt_version_id", "judge_identity",
              "requested_model", "served_model", "invocation", "datasets",
              "attempted", "valid", "scored", "cost", "failures",
-             "context_proxy_version", "rule_version"} where `datasets` maps each
+             "context_proxy_version", "rule_version", "question_resolution"}
+            where `question_resolution` is {"relevancy_scored", "multi_turn",
+            "rewritten", "raw_question_fallback"}, `datasets` maps each
             reported dataset to {"attempted", "valid", "scored",
             "scenarios_passed", "scenarios_failed", "scenarios_unmeasured",
             "metrics"}, each reported metric to {"value", "measured",
@@ -1019,6 +1164,7 @@ class EvalResult:
             "failures": [failure.payload for failure in self.failures],
             "context_proxy_version": self.context_proxy_version,
             "rule_version": self.rule_version,
+            "question_resolution": self.question_resolution.payload,
         }
 
     @classmethod
@@ -1030,9 +1176,8 @@ class EvalResult:
         already being written down is not evidence that a shape is honest.
 
         EVERY WAY A STORED SHAPE CAN BE WRONG LEAVES HERE AS InvalidEvalResult.
-        `JudgeIdentity(**identity)` over an extra key, a missing key or a string
-        raises TypeError, and the routes catch InvalidEvalResult alone, so one
-        malformed row returned 500 for the whole of `GET /eval-runs`.
+        `JudgeIdentity(**identity)` over a bad key raises TypeError, and the routes catch
+        InvalidEvalResult alone, so one malformed row returned 500 for `GET /eval-runs`.
 
         Raises:
             InvalidEvalResult: the stored shape is not a mapping, breaks a
@@ -1071,6 +1216,7 @@ class EvalResult:
                     "context_proxy_version", CONTEXT_PROXY_VERSION
                 ),
                 rule_version=payload.get("rule_version", EVAL_RULE_VERSION),
+                question_resolution=QuestionResolution.from_payload(payload.get("question_resolution") or {}),
             )
         except InvalidEvalResult:
             # Already this module's refusal, carrying which rule it broke.

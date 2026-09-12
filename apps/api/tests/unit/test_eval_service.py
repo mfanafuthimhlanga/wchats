@@ -2284,6 +2284,9 @@ def _built(**overrides):
         "ledger": [],
         "scenarios": _RECORD_SCENARIOS,
         "judge_records": _record_judge_records(),
+        # The single-turn default: nothing was resolved, so the record's four
+        # counts are zero. TestQuestionResolutionOnTheRecord overrides it.
+        "question_resolution": {},
     }
     fields.update(overrides)
     return build_eval_result(**fields)
@@ -2520,6 +2523,95 @@ class TestDatasetVerdictCounts:
         )
         assert counts["golden"] == (1, 0, 0)
         assert counts["exploratory"] == (0, 1, 0)
+
+
+class TestQuestionResolutionOnTheRecord:
+    """The record carries which question relevancy was scored against (#235).
+
+    The counts are HANDED OVER, never recomputed here. The task stamps the same
+    patch on `eval_runs.config`, so a test that let this function derive its own
+    would stop the two homes from being provably one derivation.
+    """
+
+    def test_the_patch_reaches_the_record_unchanged(self):
+        record = _built(
+            question_resolution={
+                "question_resolution": {
+                    "relevancy_scored": 12,
+                    "multi_turn": 4,
+                    "rewritten": 3,
+                    "raw_question_fallback": 1,
+                }
+            }
+        )
+        assert record.question_resolution.relevancy_scored == 12
+        assert record.question_resolution.multi_turn == 4
+        assert record.question_resolution.rewritten == 3
+        assert record.question_resolution.raw_question_fallback == 1
+
+    def test_an_empty_patch_is_four_zeros(self):
+        """The single-turn run, and the run that scored nothing at all."""
+        from app.domain.eval_result import NO_QUESTION_RESOLUTION
+
+        assert _built().question_resolution == NO_QUESTION_RESOLUTION
+
+    def test_the_counts_are_not_recomputed_from_the_scenarios(self):
+        """The record reports what it was handed, so the config and the record
+        cannot drift. A function deriving its own numbers here would reintroduce
+        the second derivation `build_eval_result` exists to remove."""
+        record = _built(
+            question_resolution={
+                "question_resolution": {
+                    "relevancy_scored": 999,
+                    "multi_turn": 0,
+                    "rewritten": 0,
+                    "raw_question_fallback": 0,
+                }
+            }
+        )
+        assert record.question_resolution.relevancy_scored == 999
+
+    def test_handing_over_the_counts_instead_of_the_envelope_is_refused(self):
+        """The one mistake this parameter's shape invites, made loud.
+
+        `build_eval_result` takes the CONFIG PATCH, the
+        `{"question_resolution": {...}}` envelope, not the four counts. Passing
+        the counts used to cost nothing: the key lookup missed, `from_payload`
+        read four zeros, and the record shipped saying the run resolved no
+        question, which is the reading the deploy gate treats as nothing to
+        distrust.
+        """
+        from app.domain.eval_result import InvalidEvalResult
+
+        with pytest.raises(InvalidEvalResult) as exc:
+            _built(
+                question_resolution={
+                    "relevancy_scored": 12,
+                    "multi_turn": 4,
+                    "rewritten": 3,
+                    "raw_question_fallback": 1,
+                }
+            )
+        assert "envelope" in str(exc.value)
+
+    def test_an_empty_patch_is_still_accepted(self):
+        """The run that scored nothing passes `{}`, and that is not the mistake."""
+        _built(question_resolution={})
+
+    def test_the_record_round_trips_with_the_counts(self):
+        from app.domain.eval_result import EvalResult
+
+        record = _built(
+            question_resolution={
+                "question_resolution": {
+                    "relevancy_scored": 8,
+                    "multi_turn": 5,
+                    "rewritten": 1,
+                    "raw_question_fallback": 4,
+                }
+            }
+        )
+        assert EvalResult.from_payload(record.payload) == record
 
 
 class TestRunJudgeIdentity:

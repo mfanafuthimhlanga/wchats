@@ -101,6 +101,7 @@ from app.domain.eval_result import (
     InvalidEvalResult,
     Invocation,
     Measurement,
+    QuestionResolution,
     ScenarioFailure,
     cost_of_run,
     metrics_of,
@@ -2608,6 +2609,70 @@ def dataset_outcomes(
     }
 
 
+def _invocation_of(invocation: Mapping) -> Invocation:
+    """The summariser's observation as the record's counter block.
+
+    `_INVOCATION_COUNTS` is indexed rather than `.get`-ed: a summary missing one
+    of them is a defect in `summarise_agent_invocation`, and a zero substituted
+    here would be a count the run never made.
+    """
+    return Invocation(
+        status=invocation["status"],
+        **{name: invocation[name] for name in _INVOCATION_COUNTS},
+        deflection_detectors=invocation.get("deflection_detectors") or {},
+    )
+
+
+def _failures_of(invocation: Mapping) -> list[ScenarioFailure]:
+    """The turns that raised, as the record holds them.
+
+    The summariser's own list, not a second walk over the records. It counted
+    `failed` off the same pass, and the record refuses to hold more failures than
+    that count.
+    """
+    return [
+        ScenarioFailure.from_payload(failure)
+        for failure in invocation.get("failures") or []
+    ]
+
+
+def _question_resolution_of(config_patch: Mapping) -> QuestionResolution:
+    """The counts out of `question_resolution_provenance`'s config patch.
+
+    THE PATCH IS PASSED IN RATHER THAN RECOMPUTED, which is the same rule
+    `build_eval_result` follows for the per-dataset counts. The task stamps this
+    object on `eval_runs.config` and hands the identical object here, so the two
+    homes hold ONE DERIVATION. Recomputing the counts from `scenarios` would be
+    the second walk that rule exists to refuse.
+
+    One derivation is not one persistence. The config stamp is a separate write
+    that can fail without raising, so the row and the record can hold different
+    AMOUNTS of the same counts; `_score_run` logs that case and the record is the
+    authority. This function is about where the numbers come from, not about how
+    many of them survive.
+
+    An empty patch is four zeros, which is the run that resolved no question:
+    every single-turn run, and every run that scored nothing at all.
+
+    THE ARGUMENT IS THE ENVELOPE, NOT THE COUNTS, and handing over the counts is
+    the one mistake this shape invites. It used to cost nothing to make: the key
+    lookup missed, `from_payload` read four zeros, and the record shipped saying
+    a run resolved nothing. A non-empty mapping that does not carry the key is
+    therefore a caller defect and is refused rather than defaulted.
+
+    Raises:
+        InvalidEvalResult: a non-empty mapping with no `question_resolution` key.
+    """
+    if config_patch and "question_resolution" not in config_patch:
+        raise InvalidEvalResult(
+            "build_eval_result takes question_resolution_provenance()'s config "
+            "patch, the {'question_resolution': {...}} envelope, and got a "
+            f"mapping carrying {sorted(config_patch)}. Four zeros here would say "
+            "the run resolved no question, which is a shipping signal."
+        )
+    return QuestionResolution.from_payload(config_patch.get("question_resolution") or {})
+
+
 def build_eval_result(
     *,
     run_id: str,
@@ -2618,6 +2683,7 @@ def build_eval_result(
     ledger: Sequence[ModelCall],
     scenarios: Sequence[Mapping],
     judge_records: Sequence[JudgeRecord],
+    question_resolution: Mapping,
 ) -> EvalResult:
     """Assemble the run's record from the summaries the task already holds. Pure.
 
@@ -2626,6 +2692,9 @@ def build_eval_result(
     Both count the same fetched rows by the same rule, so taking one number from
     each would be two derivations of one figure, the defect this record exists to
     remove, reintroduced inside the thing removing it.
+
+    `_question_resolution_of` obeys that same rule the other way round, and its
+    docstring says how.
 
     Args:
         run_id:            UUID string of the eval_runs row.
@@ -2639,6 +2708,8 @@ def build_eval_result(
                            scenario belongs to.
         judge_records:     what the Judge decided, one per (scenario, metric).
                            The per-dataset verdict counts come off these.
+        question_resolution: question_resolution_provenance()'s config patch,
+                           handed over rather than recomputed.
 
     Raises:
         InvalidEvalResult: a summary carried a shape the record refuses, which is
@@ -2651,22 +2722,13 @@ def build_eval_result(
         judge_identity=run_judge_identity(judge_records),
         requested_model=AGENT_TURN_MODEL,
         served_model=served_agent_model(ledger),
-        invocation=Invocation(
-            status=invocation["status"],
-            **{name: invocation[name] for name in _INVOCATION_COUNTS},
-            deflection_detectors=invocation.get("deflection_detectors") or {},
-        ),
+        invocation=_invocation_of(invocation),
         datasets=dataset_outcomes(
             validity, dataset_verdict_counts(scenarios, judge_records)
         ),
         cost=cost_of_run(ledger),
-        # The summariser's own list, not a second walk over the records. It
-        # counted `failed` off the same pass, and the record refuses to hold
-        # more failures than that count.
-        failures=[
-            ScenarioFailure.from_payload(failure)
-            for failure in invocation.get("failures") or []
-        ],
+        failures=_failures_of(invocation),
+        question_resolution=_question_resolution_of(question_resolution),
     )
 
 
