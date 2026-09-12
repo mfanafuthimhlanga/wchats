@@ -44,6 +44,47 @@
       ]
     },
     {
+      "question": "and how do I preview the production build?",
+      "reference_answer": "Run `pnpm build`, then `pnpm preview` serves the production build from `dist/`.",
+      "turns": [
+        {"role": "user", "content": "I have the Mellow's Earth Elements storefront running with pnpm dev."},
+        {"role": "assistant", "content": "Great, the Vite dev server is up. What next?"}
+      ]
+    },
+    {
+      "question": "can I use npm instead?",
+      "reference_answer": "The storefront's Vercel settings specify `pnpm build` for the build command and `pnpm install --frozen-lockfile` for installation. There are no instructions for using `npm` instead.",
+      "turns": [
+        {"role": "user", "content": "I'm deploying the Mellow's Earth Elements storefront to Vercel."},
+        {"role": "assistant", "content": "The build settings for Vercel are in vercel.json. Which part are you configuring?"},
+        {"role": "user", "content": "The install and build commands."}
+      ]
+    },
+    {
+      "question": "what payment method does it support?",
+      "reference_answer": "Checkout is a bank-transfer flow: a delivery form, payment details, then an order-confirmation step that shows a client-side reference number. There is no backend, so the order is not saved server-side.",
+      "turns": [
+        {"role": "user", "content": "I'm looking at how orders are placed on the Mellow's Earth Elements storefront."},
+        {"role": "assistant", "content": "Orders go through the checkout flow. What would you like to know about it?"}
+      ]
+    },
+    {
+      "question": "how is it checked before it goes live?",
+      "reference_answer": "Every response passes a three-judge chain. Nightly Ragas evals run with automatic scenario generation, PyRIT red-team agents attack the agent and their high-severity findings block deployment, and an orchestrator reads every signal into a recommendation that a non-technical owner approves.",
+      "turns": [
+        {"role": "user", "content": "I'm evaluating W Chats for our support desk."},
+        {"role": "assistant", "content": "W Chats ingests your documents and deploys an evaluated agent. What do you want to know?"}
+      ]
+    },
+    {
+      "question": "what should I do if I spot one myself before they do?",
+      "reference_answer": "Volunteer the weakness before being caught. Raising it yourself demonstrates judgment, whereas the interviewer identifying the same weakness signals ignorance; the fact is identical but the signal is opposite.",
+      "turns": [
+        {"role": "user", "content": "I'm preparing with the interview rules you have and I'm worried about weaknesses in my past work."},
+        {"role": "assistant", "content": "The rules cover that directly. Are you asking about how the interviewer raises a weakness, or how you should?"}
+      ]
+    },
+    {
       "question": "how do I start the dev server?",
       "reference_answer": "Which project are you setting up, the Mellow's Earth Elements storefront or Sentinel OHS?",
       "turns": [],
