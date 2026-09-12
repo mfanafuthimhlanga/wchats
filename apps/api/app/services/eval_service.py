@@ -110,6 +110,7 @@ from app.domain.eval_result import (
 from app.domain.judge_identity import JUDGE_PROMPT_VERSION, JudgeIdentity
 from app.domain.judge_record import JudgeRecord, scenario_verdict
 from app.domain.model_call import ModelCall
+from app.services.clarifying_check import CLARIFYING_CHECK_KEY
 from app.services.embedding_service import EMBEDDING_MODEL, _get_vo
 from app.services.judge_llm import build_judge_llm
 
@@ -905,10 +906,10 @@ def summarise_agent_invocation(
         "valid": valid,
         "attempted": attempted,
         "responded": responded,
-        # Rows that reached run_ragas_eval. Smaller than `responded` by exactly
-        # the rows excluded for having no retrieved context — see `no_retrieval`
-        # below — and it, not `responded`, is the denominator the metrics were
-        # computed over.
+        # Rows that reached run_ragas_eval: the denominator the metrics were
+        # computed over. Smaller than `responded` by the rows with no retrieved
+        # context (`no_retrieval`) and by the ambiguous rows the rule decided
+        # (#226), whose verdicts ride on the validity report instead.
         "scorable": scorable,
         "failed": failed,
         "empty": empty,
@@ -951,8 +952,8 @@ def summarise_agent_invocation(
         "retrieved_context_unparsed": sum(
             int(r.get("retrieve_unparsed") or 0) for r in records
         ),
-        # Responded, called retrieve zero times. EXCLUDED FROM SCORING and
-        # counted here: Faithfulness / ContextPrecision / ContextRecall over an
+        # Responded, called retrieve zero times. EXCLUDED FROM RAGAS SCORING and
+        # counted here (an ambiguous row that asked lands here too, #226): Faithfulness / ContextPrecision / ContextRecall over an
         # empty context list are structurally 0 or NaN, and a 0 for an answer the
         # agent gave correctly from its system prompt is the "zero is not a low
         # score" error one metric over. It is a bucket, not a failure — an agent
@@ -1246,8 +1247,13 @@ def dataset_composition(
 def summarise_run_validity(
     scenarios: list[dict],
     scenario_scores: list[dict],
+    clarifying_verdicts: Mapping[str, bool] | None = None,
 ) -> dict:
     """Report (attempted, valid, scored) for a run and per dataset. Pure — no I/O.
+
+    `clarifying_verdicts` is scenario_id -> asked for the ambiguous rows the rule
+    decided (#226). Each counts as SCORED, measured by a rule rather than a
+    Judge, and contributes no metric observation because it has none.
 
     The three counts are different claims and collapsing any two of them is how
     a run comes to report a rate it never measured:
@@ -1314,27 +1320,9 @@ def summarise_run_validity(
         if _is_valid_scenario(scenario):
             bucket["valid"] += 1
 
-    unattributed = 0
-    for score in scenario_scores:
-        # A score whose scenario is not in the fetched set is attributed to
-        # neither dataset: it cannot be, and inventing a bucket for it would put
-        # an unattributable observation into a comparable measurement. It is
-        # COUNTED, though — see the docstring: a dropped observation nobody
-        # reports is how the two readers of these rows came to disagree.
-        name = dataset_by_scenario_id.get(str(score.get("scenario_id")))
-        if name is None:
-            unattributed += 1
-            continue
-        bucket = buckets[name]
-        observed_any = False
-        for metric in METRIC_KEYS:
-            value = score.get(metric)
-            if value is None:
-                continue
-            bucket["_observations"][metric].append(float(value))
-            observed_any = True
-        if observed_any:
-            bucket["scored"] += 1
+    checked = clarifying_verdicts or {}
+    unattributed = _attribute_scores(buckets, dataset_by_scenario_id, scenario_scores)
+    unattributed += _count_checked_as_scored(buckets, dataset_by_scenario_id, checked)
 
     datasets: dict[str, dict] = {}
     for name in EVAL_DATASETS:
@@ -1359,7 +1347,59 @@ def summarise_run_validity(
         # dataset would be the invention this function refuses to make.
         "unattributed": unattributed,
         "datasets": datasets,
+        # Carried on the report so `build_eval_result` counts verdicts off the
+        # SAME mapping this counted `scored` with. Two arguments can drift; one
+        # report cannot.
+        "clarifying_verdicts": dict(checked),
     }
+
+
+def _attribute_scores(
+    buckets: dict[str, dict], dataset_by_scenario_id: Mapping[str, str], scores: list[dict]
+) -> int:
+    """Put each score's observations in its dataset; return how many had none.
+
+    A score whose scenario is not in the fetched set is attributed to neither
+    dataset: it cannot be, and inventing a bucket for it would put an
+    unattributable observation into a comparable measurement. It is COUNTED,
+    though: a dropped observation nobody reports is how the two readers of these
+    rows came to disagree.
+    """
+    unattributed = 0
+    for score in scores:
+        name = dataset_by_scenario_id.get(str(score.get("scenario_id")))
+        if name is None:
+            unattributed += 1
+            continue
+        bucket = buckets[name]
+        observed_any = False
+        for metric in METRIC_KEYS:
+            value = score.get(metric)
+            if value is None:
+                continue
+            bucket["_observations"][metric].append(float(value))
+            observed_any = True
+        if observed_any:
+            bucket["scored"] += 1
+    return unattributed
+
+
+def _count_checked_as_scored(
+    buckets: dict[str, dict], dataset_by_scenario_id: Mapping[str, str], checked: Mapping[str, bool]
+) -> int:
+    """The rows the rule decided count as scored and nothing more (#226).
+
+    A verdict for a scenario outside the fetched set is dropped the way an
+    unattributable score is, and counted with them.
+    """
+    unattributed = 0
+    for scenario_id in checked:
+        name = dataset_by_scenario_id.get(str(scenario_id))
+        if name is None:
+            unattributed += 1
+            continue
+        buckets[name]["scored"] += 1
+    return unattributed
 
 
 # ---------------------------------------------------------------------------
@@ -1807,6 +1847,23 @@ def write_eval_results(
 _INSERT_EVAL_SAMPLE = """
     INSERT INTO eval_samples (
         id, eval_run_id, scenario_id, dataset,
+        user_input, response, retrieved_contexts, reference, turns, resolved_question,
+        clarifying_check
+    )
+    VALUES (
+        %(id)s::uuid, %(eval_run_id)s::uuid, %(scenario_id)s, %(dataset)s,
+        %(user_input)s, %(response)s, %(retrieved_contexts)s::jsonb, %(reference)s,
+        %(turns)s::jsonb, %(resolved_question)s,
+        %(clarifying_check)s
+    )
+"""
+
+#: The 0028 shape, for a tenant behind 0029. The ambiguous rows' verdicts are
+#: lost on such a tenant and the warning says so; the conversation and the
+#: rewrite still land.
+_INSERT_EVAL_SAMPLE_PRE_0029 = """
+    INSERT INTO eval_samples (
+        id, eval_run_id, scenario_id, dataset,
         user_input, response, retrieved_contexts, reference, turns, resolved_question
     )
     VALUES (
@@ -1816,7 +1873,7 @@ _INSERT_EVAL_SAMPLE = """
     )
 """
 
-#: The pre-0028 shape. Used only when the wide INSERT raises UndefinedColumn.
+#: The pre-0028 shape. Used only when the 0028 INSERT raises UndefinedColumn.
 #:
 #: THE WRITE HAS TO TOLERATE WHAT THE READ TOLERATES. `run_eval_suite`'s scenario
 #: fetch degrades to a narrower projection on a tenant database behind head, so
@@ -1824,8 +1881,9 @@ _INSERT_EVAL_SAMPLE = """
 #: fallback the run then died here, on the last write before scoring, and was
 #: recorded as `failed` with no `eval_results` and no retry: a night of model
 #: spend for nothing, and a run that had completed before `turns` was added to
-#: the INSERT above. `turns` is the only column 0028 adds that this writer names,
-#: and a sample row without it is the single-turn row every run wrote before #227.
+#: the INSERT above. 0028 added `turns` and `resolved_question` to this writer
+#: and this rung drops both; a sample row without them is the single-turn row
+#: every run wrote before #227, scored on its raw question.
 _INSERT_EVAL_SAMPLE_PRE_0028 = """
     INSERT INTO eval_samples (
         id, eval_run_id, scenario_id, dataset,
@@ -1880,7 +1938,56 @@ def _sample_row_params(eval_run_id: str, scenario: Mapping) -> dict:
         # where every rewrite failed does not read like a run with no multi-turn
         # scenarios in it.
         "resolved_question": str(scenario.get("resolved_question") or "").strip() or None,
+        # The rule's verdict on an ambiguous scenario, and NULL on every other
+        # row (#226, tenant 0029). This is the row's whole result: such a
+        # scenario has no eval_results, so a reader who finds NULL here and no
+        # judge rows is looking at a row nobody measured, not at a pass.
+        "clarifying_check": (
+            bool(scenario[CLARIFYING_CHECK_KEY]) if CLARIFYING_CHECK_KEY in scenario else None
+        ),
     }
+
+
+#: The INSERT for each tenant revision that added a column to this writer,
+#: newest first, with the log line that says what the narrower shape loses.
+_SAMPLE_INSERT_LADDER: tuple[tuple[str, str, str], ...] = (
+    (
+        _INSERT_EVAL_SAMPLE,
+        "write_eval_samples.clarifying_check_column_absent",
+        "tenant DB predates alembic_tenant 0029 — ambiguous rows are recorded "
+        "without the rule's verdict on them",
+    ),
+    (
+        _INSERT_EVAL_SAMPLE_PRE_0029,
+        "write_eval_samples.turns_column_absent",
+        "tenant DB predates alembic_tenant 0028 — the scored text is recorded "
+        "without the conversation it was asked in or the rewrite it was scored on",
+    ),
+    (_INSERT_EVAL_SAMPLE_PRE_0028, "", ""),
+)
+
+
+def _insert_sample_rows(conn, params: Sequence[Mapping], *, eval_run_id: str) -> None:
+    """Put every row down on the widest INSERT the tenant's schema accepts.
+
+    The aborted transaction must be rolled back before the connection will accept
+    another statement. Every row is re-sent, and the reason is the loop rather
+    than the transaction: psycopg2 parses each statement server-side, so the
+    FIRST execute is the one that raises and no row was ever written. Restarting
+    the loop on the next rung is what puts the whole set down. The last rung has
+    no rung below it and raises.
+    """
+    for statement, event, detail in _SAMPLE_INSERT_LADDER:
+        try:
+            with conn.cursor() as cur:
+                for row in params:
+                    cur.execute(statement, row)
+            return
+        except psycopg2.errors.UndefinedColumn:
+            if not event:
+                raise
+            conn.rollback()
+            log.warning(event, eval_run_id=eval_run_id, detail=detail)
 
 
 def write_eval_samples(
@@ -1905,32 +2012,8 @@ def write_eval_samples(
 
     params = [_sample_row_params(eval_run_id, scenario) for scenario in scenarios]
     conn = psycopg2.connect(conn_str, connect_timeout=CONNECT_TIMEOUT_S)
-
-    def _insert_all(statement: str) -> None:
-        with conn.cursor() as cur:
-            for row in params:
-                cur.execute(statement, row)
-
     try:
-        try:
-            _insert_all(_INSERT_EVAL_SAMPLE)
-        except psycopg2.errors.UndefinedColumn:
-            # The aborted transaction must be rolled back before the connection
-            # will accept another statement. Every row is re-sent, and the reason
-            # is the loop rather than the transaction: psycopg2 parses each
-            # statement server-side, so the FIRST execute is the one that raises
-            # and no row was ever written. Restarting the loop on the narrow
-            # statement is what puts the whole set down.
-            conn.rollback()
-            log.warning(
-                "write_eval_samples.turns_column_absent",
-                eval_run_id=eval_run_id,
-                detail=(
-                    "tenant DB predates alembic_tenant 0028 — the scored text is "
-                    "recorded without the conversation it was asked in"
-                ),
-            )
-            _insert_all(_INSERT_EVAL_SAMPLE_PRE_0028)
+        _insert_sample_rows(conn, params, eval_run_id=eval_run_id)
         conn.commit()
     finally:
         conn.close()
@@ -2523,8 +2606,14 @@ _NO_VERDICTS = (0, 0, 0)
 def dataset_verdict_counts(
     scenarios: Sequence[Mapping],
     judge_records: Sequence[JudgeRecord],
+    clarifying_verdicts: Mapping[str, bool] | None = None,
 ) -> dict[str, tuple[int, int, int]]:
     """(passed, failed, unmeasured) scenarios per dataset, off the run's own records. Pure.
+
+    `clarifying_verdicts` (#226) is scenario_id -> asked for the ambiguous rows
+    the deterministic check decided. Asked is a pass and answered is a fail, in
+    the same counts a Judge verdict lands in, which is how the golden and
+    exploratory rules read the check without a fifth metric (ADR 0012).
 
     THE RUN COUNTS ITS OWN VERDICTS, ONCE. `deployment_service` used to reach
     these two numbers with a `COUNT(*) FILTER` over `eval_results` at deploy
@@ -2565,10 +2654,23 @@ def dataset_verdict_counts(
             ]
         )
         counts[name][2 if verdict is None else (0 if verdict else 1)] += 1
+    _count_checked_verdicts(counts, dataset_by_scenario_id, clarifying_verdicts)
     return {
         name: (passed, failed, unmeasured)
         for name, (passed, failed, unmeasured) in counts.items()
     }
+
+
+def _count_checked_verdicts(
+    counts: dict[str, list[int]],
+    dataset_by_scenario_id: Mapping[str, str],
+    clarifying_verdicts: Mapping[str, bool] | None,
+) -> None:
+    """Asked is a pass, answered is a fail, in the dataset the scenario belongs to."""
+    for scenario_id, asked in (clarifying_verdicts or {}).items():
+        name = dataset_by_scenario_id.get(str(scenario_id))
+        if name is not None:
+            counts[name][0 if asked else 1] += 1
 
 
 def dataset_outcomes(
@@ -2687,14 +2789,14 @@ def build_eval_result(
 ) -> EvalResult:
     """Assemble the run's record from the summaries the task already holds. Pure.
 
+    The ambiguous rows' verdicts (#226) come off `validity`, the mapping it
+    counted `scored` with, so verdicts and denominator read one set of rows.
     The three per-dataset counts all come from `summarise_run_validity` and none
     from `dataset_composition`, even though composition reports `attempted` too.
     Both count the same fetched rows by the same rule, so taking one number from
     each would be two derivations of one figure, the defect this record exists to
-    remove, reintroduced inside the thing removing it.
-
-    `_question_resolution_of` obeys that same rule the other way round, and its
-    docstring says how.
+    remove, reintroduced inside the thing removing it. `_question_resolution_of`
+    obeys that same rule the other way round, and its docstring says how.
 
     Args:
         run_id:            UUID string of the eval_runs row.
@@ -2707,9 +2809,7 @@ def build_eval_result(
         scenarios:         the rows the run fetched, carrying the dataset each
                            scenario belongs to.
         judge_records:     what the Judge decided, one per (scenario, metric).
-                           The per-dataset verdict counts come off these.
-        question_resolution: question_resolution_provenance()'s config patch,
-                           handed over rather than recomputed.
+        question_resolution: question_resolution_provenance()'s config patch.
 
     Raises:
         InvalidEvalResult: a summary carried a shape the record refuses, which is
@@ -2724,7 +2824,10 @@ def build_eval_result(
         served_model=served_agent_model(ledger),
         invocation=_invocation_of(invocation),
         datasets=dataset_outcomes(
-            validity, dataset_verdict_counts(scenarios, judge_records)
+            validity,
+            dataset_verdict_counts(
+                scenarios, judge_records, validity.get("clarifying_verdicts")
+            ),
         ),
         cost=cost_of_run(ledger),
         failures=_failures_of(invocation),
