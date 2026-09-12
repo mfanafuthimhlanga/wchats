@@ -239,7 +239,7 @@ LIZARD_BASELINE = {
     ("app/services/retrieval_service.py", "verified_qa_lookup"): (3, 61),
     ("app/services/scenario_service.py", "generate_eval_suite_for_agent"): (7, 61),
     ("app/services/scenario_service.py", "generate_scenarios_from_chunks"): (5, 65),
-    ("app/services/scenario_service.py", "mine_production_scenarios"): (11, 114),
+    ("app/services/scenario_service.py", "mine_production_scenarios"): (11, 100),
     ("app/services/sse.py", "event_generator"): (13, 96),
     ("app/services/strategy_service.py", "_fetch_corpus_signals_sync"): (10, 74),
     ("app/services/transactional/adapters/calendly_adapter.py", "book_slot"): (2, 81),
@@ -282,8 +282,8 @@ LIZARD_BASELINE = {
     ("app/worker/tasks/runtime/red_team.py", "run_red_team"): (28, 425),
     ("app/worker/tasks/runtime/retrieval_eval.py", "run_retrieval_faithfulness"): (12, 82),
     ("app/worker/tasks/runtime/retrieve.py", "retrieve_and_rank"): (12, 212),
-    ("app/worker/tasks/runtime/validators.py", "run_auditor"): (15, 184),
-    ("app/worker/tasks/runtime/validators.py", "run_gatekeeper"): (5, 102),
+    ("app/worker/tasks/runtime/validators.py", "run_auditor"): (15, 179),
+    ("app/worker/tasks/runtime/validators.py", "run_gatekeeper"): (5, 99),
     ("app/worker/tasks/runtime/validators.py", "run_strategist"): (9, 111),
 }
 

@@ -19,6 +19,7 @@ Mock strategy:
 
 from __future__ import annotations
 
+import json
 import uuid
 from unittest.mock import MagicMock, patch
 
@@ -403,6 +404,60 @@ class TestTheDatasetColumnIsWritten:
         )
 
 
+#: The columns `job_events` actually has, so a double cannot invent one.
+#:
+#: The miner used to read `jobs.conversation_id`, and the test below used to pass
+#: a bare MagicMock as `control_db` and set `job_row.conversation_id` on a mock it
+#: made itself. A MagicMock executes no SQL, so the query could not fail and the
+#: attribute was whatever the test assigned. That column has never existed, the
+#: real query raises `UndefinedColumn`, and mining had never produced a row (#238).
+#:
+#: This double answers ONLY the columns the Step 1 query selects. A query naming
+#: anything else raises here the way the database raises there.
+_EVENT_COLUMNS = ("job_id", "verdict", "conversation_id", "question")
+
+
+class _FlaggedEvent:
+    """One `job_events` row at the width the miner's projection selects."""
+
+    __slots__ = _EVENT_COLUMNS
+
+    def __init__(self, job_id, verdict="fail", conversation_id=None, question=None):
+        self.job_id = job_id
+        self.verdict = verdict
+        self.conversation_id = conversation_id
+        self.question = question
+
+
+class _ControlDb:
+    """A control DB that runs one query and refuses a second.
+
+    The miner used to run a follow-up `SELECT ... FROM jobs` per flagged row.
+    Nothing should reach this class twice, and a version that reintroduced the
+    lookup fails here rather than quietly reading a mock.
+    """
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.queries: list[str] = []
+
+    def execute(self, statement, params=None):
+        sql = str(statement)
+        self.queries.append(sql)
+        if len(self.queries) > 1:
+            raise AssertionError(
+                "the miner ran a second control-DB query. Everything it needs is "
+                "on the event; the `jobs` lookup is what #238 removed: %s" % sql
+            )
+        for column in ("conversation_id", "question"):
+            assert column in sql, (
+                f"the flagged-event projection does not select {column}, so the "
+                "miner cannot reach the conversation a flagged turn happened in"
+            )
+        assert "FROM jobs" not in sql, "the jobs lookup is back (#238)"
+        return MagicMock(fetchall=MagicMock(return_value=self._rows))
+
+
 class TestTheMinerNamesItsDataset:
     """The miner feeds `store_scenarios` directly, so a silent omission here is
     a refused batch, not a NULL row.
@@ -416,16 +471,15 @@ class TestTheMinerNamesItsDataset:
     def test_a_mined_row_names_the_exploratory_dataset(self, monkeypatch):
         from app.services import scenario_service
 
-        flagged = MagicMock()
-        flagged.job_id = "11111111-1111-1111-1111-111111111111"
-        job_row = MagicMock()
-        job_row.conversation_id = "22222222-2222-2222-2222-222222222222"
-
-        control_db = MagicMock()
-        control_db.execute.side_effect = [
-            MagicMock(fetchall=MagicMock(return_value=[flagged])),
-            MagicMock(fetchone=MagicMock(return_value=job_row)),
-        ]
+        control_db = _ControlDb(
+            [
+                _FlaggedEvent(
+                    "11111111-1111-1111-1111-111111111111",
+                    conversation_id="22222222-2222-2222-2222-222222222222",
+                    question="why was I charged twice?",
+                )
+            ]
+        )
         monkeypatch.setattr(
             scenario_service,
             "_fetch_messages_for_conversation",
@@ -447,3 +501,179 @@ class TestTheMinerNamesItsDataset:
                 scenario_service.store_scenarios(mined, "postgresql://tenant-conn") == 1
             )
         assert cursor.execute.call_count == 1
+
+
+class TestAMinedScenarioKeepsTheConversationItWasAskedIn:
+    """#227 PR 3. A flagged follow-up is only answerable inside its conversation.
+
+    "how do I start the dev server" is bound by the project the customer named
+    two messages earlier. Mined as a bare question it produced a row the agent
+    could not answer and the Judge could not fairly score, and the eval then
+    reported that failure as a quality signal.
+    """
+
+    CONV = "22222222-2222-2222-2222-222222222222"
+    LEAD_IN = [
+        {"role": "user", "content": "I'm setting up Earth Elements locally."},
+        {"role": "assistant", "content": "Happy to help. What do you need?"},
+    ]
+    FOLLOW_UP = "how do I start the dev server?"
+
+    def _mine(self, monkeypatch, messages, question=FOLLOW_UP, conversation_id=CONV):
+        from app.services import scenario_service
+
+        control_db = _ControlDb(
+            [
+                _FlaggedEvent(
+                    "11111111-1111-1111-1111-111111111111",
+                    conversation_id=conversation_id,
+                    question=question,
+                )
+            ]
+        )
+        monkeypatch.setattr(
+            scenario_service,
+            "_fetch_messages_for_conversation",
+            lambda *a, **kw: messages,
+        )
+        return scenario_service.mine_production_scenarios(
+            "agent-1", "postgresql://tenant-conn", control_db
+        )
+
+    def test_the_turns_before_the_flagged_question_travel_with_it(self, monkeypatch):
+        [mined] = self._mine(
+            monkeypatch,
+            [*self.LEAD_IN, {"role": "user", "content": self.FOLLOW_UP}],
+        )
+
+        assert mined["question"] == self.FOLLOW_UP
+        assert mined["turns"] == self.LEAD_IN, (
+            "the mined scenario carries no conversation, so the agent is asked a "
+            "follow-up with nothing to bind it and scored on the answer"
+        )
+
+    def test_the_question_is_the_one_that_was_flagged_not_the_first_asked(
+        self, monkeypatch
+    ):
+        """The miner took `user_messages[0]` before #227.
+
+        A conversation's opening message is rarely the turn that failed, and the
+        row it produced named a question nobody had complained about.
+        """
+        [mined] = self._mine(
+            monkeypatch,
+            [*self.LEAD_IN, {"role": "user", "content": self.FOLLOW_UP}],
+        )
+
+        assert mined["question"] != self.LEAD_IN[0]["content"]
+
+    def test_a_repeated_question_matches_the_later_asking(self, monkeypatch):
+        """Asked twice, flagged on the second, bound by the longer conversation."""
+        messages = [
+            {"role": "user", "content": self.FOLLOW_UP},
+            {"role": "assistant", "content": "Which project?"},
+            {"role": "user", "content": "Earth Elements."},
+            {"role": "assistant", "content": "Got it."},
+            {"role": "user", "content": self.FOLLOW_UP},
+        ]
+
+        [mined] = self._mine(monkeypatch, messages)
+
+        assert len(mined["turns"]) == 4
+        assert mined["turns"][-1]["content"] == "Got it."
+
+    def test_the_opening_message_being_flagged_carries_no_turns(self, monkeypatch):
+        [mined] = self._mine(
+            monkeypatch, [{"role": "user", "content": self.FOLLOW_UP}]
+        )
+
+        assert mined["turns"] == []
+
+    def test_a_question_absent_from_the_conversation_degrades_to_no_turns(
+        self, monkeypatch
+    ):
+        """A message edited or deleted since the flag. The row is still worth
+        having, and it is honestly single-turn rather than wrongly bound."""
+        [mined] = self._mine(
+            monkeypatch, [{"role": "user", "content": "something else entirely"}]
+        )
+
+        assert mined["question"] == self.FOLLOW_UP
+        assert mined["turns"] == []
+
+    def test_an_event_from_before_the_linkage_is_skipped(self, monkeypatch):
+        """Rows already in job_events carry no conversation_id and never will."""
+        assert self._mine(monkeypatch, [], conversation_id=None) == []
+
+    def test_an_event_carrying_no_question_is_skipped(self, monkeypatch):
+        assert self._mine(monkeypatch, [], question=None) == []
+
+    def test_an_empty_assistant_row_does_not_become_a_turn(self, monkeypatch):
+        """A turn that exhausted max_model_calls persists an empty assistant row.
+
+        `_read_turn_history` drops it from a live conversation for the same
+        reason: replayed, the model reads it as a turn where it chose silence.
+        """
+        [mined] = self._mine(
+            monkeypatch,
+            [
+                {"role": "user", "content": "I'm setting up Earth Elements locally."},
+                {"role": "assistant", "content": "   "},
+                {"role": "user", "content": self.FOLLOW_UP},
+            ],
+        )
+
+        assert [t["role"] for t in mined["turns"]] == ["user"]
+
+
+class TestTheWriterCarriesTheConversation:
+    """0028 added `turns` and `store_scenarios` never wrote it, so every mined
+    row landed with the column's `[]` default whatever the miner produced."""
+
+    def test_the_insert_binds_the_turns_it_was_given(self):
+        from app.services import scenario_service
+
+        turns = [{"role": "user", "content": "I'm setting up Earth Elements."}]
+        rows = [
+            {
+                "question": "how do I start the dev server?",
+                "reference_answer": "",
+                "source": "mined",
+                "dataset": "exploratory",
+                "turns": turns,
+            }
+        ]
+
+        with patch("app.services.scenario_service.psycopg2") as mock_psycopg2:
+            cursor = _cursor_on(mock_psycopg2)
+            scenario_service.store_scenarios(rows, "postgresql://tenant-conn")
+
+        sql, params = cursor.execute.call_args[0]
+        assert "turns" in sql, f"the INSERT names no turns column: {sql}"
+        assert json.dumps(turns) in params, (
+            "the conversation the question was asked in was dropped on the way to "
+            "the row, so the eval reads it back as single-turn"
+        )
+        assert sql.count("%s") == len(params), (
+            f"{sql.count('%s')} placeholders, {len(params)} parameters"
+        )
+
+    def test_a_row_with_no_turns_writes_an_empty_conversation(self):
+        """A generated scenario reads back exactly as it did before #227."""
+        from app.services import scenario_service
+
+        rows = [
+            {
+                "question": "Q",
+                "reference_answer": "A",
+                "source": "generated",
+                "dataset": "exploratory",
+            }
+        ]
+
+        with patch("app.services.scenario_service.psycopg2") as mock_psycopg2:
+            cursor = _cursor_on(mock_psycopg2)
+            scenario_service.store_scenarios(rows, "postgresql://tenant-conn")
+
+        _sql, params = cursor.execute.call_args[0]
+        assert "[]" in params

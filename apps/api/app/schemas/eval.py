@@ -4,14 +4,38 @@ Only the golden registration path uses typed schemas today; the read routes
 return dicts shaped by the run's stored record (see app/api/v1/evals.py).
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
+class ConversationTurn(BaseModel):
+    """One message before the question, in the shape tenant migration 0028 stores.
+
+    The bounds mirror `_read_turn_history`'s, which is the read that decides what
+    rides on a model call and stays authoritative: 4,000 characters a row,
+    because an assistant row carries an answer and its citations block where a
+    customer row carries a question. They are repeated rather than imported
+    because a request schema may not reach into a worker task module, and a
+    request larger than the read would accept is worth refusing at the door.
+    """
+
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=4000)
+
+
 class GoldenPair(BaseModel):
-    """One owner-authored question with the answer a correct response must match."""
+    """One owner-authored question with the answer a correct response must match.
+
+    `turns` is the conversation the question was asked in, oldest first, and the
+    question itself is never repeated in it (#227). A follow-up like "how do I
+    start the dev server" is only answerable inside the conversation that named
+    the project, so a golden pair for one needs the turns that bind it.
+    """
 
     question: str = Field(min_length=1, max_length=2000)
     reference_answer: str = Field(min_length=1, max_length=8000)
+    turns: list[ConversationTurn] = Field(default_factory=list, max_length=40)
 
 
 class GoldenScenariosRegisterRequest(BaseModel):

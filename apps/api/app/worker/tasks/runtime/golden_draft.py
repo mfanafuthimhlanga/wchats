@@ -136,7 +136,11 @@ def draft_golden_scenarios(self, job_id: str, agent_id: str, n: int) -> dict:
                 tenant_id=str(agent.tenant_id), agent_id=agent_id, job_id=job_id,
                 recorder=ledger_recorder(conn_str),
             )
-            kept, dropped = draft_golden_pairs(to_draft, ledger)
+            # A lead-in is asked for only when the corpus has something to be
+            # ambiguous BETWEEN. One document means one subject (#227).
+            kept, dropped = draft_golden_pairs(
+                to_draft, ledger, len({c["document_id"] for c in picked}) > 1
+            )
             for draft in kept:
                 emit(job_id, EVENT_PAIR, draft, db, _redis)
             summary = {

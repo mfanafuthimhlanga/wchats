@@ -84,6 +84,7 @@ What the response says when a number does not exist:
 from __future__ import annotations
 
 import asyncio
+import json
 from uuid import UUID
 
 import psycopg2
@@ -743,31 +744,56 @@ async def trigger_eval_run(
 # #56: golden registration, the one write on this router
 # ---------------------------------------------------------------------------
 
-_GOLDEN_EXISTING_SQL = "SELECT question FROM eval_scenarios WHERE dataset = 'golden'"
+_GOLDEN_EXISTING_SQL = (
+    "SELECT question, COALESCE(turns, '[]'::jsonb) FROM eval_scenarios "
+    "WHERE dataset = 'golden'"
+)
+
+
+def _golden_key(question: str, turns: list[dict] | None) -> tuple[str, str]:
+    """What makes two golden pairs the same pair.
+
+    THE QUESTION ALONE STOPPED BEING THE KEY AT #227. "How do I start the dev
+    server?" is one golden pair per conversation that binds it, and keying on the
+    text alone silently skipped the second and every one after it, leaving the
+    owner with a golden set smaller than the file they registered and no row
+    saying which pairs went missing.
+
+    The turns are keyed on their JSON with sorted keys so two orderings of the
+    same turn compare equal, and an unparseable stored value keys as its own raw
+    text rather than collapsing into the empty conversation.
+    """
+    if isinstance(turns, str):
+        try:
+            turns = json.loads(turns)
+        except (TypeError, ValueError):
+            return question, turns
+    return question, json.dumps(turns or [], sort_keys=True)
 
 
 def _register_golden_sync(
-    conn_str: str, pairs: list[tuple[str, str]], provenance: str
+    conn_str: str, pairs: list[tuple[str, str, list[dict]]], provenance: str
 ) -> tuple[int, list[str], int]:
-    """Insert authored golden pairs in one transaction, skipping known questions.
+    """Insert authored golden pairs in one transaction, skipping known pairs.
 
-    A question already in the golden set is skipped rather than duplicated, so
-    one caller re-running the same file is idempotent. No unique constraint
-    backs the check, so concurrent registrations of one file can still race
-    duplicates in; the surface is a single operator. Returns
-    (registered, skipped_questions, golden_total), the total counting distinct
-    question texts. Any failure rolls the whole batch back; a file
-    half-registered would leave the golden floor unaccountable.
+    A pair already in the golden set is skipped rather than duplicated, so one
+    caller re-running the same file is idempotent. Sameness is `_golden_key`, the
+    question AND the conversation it was asked in. No unique constraint backs the
+    check, so concurrent registrations of one file can still race duplicates in;
+    the surface is a single operator. Returns (registered, skipped_questions,
+    golden_total), the total counting distinct pairs. Any failure rolls the whole
+    batch back; a file half-registered would leave the golden floor unaccountable.
     """
     conn = psycopg2.connect(conn_str, connect_timeout=10)
     try:
         with conn.cursor() as cur:
             cur.execute(_GOLDEN_EXISTING_SQL)
-            existing = {q for (q,) in cur.fetchall()}
+            existing = {_golden_key(q, t) for q, t in cur.fetchall()}
         registered = 0
         skipped: list[str] = []
-        for question, reference_answer in pairs:
-            if question in existing:
+        for question, reference_answer, turns in pairs:
+            key = _golden_key(question, turns)
+            if key in existing:
                 skipped.append(question)
                 continue
             insert_authored_golden_scenario(
@@ -775,8 +801,9 @@ def _register_golden_sync(
                 question=question,
                 reference_answer=reference_answer,
                 provenance=provenance,
+                turns=turns,
             )
-            existing.add(question)
+            existing.add(key)
             registered += 1
         conn.commit()
         return registered, skipped, len(existing)
@@ -845,7 +872,7 @@ async def register_golden_scenarios(
         registered, skipped, total = await asyncio.to_thread(
             _register_golden_sync,
             conn_str,
-            [(p.question, p.reference_answer) for p in body.pairs],
+            [(p.question, p.reference_answer, [t.model_dump() for t in p.turns]) for p in body.pairs],
             provenance,
         )
     except (InvalidScenario, psycopg2.errors.CheckViolation) as exc:

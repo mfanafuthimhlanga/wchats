@@ -286,7 +286,7 @@ def _dispatch_validation_chain(
     # (the Auditor's verdict does not exist yet at this dispatch point — see
     # retrieval_eval.py module docstring).
     celery_chain(
-        run_gatekeeper.si(agent_id, job_id, response_text, message),
+        run_gatekeeper.si(agent_id, job_id, response_text, message, conversation_id),
         run_auditor.si(agent_id, job_id, response_text, message,
                        retrieved_context_json, conversation_id),
         run_strategist.si(agent_id, job_id, response_text, message),
