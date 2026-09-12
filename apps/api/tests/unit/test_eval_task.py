@@ -1972,3 +1972,30 @@ class TestTheEvalRunBound:
             "the ceiling on invocations is one of the two factors, and raising "
             f"it left the bound where it was: {before} then {after}"
         )
+
+
+class TestTheCheckedRowsNeverReachTheJudge:
+    """#226, ADR 0012: `_record_and_judge` splits the rows the rule decided."""
+
+    def _rows(self):
+        return [
+            {"id": "s0", "question": "q0", "agent_response": "a0", "retrieved_contexts": ["c"], "reference_answer": "r0", "turns": []},
+            {"id": "s1", "question": "q1", "agent_response": "Which project?", "retrieved_contexts": [], "reference_answer": "Which one?", "turns": [], "ambiguous": True, "clarifying_check": True},
+            {"id": "s2", "question": "q2", "agent_response": "pnpm dev", "retrieved_contexts": [], "reference_answer": "Which one?", "turns": [], "ambiguous": True, "clarifying_check": False},
+        ]
+
+    def test_the_judge_gets_the_judged_rows_and_the_samples_table_gets_all(self, monkeypatch):
+        handed = {}
+        monkeypatch.setattr(mod, "annotate_resolved_questions", lambda rows, *, ledger: rows)
+        monkeypatch.setattr(mod, "write_eval_samples", lambda run_id, rows, conn_str: handed.setdefault("samples", rows))
+        monkeypatch.setattr(mod, "run_ragas_eval", lambda rows, ledger: handed.setdefault("ragas", rows) and {"scores": [], "judge_records": []})
+
+        results, judged = mod._record_and_judge("run-1", self._rows(), object(), "postgresql://prod")
+
+        assert [r["id"] for r in handed["ragas"]] == ["s0"]
+        assert [r["id"] for r in judged] == ["s0"]
+        assert [r["id"] for r in handed["samples"]] == ["s0", "s1", "s2"]
+        assert results["clarifying_verdicts"] == {"s1": True, "s2": False}
+
+    def test_a_run_below_the_floor_reports_no_verdicts(self):
+        assert mod._NOTHING_SCORED["clarifying_verdicts"] == {}

@@ -1,46 +1,57 @@
 # 0012: A clarifying question is checked by a rule, not by a fifth Judge
 
-Status: proposed. Drafted 2026-09-12 from issue #226 and the plan in
-`.dev/plans/260909-multi-turn-eval-scenarios.md`. Tenant migration 0028 added the
-`ambiguous` column and nothing reads it yet. The decision that is open is where the
-check's result lives.
+Status: accepted. Decided with the owner 2026-09-12 on issue #226, built the same day on
+tenant migration 0029.
 
-## What is decided
+## What was decided
 
 A scenario whose correct reply is a clarifying question, rather than an answer, is marked
-`eval_scenarios.ambiguous = true`, and its reference is the clarifying question. Whether
-the agent's response passes is a deterministic check on the response text: it passes when
-the response asks and fails when it answers. No model call, no threshold, the same shape
-as the drafter's `lead_in_binds_the_question`.
+`eval_scenarios.ambiguous = true`, and its reference answer is that question. Whether the
+agent's response passes is a deterministic check on the response text,
+`is_clarifying_question` in `app/services/clarifying_check.py`: the response asks when its
+last sentence ends in a question mark and the whole reply is at most `CLARIFYING_MAX_WORDS`
+long. Both halves are needed. "Run pnpm dev from the repo root. Anything else?" ends in a
+question and is an answer.
 
-The reasons this is a rule and not a fifth Judge:
+The verdict lives on the sample row, `eval_samples.clarifying_check`, beside the strings the
+rule read. An ambiguous row has no `eval_results`: it never reaches the Judge.
+
+The verdict is counted where a Judge verdict is counted. The invocation loop decides the
+row, `_score_run` writes it and keeps it out of the Ragas set, and the run's validity
+report carries the mapping of scenario to verdict. `summarise_run_validity` counts each as
+scored and `dataset_verdict_counts` counts asked as passed and answered as failed, in the
+same per-dataset counts `decide()` already reads. So an ambiguous golden that answered is a
+`golden_failure` and an ambiguous exploratory row that answered lowers the exploratory pass
+rate, with no new rule and no fifth metric.
+
+The golden writer holds an ambiguous pair's reference to the same rule, so a pair cannot
+demand a behaviour its own reference would fail.
+
+## Why a rule
 
 - ADR 0008 makes a Judge one typed tool call, and ADR 0009 measured the four existing
   Judges at about 87 seconds per scenario on a shared rate. A fifth call per row makes
-  every run slower for a question a regular expression settles.
-- A model-generated label never gates a deploy (CLAUDE.md, measurement honesty). A rule
-  can be mutated and observed to fail; a Judge's verdict on "is this a question" cannot.
+  every run slower for a question a rule settles.
+- A model-generated label never gates a deploy. A rule can be mutated and observed to
+  fail; the six mutations that proved this build were.
 - The four Ragas metrics measure the wrong thing for such a row. A correct clarifying
-  question retrieves nothing, so the row never enters the scored set, and one that does
-  retrieve scores near zero on faithfulness against chunks it should not have used.
+  question retrieves nothing, so before this decision the row never entered the scored
+  set and five such goldens blocked the checklist as unconfirmed, reading as an agent
+  failure.
 
-## What is open: where the result lives
+## Why the sample row and not a fifth metric
 
-| Option | Grain | Effect on the deploy gate |
-|---|---|---|
-| A. `eval_samples` | one row per scenario, beside `resolved_question` | the checklist sums a fifth pass rate from samples; `eval_results` and every count it feeds are untouched |
-| B. `eval_results` | one row per scenario per metric | a fifth metric key inflates every existing count by a quarter, and every reader of `datasets` sees a metric Ragas never produced |
+`eval_results` is one row per scenario per metric, and every count the console and the
+deploy gate derive from it would have grown by a quarter for a column Ragas never
+produced. `eval_samples` is already one row per scenario and already holds the
+conversation and the rewrite, so the owner, the sheet and the gate read one row.
 
-Recommendation: A. The sample row already holds the conversation and the rewrite, so the
-sheet and the owner read one row. The gate gains one rule over ambiguous rows, with its own
-floor, in the style of ADR 0011's table.
+## Consequences a reader will meet
 
-## What building it takes
-
-- `GoldenPair.ambiguous` on the API and MCP schema, and `insert_authored_golden_scenario`
-  writing the column.
-- The check itself, and a scoring path that admits an ambiguous row with no retrieved
-  context instead of counting it as `no_retrieval`, since otherwise five such goldens push
-  coverage under `EVAL_COVERAGE_FLOOR` and read as an agent failure.
-- The rule in `deployment_service.py` and a row in this ADR's table once the grain is
-  chosen.
+- `CLARIFYING_MAX_WORDS` is 40 and untuned. The first ambiguous run's rows are what tunes
+  it, on the same sheet #58 labels.
+- `register_golden_scenarios` takes `ambiguous` on each pair, over the API and over MCP.
+- A tenant behind 0029 records an ambiguous row without its verdict and the writer logs
+  which rung it fell to. The run still completes.
+- The calibration sheet does not yet show the column. A labeller reading an ambiguous row
+  sees the response and the reference and no verdict beside them.

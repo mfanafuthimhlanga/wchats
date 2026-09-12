@@ -116,6 +116,12 @@ from app.core.log_bounds import log_failure
 from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent, select_beat_fanout_agents
+from app.services.clarifying_check import (
+    CLARIFYING_CHECK_KEY,
+    clarifying_verdicts,
+    is_clarifying_question,
+    split_checked_rows,
+)
 from app.services.eval_service import (
     AGENT_INVOCATION_CONCURRENCY,
     AGENT_INVOCATION_MAX_CALLS_PER_RUN,
@@ -167,6 +173,8 @@ log = structlog.get_logger(__name__)
 _NOTHING_SCORED = {
     "scores": [], "judge_records": [],
     "sent": 0, "returned": 0, "unattributed": 0,
+    # A run that scored nothing checked nothing either (#226).
+    "clarifying_verdicts": {},
 }
 
 
@@ -594,6 +602,46 @@ def _retrieved_contexts(turn: dict, record: dict) -> list[str]:
     return contexts
 
 
+def _measured_row(
+    scenario: Mapping, response_text: str, contexts: list[str], *, responded: bool
+) -> dict | None:
+    """The row this turn produced for the scorer, or None if it produced none.
+
+    AN AMBIGUOUS SCENARIO IS DECIDED HERE, NOT BY THE JUDGE (#226, ADR 0012).
+    Its correct reply is a clarifying question, which retrieves nothing, so the
+    ordinary rule below would drop it as `no_retrieval`, and the four metrics
+    would measure the wrong thing if it did retrieve. Its row carries the
+    rule's verdict under `CLARIFYING_CHECK_KEY`, which is what keeps it out of
+    the Ragas set in `_score_run`.
+
+    Every other responded turn is a row only when it retrieved something.
+    EXCLUDED AND COUNTED otherwise: Faithfulness / ContextPrecision /
+    ContextRecall over an empty list are structurally 0 or NaN, and a 0 for a
+    question the agent answered correctly from its system prompt ("what are
+    your opening hours?") is the same "zero is not a low score" error the
+    failure path already refuses. `summarise_agent_invocation` reports these as
+    `no_retrieval` / `retrieved_nothing_scorable`; they are not failures.
+
+    `agent_response` is THE LINE THAT WAS D1. It used to be the reference
+    answer, making the label the prediction. `retrieved_contexts` is the other
+    half: the chunks the AGENT retrieved during this turn, never the scenario's
+    stored column. NO FALLBACK to `stored_retrieved_contexts`: that is one token
+    of D1 restored, and it fires precisely in the case no dynamic test covers.
+    """
+    if not responded:
+        return None
+    if scenario.get("ambiguous"):
+        return {
+            **scenario,
+            "agent_response": response_text,
+            "retrieved_contexts": contexts,
+            CLARIFYING_CHECK_KEY: is_clarifying_question(response_text),
+        }
+    if not contexts:
+        return None
+    return {**scenario, "agent_response": response_text, "retrieved_contexts": contexts}
+
+
 def _invoke_agent_for_scenarios(
     *,
     agent_id: str,
@@ -746,35 +794,10 @@ def _invoke_agent_for_scenarios(
                 response_text = str(turn.get("response_text") or "")
                 if response_text.strip():
                     record["responded"] = True
-                # EXCLUDED AND COUNTED, one metric over. A responded turn with no
-                # retrieved context scores Faithfulness / ContextPrecision /
-                # ContextRecall over an empty list, which is structurally 0 or
-                # NaN — and a 0 for a question the agent answered correctly from
-                # its system prompt ("what are your opening hours?") is the same
-                # "zero is not a low score" error the failure path already
-                # refuses. summarise_agent_invocation reports these as
-                # `no_retrieval` / `retrieved_nothing_scorable`; they are not
-                # failures and do not depress `response_rate`.
-                if record["responded"] and contexts:
+                row = _measured_row(scenario, response_text, contexts, responded=record["responded"])
+                if row is not None:
                     record["scorable"] = True
-                    scored_rows.append(
-                        {
-                            **scenario,
-                            # THE LINE THAT WAS D1. It used to be row[3], the
-                            # reference answer, making the label the prediction.
-                            "agent_response": response_text,
-                            # THE OTHER HALF OF D1. The contexts the AGENT
-                            # retrieved during this turn, never the scenario's
-                            # stored column — scoring faithfulness against
-                            # contexts the agent never saw measures the corpus
-                            # the scenario was written from, not the retrieval
-                            # the customer gets. NO FALLBACK: `contexts or
-                            # scenario["stored_retrieved_contexts"]` is one token
-                            # of D1 restored, and it fires precisely in the case
-                            # no dynamic test covers.
-                            "retrieved_contexts": contexts,
-                        }
-                    )
+                    scored_rows.append(row)
 
             records.append(record)
     finally:
@@ -1140,6 +1163,28 @@ def _scenario_dict(row: Mapping) -> dict:
     }
 
 
+def _record_and_judge(
+    run_id: str, scored_scenarios: list, ledger: LedgerContext, conn_str: str
+) -> tuple[dict, list]:
+    """Write every measured row, then put the Judge's rows to the Judge.
+
+    THE CHECKED ROWS NEVER REACH THE JUDGE (#226, ADR 0012). An ambiguous
+    scenario's verdict was decided in the invocation loop and rides on the row;
+    here it is written to its sample row beside the strings the rule read, and
+    handed back on `results["clarifying_verdicts"]` so the run counts it as
+    scored and as passed or failed. No rewrite is asked for it: the rule reads
+    the response alone.
+
+    Returns (run_ragas_eval's payload, the rows it was handed).
+    """
+    judged, checked = split_checked_rows(scored_scenarios)
+    annotated = annotate_resolved_questions(judged, ledger=ledger)
+    write_eval_samples(run_id, [*annotated, *checked], conn_str)
+    results = run_ragas_eval(judged, ledger)
+    results["clarifying_verdicts"] = clarifying_verdicts(checked)
+    return results, judged
+
+
 def _score_run(
     *,
     tenant_id: str,
@@ -1185,10 +1230,10 @@ def _score_run(
         (results, question_resolution): `run_ragas_eval`'s payload, and the
         config patch `question_resolution_provenance` produced.
     """
-    write_eval_samples(run_id, annotate_resolved_questions(scored_scenarios, ledger=_run_ledger(tenant_id, agent_id, run_id, conn_str)), conn_str)
-    results = run_ragas_eval(scored_scenarios, _run_ledger(tenant_id, agent_id, run_id, conn_str))
+    ledger = _run_ledger(tenant_id, agent_id, run_id, conn_str)
+    results, judged = _record_and_judge(run_id, scored_scenarios, ledger, conn_str)
     write_eval_results(run_id, results["judge_records"], conn_str)
-    question_resolution = question_resolution_provenance(scored_scenarios, results["scores"])
+    question_resolution = question_resolution_provenance(judged, results["scores"])
     if not update_eval_run_config(run_id, question_resolution, conn_str):
         # The record still carries them, so the gate is unaffected. What is lost
         # is the row a human reads, and losing it quietly is how the two came to
@@ -1581,7 +1626,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
         # distinguishable — a run that fetched 40 rows and could score 12 has
         # measured far less than a run that fetched 12, and a report that shows
         # only one of the two numbers cannot say which happened.
-        validity = summarise_run_validity(scenarios, results["scores"])
+        validity = summarise_run_validity(scenarios, results["scores"], results["clarifying_verdicts"])
 
         # THE RUN'S NUMBERS, DERIVED ONCE (#51). What stood here was forty-nine
         # lines of hand-assembled dict, and it was the third derivation of one

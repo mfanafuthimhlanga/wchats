@@ -177,11 +177,28 @@ class TestATenantThatPredates0028StillKeepsItsRun:
             "whole set only lands if the loop restarts"
         )
         assert all("INSERT INTO eval_samples" in sql for sql in narrow)
-        connection["conn"].rollback.assert_called_once()
+        # Two rungs down since 0029: the 0029 shape, then the 0028 shape, both
+        # name `turns` and both are refused before the pre-0028 one lands.
+        assert connection["conn"].rollback.call_count == 2
         connection["conn"].commit.assert_called_once()
         connection["conn"].close.assert_called_once()
 
-    def test_the_rollback_comes_before_the_second_attempt(self, connection):
+    def test_a_tenant_behind_0029_keeps_the_conversation_and_loses_the_verdict(self, connection):
+        """One rung down, not two: `turns` and `resolved_question` still land (#226)."""
+        seen = self._undefined_column_on(connection, "%(clarifying_check)s")
+
+        written = es.write_eval_samples(RUN_ID, [_scenario(1), _scenario(2)], "postgresql://prod")
+
+        assert written == 2
+        landed = [sql for sql in seen if "%(clarifying_check)s" not in sql]
+        assert len(landed) == 2
+        assert all("%(turns)s::jsonb" in sql and "%(resolved_question)s" in sql for sql in landed), (
+            "a tenant at 0028 fell past the 0028 INSERT and lost the conversation"
+        )
+        connection["conn"].rollback.assert_called_once()
+        connection["conn"].commit.assert_called_once()
+
+    def test_the_rollback_comes_before_each_next_attempt(self, connection):
         """An aborted transaction refuses the next statement until it is rolled back.
 
         Without this ordering the fallback raises `InFailedSqlTransaction` and the
@@ -191,7 +208,12 @@ class TestATenantThatPredates0028StillKeepsItsRun:
         connection["conn"].rollback.side_effect = lambda: order.append("rollback")
 
         def execute(sql, params=None):
-            order.append("wide" if "%(turns)s::jsonb" in sql else "narrow")
+            if "%(clarifying_check)s" in sql:
+                order.append("0029")
+            elif "%(turns)s::jsonb" in sql:
+                order.append("0028")
+            else:
+                order.append("0027")
             if "%(turns)s::jsonb" in sql:
                 raise psycopg2.errors.UndefinedColumn("no turns")
 
@@ -199,7 +221,7 @@ class TestATenantThatPredates0028StillKeepsItsRun:
 
         es.write_eval_samples(RUN_ID, [_scenario(1)], "postgresql://prod")
 
-        assert order == ["wide", "rollback", "narrow"], order
+        assert order == ["0029", "rollback", "0028", "rollback", "0027"], order
 
     def test_only_undefined_column_falls_back(self, connection):
         """A real write failure has to surface, not be retried on a narrower shape.

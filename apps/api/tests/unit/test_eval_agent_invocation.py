@@ -2533,3 +2533,56 @@ def test_the_scored_text_is_written_before_scoring_and_is_what_the_scorer_gets(
     assert conn_str == PRODUCTION
     assert rows == task_wired["scored"][0]
     assert len(rows) == 4
+
+
+class TestAnAmbiguousScenarioIsDecidedInTheLoop:
+    """#226, ADR 0012: the rule decides, the Judge never sees the row."""
+
+    def _run(self, scenarios, respond):
+        def _turn_for(*, agent_id, conn_str, run_id, question, turns, scenario_id, prompt_version_id):
+            text, contexts = respond(question)
+            return _turn(text, contexts=contexts)
+
+        with patch.object(mod, "_run_one_eval_turn", side_effect=_turn_for):
+            return mod._invoke_agent_for_scenarios(
+                agent_id="agent-1", conn_str=PRODUCTION, run_id=RUN_ID,
+                scenarios=scenarios, prompt_version_id=None,
+            )
+
+    def _ambiguous(self, i):
+        return {
+            "id": f"s{i}", "question": "how do I start the dev server?",
+            "reference_answer": "Which project?", "turns": [], "ambiguous": True,
+            "dataset": "golden", "stored_retrieved_contexts": [],
+        }
+
+    def test_a_clarifying_reply_with_no_retrieval_is_a_scored_row_that_asked(self):
+        rows, summary = self._run([self._ambiguous(0)], lambda q: ("Which project are you on?", []))
+
+        assert len(rows) == 1
+        assert rows[0][mod.CLARIFYING_CHECK_KEY] is True
+        assert summary["scorable"] == 1, "the row was measured, by the rule"
+        assert summary["no_retrieval"] == 1, (
+            "retrieval is still reported as it happened; the row is not dropped for it"
+        )
+
+    def test_an_answer_to_an_ambiguous_question_is_a_scored_row_that_failed(self):
+        rows, _ = self._run([self._ambiguous(0)], lambda q: ("Run pnpm dev from the root.", ["CTX"]))
+
+        assert len(rows) == 1
+        assert rows[0][mod.CLARIFYING_CHECK_KEY] is False
+
+    def test_an_ordinary_scenario_never_carries_the_key(self):
+        plain = {**self._ambiguous(1), "ambiguous": False, "reference_answer": "pnpm dev"}
+        rows, _ = self._run([plain], lambda q: ("Which project are you on?", ["CTX"]))
+
+        assert len(rows) == 1
+        assert mod.CLARIFYING_CHECK_KEY not in rows[0], (
+            "a non-ambiguous row reached the scorer with a rule verdict on it"
+        )
+
+    def test_an_ambiguous_turn_that_produced_no_text_is_not_a_row(self):
+        rows, summary = self._run([self._ambiguous(0)], lambda q: ("", []))
+
+        assert rows == []
+        assert summary["scorable"] == 0
