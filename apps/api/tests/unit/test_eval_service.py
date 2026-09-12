@@ -2020,7 +2020,11 @@ class TestRunRagasEvalAttribution:
         attribution when the judge answers for fewer samples than were sent.
         """
 
-        async def _fake_score_samples(metrics, samples):  # noqa: ARG001
+        # `resolved_inputs` since #227 PR 2: relevancy is scored against the
+        # rewritten question and the other three are not. This double ignores it
+        # because these tests are about attribution, but it has to ACCEPT it or
+        # they would be passing against a signature the producer no longer has.
+        async def _fake_score_samples(metrics, samples, resolved_inputs=None):  # noqa: ARG001
             return frame.to_dict("records")
 
         monkeypatch.setattr(

@@ -140,6 +140,7 @@ from app.services.eval_service import (
     write_eval_results,
     write_eval_samples,
 )
+from app.services.question_resolution import annotate_resolved_questions
 from app.services.scenario_service import (
     generate_eval_suite_for_agent,
     mine_production_scenarios,
@@ -1491,8 +1492,8 @@ def run_eval_suite(self, agent_id: str) -> dict:
             results = dict(_NOTHING_SCORED)
         else:
             # The scored text lands before scoring so it outlives a Ragas outage
-            # (#58); scoring then bills this run through the recorder.
-            write_eval_samples(run_id, scored_scenarios, conn_str)
+            # (#58), rewritten first so both readers hold one string (#227 PR 2).
+            write_eval_samples(run_id, annotate_resolved_questions(scored_scenarios, ledger=_run_ledger(tenant_id, agent_id, run_id, conn_str)), conn_str)
             results = run_ragas_eval(scored_scenarios, _run_ledger(tenant_id, agent_id, run_id, conn_str))
 
             # Observations land on PRODUCTION because the branch below is about

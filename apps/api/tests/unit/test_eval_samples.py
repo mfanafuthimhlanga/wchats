@@ -216,6 +216,52 @@ class TestATenantThatPredates0028StillKeepsItsRun:
         connection["conn"].close.assert_called_once()
 
 
+def test_the_rewritten_question_is_written_beside_the_raw_one(connection):
+    """Both, on one row, because the sheet and the Judge read different ones.
+
+    `user_input` stays the question as asked, which is the half of the attribution
+    key the judge rows echo back. `resolved_question` is what relevancy was
+    actually scored against (#227 PR 2).
+    """
+    scenario = _scenario(6)
+    scenario["turns"] = [{"role": "user", "content": "I'm setting up Earth Elements."}]
+    scenario["resolved_question"] = "How do I start the dev server for Earth Elements?"
+
+    es.write_eval_samples(RUN_ID, [scenario], "postgresql://prod")
+
+    [(sql, params)] = [c.args for c in connection["cursor"].execute.call_args_list]
+    assert "resolved_question" in sql
+    assert params["resolved_question"] == scenario["resolved_question"]
+    assert params["user_input"] == scenario["question"], (
+        "the raw question was overwritten by the rewrite, so a returned judge row "
+        "would match no scenario"
+    )
+
+
+def test_a_scenario_with_no_rewrite_writes_null(connection):
+    """NULL twice over, and `turns` on the same row says which.
+
+    A single-turn scenario had nothing to resolve. A multi-turn one whose rewrite
+    failed is scored on its raw question. Both are NULL here on purpose; the empty
+    string would be a rewrite that says nothing.
+    """
+    es.write_eval_samples(RUN_ID, [_scenario(7)], "postgresql://prod")
+
+    [(_sql, params)] = [c.args for c in connection["cursor"].execute.call_args_list]
+    assert params["resolved_question"] is None
+
+    connection["cursor"].execute.reset_mock()
+    blank = _scenario(8)
+    blank["resolved_question"] = "   "
+    es.write_eval_samples(RUN_ID, [blank], "postgresql://prod")
+
+    [(_sql, params)] = [c.args for c in connection["cursor"].execute.call_args_list]
+    assert params["resolved_question"] is None, (
+        "a rewrite of nothing but whitespace was written as the question "
+        "relevancy was scored against"
+    )
+
+
 def test_an_empty_list_writes_nothing_and_opens_no_connection(connection):
     assert es.write_eval_samples(RUN_ID, [], "postgresql://prod") == 0
     assert connection["connects"] == []

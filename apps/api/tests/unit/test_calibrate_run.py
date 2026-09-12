@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import json
 import pathlib
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -40,6 +41,113 @@ def _samples(n: int) -> list[dict]:
         }
         for i in range(1, n + 1)
     ]
+
+
+class TestTheHarnessReadsWhatTheWriterWrote:
+    """`fetch_samples` had no test at all, and its tuple unpack matched the SELECT
+    by inspection only. Adding two columns to that SELECT is exactly the edit that
+    breaks such an unpack, and on a tenant behind 0028 it would raise where the
+    harness used to work."""
+
+    WIDE = (
+        "S-001", "golden", "How do I start it?", "pnpm dev.", ["c1"], "Run pnpm dev.",
+        [{"role": "user", "content": "Setting up Earth Elements."}],
+        "How do I start Earth Elements?",
+    )
+
+    def _conn(self, monkeypatch, rows, missing_column=False):
+        import psycopg2
+
+        seen: list[str] = []
+
+        class _Cursor:
+            def execute(self, sql, params=None):
+                seen.append(sql)
+                if missing_column and "resolved_question" in sql:
+                    raise psycopg2.errors.UndefinedColumn("column turns does not exist")
+
+            def fetchall(self):
+                return [r[:6] for r in rows] if missing_column else list(rows)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        conn = MagicMock()
+        conn.cursor.return_value = _Cursor()
+        monkeypatch.setattr(psycopg2, "connect", lambda *a, **kw: conn)
+        return conn, seen
+
+    def test_every_selected_column_lands_on_the_dict(self, monkeypatch):
+        self._conn(monkeypatch, [self.WIDE])
+
+        [sample] = cr.fetch_samples("run-1", "postgresql://tenant")
+
+        assert sample["scenario_id"] == "S-001"
+        assert sample["question"] == "How do I start it?"
+        assert sample["reference"] == "Run pnpm dev."
+        assert sample["turns"] == [{"role": "user", "content": "Setting up Earth Elements."}]
+        assert sample["resolved_question"] == "How do I start Earth Elements?"
+
+    def test_a_tenant_behind_0028_still_gets_a_sheet(self, monkeypatch):
+        """The writer degrades for the same reason; a harness that raised here
+        would refuse to label a run it could have labelled."""
+        conn, seen = self._conn(monkeypatch, [self.WIDE], missing_column=True)
+
+        [sample] = cr.fetch_samples("run-1", "postgresql://tenant")
+
+        assert sample["turns"] == []
+        assert sample["resolved_question"] == ""
+        assert sample["question"] == "How do I start it?"
+        conn.rollback.assert_called_once()
+        assert len(seen) == 2, "the narrow SELECT was never sent"
+
+
+class TestTheSheetShowsWhatBoundTheQuestion:
+    """#227 PR 2. A follow-up reaches the labeller with its conversation.
+
+    The owner labels relevancy by reading the question and the answer. For a
+    multi-turn scenario the question alone is not what was asked, so the sheet
+    carries the conversation it was asked in and the rewrite relevancy was
+    actually scored against. Both are empty for the single-turn rows that are the
+    whole corpus before #227, so an older run's sheet reads as it did.
+    """
+
+    def _row(self, tmp_path, **extra) -> dict:
+        sample = {**_samples(1)[0], **extra}
+        path = tmp_path / "sheet.csv"
+        cr.write_sheet([sample], path)
+        with path.open(newline="", encoding="utf-8") as fh:
+            return next(iter(csv.DictReader(fh)))
+
+    def test_the_conversation_renders_oldest_first_with_its_roles(self, tmp_path):
+        row = self._row(
+            tmp_path,
+            turns=[
+                {"role": "user", "content": "I'm setting up Earth Elements."},
+                {"role": "assistant", "content": "Happy to help."},
+            ],
+            resolved_question="How do I start the dev server for Earth Elements?",
+        )
+
+        assert row["turns"] == (
+            "USER: I'm setting up Earth Elements.\nASSISTANT: Happy to help."
+        )
+        assert row["resolved_question"] == (
+            "How do I start the dev server for Earth Elements?"
+        )
+
+    def test_a_single_turn_row_leaves_both_cells_empty(self, tmp_path):
+        row = self._row(tmp_path)
+
+        assert row["turns"] == ""
+        assert row["resolved_question"] == ""
+
+    def test_a_turns_value_that_is_not_a_conversation_renders_empty(self, tmp_path):
+        assert self._row(tmp_path, turns="not a list")["turns"] == ""
+        assert self._row(tmp_path, turns=[7, None])["turns"] == ""
 
 
 def _verdicts(samples: list[dict], passed_by_row) -> dict:

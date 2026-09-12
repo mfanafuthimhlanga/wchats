@@ -849,6 +849,11 @@ EVERY_PURPOSE = [
     "judge_context_precision",
     "judge_context_recall",
     "judge_retrieval_faithfulness",
+    # Added by #227 PR 2. Not a judge: it rewrites a multi-turn scenario's last
+    # customer message as a standalone question so relevancy is scored against
+    # what was asked. Its own row so a rollup does not report the Judge as
+    # costing what the rewrite cost.
+    "eval_question_resolution",
     "scenario_generation",
     "golden_draft",
     "metadata_enrichment",
