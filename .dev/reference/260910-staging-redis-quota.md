@@ -85,3 +85,36 @@ visible in the console.
 railway down -y -s <service> -e staging     # stop one; says "No deployments found" if already crashed
 railway up --detach -y -s <service> -e staging   # bring one back
 ```
+
+## Parking after a merge takes two passes, and one pass looks like it worked
+
+`railway down` removes the deployment that exists at the moment it runs. A merge to `main`
+leaves builds in flight, so the first pass removes the OLD deployments and the new ones go
+live behind you.
+
+Observed 2026-09-12, after merging four PRs and parking all four services:
+
+```
+first pass:   all four reported down
+two minutes later:
+  beat            active=1  stopped=False  status=SUCCESS
+  worker-runtime  active=1  stopped=False  status=SUCCESS
+```
+
+Those two are the Redis burners. Park again, then verify with a gap:
+
+```bash
+for svc in worker-runtime beat worker-pipeline api-service; do
+  railway down -s "$svc" -e staging -y
+done
+sleep 120
+railway status --json          # every service active=0
+railway deployment list -s worker-runtime -e staging --json   # recent entries REMOVED
+```
+
+`railway status --json` immediately after `railway down` cannot see a build that has not
+finished, so a single check is not evidence. The deployment list is the stronger read: a
+parked service shows `REMOVED`, and anything `BUILDING` or `SUCCESS` is about to bill you.
+
+One `PING` confirms the allowance survived the window. On 2026-09-12 it returned True after
+about twenty minutes of uptime across four deploys, which is roughly 5,000 of the 500,000.
