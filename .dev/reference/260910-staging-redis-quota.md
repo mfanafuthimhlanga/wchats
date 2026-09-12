@@ -81,6 +81,14 @@ stays parked when nobody is using it.
 error on 2026-09-10 at 19:31. The allowance resets; the date it resets on is still only
 visible in the console.
 
+Seen again on 2026-09-12 with all four services parked the whole time: the probe returned
+`max requests limit exceeded. Limit: 500000, Usage: 500000` at about 10:15 SAST and
+`PING -> True` at 11:01 SAST. The four merges that morning deployed and were removed
+within three minutes each, which is thousands of commands, not half a million. So the
+"monthly" reading is wrong for this account, or usage is counted on a window this box
+cannot see. Probe before a staging session; a quota error at one hour is not a quota
+error at the next.
+
 ```bash
 railway down -y -s <service> -e staging     # stop one; says "No deployments found" if already crashed
 railway up --detach -y -s <service> -e staging   # bring one back
