@@ -121,3 +121,30 @@ def test_the_beat_never_scales():
     assert payload["deploy"]["numReplicas"] == 1, (
         "two beats enqueue every schedule twice"
     )
+
+
+_IDLE_FLAGS = ("--without-gossip", "--without-mingle", "--without-heartbeat")
+
+
+@pytest.mark.parametrize("name", ["railway.worker-runtime.toml", "railway.worker-pipeline.toml"])
+def test_an_idle_worker_sends_no_heartbeat_gossip_or_mingle(name):
+    """#237: the 2 s heartbeat was 30 of the 87 Redis commands an idle worker sent
+    a minute, and Upstash bills per command. The two workers sit on separate
+    queues and never need to see each other, so gossip and mingle buy nothing."""
+    command = tomllib.loads((_ROOT / name).read_text(encoding="utf-8"))["deploy"]["startCommand"]
+    missing = [flag for flag in _IDLE_FLAGS if flag not in command]
+    assert missing == [], f"{name} start command lacks {missing}"
+
+
+def test_beat_keeps_its_start_command_unflagged():
+    command = tomllib.loads((_ROOT / "railway.beat.toml").read_text(encoding="utf-8"))["deploy"]["startCommand"]
+    assert not any(flag in command for flag in _IDLE_FLAGS), "beat is not a worker; the flags are unknown to it"
+
+
+def test_an_idle_worker_polls_every_ten_seconds_not_every_second():
+    """The other 57 of the 87. A blocking BRPOP still returns the moment a task
+    lands, so this bounds reissues on an idle queue, not pickup latency."""
+    from app.worker.celery_app import BROKER_POLLING_INTERVAL_S, celery_app
+
+    assert BROKER_POLLING_INTERVAL_S == 10.0
+    assert celery_app.conf.broker_transport_options["polling_interval"] == BROKER_POLLING_INTERVAL_S

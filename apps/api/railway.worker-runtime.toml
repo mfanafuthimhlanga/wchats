@@ -22,6 +22,6 @@ dockerfilePath = "Dockerfile"
 watchPatterns = ["apps/api/**"]
 
 [deploy]
-startCommand = "celery -A app.worker.celery_app worker --queues=runtime --hostname=runtime@%h --loglevel=info --concurrency=2"
+startCommand = "celery -A app.worker.celery_app worker --queues=runtime --hostname=runtime@%h --loglevel=info --concurrency=2 --without-gossip --without-mingle --without-heartbeat"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
