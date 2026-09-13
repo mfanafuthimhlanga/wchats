@@ -331,7 +331,9 @@ class Invocation:
                                     have been invoked. THE DENOMINATOR.
         attempted:                  rows the per-run ceiling actually let run.
         responded:                  turns that came back with text.
-        scorable:                   turns that reached the scorer. Smaller than
+        scorable:                   turns that reached the Ragas scorer; an
+                                    ambiguous row a rule decided is not one
+                                    (#226). Smaller than
                                     `responded` by the rows with no retrieved
                                     context, and it is what the metrics were
                                     computed over.

@@ -2533,3 +2533,64 @@ def test_the_scored_text_is_written_before_scoring_and_is_what_the_scorer_gets(
     assert conn_str == PRODUCTION
     assert rows == task_wired["scored"][0]
     assert len(rows) == 4
+
+
+class TestAnAmbiguousScenarioIsDecidedInTheLoop:
+    """#226, ADR 0012: the rule decides off the tool log, the Judge never sees the row."""
+
+    def _run(self, scenarios, respond):
+        def _turn_for(*, agent_id, conn_str, run_id, question, turns, scenario_id, prompt_version_id):
+            text, contexts, clarified = respond(question)
+            turn = _turn(text, contexts=contexts)
+            if clarified:
+                turn["tool_calls_log"] = [{"tool_name": "clarify", "result": text}, *turn["tool_calls_log"]]
+            return turn
+
+        with patch.object(mod, "_run_one_eval_turn", side_effect=_turn_for):
+            return mod._invoke_agent_for_scenarios(
+                agent_id="agent-1", conn_str=PRODUCTION, run_id=RUN_ID,
+                scenarios=scenarios, prompt_version_id=None,
+            )
+
+    def _ambiguous(self, i):
+        return {
+            "id": f"s{i}", "question": "how do I start the dev server?",
+            "reference_answer": "Which project?", "turns": [], "ambiguous": True,
+            "dataset": "golden", "stored_retrieved_contexts": [],
+        }
+
+    def test_a_clarify_call_with_no_retrieval_is_a_row_that_asked(self):
+        rows, summary = self._run([self._ambiguous(0)], lambda q: ("Which project are you on?", [], True))
+
+        assert len(rows) == 1
+        assert rows[0][mod.CLARIFYING_CHECK_KEY] is True
+        assert rows[0]["agent_response"] == "Which project are you on?"
+        assert summary["scorable"] == 0, "the row never reaches Ragas, so it is not scorable"
+        assert summary["no_retrieval"] == 1
+
+    def test_an_answer_that_retrieved_is_a_row_that_failed(self):
+        rows, summary = self._run([self._ambiguous(0)], lambda q: ("Run pnpm dev from the root.", ["CTX"], False))
+
+        assert len(rows) == 1
+        assert rows[0][mod.CLARIFYING_CHECK_KEY] is False
+        assert summary["scorable"] == 0
+
+    def test_a_question_in_the_text_without_the_tool_is_not_asking(self):
+        """'Anything else?' on the end of an answer is the case the text rule got wrong."""
+        rows, _ = self._run([self._ambiguous(0)], lambda q: ("Nine to five. Anything else?", [], False))
+
+        assert rows[0][mod.CLARIFYING_CHECK_KEY] is False
+
+    def test_an_ordinary_scenario_never_carries_the_key_and_stays_scorable(self):
+        plain = {**self._ambiguous(1), "ambiguous": False, "reference_answer": "pnpm dev"}
+        rows, summary = self._run([plain], lambda q: ("Which project are you on?", ["CTX"], True))
+
+        assert len(rows) == 1
+        assert mod.CLARIFYING_CHECK_KEY not in rows[0]
+        assert summary["scorable"] == 1
+
+    def test_an_ambiguous_turn_that_produced_no_text_is_not_a_row(self):
+        rows, summary = self._run([self._ambiguous(0)], lambda q: ("", [], False))
+
+        assert rows == []
+        assert summary["scorable"] == 0

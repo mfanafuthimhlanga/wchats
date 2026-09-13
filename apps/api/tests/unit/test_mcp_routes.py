@@ -406,6 +406,14 @@ class TestToolTable:
         assert {"agent_id", "pairs"} <= set(golden.input_schema["properties"])
         assert "agent_id" in golden.input_schema["required"]
 
+    def test_a_golden_pair_can_be_registered_as_ambiguous_over_mcp(self):
+        """#226: the merged schema refuses unknown keys, so the flag has to be
+        declared on the pair or an ambiguous scenario cannot be registered at all."""
+        golden = next(t for t in TOOLS if t.name == "register_golden_scenarios")
+        pair = golden.input_schema["$defs"]["GoldenPair"]["properties"]
+        assert {"turns", "ambiguous"} <= set(pair)
+        assert pair["ambiguous"]["default"] is False
+
 
 # ---------------------------------------------------------------------------
 # 13. Every tool reaches its route (tier-1 review, finding 7)

@@ -16,6 +16,7 @@ from sqlalchemy import text
 from app.core.log_bounds import log_failure
 from app.core.model_client import LedgerContext, ledger_recorder, route_for
 from app.domain.eval_result import DATASET_EXPLORATORY, DATASET_GOLDEN, EVAL_DATASETS
+from app.services.clarifying_check import CLARIFYING_MAX_WORDS, is_clarifying_question
 from app.services.tool_loop import forced_tool_arguments
 
 log = structlog.get_logger(__name__)
@@ -575,12 +576,35 @@ def mine_production_scenarios(
 # ---------------------------------------------------------------------------
 
 
+def _refuse_unusable_golden_pair(question: str, reference_answer: str, ambiguous: bool) -> None:
+    """Golden rows gate deploys, so a pair that can say nothing is refused at the door.
+
+    An empty question or reference is a contract term that says nothing. An
+    ambiguous pair's reference is the clarifying question itself, and it is held
+    to the rule the eval applies to the agent's reply, so a pair cannot demand a
+    behaviour its own reference would fail (#226).
+    """
+    if not question.strip() or not reference_answer.strip():
+        raise InvalidScenario(
+            "a golden pair needs both a question and a reference answer; "
+            "got an empty one. Golden rows gate deploys, so an empty pair "
+            "would be a contract term that says nothing."
+        )
+    if ambiguous and not is_clarifying_question(reference_answer):
+        raise InvalidScenario(
+            "an ambiguous pair's reference answer must itself be a clarifying "
+            f"question, at most {CLARIFYING_MAX_WORDS} words ending in '?'. "
+            f"Got: {reference_answer[:80]!r}"
+        )
+
+
 def insert_authored_golden_scenario(
     conn,
     question: str,
     reference_answer: str,
     provenance: str,
     turns: list[dict] | None = None,
+    ambiguous: bool = False,
 ) -> str:
     """Insert one owner-authored golden pair. The only writer of dataset='golden'.
 
@@ -607,6 +631,10 @@ def insert_authored_golden_scenario(
             caller and its credential kind. Never a caller-supplied human name.
         turns: The conversation the question was asked in, oldest first (0028).
             None and [] both write the empty conversation every pre-#227 row has.
+        ambiguous: True when the correct reply is a clarifying question (#226).
+            The reference answer is then that question, and it is held to the
+            same rule the eval applies to the agent's reply, so a pair cannot
+            demand a behaviour its own reference would fail.
 
     Returns:
         The new scenario's UUID (str). The row joins the golden dataset.
@@ -614,23 +642,19 @@ def insert_authored_golden_scenario(
     Raises:
         InvalidScenario: question or reference_answer is empty once stripped.
             A visibly-empty golden pair would gate every future deploy on
-            nothing.
+            nothing. Also an ambiguous pair whose reference does not read as a
+            clarifying question.
     """
-    if not question.strip() or not reference_answer.strip():
-        raise InvalidScenario(
-            "a golden pair needs both a question and a reference answer; "
-            "got an empty one. Golden rows gate deploys, so an empty pair "
-            "would be a contract term that says nothing."
-        )
+    _refuse_unusable_golden_pair(question, reference_answer, ambiguous)
     scenario_id = str(uuid.uuid4())
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO eval_scenarios
               (id, source, question, reference_answer, retrieved_contexts,
-               provenance, dataset, turns, created_at)
-            VALUES (%s, 'authored', %s, %s, '[]'::jsonb, %s, %s, %s::jsonb, NOW())
+               provenance, dataset, turns, ambiguous, created_at)
+            VALUES (%s, 'authored', %s, %s, '[]'::jsonb, %s, %s, %s::jsonb, %s, NOW())
             """,
-            (scenario_id, question, reference_answer, provenance, DATASET_GOLDEN, json.dumps(turns or [])),
+            (scenario_id, question, reference_answer, provenance, DATASET_GOLDEN, json.dumps(turns or []), bool(ambiguous)),
         )
     return scenario_id

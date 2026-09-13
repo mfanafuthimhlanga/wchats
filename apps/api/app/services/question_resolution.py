@@ -186,7 +186,8 @@ def annotate_resolved_questions(
 
     A row without turns is left ALONE rather than set to None, so "not attempted"
     and "attempted and failed" are different states in memory. On the database
-    row they are both NULL and the reader tells them apart by `turns`, which is
+    row they are both NULL and the reader tells them apart by `turns` (and, for
+    an ambiguous row the rule decided, by `clarifying_check` being set), which is
     why the counts below are logged: a run where every rewrite failed and a run
     with no multi-turn scenarios must not look the same in the log.
 

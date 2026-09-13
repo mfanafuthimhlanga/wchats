@@ -772,7 +772,7 @@ def _golden_key(question: str, turns: list[dict] | None) -> tuple[str, str]:
 
 
 def _register_golden_sync(
-    conn_str: str, pairs: list[tuple[str, str, list[dict]]], provenance: str
+    conn_str: str, pairs: list[tuple[str, str, list[dict], bool]], provenance: str
 ) -> tuple[int, list[str], int]:
     """Insert authored golden pairs in one transaction, skipping known pairs.
 
@@ -791,7 +791,7 @@ def _register_golden_sync(
             existing = {_golden_key(q, t) for q, t in cur.fetchall()}
         registered = 0
         skipped: list[str] = []
-        for question, reference_answer, turns in pairs:
+        for question, reference_answer, turns, ambiguous in pairs:
             key = _golden_key(question, turns)
             if key in existing:
                 skipped.append(question)
@@ -802,6 +802,7 @@ def _register_golden_sync(
                 reference_answer=reference_answer,
                 provenance=provenance,
                 turns=turns,
+                ambiguous=ambiguous,
             )
             existing.add(key)
             registered += 1
@@ -854,7 +855,8 @@ async def register_golden_scenarios(
 
     Security:
         IDOR check on agent (404 on foreign or missing agent).
-        Refusals map through _golden_refusal: 422 for an empty pair (golden
+        Refusals map through _golden_refusal: 422 for an empty pair or an
+        ambiguous pair whose reference is not a clarifying question (golden
         rows gate deploys, so one is never stored), 409 for a pre-0024 DB.
     """
     agent = await db.get(Agent, agent_id)
@@ -872,7 +874,7 @@ async def register_golden_scenarios(
         registered, skipped, total = await asyncio.to_thread(
             _register_golden_sync,
             conn_str,
-            [(p.question, p.reference_answer, [t.model_dump() for t in p.turns]) for p in body.pairs],
+            [(p.question, p.reference_answer, [t.model_dump() for t in p.turns], p.ambiguous) for p in body.pairs],
             provenance,
         )
     except (InvalidScenario, psycopg2.errors.CheckViolation) as exc:
