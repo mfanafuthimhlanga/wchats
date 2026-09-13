@@ -89,6 +89,14 @@ within three minutes each, which is thousands of commands, not half a million. S
 cannot see. Probe before a staging session; a quota error at one hour is not a quota
 error at the next.
 
+Third observation, 2026-09-13. The four merges of the morning deployed all four services at
+11:46 and by 11:52 `GET /widget/{id}/config` on `api-service` was raising the quota error from
+`_check_config_rate_limit`, while the probe from this box returned `PING -> True` at 11:54
+with the services parked again. So a deploy with both workers up spends the allowance within
+minutes, the probe is not a reliable reading of what the services see, and until #237's two
+settings land and the account has credits, staging is unparked only for the length of a test
+and parked the moment it ends.
+
 ```bash
 railway down -y -s <service> -e staging     # stop one; says "No deployments found" if already crashed
 railway up --detach -y -s <service> -e staging   # bring one back
