@@ -31,9 +31,20 @@ from app.utils.sanitize import sanitize_chunk_text
 
 
 class SoulSchema(BaseModel):
-    voice: str
-    do: list[str]
-    do_not: list[str]
+    """The soul a create request carries. Bounded like `AgentSoulUpdate`, because
+    the create route writes these into the four columns the prompt reads (#261),
+    and an unbounded voice here would outgrow `SYSTEM_PROMPT_MAX_CHARS` from the
+    one route the patch bound did not cover."""
+
+    voice: str = Field(..., max_length=SOUL_VOICE_MAX_CHARS)
+    do: Annotated[
+        list[Annotated[str, Field(max_length=SOUL_LIST_ITEM_MAX_CHARS)]],
+        Field(max_length=SOUL_LIST_MAX_ITEMS),
+    ]
+    do_not: Annotated[
+        list[Annotated[str, Field(max_length=SOUL_LIST_ITEM_MAX_CHARS)]],
+        Field(max_length=SOUL_LIST_MAX_ITEMS),
+    ]
 
 
 class AgentCreate(BaseModel):

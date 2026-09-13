@@ -336,3 +336,66 @@ class TestGetAgent:
             app.dependency_overrides.clear()
 
         assert response.status_code == 422
+
+
+class TestCreateWritesTheSoulColumns:
+    """#261: the soul a create request carries reaches the four columns the
+    prompt reads, not only the legacy JSONB nothing reads."""
+
+    async def test_the_added_agent_row_carries_voice_do_and_do_not(self):
+        fake_tenant = _make_fake_tenant()
+        mock_db, _agent_id, _job_id = _make_mock_db_for_create()
+        mock_redis = _make_mock_redis()
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+        app.dependency_overrides[get_async_redis] = lambda: mock_redis
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                with unittest.mock.patch("app.api.v1.agents.provision_neon") as mock_pn:
+                    mock_pn.apply_async = MagicMock()
+                    response = await client.post(
+                        "/api/v1/agents",
+                        json={
+                            "name": "Bantuson",
+                            "role": "support",
+                            "soul": {
+                                "voice": "  A senior engineer writing for peers.  ",
+                                "do": ["Cite the project", "   ", "Say when the corpus is silent"],
+                                "do_not": ["Use marketing language"],
+                            },
+                        },
+                        headers={"X-API-Key": "vrd_live_test"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 202
+        agent = next(a.args[0] for a in mock_db.add.call_args_list if type(a.args[0]).__name__ == "Agent")
+        assert agent.soul_voice == "A senior engineer writing for peers."
+        assert agent.soul_do_list == ["Cite the project", "Say when the corpus is silent"]
+        assert agent.soul_donot_list == ["Use marketing language"]
+        assert agent.soul["do"] == ["Cite the project", "   ", "Say when the corpus is silent"], (
+            "the legacy JSONB keeps what was sent, verbatim"
+        )
+
+    async def test_an_oversized_create_soul_is_refused_not_stored(self):
+        from app.services.agent_prompt import SOUL_VOICE_MAX_CHARS
+
+        fake_tenant = _make_fake_tenant()
+        mock_db, _a, _j = _make_mock_db_for_create()
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+        app.dependency_overrides[get_async_redis] = lambda: _make_mock_redis()
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.post(
+                    "/api/v1/agents",
+                    json={"name": "n", "role": "support",
+                          "soul": {"voice": "v" * (SOUL_VOICE_MAX_CHARS + 1), "do": [], "do_not": []}},
+                    headers={"X-API-Key": "vrd_live_test"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 422
+        mock_db.add.assert_not_called()

@@ -75,6 +75,8 @@ _LIST_ITEM_OVERHEAD_CHARS = 3
 
 _TEMPLATE = """You are a {role} agent for {name}.
 
+You work for {name}. You are not {name}: you are their assistant, you speak about \nthem in the third person, and you never claim to be them or to speak as them.
+
 Voice and tone: {voice}
 
 You MUST:
@@ -121,11 +123,57 @@ _FIXED_CHARS = len(
 #: factor of four in what the provider bills.
 SYSTEM_PROMPT_MAX_CHARS = (
     _FIXED_CHARS
-    + AGENT_NAME_MAX_CHARS
+    # The name appears once per `{name}` in the template: the greeting and the
+    # identity line (#261). Counted off the template so a third mention moves it.
+    + _TEMPLATE.count("{name}") * AGENT_NAME_MAX_CHARS
     + SOUL_ROLE_MAX_CHARS
     + SOUL_VOICE_MAX_CHARS
     + 2 * SOUL_LIST_MAX_ITEMS * (SOUL_LIST_ITEM_MAX_CHARS + _LIST_ITEM_OVERHEAD_CHARS)
 )
+
+
+def _legacy_soul(agent: Agent) -> dict:
+    """The create-time soul, bounded to the caps the columns carry.
+
+    `create_agent` wrote the soul it was given to `agents.soul` alone until #261,
+    so every agent created through MCP and never patched has a full soul in the
+    JSONB and NULL in the four columns the prompt reads. This reads the JSONB when
+    the columns are empty, cut to the same caps `AgentSoulUpdate` enforces, so the
+    fallback cannot outgrow `SYSTEM_PROMPT_MAX_CHARS` the way the columns cannot.
+    """
+    raw = agent.soul if isinstance(getattr(agent, "soul", None), dict) else {}
+
+    def items(key: str) -> list[str]:
+        value = raw.get(key)
+        if not isinstance(value, list):
+            return []
+        cut = [str(s).strip()[:SOUL_LIST_ITEM_MAX_CHARS] for s in value if s and str(s).strip()]
+        return cut[:SOUL_LIST_MAX_ITEMS]
+
+    voice = raw.get("voice")
+    return {
+        "voice": str(voice).strip()[:SOUL_VOICE_MAX_CHARS] if isinstance(voice, str) and voice.strip() else "",
+        "do": items("do"),
+        "do_not": items("do_not"),
+    }
+
+
+def _resolved_soul(agent: Agent, override: dict) -> tuple[str, str, list, list]:
+    """(role, voice, do, do_not), each from the first source that has it.
+
+    Override first, then the four columns, then the create-time JSONB, then the
+    default. The JSONB rung is what puts an MCP-created agent's soul in front of
+    the model without a patch (#261).
+    """
+    legacy = _legacy_soul(agent)
+    role = override.get("soul_role") or agent.soul_role or "customer service representative"
+    voice = (
+        override.get("soul_voice") or agent.soul_voice or legacy["voice"]
+        or "helpful, professional, and concise"
+    )
+    do_items = override.get("soul_do_list") or agent.soul_do_list or legacy["do"]
+    donot_items = override.get("soul_donot_list") or agent.soul_donot_list or legacy["do_not"]
+    return role, voice, do_items, donot_items
 
 
 def build_system_prompt(agent: Agent, soul_override: dict | None = None) -> str:
@@ -165,13 +213,7 @@ def build_system_prompt(agent: Agent, soul_override: dict | None = None) -> str:
         - The result is at most `SYSTEM_PROMPT_MAX_CHARS` characters long, for
           any agent row `AgentSoulUpdate` and `AgentCreate` will accept.
     """
-    soul_override = soul_override or {}
-
-    role: str = soul_override.get("soul_role") or agent.soul_role or "customer service representative"
-    voice: str = soul_override.get("soul_voice") or agent.soul_voice or "helpful, professional, and concise"
-
-    do_items = soul_override.get("soul_do_list") or agent.soul_do_list or []
-    donot_items = soul_override.get("soul_donot_list") or agent.soul_donot_list or []
+    role, voice, do_items, donot_items = _resolved_soul(agent, soul_override or {})
 
     do_block: str = (
         "\n".join(f"- {item}" for item in do_items)

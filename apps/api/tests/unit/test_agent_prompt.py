@@ -217,3 +217,65 @@ def test_a_soul_override_cannot_outgrow_the_bound_either():
     )
 
     assert len(prompt) <= SYSTEM_PROMPT_MAX_CHARS
+
+
+# ---------------------------------------------------------------------------
+# #261: the soul a create request carried reaches the prompt
+# ---------------------------------------------------------------------------
+
+
+def test_a_soul_written_only_to_the_legacy_jsonb_reaches_the_prompt():
+    """The Bantuson agent on staging: a full soul in `agents.soul`, NULL in the
+    four columns, and the prompt built on the defaults through a checklist run
+    and the owner's own chat."""
+    agent = _make_agent()
+    agent.soul = {
+        "voice": "A senior engineer writing for peers.",
+        "do": ["Cite the project a fact comes from", "  "],
+        "do_not": ["Use marketing language"],
+    }
+    prompt = build_system_prompt(agent)
+
+    assert "A senior engineer writing for peers." in prompt
+    assert "- Cite the project a fact comes from" in prompt
+    assert "- Use marketing language" in prompt
+    assert "helpful, professional, and concise" not in prompt
+
+
+def test_the_columns_win_over_the_legacy_jsonb_when_both_are_set():
+    agent = _make_agent(soul_voice="Terse.", soul_do_list=["Column rule"])
+    agent.soul = {"voice": "Legacy voice", "do": ["Legacy rule"], "do_not": []}
+    prompt = build_system_prompt(agent)
+
+    assert "Terse." in prompt and "- Column rule" in prompt
+    assert "Legacy voice" not in prompt and "Legacy rule" not in prompt
+
+
+def test_an_oversized_legacy_soul_still_fits_the_declared_bound():
+    """The JSONB was never bounded at create, so the fallback cuts to the caps."""
+    from app.services.agent_prompt import (
+        SOUL_LIST_ITEM_MAX_CHARS,
+        SOUL_LIST_MAX_ITEMS,
+        SOUL_VOICE_MAX_CHARS,
+    )
+
+    agent = _make_agent(name="x" * AGENT_NAME_MAX_CHARS)
+    agent.soul = {
+        "voice": "v" * (SOUL_VOICE_MAX_CHARS * 3),
+        "do": ["d" * (SOUL_LIST_ITEM_MAX_CHARS * 2)] * (SOUL_LIST_MAX_ITEMS * 2),
+        "do_not": ["n" * (SOUL_LIST_ITEM_MAX_CHARS * 2)] * (SOUL_LIST_MAX_ITEMS * 2),
+    }
+    prompt = build_system_prompt(agent)
+
+    assert len(prompt) <= SYSTEM_PROMPT_MAX_CHARS
+    assert prompt.count("\n- d") == SOUL_LIST_MAX_ITEMS
+
+
+def test_the_prompt_says_the_agent_is_the_owners_assistant_and_not_the_owner():
+    """The portfolio greeting once read "Hi! I'm Bantuson"; that was widget text,
+    but nothing in the prompt stopped the model from doing the same."""
+    prompt = build_system_prompt(_make_agent(name="Bantuson"))
+
+    assert "You work for Bantuson." in prompt
+    assert "You are not Bantuson" in prompt
+    assert "never claim to be them" in prompt
