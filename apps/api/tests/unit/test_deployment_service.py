@@ -4384,6 +4384,38 @@ class TestRelevancyProvenanceGate:
             "raw_question_fallback": 1,
         }
 
+    def test_the_counts_travel_on_a_refusal_too(self):
+        """A run the gate refuses for another reason still says which question it
+        measured. The docstring on `_record_counts` claimed this and no test put
+        a record behind a refused signal; `... if measured else None` on that
+        key survived mutation on 2026-09-12."""
+        record = _record(
+            question_resolution=QuestionResolution(
+                relevancy_scored=10, multi_turn=4, rewritten=3, raw_question_fallback=1
+            )
+        )
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", {}),
+            record=record,
+        )
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            summary = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+        assert summary["eval_signal"] != EVAL_SIGNAL_MEASURED, (
+            "the fixture must reach the collector as a refusal, or this pins the "
+            "measured path a second time"
+        )
+        assert summary["failing_scenarios"] is None, "the quality claims are withheld"
+        assert summary["question_resolution"] == {
+            "relevancy_scored": 10,
+            "multi_turn": 4,
+            "rewritten": 3,
+            "raw_question_fallback": 1,
+        }, "the counts describe the measurement, not the agent, and travel"
+
     def test_a_majority_measured_on_raw_follow_ups_blocks_the_deploy(self):
         """Six of ten scored answers judged against a question naming nothing."""
         recommendation, warnings, _ = self._gate(
