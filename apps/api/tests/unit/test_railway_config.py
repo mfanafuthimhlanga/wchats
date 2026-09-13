@@ -146,5 +146,8 @@ def test_an_idle_worker_polls_every_ten_seconds_not_every_second():
     lands, so this bounds reissues on an idle queue, not pickup latency."""
     from app.worker.celery_app import BROKER_POLLING_INTERVAL_S, celery_app
 
-    assert BROKER_POLLING_INTERVAL_S == 10.0
+    assert BROKER_POLLING_INTERVAL_S == 10
+    assert type(BROKER_POLLING_INTERVAL_S) is int, (
+        "a float reaches BRPOP as '10.0' and a pre-6 Redis kills the worker on its first poll"
+    )
     assert celery_app.conf.broker_transport_options["polling_interval"] == BROKER_POLLING_INTERVAL_S
