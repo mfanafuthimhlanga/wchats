@@ -7,10 +7,11 @@ tenant migration 0029.
 
 A scenario whose correct reply is a clarifying question, rather than an answer, is marked
 `eval_scenarios.ambiguous = true`, and its reference answer is that question. Whether the
-agent's response passes is read off what the agent did: the turn asked when it called the
-`clarify` tool and did not call `retrieve`. That is `turn_asked_to_clarify` in
-`app/services/clarifying_check.py`, and it reads the same tool log the loop already walks
-for retrieved contexts. Free text is never read for the agent's verdict. "Run pnpm dev.
+agent's response passes is read off what the agent did: the turn asked when its last tool
+call was `clarify`. An agent may retrieve first, see that the chunks span several projects,
+and then ask; one that asks and then retrieves and answers anyway did not. That is
+`turn_asked_to_clarify` in `app/services/clarifying_check.py`, and it reads the same tool
+log the loop already walks for retrieved contexts. Free text is never read for the agent's verdict. "Run pnpm dev.
 Anything else?" ends in a question mark and is an answer; a bulleted list of the four
 projects under the question does not end in one and is asking.
 
