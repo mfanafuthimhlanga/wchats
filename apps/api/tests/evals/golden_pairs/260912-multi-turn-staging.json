@@ -1,0 +1,118 @@
+{
+  "source_file": "260912-multi-turn-staging.json",
+  "pairs": [
+    {
+      "question": "how do I start the dev server?",
+      "reference_answer": "Run `pnpm dev` from the storefront's repo root. That starts the Vite development server; `pnpm preview` serves the production build after `pnpm build`.",
+      "turns": [
+        {"role": "user", "content": "I'm setting up Mellow's Earth Elements storefront locally."},
+        {"role": "assistant", "content": "Happy to help with the storefront. What do you need?"}
+      ]
+    },
+    {
+      "question": "what command runs the tests?",
+      "reference_answer": "Run `pnpm test`. The unit tests cover cart logic, order validation and submission, and the delivery-form schema under `src/tests/unit/`.",
+      "turns": [
+        {"role": "user", "content": "I'm working on the Mellow's Earth Elements storefront."},
+        {"role": "assistant", "content": "Sure. What would you like to know about the storefront?"}
+      ]
+    },
+    {
+      "question": "and how do I run the unit tests there?",
+      "reference_answer": "Sentinel OHS runs its unit tests with vitest in each package: `cd sentinel-server && npx vitest` and `cd sentinel-web && npx vitest`.",
+      "turns": [
+        {"role": "user", "content": "I've cloned Sentinel OHS and want to check my changes."},
+        {"role": "assistant", "content": "Good. Which part of Sentinel are you changing, the server or the web app?"},
+        {"role": "user", "content": "Both, actually."}
+      ]
+    },
+    {
+      "question": "do I need any environment variables to run it?",
+      "reference_answer": "No. Every environment variable is optional and the storefront runs without any. Copy `.env.example` to `.env.local` to override `VITE_APP_URL` or `VITE_BUSINESS_EMAIL`.",
+      "turns": [
+        {"role": "user", "content": "I'm trying to get the Mellow's Earth Elements storefront running on my laptop."},
+        {"role": "assistant", "content": "Let's get it running. What's the first thing you're stuck on?"}
+      ]
+    },
+    {
+      "question": "which file holds the delivery form fields?",
+      "reference_answer": "The checkout delivery form fields and their validation rules are defined in `src/components/checkout/delivery-form-schema.ts`.",
+      "turns": [
+        {"role": "user", "content": "I'm changing the checkout flow in the Mellow's Earth Elements storefront."},
+        {"role": "assistant", "content": "Okay. Which part of checkout, delivery, payment, or the order summary?"},
+        {"role": "user", "content": "Delivery."}
+      ]
+    },
+    {
+      "question": "and how do I preview the production build?",
+      "reference_answer": "Run `pnpm build`, then `pnpm preview` serves the production build from `dist/`.",
+      "turns": [
+        {"role": "user", "content": "I have the Mellow's Earth Elements storefront running with pnpm dev."},
+        {"role": "assistant", "content": "Great, the Vite dev server is up. What next?"}
+      ]
+    },
+    {
+      "question": "can I use npm instead?",
+      "reference_answer": "The storefront's Vercel settings specify `pnpm build` for the build command and `pnpm install --frozen-lockfile` for installation. There are no instructions for using `npm` instead.",
+      "turns": [
+        {"role": "user", "content": "I'm deploying the Mellow's Earth Elements storefront to Vercel."},
+        {"role": "assistant", "content": "The build settings for Vercel are in vercel.json. Which part are you configuring?"},
+        {"role": "user", "content": "The install and build commands."}
+      ]
+    },
+    {
+      "question": "what payment method does it support?",
+      "reference_answer": "Checkout is a bank-transfer flow: a delivery form, payment details, then an order-confirmation step that shows a client-side reference number. There is no backend, so the order is not saved server-side.",
+      "turns": [
+        {"role": "user", "content": "I'm looking at how orders are placed on the Mellow's Earth Elements storefront."},
+        {"role": "assistant", "content": "Orders go through the checkout flow. What would you like to know about it?"}
+      ]
+    },
+    {
+      "question": "how is it checked before it goes live?",
+      "reference_answer": "Every response passes a three-judge chain. Nightly Ragas evals run with automatic scenario generation, PyRIT red-team agents attack the agent and their high-severity findings block deployment, and an orchestrator reads every signal into a recommendation that a non-technical owner approves.",
+      "turns": [
+        {"role": "user", "content": "I'm evaluating W Chats for our support desk."},
+        {"role": "assistant", "content": "W Chats ingests your documents and deploys an evaluated agent. What do you want to know?"}
+      ]
+    },
+    {
+      "question": "what should I do if I spot one myself before they do?",
+      "reference_answer": "Volunteer the weakness before being caught. Raising it yourself demonstrates judgment, whereas the interviewer identifying the same weakness signals ignorance; the fact is identical but the signal is opposite.",
+      "turns": [
+        {"role": "user", "content": "I'm preparing with the interview rules you have and I'm worried about weaknesses in my past work."},
+        {"role": "assistant", "content": "The rules cover that directly. Are you asking about how the interviewer raises a weakness, or how you should?"}
+      ]
+    },
+    {
+      "question": "how do I start the dev server?",
+      "reference_answer": "Which project are you setting up, the Mellow's Earth Elements storefront or Sentinel OHS?",
+      "turns": [],
+      "ambiguous": true
+    },
+    {
+      "question": "what command runs the tests?",
+      "reference_answer": "Which project do you mean, the Mellow's Earth Elements storefront or Sentinel OHS?",
+      "turns": [],
+      "ambiguous": true
+    },
+    {
+      "question": "do I need any environment variables to run it?",
+      "reference_answer": "Which app are you trying to run, the storefront or Sentinel?",
+      "turns": [],
+      "ambiguous": true
+    },
+    {
+      "question": "where is the checkout code?",
+      "reference_answer": "Which project's checkout are you asking about?",
+      "turns": [],
+      "ambiguous": true
+    },
+    {
+      "question": "how is it deployed?",
+      "reference_answer": "Which project are you asking about, the storefront, Sentinel OHS, W Chats or Beekeeper?",
+      "turns": [],
+      "ambiguous": true
+    }
+  ]
+}

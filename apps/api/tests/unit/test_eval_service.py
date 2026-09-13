@@ -1787,6 +1787,7 @@ class TestSummariseRunValidity:
 
         assert "metrics" not in summary
         assert set(summary) == {
+            "clarifying_verdicts",
             "attempted",
             "valid",
             "scored",
@@ -1835,6 +1836,7 @@ class TestSummariseRunValidity:
         summary = eval_service.summarise_run_validity([], [])
 
         assert summary == {
+            "clarifying_verdicts": {},
             "attempted": 0,
             "valid": 0,
             "scored": 0,
@@ -2867,3 +2869,69 @@ class TestReadRunLedger:
 
         monkeypatch.setattr(eval_service.psycopg2, "connect", _boom)
         assert eval_service.read_run_ledger("run-1", "postgresql://production") == []
+
+
+class TestTheRuleVerdictsCountAsScoredAndAsVerdicts:
+    """#226: an ambiguous row is scored by the rule and its verdict is counted.
+
+    Both readers take the mapping, and `build_eval_result` reads it off the
+    validity report, so the denominator and the verdicts cannot come from
+    different sets of rows.
+    """
+
+    def _scenarios(self):
+        return [
+            {"id": "g0", "question": "q", "reference_answer": "Which project?", "dataset": "golden", "ambiguous": True},
+            {"id": "g1", "question": "q", "reference_answer": "Which plan?", "dataset": "golden", "ambiguous": True},
+            {"id": "e0", "question": "q", "reference_answer": "a", "dataset": "exploratory"},
+        ]
+
+    def test_checked_rows_count_as_scored_with_no_metric_observation(self):
+        validity = eval_service.summarise_run_validity(
+            self._scenarios(), [], {"g0": True, "g1": False}
+        )
+
+        assert validity["scored"] == 2
+        assert validity["datasets"]["golden"]["scored"] == 2
+        assert validity["datasets"]["golden"]["metrics"]["faithfulness"]["measured"] is False
+        assert validity["clarifying_verdicts"] == {"g0": True, "g1": False}
+
+    def test_a_verdict_for_an_unknown_scenario_is_unattributed_not_invented(self):
+        validity = eval_service.summarise_run_validity(self._scenarios(), [], {"ghost": True})
+
+        assert validity["scored"] == 0
+        assert validity["unattributed"] == 1
+
+    def test_asked_is_a_pass_and_answered_is_a_fail_in_the_scenarios_dataset(self):
+        counts = eval_service.dataset_verdict_counts(
+            self._scenarios(), [], {"g0": True, "g1": False}
+        )
+
+        assert counts["golden"] == (1, 1, 0)
+        assert counts["exploratory"] == (0, 0, 0)
+
+    def test_the_record_is_built_off_one_mapping_and_the_golden_rule_reads_it(self):
+        """End to end into the domain: an ambiguous golden that answered is a golden failure."""
+        from app.domain.calibration_status import CalibrationStatus
+        from app.domain.verdict import _rule_golden_failure
+
+        scenarios = self._scenarios()
+        validity = eval_service.summarise_run_validity(scenarios, [], {"g0": True, "g1": False})
+        result = eval_service.build_eval_result(
+            run_id="00000000-0000-0000-0000-000000000001",
+            agent_id="00000000-0000-0000-0000-000000000002",
+            prompt_version_id=None,
+            validity=validity,
+            invocation=_invocation_observation(),
+            ledger=[],
+            scenarios=scenarios,
+            judge_records=[],
+            question_resolution={},
+        )
+
+        golden = result.datasets["golden"]
+        assert (golden.scored, golden.scenarios_passed, golden.scenarios_failed) == (2, 1, 1)
+        reasons = _rule_golden_failure(
+            result, None, CalibrationStatus.absent("no_artifact"), True
+        )
+        assert [r.rule for r in reasons] == ["golden_failure"]

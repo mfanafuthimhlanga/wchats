@@ -114,6 +114,7 @@ class TestGoldenWriter:
             "authored:api_key:golden.md",
             "golden",
             "[]",
+            False,
         )
         # the caller owns the transaction: the writer must not commit
         conn.commit.assert_not_called()
@@ -136,7 +137,7 @@ class TestRegisterGoldenSync:
             fake_psycopg2.connect.return_value = conn
             registered, skipped, total = _register_golden_sync(
                 "postgresql://x",
-                [("known question", "a", []), ("new question", "b", [])],
+                [("known question", "a", [], False), ("new question", "b", [], False)],
                 "authored:api_key:inline",
             )
         assert registered == 1
@@ -160,8 +161,8 @@ class TestRegisterGoldenSync:
             registered, skipped, total = _register_golden_sync(
                 "postgresql://x",
                 [
-                    ("how do I start it?", "pnpm dev", LEAD_IN),
-                    ("how do I start it?", "uv run", OTHER_LEAD_IN),
+                    ("how do I start it?", "pnpm dev", LEAD_IN, False),
+                    ("how do I start it?", "uv run", OTHER_LEAD_IN, False),
                 ],
                 "authored:api_key:inline",
             )
@@ -179,7 +180,7 @@ class TestRegisterGoldenSync:
             fake_psycopg2.connect.return_value = conn
             registered, skipped, _total = _register_golden_sync(
                 "postgresql://x",
-                [("how do I start it?", "pnpm dev", LEAD_IN)],
+                [("how do I start it?", "pnpm dev", LEAD_IN, False)],
                 "authored:api_key:inline",
             )
         assert registered == 0
@@ -194,7 +195,7 @@ class TestRegisterGoldenSync:
             fake_psycopg2.connect.return_value = conn
             registered, skipped, _total = _register_golden_sync(
                 "postgresql://x",
-                [("how do I start it?", "pnpm dev", LEAD_IN)],
+                [("how do I start it?", "pnpm dev", LEAD_IN, False)],
                 "authored:api_key:inline",
             )
         assert registered == 0
@@ -207,7 +208,7 @@ class TestRegisterGoldenSync:
             fake_psycopg2.connect.return_value = conn
             _register_golden_sync(
                 "postgresql://x",
-                [("how do I start it?", "pnpm dev", LEAD_IN)],
+                [("how do I start it?", "pnpm dev", LEAD_IN, False)],
                 "authored:api_key:inline",
             )
         _sql, params = cursor.execute.call_args[0]
@@ -224,7 +225,7 @@ class TestRegisterGoldenSync:
             with pytest.raises(InvalidScenario):
                 _register_golden_sync(
                     "postgresql://x",
-                    [("good question", "a", []), ("empty answer", "  ", [])],
+                    [("good question", "a", [], False), ("empty answer", "  ", [], False)],
                     "authored:api_key:inline",
                 )
         conn.rollback.assert_called_once()
@@ -412,3 +413,82 @@ class TestGoldenRouteReviewEdges:
         provenance = sync_mock.call_args[0][2]
         assert provenance == "authored:api_key:x_clerk_jwt_y"
         assert provenance.split(":")[1] == "api_key"
+
+
+class TestAnAmbiguousGoldenPair:
+    """The reference of an ambiguous pair is the clarifying question (#226)."""
+
+    def test_the_flag_reaches_the_row(self):
+        conn, cursor = _make_fake_conn()
+        insert_authored_golden_scenario(
+            conn,
+            question="how do I start the dev server?",
+            reference_answer="Which project are you setting up?",
+            provenance="p",
+            ambiguous=True,
+        )
+        sql, params = cursor.execute.call_args[0]
+        assert "ambiguous" in sql
+        assert params[-1] is True
+
+    def test_a_pair_that_is_not_ambiguous_writes_false(self):
+        conn, cursor = _make_fake_conn()
+        insert_authored_golden_scenario(
+            conn, question="q", reference_answer="Nine to five.", provenance="p"
+        )
+        _sql, params = cursor.execute.call_args[0]
+        assert params[-1] is False
+
+    def test_a_reference_that_answers_is_refused_for_an_ambiguous_pair(self):
+        """A pair cannot demand a behaviour its own reference would fail."""
+        conn, cursor = _make_fake_conn()
+        with pytest.raises(InvalidScenario, match="clarifying question"):
+            insert_authored_golden_scenario(
+                conn,
+                question="how do I start the dev server?",
+                reference_answer="Run pnpm dev from the repo root.",
+                provenance="p",
+                ambiguous=True,
+            )
+        cursor.execute.assert_not_called()
+
+    def test_the_request_schema_carries_the_flag_and_defaults_it_off(self):
+        from app.schemas.eval import GoldenPair
+
+        assert GoldenPair(question="q", reference_answer="a").ambiguous is False
+        assert GoldenPair(question="q", reference_answer="a?", ambiguous=True).ambiguous is True
+
+
+class TestTheFlagReachesTheWriterFromTheRoute:
+    async def test_ambiguous_travels_on_the_pair_tuple(self):
+        """Replacing `p.ambiguous` with False at the route left every test green (review M2)."""
+        tenant = _make_fake_tenant()
+        agent = _make_agent(tenant)
+        app.dependency_overrides[get_current_tenant] = lambda: tenant
+        app.dependency_overrides[get_credential_kind] = lambda: "api_key"
+        mock_db = AsyncMock()
+        mock_db.get = AsyncMock(return_value=agent)
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+        try:
+            with (
+                patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://x"),
+                patch(
+                    "app.api.v1.evals._register_golden_sync", return_value=(2, [], 2)
+                ) as sync_mock,
+            ):
+                response = await _post_pairs(
+                    agent.id,
+                    {
+                        "pairs": [
+                            {"question": "how do I start it?", "reference_answer": "Which project?", "ambiguous": True},
+                            {"question": "q2", "reference_answer": "a2"},
+                        ]
+                    },
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 201
+        pairs = sync_mock.call_args[0][1]
+        assert [p[3] for p in pairs] == [True, False]
+        assert pairs[0][:3] == ("how do I start it?", "Which project?", [])
