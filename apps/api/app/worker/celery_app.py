@@ -77,6 +77,17 @@ log = structlog.get_logger(__name__)
 # drift apart silently the way a copied number would.
 BROKER_VISIBILITY_TIMEOUT_S = 7200
 
+#: Seconds between BRPOP reissues on an idle worker (#237). Ten cuts an idle
+#: worker from 57 polls a minute to 6; with the heartbeat, gossip and mingle
+#: flags on the start commands, two idle workers spend about 17,000 commands a
+#: day where they spent 250,000. Upstash bills per command.
+#:
+#: AN INTEGER, NOT A FLOAT. kombu passes this straight through as the BRPOP
+#: timeout and redis-py renders a float as "10.0", which a Redis older than 6
+#: refuses with "timeout is not an integer or out of range" and the worker
+#: dies on its first poll. Observed 2026-09-13 against the Windows 3.0 build.
+BROKER_POLLING_INTERVAL_S = 10
+
 # ---------------------------------------------------------------------------
 # How long a forked pool child may take before the pool gives up on it
 # ---------------------------------------------------------------------------
@@ -237,6 +248,13 @@ celery_app.conf.update(
         },
         "visibility_timeout": BROKER_VISIBILITY_TIMEOUT_S,
         "retry_on_timeout": True,
+        # How often an idle worker reissues BRPOP. Kombu's default is once a
+        # second, which is 57 of the 87 Redis commands a minute one idle worker
+        # was measured sending (#237), and Upstash bills per command. A blocking
+        # BRPOP still returns the moment a task lands, so on a single-queue
+        # worker this changes how often the call is reissued, not how fast a
+        # task is picked up.
+        "polling_interval": BROKER_POLLING_INTERVAL_S,
     },
 
     # --- Celery beat schedule (M6: nightly eval) ------------------------
