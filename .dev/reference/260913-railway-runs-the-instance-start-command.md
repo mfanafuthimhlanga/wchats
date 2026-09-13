@@ -32,3 +32,16 @@ and nothing pins the instance; until something does, read both after any change.
 
 Both workers carry the three flags in their instance setting, `polling_interval` is 10 in
 code (#252, an integer, because BRPOP refuses `10.0`), and all four services are parked.
+
+## Unparking, and the deploy that is SKIPPED
+
+`railway up --detach -y -s <service> -e staging` on a parked service can come back
+`SKIPPED` (observed twice on `worker-runtime` at 20:00 SAST, and `railway redeploy` then
+says "No deployment found for service"). Railway skips an upload whose content matches the
+last build even when nothing is running. What forces a real deployment is any variable
+change on the service: `railway variables --set WCHATS_UNPARK_STAMP=$(date +%s) -s
+worker-runtime -e staging` produced `BUILDING` within seconds and `ready.` a minute later.
+The stamp is harmless and stays; bump it to unpark again.
+
+A chat test needs `api-service` and `worker-runtime` only. `beat` and `worker-pipeline`
+stay parked and cost nothing.
