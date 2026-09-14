@@ -41,12 +41,22 @@ from app.schemas.agent import (
     AgentListResponse,
     AgentResponse,
     AgentSoulUpdate,
+    SoulSchema,
     WidgetConfigUpdate,
 )
 from app.services.prompt_version_service import SOUL_FIELDS, create_version_from_agent
 from app.worker.tasks.pipeline.provision import provision_neon
 
 router = APIRouter(tags=["agents"])
+
+
+def _soul_columns(soul: SoulSchema) -> dict:
+    """The four prompt columns from a create request's soul, blanks dropped."""
+    return {
+        "soul_voice": soul.voice.strip() or None,
+        "soul_do_list": [s.strip() for s in soul.do if s and s.strip()],
+        "soul_donot_list": [s.strip() for s in soul.do_not if s and s.strip()],
+    }
 
 
 @router.post("/agents", status_code=202, response_model=AgentCreateResponse)
@@ -62,10 +72,16 @@ async def create_agent(
     The route only creates DB rows, dispatches the chain, and returns immediately.
     """
     # Create agent with status=pending; tenant_id from authenticated context (T-04-04)
+    # THE SOUL REACHES THE PROMPT FROM HERE (#261). `build_system_prompt` reads
+    # the four `soul_*` columns, and until this route wrote them a soul sent at
+    # create landed in the legacy JSONB alone and the agent ran on the defaults
+    # until someone called the patch route. The JSONB is still written for the
+    # readers that predate the columns.
     agent = Agent(
         tenant_id=tenant.id,
         name=body.name,
         soul=body.soul.model_dump(),
+        **_soul_columns(body.soul),
         role=body.role,
         status="pending",
     )
