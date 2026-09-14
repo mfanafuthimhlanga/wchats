@@ -11,11 +11,12 @@ TWO RULES, FOR TWO KINDS OF TEXT.
 `turn_asked_to_clarify` reads the agent's turn. The agent has a `clarify` tool
 whose whole job is to ask the customer a question, so a call to it in the
 turn's tool log is exact evidence of asking, in any language and any markdown.
-A turn that also retrieved is an answer with a question on it, and is not
-asking. Free text is never read for the agent's verdict: "Run pnpm dev.
-Anything else?" ends in a question mark and is an answer, and a bulleted list
-of the four projects with the question above it does not end in one and is
-asking.
+The turn asked when clarify was its LAST tool call: an agent may retrieve
+first, see that the chunks span several projects, and then ask, and that is
+asking; an agent that asks and then retrieves and answers anyway is not. Free
+text is never read for the agent's verdict: "Run pnpm dev. Anything else?"
+ends in a question mark and is an answer, and a bulleted list of the four
+projects with the question above it does not end in one and is asking.
 
 `is_clarifying_question` reads a reference answer the owner wrote, where there
 is no tool log. It holds the reference to the shape of a question so a pair
@@ -38,10 +39,9 @@ CLARIFYING_MAX_WORDS = 40
 #: Its presence on a scored row is what keeps the row out of the Ragas set.
 CLARIFYING_CHECK_KEY = "clarifying_check"
 
-#: The tool an agent calls to ask the customer a question, and the one it calls
-#: to answer from the corpus. Names as `agent_tool_definitions` registers them.
+#: The tool an agent calls to ask the customer a question, named as
+#: `agent_tool_definitions` registers it.
 CLARIFY_TOOL = "clarify"
-RETRIEVE_TOOL = "retrieve"
 
 #: Question marks in the scripts a South African tenant's customers write in,
 #: plus the fullwidth and Arabic forms. A Greek question mark is `;`.
@@ -50,14 +50,15 @@ _TRAILING_DECORATION = "\"')]}»*_` \n\t"
 
 
 def turn_asked_to_clarify(tool_calls_log: Iterable[Mapping]) -> bool:
-    """True when the turn called `clarify` and never `retrieve`.
+    """True when the turn's last tool call was `clarify`.
 
     Read off the tool log the loop already walks for retrieved contexts, so the
     verdict comes from what the agent DID rather than from how the model
-    phrased it.
+    phrased it. The loop does not stop on clarify, so a turn that asked and then
+    went on to retrieve and answer has `retrieve` after `clarify` and fails.
     """
-    names = {str(tc.get("tool_name", "")) for tc in tool_calls_log}
-    return CLARIFY_TOOL in names and RETRIEVE_TOOL not in names
+    names = [str(tc.get("tool_name", "")) for tc in tool_calls_log]
+    return bool(names) and names[-1] == CLARIFY_TOOL
 
 
 def is_clarifying_question(text: str) -> bool:

@@ -217,3 +217,23 @@ def test_a_soul_override_cannot_outgrow_the_bound_either():
     )
 
     assert len(prompt) <= SYSTEM_PROMPT_MAX_CHARS
+
+
+# ---------------------------------------------------------------------------
+# #255: the agent is told when to ask instead of guessing
+# ---------------------------------------------------------------------------
+
+
+def test_the_prompt_tells_the_agent_to_clarify_a_question_that_names_no_project():
+    """Five vague openers answered from a guessed project on run 0a99f7ab (#255).
+
+    The MUST list said "always retrieve before answering" and nothing about
+    asking, so the agent never called its clarify tool. The rule names the tool
+    and the condition, and the few-shot shows the call, because the example
+    block is what the model imitates.
+    """
+    prompt = build_system_prompt(_make_agent())
+    assert "call the clarify tool" in prompt
+    assert "does not say which" in prompt
+    assert "Never guess which one" in prompt
+    assert '[calls clarify with question="Which project are you setting up?"]' in prompt

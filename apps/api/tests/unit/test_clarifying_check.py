@@ -24,8 +24,13 @@ class TestTheAgentsVerdictComesOffTheToolLog:
     def test_a_clarify_call_with_no_retrieve_is_asking(self):
         assert turn_asked_to_clarify([{"tool_name": "clarify", "result": "Which project?"}]) is True
 
-    def test_a_turn_that_retrieved_is_answering_even_if_it_also_asked(self):
+    def test_retrieving_first_and_then_asking_is_asking(self):
+        """The agent looked, saw four projects in the chunks, and asked."""
         log = [{"tool_name": "retrieve", "result": "..."}, {"tool_name": "clarify", "result": "?"}]
+        assert turn_asked_to_clarify(log) is True
+
+    def test_asking_and_then_retrieving_and_answering_anyway_is_answering(self):
+        log = [{"tool_name": "clarify", "result": "?"}, {"tool_name": "retrieve", "result": "..."}]
         assert turn_asked_to_clarify(log) is False
 
     def test_a_turn_with_no_tool_calls_is_not_asking(self):
@@ -35,6 +40,7 @@ class TestTheAgentsVerdictComesOffTheToolLog:
     def test_other_tools_do_not_count_either_way(self):
         assert turn_asked_to_clarify([{"tool_name": "escalate"}]) is False
         assert turn_asked_to_clarify([{"tool_name": "escalate"}, {"tool_name": "clarify"}]) is True
+        assert turn_asked_to_clarify([{"tool_name": "clarify"}, {"tool_name": "escalate"}]) is False
 
 
 class TestTheReferenceRule:

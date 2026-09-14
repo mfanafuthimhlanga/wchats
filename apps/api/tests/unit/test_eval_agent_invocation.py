@@ -2543,7 +2543,7 @@ class TestAnAmbiguousScenarioIsDecidedInTheLoop:
             text, contexts, clarified = respond(question)
             turn = _turn(text, contexts=contexts)
             if clarified:
-                turn["tool_calls_log"] = [{"tool_name": "clarify", "result": text}, *turn["tool_calls_log"]]
+                turn["tool_calls_log"] = [*turn["tool_calls_log"], {"tool_name": "clarify", "result": text}]
             return turn
 
         with patch.object(mod, "_run_one_eval_turn", side_effect=_turn_for):
@@ -2559,7 +2559,7 @@ class TestAnAmbiguousScenarioIsDecidedInTheLoop:
             "dataset": "golden", "stored_retrieved_contexts": [],
         }
 
-    def test_a_clarify_call_with_no_retrieval_is_a_row_that_asked(self):
+    def test_a_turn_that_ends_by_calling_clarify_is_a_row_that_asked(self):
         rows, summary = self._run([self._ambiguous(0)], lambda q: ("Which project are you on?", [], True))
 
         assert len(rows) == 1
