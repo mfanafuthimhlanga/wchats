@@ -1,5 +1,5 @@
 scenario_id,dimension,human_verdict,human_score,notes,dataset,question,response,retrieved_contexts,reference,turns,resolved_question
-02a5ac37-1545-4e03-ac2c-ec0fe70c84fb,faithfulness,,,,golden,how do I start the dev server?,"Run:
+02a5ac37-1545-4e03-ac2c-ec0fe70c84fb,faithfulness,pass,,,golden,how do I start the dev server?,"Run:
 
 ```bash
 pnpm install
@@ -83,7 +83,7 @@ npm run dev   # Vite on http://localhost:5173
 
 | Start the Vite dev server   |
 |-----------------------------|","Which project are you setting up, the Mellow's Earth Elements storefront or Sentinel OHS?",,
-02a5ac37-1545-4e03-ac2c-ec0fe70c84fb,answer_relevancy,,,,golden,how do I start the dev server?,"Run:
+02a5ac37-1545-4e03-ac2c-ec0fe70c84fb,answer_relevancy,fail,,needs project clarity,golden,how do I start the dev server?,"Run:
 
 ```bash
 pnpm install
@@ -167,7 +167,7 @@ npm run dev   # Vite on http://localhost:5173
 
 | Start the Vite dev server   |
 |-----------------------------|","Which project are you setting up, the Mellow's Earth Elements storefront or Sentinel OHS?",,
-05cc11f9-729c-45bd-abb9-1c715b0e167e,faithfulness,,,,exploratory,"What command should I run to execute the project’s tests, and what areas do the unit tests cover?","Run:
+05cc11f9-729c-45bd-abb9-1c715b0e167e,faithfulness,pass,,,exploratory,"What command should I run to execute the project’s tests, and what areas do the unit tests cover?","Run:
 
 ```bash
 pnpm test
@@ -259,7 +259,7 @@ is not published. Publishing
 *""here are my project's security holes""*
 is not
 a flex.","Run `pnpm test`. The unit tests cover cart logic, order validation and submission, and the delivery-form schema. The tests are located in `src/tests/unit/`.",,
-05cc11f9-729c-45bd-abb9-1c715b0e167e,answer_relevancy,,,,exploratory,"What command should I run to execute the project’s tests, and what areas do the unit tests cover?","Run:
+05cc11f9-729c-45bd-abb9-1c715b0e167e,answer_relevancy,fail,,,exploratory,"What command should I run to execute the project’s tests, and what areas do the unit tests cover?","Run:
 
 ```bash
 pnpm test
@@ -351,7 +351,7 @@ is not published. Publishing
 *""here are my project's security holes""*
 is not
 a flex.","Run `pnpm test`. The unit tests cover cart logic, order validation and submission, and the delivery-form schema. The tests are located in `src/tests/unit/`.",,
-0a9c1e5d-9620-478f-acae-b2e498695e73,faithfulness,,,,exploratory,"How can I start the app locally, and which command runs the production preview?","To start the app locally, run:
+0a9c1e5d-9620-478f-acae-b2e498695e73,faithfulness,pass,,,exploratory,"How can I start the app locally, and which command runs the production preview?","To start the app locally, run:
 
 ```bash
 pnpm dev
@@ -430,7 +430,7 @@ You will need a Neon API key, an Anthropic API key, and either Bedrock access or
 
 | Start the Vite dev server   |
 |-----------------------------|",Run `pnpm dev` to start the Vite development server. Run `pnpm preview` to preview the production build.,,
-0a9c1e5d-9620-478f-acae-b2e498695e73,answer_relevancy,,,,exploratory,"How can I start the app locally, and which command runs the production preview?","To start the app locally, run:
+0a9c1e5d-9620-478f-acae-b2e498695e73,answer_relevancy,fail,,,exploratory,"How can I start the app locally, and which command runs the production preview?","To start the app locally, run:
 
 ```bash
 pnpm dev
@@ -509,7 +509,7 @@ You will need a Neon API key, an Anthropic API key, and either Bedrock access or
 
 | Start the Vite dev server   |
 |-----------------------------|",Run `pnpm dev` to start the Vite development server. Run `pnpm preview` to preview the production build.,,
-14d2ec20-366c-423f-91cb-33c0618d95b3,faithfulness,,,,golden,"How is a W Chats agent checked before it goes live, and after?","Before going live, a W Chats agent must:
+14d2ec20-366c-423f-91cb-33c0618d95b3,faithfulness,pass,,,golden,"How is a W Chats agent checked before it goes live, and after?","Before going live, a W Chats agent must:
 
 - Be grounded in the business’s own documents.
 - Pass automated evaluations measuring **Faithfulness, Answer Relevance, Context Precision, and Context Recall**.
@@ -606,7 +606,7 @@ Built in 22 planned phases across three milestones. ~29k lines of Python, 1,103 
 M1–M11,  = ✅ Control plane, ingestion, hybrid retrieval, reasoning engine + widget, validation chain, evals, red team, pre-deployment checklist, retrieval-strategy synthesis, observability, admin UI. v1.1 — Transactional,  = ✅ Phases 14–17 (tool contracts, Actor validator, integration adapters, identity verification). ⏳ Phase 18 at 9/11 (blast-radius gate, capability UI, transaction red-team, PII firewall). Phase 19 (docs + E2E proof) not started.. v1.2 — Console + agent management,  = ✅ Frontend cutover and the agent-management backend — live metrics, RAG-health instrumentation, the triage flywheel, prompt versioning with canary and rollback. Production hosting,  = ⏸️Paused.Terraform, Bedrock embeddings, connection pooling, S3 uploads and concurrency-safe workers are all written; standing them up needs a real AWS account.
 **Being honest about what that means:**
 the end-to-end path has been proven live — a grounded, cited answer served to a browser through a tunnel — but there is no always-on deployment today, and the v1.2 migrations have not yet been applied to a live database. This is a complete, tested system awaiting infrastructure, not a running service.","Every response passes a three-judge chain. Nightly Ragas evals run with automatic scenario generation, PyRIT red-team agents attack the agent and their high-severity findings block deployment, and an orchestrator reads every signal into a recommendation that a non-technical owner approves.",,
-14d2ec20-366c-423f-91cb-33c0618d95b3,answer_relevancy,,,,golden,"How is a W Chats agent checked before it goes live, and after?","Before going live, a W Chats agent must:
+14d2ec20-366c-423f-91cb-33c0618d95b3,answer_relevancy,pass,,,golden,"How is a W Chats agent checked before it goes live, and after?","Before going live, a W Chats agent must:
 
 - Be grounded in the business’s own documents.
 - Pass automated evaluations measuring **Faithfulness, Answer Relevance, Context Precision, and Context Recall**.
@@ -703,7 +703,7 @@ Built in 22 planned phases across three milestones. ~29k lines of Python, 1,103 
 M1–M11,  = ✅ Control plane, ingestion, hybrid retrieval, reasoning engine + widget, validation chain, evals, red team, pre-deployment checklist, retrieval-strategy synthesis, observability, admin UI. v1.1 — Transactional,  = ✅ Phases 14–17 (tool contracts, Actor validator, integration adapters, identity verification). ⏳ Phase 18 at 9/11 (blast-radius gate, capability UI, transaction red-team, PII firewall). Phase 19 (docs + E2E proof) not started.. v1.2 — Console + agent management,  = ✅ Frontend cutover and the agent-management backend — live metrics, RAG-health instrumentation, the triage flywheel, prompt versioning with canary and rollback. Production hosting,  = ⏸️Paused.Terraform, Bedrock embeddings, connection pooling, S3 uploads and concurrency-safe workers are all written; standing them up needs a real AWS account.
 **Being honest about what that means:**
 the end-to-end path has been proven live — a grounded, cited answer served to a browser through a tunnel — but there is no always-on deployment today, and the v1.2 migrations have not yet been applied to a live database. This is a complete, tested system awaiting infrastructure, not a running service.","Every response passes a three-judge chain. Nightly Ragas evals run with automatic scenario generation, PyRIT red-team agents attack the agent and their high-severity findings block deployment, and an orchestrator reads every signal into a recommendation that a non-technical owner approves.",,
-17dcd1b3-9b7f-47d8-8200-3b39e764d90f,faithfulness,,,,golden,how is it checked before it goes live?,"Before going live, W Chats requires the agent to:
+17dcd1b3-9b7f-47d8-8200-3b39e764d90f,faithfulness,pass,,,golden,how is it checked before it goes live?,"Before going live, W Chats requires the agent to:
 
 1. Be grounded in your business documents.
 2. Run an automated evaluation suite measuring Faithfulness, Answer Relevance, Context Precision, and Context Recall.
@@ -792,7 +792,7 @@ ungrounded
 ```
 verdicts on a retrieval pattern flag the agent for strategy resynthesis. Every verdict is Pydantic-validated and traced to Langfuse.","Every response passes a three-judge chain. Nightly Ragas evals run with automatic scenario generation, PyRIT red-team agents attack the agent and their high-severity findings block deployment, and an orchestrator reads every signal into a recommendation that a non-technical owner approves.","USER: I'm evaluating W Chats for our support desk.
 ASSISTANT: W Chats ingests your documents and deploys an evaluated agent. What do you want to know?",How is the W Chats agent checked before it goes live?
-17dcd1b3-9b7f-47d8-8200-3b39e764d90f,answer_relevancy,,,,golden,how is it checked before it goes live?,"Before going live, W Chats requires the agent to:
+17dcd1b3-9b7f-47d8-8200-3b39e764d90f,answer_relevancy,pass,,,golden,how is it checked before it goes live?,"Before going live, W Chats requires the agent to:
 
 1. Be grounded in your business documents.
 2. Run an automated evaluation suite measuring Faithfulness, Answer Relevance, Context Precision, and Context Recall.
@@ -881,7 +881,7 @@ ungrounded
 ```
 verdicts on a retrieval pattern flag the agent for strategy resynthesis. Every verdict is Pydantic-validated and traced to Langfuse.","Every response passes a three-judge chain. Nightly Ragas evals run with automatic scenario generation, PyRIT red-team agents attack the agent and their high-severity findings block deployment, and an orchestrator reads every signal into a recommendation that a non-technical owner approves.","USER: I'm evaluating W Chats for our support desk.
 ASSISTANT: W Chats ingests your documents and deploys an evaluated agent. What do you want to know?",How is the W Chats agent checked before it goes live?
-18ae8f44-96b6-4d00-9ea1-a5fe2a0b210f,faithfulness,,,,golden,Which agent harnesses has Beekeeper been verified against end to end?,"Beekeeper has been verified end to end against **Claude Code only**. Specifically, a credential read triggered the hook, the tool execution was blocked, and the block was audited.
+18ae8f44-96b6-4d00-9ea1-a5fe2a0b210f,faithfulness,pass,,,golden,Which agent harnesses has Beekeeper been verified against end to end?,"Beekeeper has been verified end to end against **Claude Code only**. Specifically, a credential read triggered the hook, the tool execution was blocked, and the block was audited.
 
 The other 16 harnesses are contract-shape tested against their documented interfaces but have not been run against real harnesses in CI. (Beekeeper, “Harness support,” Section: Verification scope)
 
@@ -941,7 +941,7 @@ Three systems, one loop applied three ways.
 Beekeeper
 The design
 One static Go binary, three layers. A fail-closed PreToolUse hook - and an MCP gateway for harnesses without one - blocks before a tool call runs, across 17 agent harnesses in three honesty tiers. A corroboration engine needs a second signed source to block. Sentry, an opt-in behavioral monitor, correlates process, file, and network events into detection rules. Install posture and sensitive-path enforcement ride the same hook.","Only Claude Code is live-block-verified end to end: a credential read fires the hook, the tool does not run, and the block is audited. The other 16 harnesses are implemented against their documented contracts and contract-shape tested, not run against a real harness in CI.",,
-18ae8f44-96b6-4d00-9ea1-a5fe2a0b210f,answer_relevancy,,,,golden,Which agent harnesses has Beekeeper been verified against end to end?,"Beekeeper has been verified end to end against **Claude Code only**. Specifically, a credential read triggered the hook, the tool execution was blocked, and the block was audited.
+18ae8f44-96b6-4d00-9ea1-a5fe2a0b210f,answer_relevancy,pass,,,golden,Which agent harnesses has Beekeeper been verified against end to end?,"Beekeeper has been verified end to end against **Claude Code only**. Specifically, a credential read triggered the hook, the tool execution was blocked, and the block was audited.
 
 The other 16 harnesses are contract-shape tested against their documented interfaces but have not been run against real harnesses in CI. (Beekeeper, “Harness support,” Section: Verification scope)
 
@@ -1001,7 +1001,7 @@ Three systems, one loop applied three ways.
 Beekeeper
 The design
 One static Go binary, three layers. A fail-closed PreToolUse hook - and an MCP gateway for harnesses without one - blocks before a tool call runs, across 17 agent harnesses in three honesty tiers. A corroboration engine needs a second signed source to block. Sentry, an opt-in behavioral monitor, correlates process, file, and network events into detection rules. Install posture and sensitive-path enforcement ride the same hook.","Only Claude Code is live-block-verified end to end: a credential read fires the hook, the tool does not run, and the block is audited. The other 16 harnesses are implemented against their documented contracts and contract-shape tested, not run against a real harness in CI.",,
-1adec12b-1740-4551-8992-fc6af194bec0,faithfulness,,,,golden,and how do I preview the production build?,"Run:
+1adec12b-1740-4551-8992-fc6af194bec0,faithfulness,pass,,,golden,and how do I preview the production build?,"Run:
 
 ```bash
 pnpm build
@@ -1085,7 +1085,7 @@ to override:
 - `VITE_APP_URL` — public site URL
 - `VITE_BUSINESS_EMAIL` — contact email shown if checkout fails","Run `pnpm build`, then `pnpm preview` serves the production build from `dist/`.","USER: I have the Mellow's Earth Elements storefront running with pnpm dev.
 ASSISTANT: Great, the Vite dev server is up. What next?",How do I preview the production build of the Mellow's Earth Elements storefront?
-1adec12b-1740-4551-8992-fc6af194bec0,answer_relevancy,,,,golden,and how do I preview the production build?,"Run:
+1adec12b-1740-4551-8992-fc6af194bec0,answer_relevancy,pass,,,golden,and how do I preview the production build?,"Run:
 
 ```bash
 pnpm build
@@ -1169,7 +1169,7 @@ to override:
 - `VITE_APP_URL` — public site URL
 - `VITE_BUSINESS_EMAIL` — contact email shown if checkout fails","Run `pnpm build`, then `pnpm preview` serves the production build from `dist/`.","USER: I have the Mellow's Earth Elements storefront running with pnpm dev.
 ASSISTANT: Great, the Vite dev server is up. What next?",How do I preview the production build of the Mellow's Earth Elements storefront?
-21e4ac56-ce4e-4d5b-8583-a682d3642796,faithfulness,,,,exploratory,What command starts the Vite development server?,"Run:
+21e4ac56-ce4e-4d5b-8583-a682d3642796,faithfulness,pass,,,exploratory,What command starts the Vite development server?,"Run:
 
 ```bash
 pnpm dev
@@ -1246,7 +1246,7 @@ vercel.json
 - **Build:** `pnpm build`
 - **Output:** `dist`
 - **Install:** `pnpm install --frozen-lockfile`",The content only includes the heading “Start the Vite dev server” and does not provide the command.,,
-21e4ac56-ce4e-4d5b-8583-a682d3642796,answer_relevancy,,,,exploratory,What command starts the Vite development server?,"Run:
+21e4ac56-ce4e-4d5b-8583-a682d3642796,answer_relevancy,fail,,,exploratory,What command starts the Vite development server?,"Run:
 
 ```bash
 pnpm dev
@@ -1323,7 +1323,7 @@ vercel.json
 - **Build:** `pnpm build`
 - **Output:** `dist`
 - **Install:** `pnpm install --frozen-lockfile`",The content only includes the heading “Start the Vite dev server” and does not provide the command.,,
-2de51771-7c35-4f72-a3d1-136999c79ea8,faithfulness,,,,golden,do I need any environment variables to run it?,"No. The environment variables are optional, and the app runs without any. If you want to customize them, copy `.env.example` to `.env.local` and set:
+2de51771-7c35-4f72-a3d1-136999c79ea8,faithfulness,pass,,,golden,do I need any environment variables to run it?,"No. The environment variables are optional, and the app runs without any. If you want to customize them, copy `.env.example` to `.env.local` and set:
 
 - `VITE_APP_URL` — public site URL
 - `VITE_BUSINESS_EMAIL` — contact email shown if checkout fails
@@ -1410,7 +1410,7 @@ vercel.json
 - **Output:** `dist`
 - **Install:** `pnpm install --frozen-lockfile`",No. Every environment variable is optional and the storefront runs without any. Copy `.env.example` to `.env.local` to override `VITE_APP_URL` or `VITE_BUSINESS_EMAIL`.,"USER: I'm trying to get the Mellow's Earth Elements storefront running on my laptop.
 ASSISTANT: Let's get it running. What's the first thing you're stuck on?",Does the Mellow's Earth Elements storefront require any environment variables to run on my laptop?
-2de51771-7c35-4f72-a3d1-136999c79ea8,answer_relevancy,,,,golden,do I need any environment variables to run it?,"No. The environment variables are optional, and the app runs without any. If you want to customize them, copy `.env.example` to `.env.local` and set:
+2de51771-7c35-4f72-a3d1-136999c79ea8,answer_relevancy,pass,,,golden,do I need any environment variables to run it?,"No. The environment variables are optional, and the app runs without any. If you want to customize them, copy `.env.example` to `.env.local` and set:
 
 - `VITE_APP_URL` — public site URL
 - `VITE_BUSINESS_EMAIL` — contact email shown if checkout fails
@@ -1497,7 +1497,7 @@ vercel.json
 - **Output:** `dist`
 - **Install:** `pnpm install --frozen-lockfile`",No. Every environment variable is optional and the storefront runs without any. Copy `.env.example` to `.env.local` to override `VITE_APP_URL` or `VITE_BUSINESS_EMAIL`.,"USER: I'm trying to get the Mellow's Earth Elements storefront running on my laptop.
 ASSISTANT: Let's get it running. What's the first thing you're stuck on?",Does the Mellow's Earth Elements storefront require any environment variables to run on my laptop?
-2f98b00b-2939-434a-a52e-b45fbe1dfca8,faithfulness,,,,golden,where is the checkout code?,"The checkout code is mainly located here:
+2f98b00b-2939-434a-a52e-b45fbe1dfca8,faithfulness,pass,,,golden,where is the checkout code?,"The checkout code is mainly located here:
 
 - `src/pages/Checkout.tsx` — checkout page and delivery fee
 - `src/components/checkout/` — delivery form, payment information, and order summary
@@ -1581,7 +1581,7 @@ calls |
 Only Claude Code is live-block-verified end to end (a credential read fires the hook, the tool does not run, the block is audited). The other 16 harnesses are implemented against their documented contracts and contract-shape tested (correct exit code and deny payload), but not run against a real harness in CI. The live-block procedure for each is enumerated with sign-off fields in
 [docs/validation-register.md](https://github.com/home-beekeeper/beekeeper/blob/main/docs/validation-register.md)
 .",Which project's checkout are you asking about?,,
-2f98b00b-2939-434a-a52e-b45fbe1dfca8,answer_relevancy,,,,golden,where is the checkout code?,"The checkout code is mainly located here:
+2f98b00b-2939-434a-a52e-b45fbe1dfca8,answer_relevancy,fail,,,golden,where is the checkout code?,"The checkout code is mainly located here:
 
 - `src/pages/Checkout.tsx` — checkout page and delivery fee
 - `src/components/checkout/` — delivery form, payment information, and order summary
@@ -1665,7 +1665,7 @@ calls |
 Only Claude Code is live-block-verified end to end (a credential read fires the hook, the tool does not run, the block is audited). The other 16 harnesses are implemented against their documented contracts and contract-shape tested (correct exit code and deny payload), but not run against a real harness in CI. The live-block procedure for each is enumerated with sign-off fields in
 [docs/validation-register.md](https://github.com/home-beekeeper/beekeeper/blob/main/docs/validation-register.md)
 .",Which project's checkout are you asking about?,,
-4b0b3432-7024-4f12-a9fb-2a01ccbc01a4,faithfulness,,,,golden,What problem does Beekeeper solve?,"Beekeeper solves the problem of autonomous coding agents making unsafe decisions with outdated security knowledge. It provides fresh, corroborated threat intelligence and checks package installs, file access, network calls, and tool calls before execution—blocking actions that violate threat or policy checks. This helps protect against software supply-chain attacks, such as malicious dependencies published after an agent’s training cutoff. **(Beekeeper, “Why”; Beekeeper, “Threat intelligence for autonomous coding agents”)**
+4b0b3432-7024-4f12-a9fb-2a01ccbc01a4,faithfulness,pass,,,golden,What problem does Beekeeper solve?,"Beekeeper solves the problem of autonomous coding agents making unsafe decisions with outdated security knowledge. It provides fresh, corroborated threat intelligence and checks package installs, file access, network calls, and tool calls before execution—blocking actions that violate threat or policy checks. This helps protect against software supply-chain attacks, such as malicious dependencies published after an agent’s training cutoff. **(Beekeeper, “Why”; Beekeeper, “Threat intelligence for autonomous coding agents”)**
 
 CITATIONS:
 - Document: Beekeeper | Section: Why
@@ -1742,7 +1742,7 @@ Apache 2.0. Threat intelligence is inspired by Perplexity's
 (Apache-2.0), consumed as a catalog source, with
 [Pollen](https://github.com/home-beekeeper/pollen)
 as the Windows-support scanner fallback. Beekeeper bundles no Bumblebee or Pollen code; both are invoked as subprocesses.","A coding agent's knowledge of which packages are safe is frozen at its training cutoff, so it installs the dependency a task needs with no way to know that version shipped a credential stealer after the cutoff. Beekeeper puts a corroborated threat check in front of the install, synced every two hours, with a second-source requirement and an audit trail.",,
-4b0b3432-7024-4f12-a9fb-2a01ccbc01a4,answer_relevancy,,,,golden,What problem does Beekeeper solve?,"Beekeeper solves the problem of autonomous coding agents making unsafe decisions with outdated security knowledge. It provides fresh, corroborated threat intelligence and checks package installs, file access, network calls, and tool calls before execution—blocking actions that violate threat or policy checks. This helps protect against software supply-chain attacks, such as malicious dependencies published after an agent’s training cutoff. **(Beekeeper, “Why”; Beekeeper, “Threat intelligence for autonomous coding agents”)**
+4b0b3432-7024-4f12-a9fb-2a01ccbc01a4,answer_relevancy,pass,,,golden,What problem does Beekeeper solve?,"Beekeeper solves the problem of autonomous coding agents making unsafe decisions with outdated security knowledge. It provides fresh, corroborated threat intelligence and checks package installs, file access, network calls, and tool calls before execution—blocking actions that violate threat or policy checks. This helps protect against software supply-chain attacks, such as malicious dependencies published after an agent’s training cutoff. **(Beekeeper, “Why”; Beekeeper, “Threat intelligence for autonomous coding agents”)**
 
 CITATIONS:
 - Document: Beekeeper | Section: Why
@@ -1819,7 +1819,7 @@ Apache 2.0. Threat intelligence is inspired by Perplexity's
 (Apache-2.0), consumed as a catalog source, with
 [Pollen](https://github.com/home-beekeeper/pollen)
 as the Windows-support scanner fallback. Beekeeper bundles no Bumblebee or Pollen code; both are invoked as subprocesses.","A coding agent's knowledge of which packages are safe is frozen at its training cutoff, so it installs the dependency a task needs with no way to know that version shipped a credential stealer after the cutoff. Beekeeper puts a corroborated threat check in front of the install, synced every two hours, with a second-source requirement and an audit trail.",,
-5127e0f0-06b1-41b5-9e78-f11dc0c551cb,faithfulness,,,,exploratory,"How do I install and run Mellow's Earth Elements locally, and what URL should I open?","To install and run Mellow’s Earth Elements locally:
+5127e0f0-06b1-41b5-9e78-f11dc0c551cb,faithfulness,pass,,,exploratory,"How do I install and run Mellow's Earth Elements locally, and what URL should I open?","To install and run Mellow’s Earth Elements locally:
 
 ```bash
 pnpm install
@@ -1910,7 +1910,7 @@ Unit tests cover cart logic, order validation/submission, and the delivery-form 
 src/tests/unit/
 ```
 ).","Run `pnpm install`, then `pnpm dev`. The dev server normally runs at http://localhost:8080. If port 8080 is already in use, it falls back to the next available port, such as 8081.",,
-5127e0f0-06b1-41b5-9e78-f11dc0c551cb,answer_relevancy,,,,exploratory,"How do I install and run Mellow's Earth Elements locally, and what URL should I open?","To install and run Mellow’s Earth Elements locally:
+5127e0f0-06b1-41b5-9e78-f11dc0c551cb,answer_relevancy,pass,,,exploratory,"How do I install and run Mellow's Earth Elements locally, and what URL should I open?","To install and run Mellow’s Earth Elements locally:
 
 ```bash
 pnpm install
@@ -2001,7 +2001,7 @@ Unit tests cover cart logic, order validation/submission, and the delivery-form 
 src/tests/unit/
 ```
 ).","Run `pnpm install`, then `pnpm dev`. The dev server normally runs at http://localhost:8080. If port 8080 is already in use, it falls back to the next available port, such as 8081.",,
-53b6f7ca-f1ac-4355-8139-a87c3fc8fd4c,faithfulness,,,,golden,Why does the Beekeeper hook exit with code 2 when it blocks a tool call?,"Beekeeper exits with code **2 intentionally** when it blocks a tool call. Exit code **1** is interpreted by most agent harnesses as a hook error, which they may ignore—allowing the tool call to proceed. Exit code **2**, together with the harness-specific deny payload, reliably signals that the call must be blocked. The default enforcement mode is fail-closed.  
+53b6f7ca-f1ac-4355-8139-a87c3fc8fd4c,faithfulness,pass,,,golden,Why does the Beekeeper hook exit with code 2 when it blocks a tool call?,"Beekeeper exits with code **2 intentionally** when it blocks a tool call. Exit code **1** is interpreted by most agent harnesses as a hook error, which they may ignore—allowing the tool call to proceed. Exit code **2**, together with the harness-specific deny payload, reliably signals that the call must be blocked. The default enforcement mode is fail-closed.  
 
 CITATIONS:
 - Document: Beekeeper | Section: What it does
@@ -2119,7 +2119,7 @@ Beekeeper also self-protects: an agent cannot read or write its state directory,
 beekeeper-self
 ```
 feed lets a tampered build refuse to run.","Exit code 1 reads as a hook error and most harnesses ignore it, so the tool would still run. Exit 2, with the per-harness deny payload, is what the harness honours as a block.",,
-53b6f7ca-f1ac-4355-8139-a87c3fc8fd4c,answer_relevancy,,,,golden,Why does the Beekeeper hook exit with code 2 when it blocks a tool call?,"Beekeeper exits with code **2 intentionally** when it blocks a tool call. Exit code **1** is interpreted by most agent harnesses as a hook error, which they may ignore—allowing the tool call to proceed. Exit code **2**, together with the harness-specific deny payload, reliably signals that the call must be blocked. The default enforcement mode is fail-closed.  
+53b6f7ca-f1ac-4355-8139-a87c3fc8fd4c,answer_relevancy,pass,,,golden,Why does the Beekeeper hook exit with code 2 when it blocks a tool call?,"Beekeeper exits with code **2 intentionally** when it blocks a tool call. Exit code **1** is interpreted by most agent harnesses as a hook error, which they may ignore—allowing the tool call to proceed. Exit code **2**, together with the harness-specific deny payload, reliably signals that the call must be blocked. The default enforcement mode is fail-closed.  
 
 CITATIONS:
 - Document: Beekeeper | Section: What it does
@@ -2237,7 +2237,7 @@ Beekeeper also self-protects: an agent cannot read or write its state directory,
 beekeeper-self
 ```
 feed lets a tampered build refuse to run.","Exit code 1 reads as a hook error and most harnesses ignore it, so the tool would still run. Exit 2, with the per-harness deny payload, is what the harness honours as a block.",,
-5f13b81d-f85b-4287-9f32-ba452eaf8cc8,faithfulness,,,,exploratory,Where is the delivery fee configured in the storefront code?,"The delivery fee is configured as the `deliveryFee` constant in:
+5f13b81d-f85b-4287-9f32-ba452eaf8cc8,faithfulness,pass,,,exploratory,Where is the delivery fee configured in the storefront code?,"The delivery fee is configured as the `deliveryFee` constant in:
 
 `src/pages/Checkout.tsx`
 
@@ -2311,7 +2311,7 @@ to
 to override:
 - `VITE_APP_URL` — public site URL
 - `VITE_BUSINESS_EMAIL` — contact email shown if checkout fails",The delivery fee is configured through the `deliveryFee` constant in `src/pages/Checkout.tsx`.,,
-5f13b81d-f85b-4287-9f32-ba452eaf8cc8,answer_relevancy,,,,exploratory,Where is the delivery fee configured in the storefront code?,"The delivery fee is configured as the `deliveryFee` constant in:
+5f13b81d-f85b-4287-9f32-ba452eaf8cc8,answer_relevancy,fail,,,exploratory,Where is the delivery fee configured in the storefront code?,"The delivery fee is configured as the `deliveryFee` constant in:
 
 `src/pages/Checkout.tsx`
 
@@ -2385,7 +2385,7 @@ to
 to override:
 - `VITE_APP_URL` — public site URL
 - `VITE_BUSINESS_EMAIL` — contact email shown if checkout fails",The delivery fee is configured through the `deliveryFee` constant in `src/pages/Checkout.tsx`.,,
-635cb492-dc9a-44fb-8036-a98f4c342f58,faithfulness,,,,golden,What is the verified knowledge layer in W Chats?,"The verified knowledge layer in W Chats is a compounding `verified_qa` store. It is seeded by evaluation scenarios that pass review and expanded with grounded production answers approved by an Auditor judge. W Chats checks this store first; when there is a cache hit, it returns a cited answer and skips vector search. This makes future answers more efficient and reliable.  
+635cb492-dc9a-44fb-8036-a98f4c342f58,faithfulness,pass,,,golden,What is the verified knowledge layer in W Chats?,"The verified knowledge layer in W Chats is a compounding `verified_qa` store. It is seeded by evaluation scenarios that pass review and expanded with grounded production answers approved by an Auditor judge. W Chats checks this store first; when there is a cache hit, it returns a cited answer and skips vector search. This makes future answers more efficient and reliable.  
 **Source: W Chats overview, “Verified knowledge layer” section**
 
 CITATIONS:
@@ -2459,7 +2459,7 @@ Built in 22 planned phases across three milestones. ~29k lines of Python, 1,103 
 M1–M11,  = ✅ Control plane, ingestion, hybrid retrieval, reasoning engine + widget, validation chain, evals, red team, pre-deployment checklist, retrieval-strategy synthesis, observability, admin UI. v1.1 — Transactional,  = ✅ Phases 14–17 (tool contracts, Actor validator, integration adapters, identity verification). ⏳ Phase 18 at 9/11 (blast-radius gate, capability UI, transaction red-team, PII firewall). Phase 19 (docs + E2E proof) not started.. v1.2 — Console + agent management,  = ✅ Frontend cutover and the agent-management backend — live metrics, RAG-health instrumentation, the triage flywheel, prompt versioning with canary and rollback. Production hosting,  = ⏸️Paused.Terraform, Bedrock embeddings, connection pooling, S3 uploads and concurrency-safe workers are all written; standing them up needs a real AWS account.
 **Being honest about what that means:**
 the end-to-end path has been proven live — a grounded, cited answer served to a browser through a tunnel — but there is no always-on deployment today, and the v1.2 migrations have not yet been applied to a live database. This is a complete, tested system awaiting infrastructure, not a running service.",A compounding verified_qa store. It is seeded by passing eval scenarios and grows as an Auditor judge promotes grounded production answers into it. A cache hit short-circuits retrieval: the agent returns the cited answer and skips vector search.,,
-635cb492-dc9a-44fb-8036-a98f4c342f58,answer_relevancy,,,,golden,What is the verified knowledge layer in W Chats?,"The verified knowledge layer in W Chats is a compounding `verified_qa` store. It is seeded by evaluation scenarios that pass review and expanded with grounded production answers approved by an Auditor judge. W Chats checks this store first; when there is a cache hit, it returns a cited answer and skips vector search. This makes future answers more efficient and reliable.  
+635cb492-dc9a-44fb-8036-a98f4c342f58,answer_relevancy,pass,,,golden,What is the verified knowledge layer in W Chats?,"The verified knowledge layer in W Chats is a compounding `verified_qa` store. It is seeded by evaluation scenarios that pass review and expanded with grounded production answers approved by an Auditor judge. W Chats checks this store first; when there is a cache hit, it returns a cited answer and skips vector search. This makes future answers more efficient and reliable.  
 **Source: W Chats overview, “Verified knowledge layer” section**
 
 CITATIONS:
@@ -2533,7 +2533,7 @@ Built in 22 planned phases across three milestones. ~29k lines of Python, 1,103 
 M1–M11,  = ✅ Control plane, ingestion, hybrid retrieval, reasoning engine + widget, validation chain, evals, red team, pre-deployment checklist, retrieval-strategy synthesis, observability, admin UI. v1.1 — Transactional,  = ✅ Phases 14–17 (tool contracts, Actor validator, integration adapters, identity verification). ⏳ Phase 18 at 9/11 (blast-radius gate, capability UI, transaction red-team, PII firewall). Phase 19 (docs + E2E proof) not started.. v1.2 — Console + agent management,  = ✅ Frontend cutover and the agent-management backend — live metrics, RAG-health instrumentation, the triage flywheel, prompt versioning with canary and rollback. Production hosting,  = ⏸️Paused.Terraform, Bedrock embeddings, connection pooling, S3 uploads and concurrency-safe workers are all written; standing them up needs a real AWS account.
 **Being honest about what that means:**
 the end-to-end path has been proven live — a grounded, cited answer served to a browser through a tunnel — but there is no always-on deployment today, and the v1.2 migrations have not yet been applied to a live database. This is a complete, tested system awaiting infrastructure, not a running service.",A compounding verified_qa store. It is seeded by passing eval scenarios and grows as an Auditor judge promotes grounded production answers into it. A cache hit short-circuits retrieval: the agent returns the cited answer and skips vector search.,,
-6bcd6d4d-bbbe-4775-bc29-754bc618720f,faithfulness,,,,golden,what command runs the tests?,"Run:
+6bcd6d4d-bbbe-4775-bc29-754bc618720f,faithfulness,pass,,,golden,what command runs the tests?,"Run:
 
 ```bash
 pnpm test
@@ -2614,7 +2614,7 @@ Unit tests cover cart logic, order validation/submission, and the delivery-form 
 src/tests/unit/
 ```
 ).","Which project do you mean, the Mellow's Earth Elements storefront or Sentinel OHS?",,
-6bcd6d4d-bbbe-4775-bc29-754bc618720f,answer_relevancy,,,,golden,what command runs the tests?,"Run:
+6bcd6d4d-bbbe-4775-bc29-754bc618720f,answer_relevancy,fail,,,golden,what command runs the tests?,"Run:
 
 ```bash
 pnpm test
@@ -2695,7 +2695,7 @@ Unit tests cover cart logic, order validation/submission, and the delivery-form 
 src/tests/unit/
 ```
 ).","Which project do you mean, the Mellow's Earth Elements storefront or Sentinel OHS?",,
-6e6c2e8a-81ad-4127-9742-dc5411462a62,faithfulness,,,,golden,can I use npm instead?,"The storefront is configured to use **pnpm**, so the documented Vercel settings are:
+6e6c2e8a-81ad-4127-9742-dc5411462a62,faithfulness,pass,,,golden,can I use npm instead?,"The storefront is configured to use **pnpm**, so the documented Vercel settings are:
 
 - **Install command:** `pnpm install --frozen-lockfile`
 - **Build command:** `pnpm build`
@@ -2785,7 +2785,7 @@ to override:
 - `VITE_BUSINESS_EMAIL` — contact email shown if checkout fails",The storefront's Vercel settings specify `pnpm build` for the build command and `pnpm install --frozen-lockfile` for installation. There are no instructions for using `npm` instead.,"USER: I'm deploying the Mellow's Earth Elements storefront to Vercel.
 ASSISTANT: The build settings for Vercel are in vercel.json. Which part are you configuring?
 USER: The install and build commands.",Can I use npm for the install and build commands in vercel.json when deploying the Mellow's Earth Elements storefront to Vercel?
-6e6c2e8a-81ad-4127-9742-dc5411462a62,answer_relevancy,,,,golden,can I use npm instead?,"The storefront is configured to use **pnpm**, so the documented Vercel settings are:
+6e6c2e8a-81ad-4127-9742-dc5411462a62,answer_relevancy,pass,,,golden,can I use npm instead?,"The storefront is configured to use **pnpm**, so the documented Vercel settings are:
 
 - **Install command:** `pnpm install --frozen-lockfile`
 - **Build command:** `pnpm build`
@@ -2875,7 +2875,7 @@ to override:
 - `VITE_BUSINESS_EMAIL` — contact email shown if checkout fails",The storefront's Vercel settings specify `pnpm build` for the build command and `pnpm install --frozen-lockfile` for installation. There are no instructions for using `npm` instead.,"USER: I'm deploying the Mellow's Earth Elements storefront to Vercel.
 ASSISTANT: The build settings for Vercel are in vercel.json. Which part are you configuring?
 USER: The install and build commands.",Can I use npm for the install and build commands in vercel.json when deploying the Mellow's Earth Elements storefront to Vercel?
-71b3d131-8a73-45ab-8698-0830cdc32643,faithfulness,,,,golden,What does Beekeeper do when only one threat source flags a package?,"When only one threat source flags a package, Beekeeper issues a **warning** rather than blocking the package. Only signed sources count toward blocking, and a single source cannot block by itself. *(Beekeeper documentation, “Catalog corroboration (the supply-chain layer)”)*
+71b3d131-8a73-45ab-8698-0830cdc32643,faithfulness,pass,,,golden,What does Beekeeper do when only one threat source flags a package?,"When only one threat source flags a package, Beekeeper issues a **warning** rather than blocking the package. Only signed sources count toward blocking, and a single source cannot block by itself. *(Beekeeper documentation, “Catalog corroboration (the supply-chain layer)”)*
 
 CITATIONS:
 - Document: Beekeeper | Section: Catalog corroboration (the supply-chain layer)
@@ -2975,7 +2975,7 @@ and
 state what it covers and where coverage stops. Read those before you trust it with anything.
 **v1.0.0**
 is the first public release. License: Apache 2.0.","One source flagging a package produces a warning. Two sources block the install, and three or more block and quarantine it. Only signed sources count toward a block; an unsigned source can warn but never block on its own.",,
-71b3d131-8a73-45ab-8698-0830cdc32643,answer_relevancy,,,,golden,What does Beekeeper do when only one threat source flags a package?,"When only one threat source flags a package, Beekeeper issues a **warning** rather than blocking the package. Only signed sources count toward blocking, and a single source cannot block by itself. *(Beekeeper documentation, “Catalog corroboration (the supply-chain layer)”)*
+71b3d131-8a73-45ab-8698-0830cdc32643,answer_relevancy,pass,,,golden,What does Beekeeper do when only one threat source flags a package?,"When only one threat source flags a package, Beekeeper issues a **warning** rather than blocking the package. Only signed sources count toward blocking, and a single source cannot block by itself. *(Beekeeper documentation, “Catalog corroboration (the supply-chain layer)”)*
 
 CITATIONS:
 - Document: Beekeeper | Section: Catalog corroboration (the supply-chain layer)
@@ -3075,7 +3075,7 @@ and
 state what it covers and where coverage stops. Read those before you trust it with anything.
 **v1.0.0**
 is the first public release. License: Apache 2.0.","One source flagging a package produces a warning. Two sources block the install, and three or more block and quarantine it. Only signed sources count toward a block; an unsigned source can warn but never block on its own.",,
-803035a5-e225-4f6a-ac16-8b2910afabda,faithfulness,,,,exploratory,"I want to verify the code before submitting changes. Which commands should I use to run tests, type-checking, and ESLint?","Use these commands:
+803035a5-e225-4f6a-ac16-8b2910afabda,faithfulness,pass,,,exploratory,"I want to verify the code before submitting changes. Which commands should I use to run tests, type-checking, and ESLint?","Use these commands:
 
 ```bash
 pnpm test
@@ -3150,7 +3150,7 @@ Unit tests cover cart logic, order validation/submission, and the delivery-form 
 src/tests/unit/
 ```
 ).","Run `pnpm test` for Vitest unit tests, `pnpm typecheck` for TypeScript checking via `tsc --noEmit`, and `pnpm lint` for ESLint.",,
-803035a5-e225-4f6a-ac16-8b2910afabda,answer_relevancy,,,,exploratory,"I want to verify the code before submitting changes. Which commands should I use to run tests, type-checking, and ESLint?","Use these commands:
+803035a5-e225-4f6a-ac16-8b2910afabda,answer_relevancy,fail,,,exploratory,"I want to verify the code before submitting changes. Which commands should I use to run tests, type-checking, and ESLint?","Use these commands:
 
 ```bash
 pnpm test
@@ -3225,7 +3225,7 @@ Unit tests cover cart logic, order validation/submission, and the delivery-form 
 src/tests/unit/
 ```
 ).","Run `pnpm test` for Vitest unit tests, `pnpm typecheck` for TypeScript checking via `tsc --noEmit`, and `pnpm lint` for ESLint.",,
-819c84c9-eefd-4845-8510-0709ac91b4a4,faithfulness,,,,golden,which file holds the delivery form fields?,"The delivery form fields and validation are in:
+819c84c9-eefd-4845-8510-0709ac91b4a4,faithfulness,pass,,,golden,which file holds the delivery form fields?,"The delivery form fields and validation are in:
 
 `src/components/checkout/delivery-form-schema.ts`
 
@@ -3306,7 +3306,7 @@ to override:
 - `VITE_BUSINESS_EMAIL` — contact email shown if checkout fails",The checkout delivery form fields and their validation rules are defined in `src/components/checkout/delivery-form-schema.ts`.,"USER: I'm changing the checkout flow in the Mellow's Earth Elements storefront.
 ASSISTANT: Okay. Which part of checkout, delivery, payment, or the order summary?
 USER: Delivery.",Which file holds the delivery form fields in the Mellow's Earth Elements storefront checkout flow?
-819c84c9-eefd-4845-8510-0709ac91b4a4,answer_relevancy,,,,golden,which file holds the delivery form fields?,"The delivery form fields and validation are in:
+819c84c9-eefd-4845-8510-0709ac91b4a4,answer_relevancy,pass,,,golden,which file holds the delivery form fields?,"The delivery form fields and validation are in:
 
 `src/components/checkout/delivery-form-schema.ts`
 
@@ -3387,7 +3387,7 @@ to override:
 - `VITE_BUSINESS_EMAIL` — contact email shown if checkout fails",The checkout delivery form fields and their validation rules are defined in `src/components/checkout/delivery-form-schema.ts`.,"USER: I'm changing the checkout flow in the Mellow's Earth Elements storefront.
 ASSISTANT: Okay. Which part of checkout, delivery, payment, or the order summary?
 USER: Delivery.",Which file holds the delivery form fields in the Mellow's Earth Elements storefront checkout flow?
-86cfacaa-3750-458d-a75f-1515c28436aa,faithfulness,,,,golden,"What is the risk in promoting answers to a canonical store, and how does W Chats handle it?","The risk is that a wrong answer could be promoted into the canonical store and then poison future responses by being repeatedly retrieved. W Chats mitigates this through:
+86cfacaa-3750-458d-a75f-1515c28436aa,faithfulness,pass,,,golden,"What is the risk in promoting answers to a canonical store, and how does W Chats handle it?","The risk is that a wrong answer could be promoted into the canonical store and then poison future responses by being repeatedly retrieved. W Chats mitigates this through:
 
 - A three-judge validation chain before promotion.
 - Human approval via a weekly digest.
@@ -3501,7 +3501,7 @@ acks_late=True
 ```
 *and*
 idempotent.","The risk is promoting a wrong answer to canonical, where it poisons every future query. Promotion is gated behind human approval in a weekly digest, with an invalidation path. Nightly evals run on a Neon database branch so eval traffic never touches production.",,
-86cfacaa-3750-458d-a75f-1515c28436aa,answer_relevancy,,,,golden,"What is the risk in promoting answers to a canonical store, and how does W Chats handle it?","The risk is that a wrong answer could be promoted into the canonical store and then poison future responses by being repeatedly retrieved. W Chats mitigates this through:
+86cfacaa-3750-458d-a75f-1515c28436aa,answer_relevancy,pass,,,golden,"What is the risk in promoting answers to a canonical store, and how does W Chats handle it?","The risk is that a wrong answer could be promoted into the canonical store and then poison future responses by being repeatedly retrieved. W Chats mitigates this through:
 
 - A three-judge validation chain before promotion.
 - Human approval via a weekly digest.
@@ -3615,7 +3615,7 @@ acks_late=True
 ```
 *and*
 idempotent.","The risk is promoting a wrong answer to canonical, where it poisons every future query. Promotion is gated behind human approval in a weekly digest, with an invalidation path. Nightly evals run on a Neon database branch so eval traffic never touches production.",,
-87bcd128-0ba3-4fde-933d-c9bc843a9d91,faithfulness,,,,exploratory,Which file contains the checkout delivery form fields and validation rules?,"The checkout delivery form fields and validation rules are in:
+87bcd128-0ba3-4fde-933d-c9bc843a9d91,faithfulness,pass,,,exploratory,Which file contains the checkout delivery form fields and validation rules?,"The checkout delivery form fields and validation rules are in:
 
 `src/components/checkout/delivery-form-schema.ts`
 
@@ -3689,7 +3689,7 @@ to
 to override:
 - `VITE_APP_URL` — public site URL
 - `VITE_BUSINESS_EMAIL` — contact email shown if checkout fails",The checkout delivery form fields and validation are defined in `src/components/checkout/delivery-form-schema.ts`.,,
-87bcd128-0ba3-4fde-933d-c9bc843a9d91,answer_relevancy,,,,exploratory,Which file contains the checkout delivery form fields and validation rules?,"The checkout delivery form fields and validation rules are in:
+87bcd128-0ba3-4fde-933d-c9bc843a9d91,answer_relevancy,fail,,,exploratory,Which file contains the checkout delivery form fields and validation rules?,"The checkout delivery form fields and validation rules are in:
 
 `src/components/checkout/delivery-form-schema.ts`
 
@@ -3763,7 +3763,7 @@ to
 to override:
 - `VITE_APP_URL` — public site URL
 - `VITE_BUSINESS_EMAIL` — contact email shown if checkout fails",The checkout delivery form fields and validation are defined in `src/components/checkout/delivery-form-schema.ts`.,,
-8af676f3-0924-4ad9-99d3-87ec3eef49e8,faithfulness,,,,exploratory,"What directories are included in the Interview Volt structure, and what is the purpose of the .local directory?","The Interview Volt structure includes:
+8af676f3-0924-4ad9-99d3-87ec3eef49e8,faithfulness,pass,,,exploratory,"What directories are included in the Interview Volt structure, and what is the purpose of the .local directory?","The Interview Volt structure includes:
 
 - `rounds/` — the five lanes, including rubrics and question banks
 - `projects/` — one dossier per project, covering architecture, decisions, war stories, and whiteboards
@@ -3859,7 +3859,7 @@ Normal screening interview in one lane. Tests whether I canexplainthings — inc
 The adversarial one. The interviewer has read my source and goes straight for the holes. This is the one that earns its keep.
 Scores the session, writes the transcript, files the mistakes, schedules the review.
 Rapid recall from the review queue. Two lines per question, no discussion.","The structure includes rounds/, projects/, concepts/, answers/, drills/, review/, and .local/. The .local directory is gitignored and contains the claim ledger, known holes, and raw graded answers. It is not published because exposing a project's security holes is not a flex.",,
-8af676f3-0924-4ad9-99d3-87ec3eef49e8,answer_relevancy,,,,exploratory,"What directories are included in the Interview Volt structure, and what is the purpose of the .local directory?","The Interview Volt structure includes:
+8af676f3-0924-4ad9-99d3-87ec3eef49e8,answer_relevancy,pass,,,exploratory,"What directories are included in the Interview Volt structure, and what is the purpose of the .local directory?","The Interview Volt structure includes:
 
 - `rounds/` — the five lanes, including rubrics and question banks
 - `projects/` — one dossier per project, covering architecture, decisions, war stories, and whiteboards
@@ -3955,7 +3955,7 @@ Normal screening interview in one lane. Tests whether I canexplainthings — inc
 The adversarial one. The interviewer has read my source and goes straight for the holes. This is the one that earns its keep.
 Scores the session, writes the transcript, files the mistakes, schedules the review.
 Rapid recall from the review queue. Two lines per question, no discussion.","The structure includes rounds/, projects/, concepts/, answers/, drills/, review/, and .local/. The .local directory is gitignored and contains the claim ledger, known holes, and raw graded answers. It is not published because exposing a project's security holes is not a flex.",,
-92148a6b-45bf-4c94-ad13-a516784c6680,faithfulness,,,,exploratory,"What evidence does Interview Volt use to support claims about performance, quality, or correctness?","Interview Volt emphasizes measurable evidence rather than unsupported assertions. It cites:
+92148a6b-45bf-4c94-ad13-a516784c6680,faithfulness,pass,,,exploratory,"What evidence does Interview Volt use to support claims about performance, quality, or correctness?","Interview Volt emphasizes measurable evidence rather than unsupported assertions. It cites:
 
 - A **20-scenario golden set** for evaluating outcomes.
 - A **judge calibrated against human labels**, using **Spearman correlation**.
@@ -4065,7 +4065,7 @@ Normal screening interview in one lane. Tests whether I canexplainthings — inc
 The adversarial one. The interviewer has read my source and goes straight for the holes. This is the one that earns its keep.
 Scores the session, writes the transcript, files the mistakes, schedules the review.
 Rapid recall from the review queue. Two lines per question, no discussion.","Every such claim should have a measurement behind it. The stated evidence includes a 20-scenario golden set, a judge calibrated against human labels using Spearman correlation, and Ragas run on an isolated database branch.",,
-92148a6b-45bf-4c94-ad13-a516784c6680,answer_relevancy,,,,exploratory,"What evidence does Interview Volt use to support claims about performance, quality, or correctness?","Interview Volt emphasizes measurable evidence rather than unsupported assertions. It cites:
+92148a6b-45bf-4c94-ad13-a516784c6680,answer_relevancy,pass,,,exploratory,"What evidence does Interview Volt use to support claims about performance, quality, or correctness?","Interview Volt emphasizes measurable evidence rather than unsupported assertions. It cites:
 
 - A **20-scenario golden set** for evaluating outcomes.
 - A **judge calibrated against human labels**, using **Spearman correlation**.
@@ -4175,7 +4175,7 @@ Normal screening interview in one lane. Tests whether I canexplainthings — inc
 The adversarial one. The interviewer has read my source and goes straight for the holes. This is the one that earns its keep.
 Scores the session, writes the transcript, files the mistakes, schedules the review.
 Rapid recall from the review queue. Two lines per question, no discussion.","Every such claim should have a measurement behind it. The stated evidence includes a 20-scenario golden set, a judge calibrated against human labels using Spearman correlation, and Ragas run on an isolated database branch.",,
-9517cd71-589c-42f1-9411-34de75a9921c,faithfulness,,,,golden,how is it deployed?,"Deployment involves clearing the pre-deployment gate and then adding a copy-paste widget snippet to the owner’s website. Nothing becomes public until it passes the gate. *(W Chats, “The four steps”)*
+9517cd71-589c-42f1-9411-34de75a9921c,faithfulness,pass,,,golden,how is it deployed?,"Deployment involves clearing the pre-deployment gate and then adding a copy-paste widget snippet to the owner’s website. Nothing becomes public until it passes the gate. *(W Chats, “The four steps”)*
 
 Currently, production hosting is paused: the Terraform, Bedrock embeddings, connection pooling, S3 uploads, and concurrency-safe workers are written, but standing them up requires an AWS account. There is no always-on deployment at present. *(W Chats, Status)*
 
@@ -4220,7 +4220,7 @@ vercel.json
 - **Build:** `pnpm build`
 - **Output:** `dist`
 - **Install:** `pnpm install --frozen-lockfile`","Which project are you asking about, the storefront, Sentinel OHS, W Chats or Beekeeper?",,
-9517cd71-589c-42f1-9411-34de75a9921c,answer_relevancy,,,,golden,how is it deployed?,"Deployment involves clearing the pre-deployment gate and then adding a copy-paste widget snippet to the owner’s website. Nothing becomes public until it passes the gate. *(W Chats, “The four steps”)*
+9517cd71-589c-42f1-9411-34de75a9921c,answer_relevancy,fail,,,golden,how is it deployed?,"Deployment involves clearing the pre-deployment gate and then adding a copy-paste widget snippet to the owner’s website. Nothing becomes public until it passes the gate. *(W Chats, “The four steps”)*
 
 Currently, production hosting is paused: the Terraform, Bedrock embeddings, connection pooling, S3 uploads, and concurrency-safe workers are written, but standing them up requires an AWS account. There is no always-on deployment at present. *(W Chats, Status)*
 
@@ -4265,7 +4265,7 @@ vercel.json
 - **Build:** `pnpm build`
 - **Output:** `dist`
 - **Install:** `pnpm install --frozen-lockfile`","Which project are you asking about, the storefront, Sentinel OHS, W Chats or Beekeeper?",,
-a526db68-04dd-4bde-9d00-e3fee8f82d96,faithfulness,,,,golden,do I need any environment variables to run it?,"Yes. To run it locally, you need:
+a526db68-04dd-4bde-9d00-e3fee8f82d96,faithfulness,pass,,,golden,do I need any environment variables to run it?,"Yes. To run it locally, you need:
 
 - A Neon API key
 - An Anthropic API key
@@ -4355,7 +4355,7 @@ Prerequisites
 - Node.js 22 LTS
 - Docker Desktop (for Memgraph)
 - An Anthropic API key","Which app are you trying to run, the storefront or Sentinel?",,
-a526db68-04dd-4bde-9d00-e3fee8f82d96,answer_relevancy,,,,golden,do I need any environment variables to run it?,"Yes. To run it locally, you need:
+a526db68-04dd-4bde-9d00-e3fee8f82d96,answer_relevancy,fail,,,golden,do I need any environment variables to run it?,"Yes. To run it locally, you need:
 
 - A Neon API key
 - An Anthropic API key
@@ -4445,7 +4445,7 @@ Prerequisites
 - Node.js 22 LTS
 - Docker Desktop (for Memgraph)
 - An Anthropic API key","Which app are you trying to run, the storefront or Sentinel?",,
-a90006b2-c91f-4ed2-9903-09e474a56910,faithfulness,,,,exploratory,What technologies and package manager does the storefront use?,"The storefront uses:
+a90006b2-c91f-4ed2-9903-09e474a56910,faithfulness,pass,,,exploratory,What technologies and package manager does the storefront use?,"The storefront uses:
 
 - **Framework:** React 19, TypeScript 7, and Vite 8
 - **Styling:** Tailwind CSS v4 and shadcn/ui
@@ -4519,7 +4519,7 @@ Frontend
 | Observability | Langfuse v4                                                                     |
 | Console       | Next.js 16 · React 19 · a hand-built design system                              |
 | Widget        | Preact, 8,087 B gzipped                                                         |","It uses React 19, TypeScript 7, Vite 8, Tailwind CSS v4, shadcn/ui, React Context for the cart, TanStack Query, react-hook-form with zod, and pnpm as the package manager. It is deployed as a static site on Vercel.",,
-a90006b2-c91f-4ed2-9903-09e474a56910,answer_relevancy,,,,exploratory,What technologies and package manager does the storefront use?,"The storefront uses:
+a90006b2-c91f-4ed2-9903-09e474a56910,answer_relevancy,fail,,,exploratory,What technologies and package manager does the storefront use?,"The storefront uses:
 
 - **Framework:** React 19, TypeScript 7, and Vite 8
 - **Styling:** Tailwind CSS v4 and shadcn/ui
@@ -4593,7 +4593,7 @@ Frontend
 | Observability | Langfuse v4                                                                     |
 | Console       | Next.js 16 · React 19 · a hand-built design system                              |
 | Widget        | Preact, 8,087 B gzipped                                                         |","It uses React 19, TypeScript 7, Vite 8, Tailwind CSS v4, shadcn/ui, React Context for the cart, TanStack Query, react-hook-form with zod, and pnpm as the package manager. It is deployed as a static site on Vercel.",,
-abdf6ecd-e8ce-44b5-8587-c9e86ed5299b,faithfulness,,,,exploratory,"Can I create an account, upload a receipt, and receive an email confirmation after placing an order?","No. The storefront has no account authentication, backend, order database, email functionality, or file-upload capability. Completing an order only validates the form and displays a client-side reference number; nothing is saved server-side.
+abdf6ecd-e8ce-44b5-8587-c9e86ed5299b,faithfulness,pass,,,exploratory,"Can I create an account, upload a receipt, and receive an email confirmation after placing an order?","No. The storefront has no account authentication, backend, order database, email functionality, or file-upload capability. Completing an order only validates the form and displays a client-side reference number; nothing is saved server-side.
 
 CITATIONS:
 - Document: Mellow's Earth Elements — Storefront | Section: Features
@@ -4638,7 +4638,7 @@ Checkout / Delivery Settings
 - Payment (bank) details: `src/components/checkout/PaymentInfo.tsx`
 - Delivery fee: `deliveryFee` constant in `src/pages/Checkout.tsx`
 - Form fields & validation: `src/components/checkout/delivery-form-schema.ts`","No. The storefront has no authentication, email service, or file upload, and there is no backend. Completing the order only validates the form and displays a client-side reference number; the order is not persisted server-side.",,
-abdf6ecd-e8ce-44b5-8587-c9e86ed5299b,answer_relevancy,,,,exploratory,"Can I create an account, upload a receipt, and receive an email confirmation after placing an order?","No. The storefront has no account authentication, backend, order database, email functionality, or file-upload capability. Completing an order only validates the form and displays a client-side reference number; nothing is saved server-side.
+abdf6ecd-e8ce-44b5-8587-c9e86ed5299b,answer_relevancy,fail,,,exploratory,"Can I create an account, upload a receipt, and receive an email confirmation after placing an order?","No. The storefront has no account authentication, backend, order database, email functionality, or file-upload capability. Completing an order only validates the form and displays a client-side reference number; nothing is saved server-side.
 
 CITATIONS:
 - Document: Mellow's Earth Elements — Storefront | Section: Features
@@ -4683,7 +4683,7 @@ Checkout / Delivery Settings
 - Payment (bank) details: `src/components/checkout/PaymentInfo.tsx`
 - Delivery fee: `deliveryFee` constant in `src/pages/Checkout.tsx`
 - Form fields & validation: `src/components/checkout/delivery-form-schema.ts`","No. The storefront has no authentication, email service, or file upload, and there is no backend. Completing the order only validates the form and displays a client-side reference number; the order is not persisted server-side.",,
-b16a9cc0-771a-4cf4-8a50-e4a05416483f,faithfulness,,,,exploratory,"What environment variables can I set, and are they required for the app to run?","The app supports these environment variables:
+b16a9cc0-771a-4cf4-8a50-e4a05416483f,faithfulness,pass,,,exploratory,"What environment variables can I set, and are they required for the app to run?","The app supports these environment variables:
 
 - `VITE_APP_URL` — the public site URL
 - `VITE_BUSINESS_EMAIL` — the contact email displayed if checkout fails
@@ -4773,7 +4773,7 @@ cd sentinel-web
 npm install
 npm run dev   # Vite on http://localhost:5173
 ```",Environment variables are optional; the app runs without them. Copy `.env.example` to `.env.local` to override `VITE_APP_URL` (public site URL) and `VITE_BUSINESS_EMAIL` (the contact email shown if checkout fails).,,
-b16a9cc0-771a-4cf4-8a50-e4a05416483f,answer_relevancy,,,,exploratory,"What environment variables can I set, and are they required for the app to run?","The app supports these environment variables:
+b16a9cc0-771a-4cf4-8a50-e4a05416483f,answer_relevancy,fail,,,exploratory,"What environment variables can I set, and are they required for the app to run?","The app supports these environment variables:
 
 - `VITE_APP_URL` — the public site URL
 - `VITE_BUSINESS_EMAIL` — the contact email displayed if checkout fails
@@ -4863,7 +4863,7 @@ cd sentinel-web
 npm install
 npm run dev   # Vite on http://localhost:5173
 ```",Environment variables are optional; the app runs without them. Copy `.env.example` to `.env.local` to override `VITE_APP_URL` (public site URL) and `VITE_BUSINESS_EMAIL` (the contact email shown if checkout fails).,,
-b4fc4695-afc7-4bd0-ba55-950cc119dae2,faithfulness,,,,golden,what command runs the tests?,"Run:
+b4fc4695-afc7-4bd0-ba55-950cc119dae2,faithfulness,pass,,,golden,what command runs the tests?,"Run:
 
 ```bash
 pnpm test
@@ -4954,7 +4954,7 @@ vercel.json
 - **Output:** `dist`
 - **Install:** `pnpm install --frozen-lockfile`","Run `pnpm test`. The unit tests cover cart logic, order validation and submission, and the delivery-form schema under `src/tests/unit/`.","USER: I'm working on the Mellow's Earth Elements storefront.
 ASSISTANT: Sure. What would you like to know about the storefront?",What command runs the tests for the Mellow's Earth Elements storefront?
-b4fc4695-afc7-4bd0-ba55-950cc119dae2,answer_relevancy,,,,golden,what command runs the tests?,"Run:
+b4fc4695-afc7-4bd0-ba55-950cc119dae2,answer_relevancy,pass,,,golden,what command runs the tests?,"Run:
 
 ```bash
 pnpm test
@@ -5045,7 +5045,7 @@ vercel.json
 - **Output:** `dist`
 - **Install:** `pnpm install --frozen-lockfile`","Run `pnpm test`. The unit tests cover cart logic, order validation and submission, and the delivery-form schema under `src/tests/unit/`.","USER: I'm working on the Mellow's Earth Elements storefront.
 ASSISTANT: Sure. What would you like to know about the storefront?",What command runs the tests for the Mellow's Earth Elements storefront?
-b8f0b3be-c5c1-4182-a84a-4f59b9ddd823,faithfulness,,,,exploratory,"Where do I add or edit products in the Mellow's Earth Elements storefront, and what fields does each product require?","Add or edit products in:
+b8f0b3be-c5c1-4182-a84a-4f59b9ddd823,faithfulness,pass,,,exploratory,"Where do I add or edit products in the Mellow's Earth Elements storefront, and what fields does each product require?","Add or edit products in:
 
 `src/data/products.ts`
 
@@ -5138,7 +5138,7 @@ pnpm dev
 The dev server runs on
 **http://localhost:8080**
 (falls back to the next free port — e.g. 8081 — if 8080 is taken).","Edit `src/data/products.ts`. Each product includes an `id`, `name`, `price`, `description`, `imageUrl`, and `category`. The category is shown as either `Perfumes` or `Skin Care` in the example.",,
-b8f0b3be-c5c1-4182-a84a-4f59b9ddd823,answer_relevancy,,,,exploratory,"Where do I add or edit products in the Mellow's Earth Elements storefront, and what fields does each product require?","Add or edit products in:
+b8f0b3be-c5c1-4182-a84a-4f59b9ddd823,answer_relevancy,pass,,,exploratory,"Where do I add or edit products in the Mellow's Earth Elements storefront, and what fields does each product require?","Add or edit products in:
 
 `src/data/products.ts`
 
@@ -5231,7 +5231,7 @@ pnpm dev
 The dev server runs on
 **http://localhost:8080**
 (falls back to the next free port — e.g. 8081 — if 8080 is taken).","Edit `src/data/products.ts`. Each product includes an `id`, `name`, `price`, `description`, `imageUrl`, and `category`. The category is shown as either `Perfumes` or `Skin Care` in the example.",,
-baa3a4ff-5324-4c89-a94f-a4eb96314c00,faithfulness,,,,golden,How does W Chats retrieve an answer from a business's documents?,"W Chats retrieves answers through a hybrid retrieval process:
+baa3a4ff-5324-4c89-a94f-a4eb96314c00,faithfulness,pass,,,golden,How does W Chats retrieve an answer from a business's documents?,"W Chats retrieves answers through a hybrid retrieval process:
 
 1. **Documents are parsed structurally** with Docling, preserving headings, lists, and table relationships. They are then chunked with Chonkie using structure-aware boundaries.  
 2. **Each chunk is enriched** with a summary, keywords, and hypothetical questions it could answer before being embedded.  
@@ -5350,7 +5350,7 @@ Persistent
 ungrounded
 ```
 verdicts on a retrieval pattern flag the agent for strategy resynthesis. Every verdict is Pydantic-validated and traced to Langfuse.","Docling parses documents structure-aware, Chonkie chunks them, and HyDE metadata feeds a hybrid retriever: vector search plus BM25, fused with RRF and reranked by Voyage. A Strategist agent synthesizes the per-tenant retrieval strategy from an analysis of the data's shape.",,
-baa3a4ff-5324-4c89-a94f-a4eb96314c00,answer_relevancy,,,,golden,How does W Chats retrieve an answer from a business's documents?,"W Chats retrieves answers through a hybrid retrieval process:
+baa3a4ff-5324-4c89-a94f-a4eb96314c00,answer_relevancy,pass,,,golden,How does W Chats retrieve an answer from a business's documents?,"W Chats retrieves answers through a hybrid retrieval process:
 
 1. **Documents are parsed structurally** with Docling, preserving headings, lists, and table relationships. They are then chunked with Chonkie using structure-aware boundaries.  
 2. **Each chunk is enriched** with a summary, keywords, and hypothetical questions it could answer before being embedded.  
@@ -5469,7 +5469,7 @@ Persistent
 ungrounded
 ```
 verdicts on a retrieval pattern flag the agent for strategy resynthesis. Every verdict is Pydantic-validated and traced to Langfuse.","Docling parses documents structure-aware, Chonkie chunks them, and HyDE metadata feeds a hybrid retriever: vector search plus BM25, fused with RRF and reranked by Voyage. A Strategist agent synthesizes the per-tenant retrieval strategy from an analysis of the data's shape.",,
-bbc77162-c414-4dfa-b841-4190f61fa7b9,faithfulness,,,,golden,what payment method does it support?,"Mellow’s Earth Elements supports **bank-transfer payments**. The checkout flow is: delivery form → payment details → order confirmation. “Complete Order” only displays a confirmation and reference number; it does not persist the order server-side.  
+bbc77162-c414-4dfa-b841-4190f61fa7b9,faithfulness,pass,,,golden,what payment method does it support?,"Mellow’s Earth Elements supports **bank-transfer payments**. The checkout flow is: delivery form → payment details → order confirmation. “Complete Order” only displays a confirmation and reference number; it does not persist the order server-side.  
 
 CITATIONS:
 - Document: Mellow's Earth Elements — Storefront | Section: Features","Mellow's Earth Elements — Storefront
@@ -5524,7 +5524,7 @@ The dev server runs on
 **http://localhost:8080**
 (falls back to the next free port — e.g. 8081 — if 8080 is taken).","Checkout is a bank-transfer flow: a delivery form, payment details, then an order-confirmation step that shows a client-side reference number. There is no backend, so the order is not saved server-side.","USER: I'm looking at how orders are placed on the Mellow's Earth Elements storefront.
 ASSISTANT: Orders go through the checkout flow. What would you like to know about it?",What payment method does the Mellow's Earth Elements storefront support?
-bbc77162-c414-4dfa-b841-4190f61fa7b9,answer_relevancy,,,,golden,what payment method does it support?,"Mellow’s Earth Elements supports **bank-transfer payments**. The checkout flow is: delivery form → payment details → order confirmation. “Complete Order” only displays a confirmation and reference number; it does not persist the order server-side.  
+bbc77162-c414-4dfa-b841-4190f61fa7b9,answer_relevancy,pass,,,golden,what payment method does it support?,"Mellow’s Earth Elements supports **bank-transfer payments**. The checkout flow is: delivery form → payment details → order confirmation. “Complete Order” only displays a confirmation and reference number; it does not persist the order server-side.  
 
 CITATIONS:
 - Document: Mellow's Earth Elements — Storefront | Section: Features","Mellow's Earth Elements — Storefront
@@ -5579,7 +5579,7 @@ The dev server runs on
 **http://localhost:8080**
 (falls back to the next free port — e.g. 8081 — if 8080 is taken).","Checkout is a bank-transfer flow: a delivery form, payment details, then an order-confirmation step that shows a client-side reference number. There is no backend, so the order is not saved server-side.","USER: I'm looking at how orders are placed on the Mellow's Earth Elements storefront.
 ASSISTANT: Orders go through the checkout flow. What would you like to know about it?",What payment method does the Mellow's Earth Elements storefront support?
-bdd838b2-f292-45ce-b479-b5912c7dc5cb,faithfulness,,,,exploratory,"I’m deploying the storefront to Vercel. Which framework should I select, and what build, output, and install settings should I use?","Select **Vite** as the framework.
+bdd838b2-f292-45ce-b479-b5912c7dc5cb,faithfulness,pass,,,exploratory,"I’m deploying the storefront to Vercel. Which framework should I select, and what build, output, and install settings should I use?","Select **Vite** as the framework.
 
 Use these Vercel settings:
 
@@ -5674,7 +5674,7 @@ to
 to override:
 - `VITE_APP_URL` — public site URL
 - `VITE_BUSINESS_EMAIL` — contact email shown if checkout fails","Import the repository into Vercel and select the Vite framework. The settings in `vercel.json` are: Build `pnpm build`, Output `dist`, and Install `pnpm install --frozen-lockfile`.",,
-bdd838b2-f292-45ce-b479-b5912c7dc5cb,answer_relevancy,,,,exploratory,"I’m deploying the storefront to Vercel. Which framework should I select, and what build, output, and install settings should I use?","Select **Vite** as the framework.
+bdd838b2-f292-45ce-b479-b5912c7dc5cb,answer_relevancy,fail,,,exploratory,"I’m deploying the storefront to Vercel. Which framework should I select, and what build, output, and install settings should I use?","Select **Vite** as the framework.
 
 Use these Vercel settings:
 
@@ -5769,7 +5769,7 @@ to
 to override:
 - `VITE_APP_URL` — public site URL
 - `VITE_BUSINESS_EMAIL` — contact email shown if checkout fails","Import the repository into Vercel and select the Vite framework. The settings in `vercel.json` are: Build `pnpm build`, Output `dist`, and Install `pnpm install --frozen-lockfile`.",,
-c4e02b6a-132b-4cd3-a9e1-db6f6e70cafb,faithfulness,,,,golden,and how do I run the unit tests there?,"From the repository root, run the unit tests separately:
+c4e02b6a-132b-4cd3-a9e1-db6f6e70cafb,faithfulness,pass,,,golden,and how do I run the unit tests there?,"From the repository root, run the unit tests separately:
 
 ```bash
 cd sentinel-server && npx vitest
@@ -5885,7 +5885,7 @@ npm run dev:no-graph
 ```",Sentinel OHS runs its unit tests with vitest in each package: `cd sentinel-server && npx vitest` and `cd sentinel-web && npx vitest`.,"USER: I've cloned Sentinel OHS and want to check my changes.
 ASSISTANT: Good. Which part of Sentinel are you changing, the server or the web app?
 USER: Both, actually.",How do I run the unit tests for both the Sentinel OHS server and web app?
-c4e02b6a-132b-4cd3-a9e1-db6f6e70cafb,answer_relevancy,,,,golden,and how do I run the unit tests there?,"From the repository root, run the unit tests separately:
+c4e02b6a-132b-4cd3-a9e1-db6f6e70cafb,answer_relevancy,pass,,,golden,and how do I run the unit tests there?,"From the repository root, run the unit tests separately:
 
 ```bash
 cd sentinel-server && npx vitest
@@ -6001,7 +6001,7 @@ npm run dev:no-graph
 ```",Sentinel OHS runs its unit tests with vitest in each package: `cd sentinel-server && npx vitest` and `cd sentinel-web && npx vitest`.,"USER: I've cloned Sentinel OHS and want to check my changes.
 ASSISTANT: Good. Which part of Sentinel are you changing, the server or the web app?
 USER: Both, actually.",How do I run the unit tests for both the Sentinel OHS server and web app?
-c84095c9-042f-450c-81be-0cd91b07ba7a,faithfulness,,,,exploratory,"How does the checkout work, and what payment method does it support?","Checkout works in three steps:
+c84095c9-042f-450c-81be-0cd91b07ba7a,faithfulness,pass,,,exploratory,"How does the checkout work, and what payment method does it support?","Checkout works in three steps:
 
 1. Complete the delivery form.
 2. Enter the payment details.
@@ -6075,7 +6075,7 @@ Unit tests cover cart logic, order validation/submission, and the delivery-form 
 src/tests/unit/
 ```
 ).","Checkout is a bank-transfer flow consisting of a delivery form, payment details, and an order-confirmation step. After the form is validated and the order is completed, the storefront displays a client-side reference number. There is no backend, so the order is not saved server-side.",,
-c84095c9-042f-450c-81be-0cd91b07ba7a,answer_relevancy,,,,exploratory,"How does the checkout work, and what payment method does it support?","Checkout works in three steps:
+c84095c9-042f-450c-81be-0cd91b07ba7a,answer_relevancy,fail,,,exploratory,"How does the checkout work, and what payment method does it support?","Checkout works in three steps:
 
 1. Complete the delivery form.
 2. Enter the payment details.
@@ -6149,7 +6149,7 @@ Unit tests cover cart logic, order validation/submission, and the delivery-form 
 src/tests/unit/
 ```
 ).","Checkout is a bank-transfer flow consisting of a delivery form, payment details, and an order-confirmation step. After the form is validated and the order is completed, the storefront displays a client-side reference number. There is no backend, so the order is not saved server-side.",,
-cd413747-b4cb-4933-bb5e-933a4e747b39,faithfulness,,,,golden,how do I start the dev server?,"From the storefront’s project directory, run:
+cd413747-b4cb-4933-bb5e-933a4e747b39,faithfulness,pass,,,golden,how do I start the dev server?,"From the storefront’s project directory, run:
 
 ```bash
 pnpm install
@@ -6234,7 +6234,7 @@ vercel.json
 | Start the Vite dev server   |
 |-----------------------------|",Run `pnpm dev` from the storefront's repo root. That starts the Vite development server; `pnpm preview` serves the production build after `pnpm build`.,"USER: I'm setting up Mellow's Earth Elements storefront locally.
 ASSISTANT: Happy to help with the storefront. What do you need?",How do I start the dev server for Mellow's Earth Elements storefront?
-cd413747-b4cb-4933-bb5e-933a4e747b39,answer_relevancy,,,,golden,how do I start the dev server?,"From the storefront’s project directory, run:
+cd413747-b4cb-4933-bb5e-933a4e747b39,answer_relevancy,pass,,,golden,how do I start the dev server?,"From the storefront’s project directory, run:
 
 ```bash
 pnpm install
@@ -6319,7 +6319,7 @@ vercel.json
 | Start the Vite dev server   |
 |-----------------------------|",Run `pnpm dev` from the storefront's repo root. That starts the Vite development server; `pnpm preview` serves the production build after `pnpm build`.,"USER: I'm setting up Mellow's Earth Elements storefront locally.
 ASSISTANT: Happy to help with the storefront. What do you need?",How do I start the dev server for Mellow's Earth Elements storefront?
-d15b759f-f8ce-4532-99fd-52916114e15a,faithfulness,,,,exploratory,"An interviewer asks why a design decision was made. According to the training rules, what should the candidate explain beyond the choice itself?","Beyond stating the choice, explain:
+d15b759f-f8ce-4532-99fd-52916114e15a,faithfulness,pass,,,exploratory,"An interviewer asks why a design decision was made. According to the training rules, what should the candidate explain beyond the choice itself?","Beyond stating the choice, explain:
 
 - **The situation or problem**
 - **The alternatives you rejected and why**
@@ -6408,7 +6408,7 @@ an artifact. Same shape as the thing I say I believe about engineering —
 — applied to the one system I'd never actually instrumented:
 **me, explaining my work**
 **out loud, under pressure.**","The candidate should name the cost of the choice, not just the choice. A decision without an explained cost was not really an engineering decision; it may simply have been a guess that happened to work.",,
-d15b759f-f8ce-4532-99fd-52916114e15a,answer_relevancy,,,,exploratory,"An interviewer asks why a design decision was made. According to the training rules, what should the candidate explain beyond the choice itself?","Beyond stating the choice, explain:
+d15b759f-f8ce-4532-99fd-52916114e15a,answer_relevancy,pass,,,exploratory,"An interviewer asks why a design decision was made. According to the training rules, what should the candidate explain beyond the choice itself?","Beyond stating the choice, explain:
 
 - **The situation or problem**
 - **The alternatives you rejected and why**
@@ -6497,7 +6497,7 @@ an artifact. Same shape as the thing I say I believe about engineering —
 — applied to the one system I'd never actually instrumented:
 **me, explaining my work**
 **out loud, under pressure.**","The candidate should name the cost of the choice, not just the choice. A decision without an explained cost was not really an engineering decision; it may simply have been a guess that happened to work.",,
-dfd73315-3c8e-4a5b-ac2b-e80fb5981a45,faithfulness,,,,exploratory,"What is the current status of the Interview Volt vault, and what problems has the claim ledger identified?","The Interview Volt vault is **scaffolded and populated, but not yet drilled**. Its purpose is to help explain three shipped projects through interview practice—not to serve as proof of engineering ability. **(Interview Volt | Status)**
+dfd73315-3c8e-4a5b-ac2b-e80fb5981a45,faithfulness,pass,,,exploratory,"What is the current status of the Interview Volt vault, and what problems has the claim ledger identified?","The Interview Volt vault is **scaffolded and populated, but not yet drilled**. Its purpose is to help explain three shipped projects through interview practice—not to serve as proof of engineering ability. **(Interview Volt | Status)**
 
 The claim ledger identified:
 
@@ -6597,7 +6597,7 @@ Normal screening interview in one lane. Tests whether I canexplainthings — inc
 The adversarial one. The interviewer has read my source and goes straight for the holes. This is the one that earns its keep.
 Scores the session, writes the transcript, files the mistakes, schedules the review.
 Rapid recall from the review queue. Two lines per question, no discussion.",The vault is scaffolded and populated but has not yet been drilled. The claim ledger found three false claims on the portfolio site and one headline feature that is not wired to the path it claims to be on; fixing these is the purpose of the vault.,,
-dfd73315-3c8e-4a5b-ac2b-e80fb5981a45,answer_relevancy,,,,exploratory,"What is the current status of the Interview Volt vault, and what problems has the claim ledger identified?","The Interview Volt vault is **scaffolded and populated, but not yet drilled**. Its purpose is to help explain three shipped projects through interview practice—not to serve as proof of engineering ability. **(Interview Volt | Status)**
+dfd73315-3c8e-4a5b-ac2b-e80fb5981a45,answer_relevancy,pass,,,exploratory,"What is the current status of the Interview Volt vault, and what problems has the claim ledger identified?","The Interview Volt vault is **scaffolded and populated, but not yet drilled**. Its purpose is to help explain three shipped projects through interview practice—not to serve as proof of engineering ability. **(Interview Volt | Status)**
 
 The claim ledger identified:
 
@@ -6697,7 +6697,7 @@ Normal screening interview in one lane. Tests whether I canexplainthings — inc
 The adversarial one. The interviewer has read my source and goes straight for the holes. This is the one that earns its keep.
 Scores the session, writes the transcript, files the mistakes, schedules the review.
 Rapid recall from the review queue. Two lines per question, no discussion.",The vault is scaffolded and populated but has not yet been drilled. The claim ledger found three false claims on the portfolio site and one headline feature that is not wired to the path it claims to be on; fixing these is the purpose of the vault.,,
-e2d95570-2494-4397-8d8d-f9a273f7cf82,faithfulness,,,,golden,What does W Chats do?,"W Chats is a multi-tenant platform for deploying customer-service and transactional AI agents. It ingests a business’s knowledge, grounds the agent in its documents, evaluates and red-teams the agent, and monitors it continuously before deployment. It is designed for businesses such as salons, repair shops, and e-commerce stores that want customer support without hiring a developer. **(W Chats overview, Sections 1–2)**
+e2d95570-2494-4397-8d8d-f9a273f7cf82,faithfulness,pass,,,golden,What does W Chats do?,"W Chats is a multi-tenant platform for deploying customer-service and transactional AI agents. It ingests a business’s knowledge, grounds the agent in its documents, evaluates and red-teams the agent, and monitors it continuously before deployment. It is designed for businesses such as salons, repair shops, and e-commerce stores that want customer support without hiring a developer. **(W Chats overview, Sections 1–2)**
 
 CITATIONS:
 - Document: W Chats overview | Section: 1
@@ -6791,7 +6791,7 @@ acks_late=True
 ```
 *and*
 idempotent.","W Chats ingests a business's knowledge, deploys an evaluated agent, and monitors it continuously. It is advanced hybrid RAG with a compounding verified-knowledge core, with A2A-native and transactional actions on the roadmap.",,
-e2d95570-2494-4397-8d8d-f9a273f7cf82,answer_relevancy,,,,golden,What does W Chats do?,"W Chats is a multi-tenant platform for deploying customer-service and transactional AI agents. It ingests a business’s knowledge, grounds the agent in its documents, evaluates and red-teams the agent, and monitors it continuously before deployment. It is designed for businesses such as salons, repair shops, and e-commerce stores that want customer support without hiring a developer. **(W Chats overview, Sections 1–2)**
+e2d95570-2494-4397-8d8d-f9a273f7cf82,answer_relevancy,pass,,,golden,What does W Chats do?,"W Chats is a multi-tenant platform for deploying customer-service and transactional AI agents. It ingests a business’s knowledge, grounds the agent in its documents, evaluates and red-teams the agent, and monitors it continuously before deployment. It is designed for businesses such as salons, repair shops, and e-commerce stores that want customer support without hiring a developer. **(W Chats overview, Sections 1–2)**
 
 CITATIONS:
 - Document: W Chats overview | Section: 1
@@ -6885,7 +6885,7 @@ acks_late=True
 ```
 *and*
 idempotent.","W Chats ingests a business's knowledge, deploys an evaluated agent, and monitors it continuously. It is advanced hybrid RAG with a compounding verified-knowledge core, with A2A-native and transactional actions on the roadmap.",,
-e31bdaa5-f05c-494d-b865-40d16eebe582,faithfulness,,,,golden,What is coming next for W Chats?,"What’s next for W Chats is primarily:
+e31bdaa5-f05c-494d-b865-40d16eebe582,faithfulness,pass,,,golden,What is coming next for W Chats?,"What’s next for W Chats is primarily:
 
 - **Complete Phase 18** of v1.1, currently at **9 of 11 items**, including the blast-radius gate, capability UI, transaction red-team work, and PII firewall.
 - **Start Phase 19**, covering documentation and end-to-end proof.
@@ -6978,7 +6978,7 @@ acks_late=True
 ```
 *and*
 idempotent.",v1.1 adds transactional actions gated by an Actor validator and a financial blast-radius gate. v1.2 makes every deployed agent an A2A-compliant endpoint that can be provisioned over MCP from Claude Code and Cursor.,,
-e31bdaa5-f05c-494d-b865-40d16eebe582,answer_relevancy,,,,golden,What is coming next for W Chats?,"What’s next for W Chats is primarily:
+e31bdaa5-f05c-494d-b865-40d16eebe582,answer_relevancy,pass,,,golden,What is coming next for W Chats?,"What’s next for W Chats is primarily:
 
 - **Complete Phase 18** of v1.1, currently at **9 of 11 items**, including the blast-radius gate, capability UI, transaction red-team work, and PII firewall.
 - **Start Phase 19**, covering documentation and end-to-end proof.
@@ -7071,7 +7071,7 @@ acks_late=True
 ```
 *and*
 idempotent.",v1.1 adds transactional actions gated by an Actor validator and a financial blast-radius gate. v1.2 makes every deployed agent an A2A-compliant endpoint that can be provisioned over MCP from Claude Code and Cursor.,,
-e54b8c25-4433-4689-b816-035f39cde664,faithfulness,,,,golden,what should I do if I spot one myself before they do?,"Raise it proactively rather than waiting to be caught. Frame it as evidence of judgment:
+e54b8c25-4433-4689-b816-035f39cde664,faithfulness,pass,,,golden,what should I do if I spot one myself before they do?,"Raise it proactively rather than waiting to be caught. Frame it as evidence of judgment:
 
 1. **Name the weakness clearly.**
 2. **Explain its cost or trade-off**, not just the decision.
@@ -7141,7 +7141,7 @@ What I had never done is
 **pushed back.**
 Building and defending are different skills. I'd trained one.","Volunteer the weakness before being caught. Raising it yourself demonstrates judgment, whereas the interviewer identifying the same weakness signals ignorance; the fact is identical but the signal is opposite.","USER: I'm preparing with the interview rules you have and I'm worried about weaknesses in my past work.
 ASSISTANT: The rules cover that directly. Are you asking about how the interviewer raises a weakness, or how you should?",What should I do if I spot a weakness in my past work myself before the interviewer does?
-e54b8c25-4433-4689-b816-035f39cde664,answer_relevancy,,,,golden,what should I do if I spot one myself before they do?,"Raise it proactively rather than waiting to be caught. Frame it as evidence of judgment:
+e54b8c25-4433-4689-b816-035f39cde664,answer_relevancy,pass,,,golden,what should I do if I spot one myself before they do?,"Raise it proactively rather than waiting to be caught. Frame it as evidence of judgment:
 
 1. **Name the weakness clearly.**
 2. **Explain its cost or trade-off**, not just the decision.
@@ -7211,7 +7211,7 @@ What I had never done is
 **pushed back.**
 Building and defending are different skills. I'd trained one.","Volunteer the weakness before being caught. Raising it yourself demonstrates judgment, whereas the interviewer identifying the same weakness signals ignorance; the fact is identical but the signal is opposite.","USER: I'm preparing with the interview rules you have and I'm worried about weaknesses in my past work.
 ASSISTANT: The rules cover that directly. Are you asking about how the interviewer raises a weakness, or how you should?",What should I do if I spot a weakness in my past work myself before the interviewer does?
-ed969581-d5f3-46eb-932c-29f3fc2ac76d,faithfulness,,,,exploratory,Can I use `npm` instead of `pnpm` for the Vercel install and build commands?,"The deployment configuration specifies `pnpm install --frozen-lockfile` for installation and `pnpm build` for the build command. The documentation does not state whether substituting `npm` is supported, so I can’t confirm that `npm` will work without additional configuration.
+ed969581-d5f3-46eb-932c-29f3fc2ac76d,faithfulness,pass,,,exploratory,Can I use `npm` instead of `pnpm` for the Vercel install and build commands?,"The deployment configuration specifies `pnpm install --frozen-lockfile` for installation and `pnpm build` for the build command. The documentation does not state whether substituting `npm` is supported, so I can’t confirm that `npm` will work without additional configuration.
 
 CITATIONS:
 - Document: Mellow's Earth Elements — Storefront | Section: Deployment (Vercel)","Mellow's Earth Elements — Storefront
@@ -7286,7 +7286,7 @@ A coding agent's knowledge of which packages are safe is frozen at its training 
 some-build-tool@1.4.2
 ```
 because the task needs it, with no way to know that version published a postinstall credential stealer after that cutoff, and no instinct to treat a routine dependency as a risk. The 2026 supply-chain wave (Nx Console, Shai-Hulud, the npm trusted-publisher OIDC attacks) targets exactly that gap: code that reaches a developer through a trusted, well-meaning install. Beekeeper puts a corroborated threat check in front of the install, synced every two hours, with a second-source requirement and an audit trail.",The provided content specifies `pnpm build` for the build command and `pnpm install --frozen-lockfile` for installation. It does not provide instructions for using `npm` instead.,,
-ed969581-d5f3-46eb-932c-29f3fc2ac76d,answer_relevancy,,,,exploratory,Can I use `npm` instead of `pnpm` for the Vercel install and build commands?,"The deployment configuration specifies `pnpm install --frozen-lockfile` for installation and `pnpm build` for the build command. The documentation does not state whether substituting `npm` is supported, so I can’t confirm that `npm` will work without additional configuration.
+ed969581-d5f3-46eb-932c-29f3fc2ac76d,answer_relevancy,fail,,,exploratory,Can I use `npm` instead of `pnpm` for the Vercel install and build commands?,"The deployment configuration specifies `pnpm install --frozen-lockfile` for installation and `pnpm build` for the build command. The documentation does not state whether substituting `npm` is supported, so I can’t confirm that `npm` will work without additional configuration.
 
 CITATIONS:
 - Document: Mellow's Earth Elements — Storefront | Section: Deployment (Vercel)","Mellow's Earth Elements — Storefront
@@ -7361,7 +7361,7 @@ A coding agent's knowledge of which packages are safe is frozen at its training 
 some-build-tool@1.4.2
 ```
 because the task needs it, with no way to know that version published a postinstall credential stealer after that cutoff, and no instinct to treat a routine dependency as a risk. The 2026 supply-chain wave (Nx Console, Shai-Hulud, the npm trusted-publisher OIDC attacks) targets exactly that gap: code that reaches a developer through a trusted, well-meaning install. Beekeeper puts a corroborated threat check in front of the install, synced every two hours, with a second-source requirement and an audit trail.",The provided content specifies `pnpm build` for the build command and `pnpm install --frozen-lockfile` for installation. It does not provide instructions for using `npm` instead.,,
-f1aa993f-b540-45cd-82fc-c343e864fb9f,faithfulness,,,,exploratory,What happens to my cart and checkout order if I close the browser?,"Your cart is saved in your browser’s `localStorage`, so closing and reopening the browser should preserve it. However, checkout orders are client-side only: completing checkout displays a reference number, but the order is not saved to a server or order database. **(Mellow's Earth Elements — Storefront, Features)**
+f1aa993f-b540-45cd-82fc-c343e864fb9f,faithfulness,pass,,,exploratory,What happens to my cart and checkout order if I close the browser?,"Your cart is saved in your browser’s `localStorage`, so closing and reopening the browser should preserve it. However, checkout orders are client-side only: completing checkout displays a reference number, but the order is not saved to a server or order database. **(Mellow's Earth Elements — Storefront, Features)**
 
 CITATIONS:
 - Document: Mellow's Earth Elements — Storefront | Section: Features","Mellow's Earth Elements — Storefront
@@ -7429,7 +7429,7 @@ Tech Stack
 - **State/Data:** React Context (cart), TanStack Query, react-hook-form + zod
 - **Package manager:** pnpm
 - **Deployment:** Vercel (static)","The shopping cart is persisted in the browser's localStorage. Checkout orders are different: there is no backend or order database, so completing checkout only produces a client-side reference number and does not persist the order server-side.",,
-f1aa993f-b540-45cd-82fc-c343e864fb9f,answer_relevancy,,,,exploratory,What happens to my cart and checkout order if I close the browser?,"Your cart is saved in your browser’s `localStorage`, so closing and reopening the browser should preserve it. However, checkout orders are client-side only: completing checkout displays a reference number, but the order is not saved to a server or order database. **(Mellow's Earth Elements — Storefront, Features)**
+f1aa993f-b540-45cd-82fc-c343e864fb9f,answer_relevancy,fail,,,exploratory,What happens to my cart and checkout order if I close the browser?,"Your cart is saved in your browser’s `localStorage`, so closing and reopening the browser should preserve it. However, checkout orders are client-side only: completing checkout displays a reference number, but the order is not saved to a server or order database. **(Mellow's Earth Elements — Storefront, Features)**
 
 CITATIONS:
 - Document: Mellow's Earth Elements — Storefront | Section: Features","Mellow's Earth Elements — Storefront
@@ -7497,7 +7497,7 @@ Tech Stack
 - **State/Data:** React Context (cart), TanStack Query, react-hook-form + zod
 - **Package manager:** pnpm
 - **Deployment:** Vercel (static)","The shopping cart is persisted in the browser's localStorage. Checkout orders are different: there is no backend or order database, so completing checkout only produces a client-side reference number and does not persist the order server-side.",,
-f28f6c3f-6ad2-4f3c-a326-56e43c639a74,faithfulness,,,,golden,Why does Beekeeper not block a package the moment one source flags it?,"Beekeeper uses corroboration rather than blocking on a single source to reduce false positives and prevent a compromised catalog from forcing unjustified blocks. A single source produces a **warning**; two signed sources trigger a **block**; three or more trigger **block plus quarantine**. Unsigned sources can warn but cannot block on their own. (Beekeeper documentation, “Catalog corroboration (the supply-chain layer)”)
+f28f6c3f-6ad2-4f3c-a326-56e43c639a74,faithfulness,pass,,,golden,Why does Beekeeper not block a package the moment one source flags it?,"Beekeeper uses corroboration rather than blocking on a single source to reduce false positives and prevent a compromised catalog from forcing unjustified blocks. A single source produces a **warning**; two signed sources trigger a **block**; three or more trigger **block plus quarantine**. Unsigned sources can warn but cannot block on their own. (Beekeeper documentation, “Catalog corroboration (the supply-chain layer)”)
 
 This design aims to keep the protection enabled: a gate that blocks on every isolated warning could generate too many false positives and be disabled by developers. (Beekeeper documentation, “The loop”)
 
@@ -7601,7 +7601,7 @@ and
 state what it covers and where coverage stops. Read those before you trust it with anything.
 **v1.0.0**
 is the first public release. License: Apache 2.0.","A gate that fires on any single hit is a gate developers disable by lunchtime, and a switched-off guard protects nothing. Beekeeper uses a tunable, per-ecosystem agreement threshold: one source warns, two enforce, three trigger quarantine.",,
-f28f6c3f-6ad2-4f3c-a326-56e43c639a74,answer_relevancy,,,,golden,Why does Beekeeper not block a package the moment one source flags it?,"Beekeeper uses corroboration rather than blocking on a single source to reduce false positives and prevent a compromised catalog from forcing unjustified blocks. A single source produces a **warning**; two signed sources trigger a **block**; three or more trigger **block plus quarantine**. Unsigned sources can warn but cannot block on their own. (Beekeeper documentation, “Catalog corroboration (the supply-chain layer)”)
+f28f6c3f-6ad2-4f3c-a326-56e43c639a74,answer_relevancy,pass,,,golden,Why does Beekeeper not block a package the moment one source flags it?,"Beekeeper uses corroboration rather than blocking on a single source to reduce false positives and prevent a compromised catalog from forcing unjustified blocks. A single source produces a **warning**; two signed sources trigger a **block**; three or more trigger **block plus quarantine**. Unsigned sources can warn but cannot block on their own. (Beekeeper documentation, “Catalog corroboration (the supply-chain layer)”)
 
 This design aims to keep the protection enabled: a gate that blocks on every isolated warning could generate too many false positives and be disabled by developers. (Beekeeper documentation, “The loop”)
 
@@ -7705,7 +7705,7 @@ and
 state what it covers and where coverage stops. Read those before you trust it with anything.
 **v1.0.0**
 is the first public release. License: Apache 2.0.","A gate that fires on any single hit is a gate developers disable by lunchtime, and a switched-off guard protects nothing. Beekeeper uses a tunable, per-ecosystem agreement threshold: one source warns, two enforce, three trigger quarantine.",,
-fd56f78e-3944-42bc-9a72-367441eded40,faithfulness,,,,exploratory,How should the candidate respond if they discover a weakness in their own work before the interviewer points it out?,"They should raise it proactively rather than waiting to be caught. Briefly acknowledge the weakness, explain its cost or trade-off, and describe how they would measure, mitigate, or fix it. This demonstrates judgment and self-awareness; the guidance summarizes it as: “Volunteer before you’re caught.”【Interview Volt | Rules I'm training】
+fd56f78e-3944-42bc-9a72-367441eded40,faithfulness,pass,,,exploratory,How should the candidate respond if they discover a weakness in their own work before the interviewer points it out?,"They should raise it proactively rather than waiting to be caught. Briefly acknowledge the weakness, explain its cost or trade-off, and describe how they would measure, mitigate, or fix it. This demonstrates judgment and self-awareness; the guidance summarizes it as: “Volunteer before you’re caught.”【Interview Volt | Rules I'm training】
 
 CITATIONS:
 - Document: Interview Volt | Section: Rules I'm training","Interview Volt
@@ -7771,7 +7771,7 @@ What I had never done is
 **say any of it out loud while someone who'd read the source**
 **pushed back.**
 Building and defending are different skills. I'd trained one.","They should volunteer the weakness before being caught. Raising a weakness demonstrates judgment, whereas having the interviewer identify the same weakness signals ignorance; the fact is identical but the signal is opposite.",,
-fd56f78e-3944-42bc-9a72-367441eded40,answer_relevancy,,,,exploratory,How should the candidate respond if they discover a weakness in their own work before the interviewer points it out?,"They should raise it proactively rather than waiting to be caught. Briefly acknowledge the weakness, explain its cost or trade-off, and describe how they would measure, mitigate, or fix it. This demonstrates judgment and self-awareness; the guidance summarizes it as: “Volunteer before you’re caught.”【Interview Volt | Rules I'm training】
+fd56f78e-3944-42bc-9a72-367441eded40,answer_relevancy,pass,,,exploratory,How should the candidate respond if they discover a weakness in their own work before the interviewer points it out?,"They should raise it proactively rather than waiting to be caught. Briefly acknowledge the weakness, explain its cost or trade-off, and describe how they would measure, mitigate, or fix it. This demonstrates judgment and self-awareness; the guidance summarizes it as: “Volunteer before you’re caught.”【Interview Volt | Rules I'm training】
 
 CITATIONS:
 - Document: Interview Volt | Section: Rules I'm training","Interview Volt
