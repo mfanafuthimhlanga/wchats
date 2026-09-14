@@ -99,6 +99,7 @@ from app.services.deployment_service import (
     RED_TEAM_SIGNAL_RUN_FAILED,
     RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL,
     SUBMIT_REPORT_TOOL_NAME,
+    TERMINAL_RUN_STATUSES,
     VERDICT_WARNING_CATEGORY_UNMAPPED,
     DeploymentReport,
     DeploymentWarning,
@@ -121,6 +122,7 @@ from app.services.deployment_service import (
     stored_run_records_agent_invocation,
     verdict_warnings,
 )
+from app.services.eval_service import EVAL_RUN_DID_NOT_FINISH
 
 # ---------------------------------------------------------------------------
 # Helper: build a mock psycopg2 connection with controllable cursor
@@ -4671,4 +4673,75 @@ class TestRelevancyProvenanceGate:
         assert "could not rewrite" not in warning.message, (
             "both causes are live on this payload; the coarser one is the claim "
             "the owner acts on"
+        )
+
+
+class TestADidNotFinishRunIsNeverReadAsAPass:
+    """#207 part three. A run the platform stopped carries partial scores.
+
+    `mark_eval_run_did_not_finish` writes a status this repo had never written
+    before, and a stopped run keeps whatever `eval_results` rows the Judge
+    returned before the interruption. Both readers of a run's status have to
+    treat that as an absent measurement, because the project rule is that
+    missing data is never passing data. These pin the three places that decide it.
+    """
+
+    def _summary_of_a_stopped_run(self, record):
+        mock_conn = _make_eval_conn(
+            (
+                uuid.uuid4(),
+                datetime(2026, 9, 14, 2, 0, 0),
+                EVAL_RUN_DID_NOT_FINISH,
+                _invoked_config(),
+            ),
+            record=record,
+        )
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            return _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+    def test_the_collector_withholds_the_numbers_a_stopped_run_does_carry(self):
+        """The record here is a clean one: every metric above every threshold.
+
+        A collector that looked at the scores before the status would report
+        `measured` and the gate would ship on a fraction of the dataset.
+        """
+        result = self._summary_of_a_stopped_run(_record())
+
+        assert result["eval_signal"] == EVAL_SIGNAL_RUN_FAILED
+        assert result["eval_signal"] != EVAL_SIGNAL_MEASURED
+        assert result["pass_rates"] is None
+        assert result["last_run_status"] == EVAL_RUN_DID_NOT_FINISH
+        assert EVAL_RUN_DID_NOT_FINISH in result["signal_detail"]
+
+    def test_the_gate_turns_that_signal_into_a_block(self):
+        """The whole chain, from the stopped row to the recommendation."""
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship",
+            self._summary_of_a_stopped_run(_record()),
+            _measured_red_team(),
+        )
+
+        assert recommendation == "block"
+        [warning] = [w for w in warnings if w.warning_id == "eval_signal_unavailable"]
+        assert EVAL_RUN_DID_NOT_FINISH in warning.message, (
+            "the owner is told the eval could not be read without being told "
+            f"the run was stopped: {warning.message!r}"
+        )
+
+    def test_the_wait_never_reads_the_status_as_terminal(self):
+        """`poll_terminal_statuses` collects a run's record once it reports
+        terminal. Admitting this status there would grade the partial scores."""
+        assert EVAL_RUN_DID_NOT_FINISH not in TERMINAL_RUN_STATUSES
+
+        statuses = poll_terminal_statuses(
+            {"eval": None},
+            {"eval": lambda: EVAL_RUN_DID_NOT_FINISH},
+        )
+
+        assert statuses == {"eval": None}, (
+            "the checklist read a stopped run as finished, so it will collect "
+            "the fraction of the dataset the Judge got through and grade it"
         )

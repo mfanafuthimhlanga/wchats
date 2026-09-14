@@ -10,10 +10,10 @@ it, so the judges are in the number by construction and a corrected price book
 re-prices history for free.
 
 THE GRAINS
-    per purpose, per CAT day, per conversation, and the turns as a whole. A turn
-    is a `turn_metrics` row; its calls are the ledger rows with its `job_id`.
-    Ledger rows whose job is not a turn (an eval run, a red-team run, a draft)
-    count in the purpose and day figures and in nothing per turn.
+    per purpose, per CAT day, per conversation, per job, and the turns as a
+    whole. A turn is a `turn_metrics` row; its calls are the ledger rows with its
+    `job_id`. Ledger rows whose job is not a turn (an eval run, a red-team run, a
+    draft) count in the purpose, day and job figures and in nothing per turn.
 
 UNKNOWN IS NULL, NEVER ZERO
     `roll_up` refuses to price a model the book does not know and reports the
@@ -67,6 +67,11 @@ _SELECT_AGENT_LEDGER_SQL = (
 #: How many conversations `by_conversation` carries. The costliest are the ones
 #: a reader acts on, and `turns.conversations` says how many the cap left out.
 _CONVERSATION_LIMIT = 50
+
+#: How many jobs `by_job` carries. A job is one unit of work the platform did,
+#: so a busy week has thousands of them and a reader chasing a bill acts on the
+#: dearest few. `total` still holds the window's whole money either way.
+_JOB_LIMIT = 20
 
 
 @dataclass(frozen=True)
@@ -216,23 +221,75 @@ def _grouped(rows: Sequence[LedgerRow], key) -> list[tuple]:
     return out
 
 
-def _dearest_first(conversations: list[dict]) -> list[dict]:
-    """The costliest conversations first, the unpriced ones last, capped.
+def _dearest_first(rows: list[dict], limit: int = _CONVERSATION_LIMIT) -> list[dict]:
+    """The costliest rows first, the unpriced ones last, capped at `limit`.
 
-    Key order put whichever conversation ids sorted lowest in front of the ones
-    the money is in. The cap is a reading aid: `total` and `turns` hold the whole
-    window's money either way, and `turns.conversations` says how many
-    conversations the list leaves out.
+    Key order put whichever ids sorted lowest in front of the ones the money is
+    in. The cap is a reading aid, and `total` holds the whole window's money
+    whatever it leaves out; for the conversation list, `turns.conversations` also
+    says how many were left out.
+
+    An unpriced row sorts LAST rather than as zero. It is the row most likely to
+    hold real money, and putting it at the bottom of a cheap-looking list is how
+    a price gap goes unnoticed; `unpriced_calls` on the row says why it is there.
     """
     ordered = sorted(
-        conversations,
+        rows,
         key=lambda row: (row["cost_usd"] is None, -(row["cost_usd"] or 0.0)),
     )
-    return ordered[:_CONVERSATION_LIMIT]
+    return ordered[:limit]
+
+
+def _job_purposes(rows: Sequence[LedgerRow]) -> dict[str, list[str]]:
+    """Every purpose each job's calls were made under, sorted, one entry per job.
+
+    Sorted rather than first-seen, so two runs of the same shape of work read the
+    same and a reader can compare two jobs' lists by eye.
+    """
+    seen: dict[str, set] = defaultdict(set)
+    for row in rows:
+        # `ModelCall.job_id` is optional, and a call belonging to no job is not a
+        # job. `_job_rows` filters those out before it calls this; the test here
+        # is what lets the annotation say `dict[str, ...]` and mean it.
+        if row.call.job_id is not None:
+            seen[row.call.job_id].add(row.call.purpose)
+    return {job_id: sorted(purposes) for job_id, purposes in seen.items()}
+
+
+def _job_rows(rows: Sequence[LedgerRow]) -> tuple[list[dict], int]:
+    """The dearest `_JOB_LIMIT` jobs in the window, and how many jobs there were.
+
+    A JOB IS THE GRAIN A BILL IS ARGUED AT. `by_purpose` says what the money was
+    spent on and `by_conversation` says which Customer it served. Neither answers
+    "which single piece of work cost the most". One eval run and one customer
+    turn both appear as a job here, and `is_turn` is the difference. A turn is
+    work a Customer waited for; everything else is work the platform chose to do.
+
+    THE COUNT TRAVELS BESIDE THE LIST because the list is capped.
+    `turns.conversations` already does this for `by_conversation`, and without
+    the same thing here a window holding four hundred jobs and a window holding
+    twenty are the same twenty rows on the screen.
+
+    A LEDGER ROW WITH NO JOB IS NOT A JOB. `ModelCall.job_id` is None for a call
+    made outside any unit of work, a rollup among them. Those calls stay in
+    `total` and in `by_purpose`, where they are honest, and are absent here
+    rather than pooled under a null that would read as one enormous job.
+    """
+    of_a_job = [row for row in rows if row.call.job_id]
+    purposes = _job_purposes(of_a_job)
+    jobs = []
+    for job_id, figures in _grouped(of_a_job, lambda r: r.call.job_id):
+        # `_grouped` counts the distinct turn jobs in a group, and a group that
+        # IS one job holds one or none. That is the same question `is_turn` asks.
+        is_turn = bool(figures.pop("turns"))
+        jobs.append(
+            {"job_id": job_id, **figures, "purposes": purposes[job_id], "is_turn": is_turn}
+        )
+    return _dearest_first(jobs, _JOB_LIMIT), len(jobs)
 
 
 def summarise_usage(rows: Sequence[LedgerRow], window_days: int) -> dict:
-    """The four grains over one window of ledger rows. Pure; the tests live here.
+    """The five grains over one window of ledger rows. Pure; the tests live here.
 
     `turns` covers only the calls whose job was a turn, judges included, so
     `cost_per_turn_usd` is what serving one customer message costs. It is None
@@ -243,8 +300,13 @@ def summarise_usage(rows: Sequence[LedgerRow], window_days: int) -> dict:
     `price_versions` names every book version the window priced against, sorted.
     It is a list rather than one name because a window can span a correction to
     the book.
+
+    `by_job` is the dearest twenty single pieces of work, turns and eval runs in
+    one list, which is the grain a surprising bill is read at. `jobs` is how many
+    there were, so a capped list cannot read as the whole window.
     """
     by_purpose = roll_up(row.call for row in rows)
+    by_job, job_count = _job_rows(rows)
     turn_rows = [row for row in rows if row.conversation_id is not None]
     turn_jobs = {row.call.job_id for row in turn_rows}
     turns = _money(roll_up(row.call for row in turn_rows))
@@ -269,6 +331,10 @@ def summarise_usage(rows: Sequence[LedgerRow], window_days: int) -> dict:
                 for conversation_id, money in _grouped(turn_rows, lambda r: r.conversation_id)
             ]
         ),
+        "by_job": by_job,
+        # How many jobs the window held, so the capped list above can be read as
+        # a top twenty rather than as the whole of it.
+        "jobs": job_count,
     }
 
 

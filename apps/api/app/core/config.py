@@ -377,6 +377,32 @@ class Settings(BaseSettings):
     # selects. The constant stays as the floor for a small golden set.
     CHECKLIST_WAIT_PER_SCENARIO_S: int = 120
 
+    # The three gaps #207 puts between the checklist giving up, the worker
+    # interrupting the eval, the kill, and the broker's redelivery. All seconds.
+    #
+    # ONE ORDERING, FOUR NUMBERS, AND EVERY ONE OF THEM DERIVED FROM THE NEXT:
+    #
+    #   checklist ceiling <= EVAL_SOFT_TIME_LIMIT_S
+    #                      < EVAL_HARD_TIME_LIMIT_S
+    #                      < BROKER_VISIBILITY_TIMEOUT_S
+    #
+    # The checklist gives up first, so the revoke is what usually stops an eval
+    # and the soft limit is the backstop for an eval nobody is waiting on. Then
+    # the soft limit, so the task's handler writes the rows it scored. Then the
+    # hard kill. And all of it inside the broker's visibility timeout, because
+    # `acks_late=True` redelivers past that and a second worker would rerun the
+    # whole eval.
+    #
+    # Three gaps produce the three relations. EVAL_SOFT_LIMIT_HANDOVER_S is how
+    # long the eval goes on after the checklist stops waiting, which is the window
+    # a revoke lands in. EVAL_SOFT_LIMIT_HANDLER_S is what the handler gets for
+    # its two writes and a status update, on connections bounded by
+    # eval_service.CONNECT_TIMEOUT_S. EVAL_REDELIVERY_MARGIN_S is the kill's lead
+    # on the redelivery.
+    EVAL_SOFT_LIMIT_HANDOVER_S: int = 300
+    EVAL_SOFT_LIMIT_HANDLER_S: int = 300
+    EVAL_REDELIVERY_MARGIN_S: int = 300
+
     # Samples an eval scores at once. OBSERVED 2026-09-06 (#205): one at a time,
     # 31 scenarios by four metrics did not finish inside the ceiling above. Then
     # OBSERVED 2026-09-07 (#213): eight in flight scored no faster than four, so

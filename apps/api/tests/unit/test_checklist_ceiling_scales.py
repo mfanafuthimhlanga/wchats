@@ -19,7 +19,11 @@ from app.core.config import settings
 from app.services import deployment_service
 from app.services.eval_service import AGENT_INVOCATION_MAX_CALLS_PER_RUN
 from app.worker.tasks.runtime import deployment as task_mod
-from app.worker.tasks.runtime.eval import GENERATED_SUITE_SIZE, GENERATION_SKIP_AT_ROWS
+from app.worker.tasks.runtime.eval import (
+    CHECKLIST_WAIT_CAP_S,
+    GENERATED_SUITE_SIZE,
+    GENERATION_SKIP_AT_ROWS,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -54,7 +58,20 @@ class TestTheCeilingIsTheFloorOrTheEvalsSize:
         assert task_mod.checklist_wait_ceiling_s(9) == (9 + GENERATED_SUITE_SIZE) * 120
 
     def test_hundreds_of_rows_wait_for_the_cap_not_for_hours(self):
-        assert task_mod.checklist_wait_ceiling_s(300) == AGENT_INVOCATION_MAX_CALLS_PER_RUN * 120
+        """Two caps now, and the tighter one wins (#207).
+
+        The invocation ceiling bounds the ROWS, at 60 x 120 = 7200 s. The eval
+        task's soft time limit bounds the WAIT, because a checklist still waiting
+        when the worker interrupts the run would report on a run stopped on its
+        behalf without knowing it.
+        """
+        rows_bound = AGENT_INVOCATION_MAX_CALLS_PER_RUN * 120
+
+        assert task_mod.checklist_wait_ceiling_s(300) == CHECKLIST_WAIT_CAP_S
+        assert CHECKLIST_WAIT_CAP_S < rows_bound, (
+            "this test is a tautology unless the soft limit's cap really is the "
+            f"tighter of the two: {CHECKLIST_WAIT_CAP_S} vs {rows_bound}"
+        )
 
 
 class TestTheWaitOpensWithItsCeilingAndCarriesIt:

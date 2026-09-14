@@ -53,6 +53,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import psycopg2
 import pytest
+from celery.exceptions import SoftTimeLimitExceeded
 from ragas.embeddings.base import BaseRagasEmbedding
 from ragas.llms.base import InstructorBaseRagasLLM
 from ragas.metrics.collections.answer_relevancy.util import AnswerRelevanceOutput
@@ -454,13 +455,20 @@ class TestScoringTouchesNoDatabase:
         field that could hold a connection string (project rule 1), so the claim
         this test defends is unchanged and the parameter list is pinned exactly
         rather than left open.
+
+        `partial` joined it for #207: a list this function APPENDS to when an
+        interruption cancels the gather. It is pinned here by name and by the
+        annotation, so a dsn cannot arrive under it.
         """
         from app.core.model_client import LedgerContext
         from app.services.eval_service import run_ragas_eval
 
         params = inspect.signature(run_ragas_eval).parameters
-        assert list(params) == ["scenarios", "ledger"], (
+        assert list(params) == ["scenarios", "ledger", "partial"], (
             f"run_ragas_eval grew a parameter it does not read: {list(params)}"
+        )
+        assert params["partial"].annotation == "list | None", (
+            f"the accumulator is a list, never a string: {params['partial']}"
         )
         carriers = [
             field.name
@@ -2026,7 +2034,7 @@ class TestRunRagasEvalAttribution:
         # rewritten question and the other three are not. This double ignores it
         # because these tests are about attribution, but it has to ACCEPT it or
         # they would be passing against a signature the producer no longer has.
-        async def _fake_score_samples(metrics, samples, resolved_inputs=None):  # noqa: ARG001
+        async def _fake_score_samples(metrics, samples, resolved_inputs=None, sink=None):  # noqa: ARG001
             return frame.to_dict("records")
 
         monkeypatch.setattr(
@@ -2920,7 +2928,7 @@ class TestTheRewritesReachTheScoringLoop:
         ]
         handed = {}
 
-        async def _capture_score_samples(metrics, samples, resolved_inputs=None):  # noqa: ARG001
+        async def _capture_score_samples(metrics, samples, resolved_inputs=None, sink=None):  # noqa: ARG001
             handed["resolved_inputs"] = resolved_inputs
             handed["sample_count"] = len(samples)
             return []
@@ -3008,3 +3016,399 @@ class TestTheRuleVerdictsCountAsScoredAndAsVerdicts:
             result, None, CalibrationStatus.absent("no_artifact"), True
         )
         assert [r.rule for r in reasons] == ["golden_failure"]
+
+
+class TestClosingOutARunNothingWillFinish:
+    """`mark_eval_run_did_not_finish`, the one writer of that status (#207).
+
+    Two callers race for it: the deployment checklist when its wait ceiling
+    expires, and `run_eval_suite` when the worker's soft time limit interrupts
+    scoring. The condition that decides the race lives in the statement.
+    """
+
+    def _closed(self, monkeypatch, *, rowcount):
+        from app.services import eval_service
+
+        cursor = _RecordingCursor()
+        cursor.rowcount = rowcount
+        conn_strings: list[str] = []
+        connect, _conn = _recording_connect(cursor, conn_strings)
+        monkeypatch.setattr(eval_service.psycopg2, "connect", connect)
+
+        moved = eval_service.mark_eval_run_did_not_finish(
+            "run-207", "postgresql://production", "the ceiling expired"
+        )
+        return moved, cursor, conn_strings
+
+    def test_only_a_row_still_running_is_moved(self, monkeypatch):
+        """The WHERE clause is the whole guard: a terminal row is left alone."""
+        moved, cursor, conn_strings = self._closed(monkeypatch, rowcount=1)
+
+        assert moved is True
+        assert conn_strings == ["postgresql://production"]
+        sql, params = cursor.executed[0]
+        assert "UPDATE eval_runs" in sql
+        assert "status = 'running'" in sql, (
+            "without the condition the loser of the race overwrites a terminal "
+            f"status with this one: {sql!r}"
+        )
+        assert params == {"status": "did_not_finish", "id": "run-207"}
+
+    def test_a_row_another_writer_already_closed_reports_false(self, monkeypatch):
+        """Idempotent by the statement, so the reason is stamped once."""
+        moved, cursor, _ = self._closed(monkeypatch, rowcount=0)
+
+        assert moved is False
+        assert len(cursor.executed) == 1, (
+            "the reason was stamped on a run this call did not close: "
+            f"{cursor.statements}"
+        )
+
+    def test_the_reason_lands_on_the_run_that_was_closed(self, monkeypatch):
+        """A reader holding the row learns which of the two bounds stopped it."""
+        _, cursor, _ = self._closed(monkeypatch, rowcount=1)
+
+        sql, params = cursor.executed[1]
+        assert "config = COALESCE(config" in sql
+        assert json.loads(params["patch"]) == {
+            "did_not_finish": {"reason": "the ceiling expired"}
+        }
+        assert params["id"] == "run-207"
+
+    def test_both_statements_run_on_one_connection(self, monkeypatch):
+        """Three handshakes on the end of an expired wait, for one row."""
+        _, cursor, conn_strings = self._closed(monkeypatch, rowcount=1)
+
+        assert conn_strings == ["postgresql://production"]
+        assert len(cursor.executed) == 2
+
+    def test_an_unreachable_tenant_db_reports_false_rather_than_raising(self, monkeypatch):
+        """Both callers are already on a failure path and still owe a report."""
+        from app.services import eval_service
+
+        def _boom(*_a, **_kw):
+            raise psycopg2.OperationalError("no route to host")
+
+        monkeypatch.setattr(eval_service.psycopg2, "connect", _boom)
+
+        assert eval_service.mark_eval_run_did_not_finish(
+            "run-207", "postgresql://production", "the ceiling expired"
+        ) is False
+
+
+class TestAnInterruptedRunKeepsTheRowsItPaidFor:
+    """#207: the soft time limit cancels the gather, and every row goes with it.
+
+    Four judge calls buy one score row. A run interrupted two thirds of the way
+    through has already been billed for all of them, so the rows have to leave
+    the coroutine as they complete rather than be held until the gather returns.
+    """
+
+    def _scenarios(self, count: int) -> list[dict]:
+        return [
+            {
+                "id": f"s{n}",
+                "question": f"q{n}",
+                "reference_answer": f"a{n}",
+                "retrieved_contexts": [],
+                "agent_response": f"r{n}",
+                "dataset": "exploratory",
+                "turns": [],
+            }
+            for n in range(count)
+        ]
+
+    def _interrupt_after(self, monkeypatch, scenarios, finished: int):
+        """Score `finished` rows into the sink, then raise the way Celery does."""
+
+        async def _score(metrics, samples, resolved_inputs=None, sink=None):  # noqa: ARG001
+            for index, sample in enumerate(samples[:finished]):
+                sink.append(
+                    (
+                        index,
+                        {
+                            "user_input": sample.user_input,
+                            "reference": sample.reference,
+                            "faithfulness": 0.9,
+                            "answer_relevancy": 0.8,
+                            "context_precision": 0.7,
+                            "context_recall": 0.6,
+                        },
+                    )
+                )
+            raise SoftTimeLimitExceeded()
+
+        monkeypatch.setattr(
+            eval_service, "_build_instructor_llm", _fake_ragas_instructor_llm
+        )
+        monkeypatch.setattr(eval_service, "_VoyageRagasEmbedding", _FakeRagasEmbedding)
+        monkeypatch.setattr(eval_service, "_score_samples", _score)
+
+    def test_the_finished_rows_reach_the_caller_attributed_to_their_scenarios(
+        self, monkeypatch
+    ):
+        scenarios = self._scenarios(5)
+        self._interrupt_after(monkeypatch, scenarios, finished=3)
+        kept: list = []
+
+        with pytest.raises(SoftTimeLimitExceeded):
+            eval_service.run_ragas_eval(scenarios, ledger(), partial=kept)
+
+        assert [row["scenario_id"] for row in kept] == ["s0", "s1", "s2"], (
+            "the rows the tenant paid twelve judge calls for were cancelled "
+            f"with the gather: {kept}"
+        )
+        assert kept[0]["faithfulness"] == pytest.approx(0.9)
+
+    def test_the_interruption_still_reaches_the_caller(self, monkeypatch):
+        """Filling the list is not swallowing the exception: the task's own
+        handler is what decides the run is over."""
+        scenarios = self._scenarios(2)
+        self._interrupt_after(monkeypatch, scenarios, finished=1)
+
+        with pytest.raises(SoftTimeLimitExceeded):
+            eval_service.run_ragas_eval(scenarios, ledger(), partial=[])
+
+    def test_a_caller_that_asks_for_no_rows_back_is_unaffected(self, monkeypatch):
+        """`partial=None` is every caller but `run_eval_suite`."""
+        scenarios = self._scenarios(2)
+        self._interrupt_after(monkeypatch, scenarios, finished=1)
+
+        with pytest.raises(SoftTimeLimitExceeded):
+            eval_service.run_ragas_eval(scenarios, ledger())
+
+
+
+class TestTheSinkKeepsTheRowsOnTheirOwnScenarios:
+    """#207 review. The sink filled in completion order and attribution is
+    positional whenever the counts match, so a full sink wrote every scenario's
+    four scores against a neighbour.
+
+    `EVAL_SCORING_CONCURRENCY` is 4, so rows genuinely arrive out of order, and
+    the case that hurts most is the one where the limit fires AFTER the last row
+    finished and before the gather returned: the sink then holds every row and
+    `attribute_returned_rows` takes its positional shortcut on all of them.
+    """
+
+    def _scenarios(self, count: int) -> list[dict]:
+        return [
+            {
+                "id": f"s{n}",
+                "question": f"q{n}",
+                "reference_answer": f"a{n}",
+                "retrieved_contexts": [],
+                "agent_response": f"r{n}",
+                "dataset": "exploratory",
+                "turns": [],
+            }
+            for n in range(count)
+        ]
+
+    def _shuffled_sink(self, monkeypatch, scenarios, order):
+        """Score every sample, append in `order`, then raise the way Celery does."""
+
+        async def _score(metrics, samples, resolved_inputs=None, sink=None):  # noqa: ARG001
+            for index in order:
+                sample = samples[index]
+                sink.append(
+                    (
+                        index,
+                        {
+                            "user_input": sample.user_input,
+                            "reference": sample.reference,
+                            # The score IS the index, so a row on the wrong
+                            # scenario is visible in the number itself.
+                            "faithfulness": float(index) / 10,
+                            "answer_relevancy": float(index) / 10,
+                            "context_precision": float(index) / 10,
+                            "context_recall": float(index) / 10,
+                        },
+                    )
+                )
+            raise SoftTimeLimitExceeded()
+
+        monkeypatch.setattr(
+            eval_service, "_build_instructor_llm", _fake_ragas_instructor_llm
+        )
+        monkeypatch.setattr(eval_service, "_VoyageRagasEmbedding", _FakeRagasEmbedding)
+        monkeypatch.setattr(eval_service, "_score_samples", _score)
+
+    def test_a_full_sink_in_completion_order_still_lands_on_its_own_scenarios(
+        self, monkeypatch
+    ):
+        scenarios = self._scenarios(5)
+        # Every row finished, none of them in sample order.
+        self._shuffled_sink(monkeypatch, scenarios, order=[3, 0, 4, 1, 2])
+        kept: list = []
+
+        with pytest.raises(SoftTimeLimitExceeded):
+            eval_service.run_ragas_eval(scenarios, ledger(), partial=kept)
+
+        assert [row["scenario_id"] for row in kept] == ["s0", "s1", "s2", "s3", "s4"]
+        assert [row["faithfulness"] for row in kept] == [
+            pytest.approx(n / 10) for n in range(5)
+        ], (
+            "a scenario was handed the score of whichever row happened to "
+            f"finish in its position: {kept}"
+        )
+
+    def test_a_partial_sink_out_of_order_keeps_each_row_on_its_scenario(
+        self, monkeypatch
+    ):
+        scenarios = self._scenarios(5)
+        self._shuffled_sink(monkeypatch, scenarios, order=[4, 1, 0])
+        kept: list = []
+
+        with pytest.raises(SoftTimeLimitExceeded):
+            eval_service.run_ragas_eval(scenarios, ledger(), partial=kept)
+
+        assert {row["scenario_id"]: row["faithfulness"] for row in kept} == {
+            "s0": pytest.approx(0.0),
+            "s1": pytest.approx(0.1),
+            "s4": pytest.approx(0.4),
+        }
+
+
+class TestAWholeRunSurvivesTheWritesThatFollowIt:
+    """#207 review. `partial` was filled only when scoring itself raised.
+
+    Six tenant DB round trips stand between scoring returning and the run being
+    marked complete, and the soft time limit can land in any of them. The rows
+    were all bought and all in hand, and the handler would have written none.
+    """
+
+    def _scored(self, monkeypatch, scenarios):
+        async def _score(metrics, samples, resolved_inputs=None, sink=None):  # noqa: ARG001
+            return [
+                {
+                    "user_input": s.user_input, "reference": s.reference,
+                    "faithfulness": 0.9, "answer_relevancy": 0.9,
+                    "context_precision": 0.9, "context_recall": 0.9,
+                }
+                for s in samples
+            ]
+
+        monkeypatch.setattr(
+            eval_service, "_build_instructor_llm", _fake_ragas_instructor_llm
+        )
+        monkeypatch.setattr(eval_service, "_VoyageRagasEmbedding", _FakeRagasEmbedding)
+        monkeypatch.setattr(eval_service, "_score_samples", _score)
+
+    def test_scoring_that_returned_leaves_every_row_in_the_accumulator(
+        self, monkeypatch
+    ):
+        scenarios = [
+            {
+                "id": f"s{n}", "question": f"q{n}", "reference_answer": f"a{n}",
+                "retrieved_contexts": [], "agent_response": f"r{n}",
+                "dataset": "exploratory", "turns": [],
+            }
+            for n in range(3)
+        ]
+        self._scored(monkeypatch, scenarios)
+        kept: list = []
+
+        results = eval_service.run_ragas_eval(scenarios, ledger(), partial=kept)
+
+        assert [row["scenario_id"] for row in kept] == ["s0", "s1", "s2"]
+        assert kept == results["scores"], (
+            "the accumulator and the return value describe the same run, so a "
+            "limit landing in the writes below loses nothing"
+        )
+
+    def test_the_accumulator_is_replaced_rather_than_appended_to(self, monkeypatch):
+        """It is filled twice on an interrupted run, with the same rows read
+        twice. Appending would write every judge decision twice."""
+        kept = [{"scenario_id": "stale"}]
+        scenarios = [
+            {
+                "id": "s0", "question": "q0", "reference_answer": "a0",
+                "retrieved_contexts": [], "agent_response": "r0",
+                "dataset": "exploratory", "turns": [],
+            }
+        ]
+        self._scored(monkeypatch, scenarios)
+
+        eval_service.run_ragas_eval(scenarios, ledger(), partial=kept)
+
+        assert [row["scenario_id"] for row in kept] == ["s0"]
+
+
+class TestClosingOutTheNewestRunningRun:
+    """The checklist's half of the close-out (#207 review).
+
+    It has no run id to name. `run_eval_suite` mints one after it starts and
+    nothing crosses back over the broker, so the boundary and the 'running'
+    status are the whole identity available.
+    """
+
+    def _closed(self, monkeypatch, *, found, rowcount=1):
+        from app.services import eval_service
+
+        cursor = _RecordingCursor(fetchone_result=found)
+        cursor.rowcount = rowcount
+        conn_strings: list[str] = []
+        connect, _conn = _recording_connect(cursor, conn_strings)
+        monkeypatch.setattr(eval_service.psycopg2, "connect", connect)
+
+        closed = eval_service.close_newest_running_eval_run(
+            "agent-1",
+            "postgresql://production",
+            datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc),
+            "the ceiling expired",
+        )
+        return closed, cursor, conn_strings
+
+    def test_the_newest_running_run_since_the_boundary_is_the_one_closed(
+        self, monkeypatch
+    ):
+        """Oldest-first would close the orphan an adopted boundary reached back
+        for rather than the run this checklist's own dispatch caused."""
+        closed, cursor, _ = self._closed(monkeypatch, found=("run-42",))
+
+        assert closed == "run-42"
+        sql, params = cursor.executed[0]
+        assert "status = 'running'" in sql
+        assert "ORDER BY started_at DESC" in sql, (
+            f"the oldest running run is not this checklist's: {sql!r}"
+        )
+        assert params == {
+            "kind": "m6:agent-1",
+            "since": datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc),
+        }
+
+    def test_all_three_statements_share_one_connection(self, monkeypatch):
+        """A SELECT, an UPDATE and a patch, on one Neon handshake."""
+        _, cursor, conn_strings = self._closed(monkeypatch, found=("run-42",))
+
+        assert conn_strings == ["postgresql://production"]
+        assert len(cursor.executed) == 3
+
+    def test_nothing_running_writes_nothing(self, monkeypatch):
+        closed, cursor, _ = self._closed(monkeypatch, found=None)
+
+        assert closed is None
+        assert len(cursor.executed) == 1
+
+    def test_a_row_the_task_already_closed_is_left_alone(self, monkeypatch):
+        """The task usually wins the race, because the revoke reaches it first."""
+        closed, cursor, _ = self._closed(monkeypatch, found=("run-42",), rowcount=0)
+
+        assert closed is None
+        assert len(cursor.executed) == 2, (
+            "the reason was stamped on a row another writer had already closed"
+        )
+
+    def test_an_unreachable_tenant_db_reports_none_rather_than_raising(
+        self, monkeypatch
+    ):
+        from app.services import eval_service
+
+        def _boom(*_a, **_kw):
+            raise psycopg2.OperationalError("no route to host")
+
+        monkeypatch.setattr(eval_service.psycopg2, "connect", _boom)
+
+        assert eval_service.close_newest_running_eval_run(
+            "agent-1", "postgresql://p", datetime.now(timezone.utc), "expired"
+        ) is None

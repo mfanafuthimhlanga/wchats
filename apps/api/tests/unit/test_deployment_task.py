@@ -54,11 +54,13 @@ import json
 import uuid
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.domain.calibration_status import CalibrationStatus
+from app.worker.tasks.runtime import deployment as deployment_task
 
 # ---------------------------------------------------------------------------
 # Helper: build a mock get_sync_db context manager
@@ -1457,9 +1459,13 @@ class TestExistingTenantEvalPath(TestEvidenceGateWiring):
 
             def apply_async(self, **kwargs):
                 captured["options"] = kwargs
+                return SimpleNamespace(id="task-of-the-chain")
 
         with patch("celery.chain", _FakeChain):
-            assert deployment_task._dispatch_eval_run(agent_id) is True
+            assert deployment_task._dispatch_eval_run(agent_id) == "task-of-the-chain", (
+                "the ceiling revokes the id this returns (#207), so a helper "
+                "that reports only that it dispatched leaves nothing to name"
+            )
 
         assert captured["options"] == {"queue": "runtime"}
         assert len(captured["signatures"]) == 2, (
@@ -1485,7 +1491,7 @@ class TestExistingTenantEvalPath(TestEvidenceGateWiring):
             raise RuntimeError("broker unreachable")
 
         with patch("celery.chain", _boom):
-            assert deployment_task._dispatch_eval_run("agent-1") is False
+            assert deployment_task._dispatch_eval_run("agent-1") is None
 
 
 # ---------------------------------------------------------------------------
@@ -4528,3 +4534,155 @@ class TestAFailedPassIsHandedBackOnANumberTheRowWillMatch:
             "a checklist with no attempts left has to close its own row, or the "
             f"guard is the only thing that will: {self.run.status!r}"
         )
+
+
+#: The Celery id the chain's `run_eval_suite` message carries, as
+#: `_dispatch_eval_run` hands it back to the wait it opens.
+EVAL_TASK_ID = "6d1f4b8e-0000-4000-8000-00000000e207"
+#: The eval_runs row that task is still writing to when the ceiling expires.
+EVAL_RUN_ID = "6d1f4b8e-0000-4000-8000-00000000e206"
+#: After `_drive_sequenced`'s dispatch moment, so the adoption path leaves it alone.
+EVAL_RUN_STARTED_AT = datetime(2026, 8, 30, 12, 5, tzinfo=timezone.utc)
+
+
+class TestTheCeilingStopsTheSpend:
+    """#207: the wait gave up and the eval went on billing judge calls.
+
+    The checklist stops waiting at its ceiling and reports `eval_did_not_finish`.
+    Until this class existed that report was the only thing that happened. The
+    `run_eval_suite` message kept running, kept calling the Judge and kept
+    charging the tenant for a measurement no reader would ever see, and nothing
+    in the system was going to end it.
+
+    A REVOKE ACKS THE MESSAGE. `Request.on_failure` announces a revoked task as
+    handled, so stopping the eval this way does not hand it to a second worker
+    the way an `acks_late` redelivery would.
+    """
+
+    def _expire_the_ceiling(self, running=None):
+        """Run the whole checklist to settlement with the eval never finishing."""
+        _, fetchers, collectors = _sequenced_world(eval_polls=10**6, red_team_polls=0)
+        control = MagicMock()
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch.object(deployment_task.celery_app, "control", control)
+            )
+            stack.enter_context(
+                _deployment_patch(
+                    "running_runs_since",
+                    return_value={} if running is None else running,
+                )
+            )
+            result, mock_run, _ = _drive_sequenced(
+                fetchers,
+                collectors,
+                ceiling_s=0,
+                dispatch=(lambda _a: EVAL_TASK_ID, lambda _a: True),
+            )
+        return result, mock_run, control
+
+    def test_the_ceiling_revokes_the_eval_task_it_gave_up_on(self):
+        """The repro for #207, stated as the spend that has to stop."""
+        result, mock_run, control = self._expire_the_ceiling()
+
+        assert mock_run.report["eval_summary"]["eval_signal"] == "did_not_finish"
+        assert "eval_did_not_finish" in [w["warning_id"] for w in mock_run.warnings]
+        assert result["recommendation"] == "block"
+        assert control.revoke.call_args_list, (
+            "the checklist reported eval_did_not_finish and revoked nothing, so "
+            "the eval it gave up on is still calling the Judge on the tenant's "
+            "money (#207)"
+        )
+        assert control.revoke.call_args.args == (EVAL_TASK_ID,), (
+            "the revoke has to name the eval task this checklist dispatched: "
+            f"{control.revoke.call_args}"
+        )
+
+    def test_the_revoke_asks_for_the_signal_the_handler_listens_on(self):
+        """SIGUSR1 is the only signal that reaches `except SoftTimeLimitExceeded`.
+
+        billiard installs `soft_timeout_sighandler` on SIGUSR1, and that handler
+        raises `SoftTimeLimitExceeded` inside the running task, which is what
+        `run_eval_suite` catches to write the rows it scored. SIGTERM does not:
+        billiard's `_shutdown_handler` raises `SystemExit`, a BaseException that
+        neither `except SoftTimeLimitExceeded` nor `except Exception` catches, so
+        a SIGTERM revoke stops the spend and throws every scored row away.
+        """
+        from app.worker.tasks.runtime.deployment import EVAL_REVOKE_SIGNAL
+
+        _, _, control = self._expire_the_ceiling()
+
+        assert EVAL_REVOKE_SIGNAL == "SIGUSR1", (
+            "SIGTERM raises SystemExit in the child and SIGKILL runs no handler "
+            "at all; either one discards the rows the tenant already paid for"
+        )
+        assert control.revoke.call_args.kwargs == {
+            "terminate": True,
+            "signal": "SIGUSR1",
+        }
+
+    def test_the_still_running_eval_row_is_closed_out_as_did_not_finish(self):
+        """The revoke stops the spend and this stops the row reading 'running'."""
+        with _deployment_patch(
+            "close_newest_running_eval_run", return_value=EVAL_RUN_ID
+        ) as closed:
+            self._expire_the_ceiling()
+
+        assert closed.call_args.args[1] == "postgresql://test/tenant"
+        assert closed.call_args.args[2] == datetime(
+            2026, 8, 30, 12, 0, tzinfo=timezone.utc
+        ), (
+            "the row has to be found against this wait's own boundary, or the "
+            f"checklist closes out a run it never started: {closed.call_args}"
+        )
+
+    def test_a_wait_that_dispatched_nothing_closes_no_row(self):
+        """A run already going absorbs this checklist's dispatch (`_open_wait`).
+
+        The running row at the boundary is then somebody else's, and marking it
+        did_not_finish would end a run this checklist never started.
+        """
+        from app.worker.tasks.runtime.deployment import _marked_did_not_finish
+
+        state = {"run_id": "run-1", "since": "2026-08-30T12:00:00+00:00"}
+        with _deployment_patch("close_newest_running_eval_run") as closed:
+            assert _marked_did_not_finish("agent-1", "postgresql://t", state) is None
+
+        assert closed.call_args_list == []
+
+    def test_an_eval_that_reached_terminal_is_never_revoked(self):
+        """The wait that ends because both halves finished stops nothing."""
+        _, fetchers, collectors = _sequenced_world(eval_polls=1, red_team_polls=1)
+        control = MagicMock()
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch.object(deployment_task.celery_app, "control", control)
+            )
+            stack.enter_context(
+                _deployment_patch("running_runs_since", return_value={})
+            )
+            result, _, _ = _drive_sequenced(
+                fetchers,
+                collectors,
+                dispatch=(lambda _a: EVAL_TASK_ID, lambda _a: True),
+            )
+
+        assert result["status"] == "complete"
+        assert control.revoke.call_args_list == [], (
+            "a finished eval was revoked, so a checklist that waited "
+            "successfully would kill the run it just graded"
+        )
+
+    def test_a_wait_opened_before_the_id_existed_revokes_nothing(self):
+        """A continuation in flight across the deploy carries no task id.
+
+        Guessing one would stop a run this checklist never dispatched, so the
+        absence is logged and the eval runs on to its own time limit.
+        """
+        from app.worker.tasks.runtime.deployment import _revoked_eval_task
+
+        state = {"run_id": "run-1", "since": "2026-08-30T12:00:00+00:00"}
+        control = MagicMock()
+        with patch.object(deployment_task.celery_app, "control", control):
+            assert _revoked_eval_task("agent-1", state) is False
+        assert control.revoke.call_args_list == []
