@@ -40,15 +40,23 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.model_doubles import ledger
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _mock_bedrock_response(dim: int = 1024) -> dict:
-    """Return a mocked Bedrock invoke_model response with embedding of given dimension."""
+def _mock_bedrock_response(dim: int = 1024, input_tokens: int = 4) -> dict:
+    """Return a mocked Bedrock invoke_model response with embedding of given dimension.
+
+    `inputTextTokenCount` rides along because Titan reports it on the same body
+    and the ledger row is built from it (#265).
+    """
     mock_body = MagicMock()
-    mock_body.read.return_value = json.dumps({"embedding": [0.1] * dim}).encode()
+    mock_body.read.return_value = json.dumps(
+        {"embedding": [0.1] * dim, "inputTextTokenCount": input_tokens}
+    ).encode()
     return {"body": mock_body}
 
 
@@ -71,7 +79,7 @@ def test_embed_texts_returns_1024_dim_vector():
 
     with patch("app.services.bedrock_embedding_service._bedrock") as mock_bedrock:
         mock_bedrock.invoke_model.return_value = _mock_bedrock_response(1024)
-        result = embed_texts(["hello"], "document")
+        result = embed_texts(["hello"], "document", ledger())
 
     assert len(result) == 1, f"Expected 1 vector but got {len(result)}"
     assert len(result[0]) == 1024, f"Expected 1024-dim vector but got {len(result[0])}"
@@ -89,7 +97,7 @@ def test_embed_texts_calls_invoke_model_correctly():
 
     with patch("app.services.bedrock_embedding_service._bedrock") as mock_bedrock:
         mock_bedrock.invoke_model.return_value = _mock_bedrock_response(1024)
-        embed_texts(["hello world"], "document")
+        embed_texts(["hello world"], "document", ledger())
 
         call_kwargs = mock_bedrock.invoke_model.call_args.kwargs
         model_id = call_kwargs.get("modelId")
@@ -124,7 +132,7 @@ def test_embed_texts_loops_per_text():
 
     with patch("app.services.bedrock_embedding_service._bedrock") as mock_bedrock:
         mock_bedrock.invoke_model.return_value = _mock_bedrock_response(1024)
-        result = embed_texts(["a", "b", "c"], "document")
+        result = embed_texts(["a", "b", "c"], "document", ledger())
 
     assert mock_bedrock.invoke_model.call_count == 3, (
         f"Expected 3 invoke_model calls (one per text) but got {mock_bedrock.invoke_model.call_count}"
@@ -146,7 +154,7 @@ def test_embed_texts_raises_on_dim_mismatch():
         # Mock returns 512-dim vector (wrong dimension for VECTOR(1024) schema)
         mock_bedrock.invoke_model.return_value = _mock_bedrock_response(512)
         with pytest.raises(RuntimeError, match="bedrock embedding dim mismatch"):
-            embed_texts(["hello"], "document")
+            embed_texts(["hello"], "document", ledger())
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +190,7 @@ def test_embed_chunks_routes_to_bedrock():
 
     with patch("app.services.bedrock_embedding_service._bedrock") as mock_bedrock:
         mock_bedrock.invoke_model.return_value = _mock_bedrock_response(1024)
-        result = embed_chunks(["chunk_a", "chunk_b"])
+        result = embed_chunks(["chunk_a", "chunk_b"], ledger())
 
     assert mock_bedrock.invoke_model.call_count == 2, (
         f"Expected 2 Bedrock calls (one per text) but got {mock_bedrock.invoke_model.call_count}"
@@ -207,8 +215,10 @@ def test_embed_chunks_routes_to_voyage():
     with patch("app.services.embedding_service.settings") as mock_settings:
         mock_settings.EMBEDDING_PROVIDER = "voyage"
         with patch("app.services.embedding_service._vo") as mock_vo:
-            mock_vo.embed.return_value = MagicMock(embeddings=[[0.2] * 1024, [0.3] * 1024])
-            result = embed_chunks(["a", "b"])
+            mock_vo.embed.return_value = MagicMock(
+                embeddings=[[0.2] * 1024, [0.3] * 1024], total_tokens=9
+            )
+            result = embed_chunks(["a", "b"], ledger())
 
     assert mock_vo.embed.call_count >= 1, (
         f"Expected Voyage _vo.embed to be called but call_count={mock_vo.embed.call_count}"
@@ -228,7 +238,7 @@ def test_embed_query_routes_to_bedrock():
 
     with patch("app.services.bedrock_embedding_service._bedrock") as mock_bedrock:
         mock_bedrock.invoke_model.return_value = _mock_bedrock_response(1024)
-        result = embed_query("what is the return policy?")
+        result = embed_query("what is the return policy?", ledger())
 
     assert mock_bedrock.invoke_model.call_count == 1, (
         f"Expected 1 Bedrock call but got {mock_bedrock.invoke_model.call_count}"
@@ -253,10 +263,10 @@ def test_embed_query_routes_to_voyage():
         with patch("app.services.retrieval_service._get_vo") as mock_get_vo:
             mock_client = MagicMock()
             mock_client.embed.return_value = MagicMock(
-                embeddings=[[0.5] * 1024]
+                embeddings=[[0.5] * 1024], total_tokens=6
             )
             mock_get_vo.return_value = mock_client
-            result = embed_query("what is the return policy?")
+            result = embed_query("what is the return policy?", ledger())
 
     assert mock_client.embed.call_count == 1, (
         f"Expected Voyage embed to be called but call_count={mock_client.embed.call_count}"

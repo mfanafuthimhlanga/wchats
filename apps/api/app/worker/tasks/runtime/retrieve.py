@@ -40,6 +40,7 @@ from sqlalchemy import text as sa_text
 from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.log_bounds import log_failure
+from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
@@ -61,6 +62,24 @@ log = structlog.get_logger(__name__)
 _url_clean = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
 _ssl_opts: dict = redis_ssl_kwargs(_url_clean)
 _redis = redis_lib.from_url(_url_clean, **_ssl_opts)
+
+
+def _ledger_for(agent: Agent, job_id: str, conn_str: str) -> LedgerContext:
+    """Who this query's embedding is billed to, and which database records it.
+
+    Read while the control-DB session is still open, the rule
+    `validators.py:_ledger_for` states. A detached Agent raises on attribute
+    access rather than answering.
+
+    The dsn reaches `ledger_recorder` here and travels no further. LedgerContext
+    holds no connection string and has no field that could (project rule 1).
+    """
+    return LedgerContext(
+        tenant_id=str(agent.tenant_id),
+        agent_id=str(agent.id),
+        job_id=job_id,
+        recorder=ledger_recorder(conn_str),
+    )
 
 
 @celery_app.task(
@@ -145,7 +164,7 @@ def retrieve_and_rank(self, job_id: str, agent_id: str, query: str) -> dict:
             # --------------------------------------------------------------
             # Embed query with Voyage voyage-3 (input_type="query")
             # --------------------------------------------------------------
-            query_vector = embed_query(query)
+            query_vector = embed_query(query, _ledger_for(agent, job_id, conn_str))
 
             # EVENT 2: query.embedding — vector produced
             emit(job_id, "query.embedding", {"model": "voyage-3"}, db, _redis)

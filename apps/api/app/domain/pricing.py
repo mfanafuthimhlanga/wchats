@@ -37,21 +37,28 @@ CAT, AND WHY THE OFFSET IS IN THE DATA
     inside the peak hours and prices off peak.
 
 WHAT THE SEEDED BOOK KNOWS AND WHAT IT REFUSES
-    Two models. DeepSeek V4 Flash by window, at the figures fetched 2026-08-23,
-    and OpenAI `gpt-5.6-luna` flat, at the figures decision #34 verified the same
-    day. A call naming any other model raises `UnknownPrice`. It never returns
-    zero, because a silent zero is a free model call in every report that reads
-    it, and the Harness run that started this ticket was unpriceable in exactly
-    that way.
+    Three models. DeepSeek V4 Flash by window, at the figures fetched 2026-08-23.
+    OpenAI `gpt-5.6-luna` flat, at the figures decision #34 verified the same day.
+    Voyage `voyage-3` flat, at the figure fetched 2026-09-14. A call naming any
+    other model raises `UnknownPrice`. It never returns zero, because a silent
+    zero is a free model call in every report that reads it, and the Harness run
+    that started this ticket was unpriceable in exactly that way.
 
-    `price_version` stays `2026-08-23.1` across the Luna addition. Both tariffs
-    were verified on that date, and every call the book already priced prices
-    identically, so the version still names one set of figures. A version bump is
-    for a figure that changed, which re-prices history.
+    `price_version` stays `2026-08-23.1` across the Luna and voyage-3 additions.
+    Neither changed a figure the book already held, so every call it could price
+    prices identically. A version bump is for a figure that changed, which
+    re-prices history.
 
     `deepseek-v4-pro` is the documented mapping for `claude-opus` and is
     deliberately absent. Its tariff has not been fetched, so a call that reaches it
     fails loudly rather than being priced from a guess.
+
+    `amazon.titan-embed-text-v2:0` is absent for the same reason, and it matters
+    more. `EMBEDDING_PROVIDER` defaults to `bedrock`, so on a deployment left at
+    the default every embedding row is unpriced and nulls the cost of the group it
+    falls in. `https://aws.amazon.com/bedrock/pricing/` rendered no Titan Text
+    Embeddings row on 2026-09-14. `price_gaps` names the model in every rollup
+    until someone reads the figure and adds the row.
 
     DeepSeek cache creation takes the fresh input rate for its window. The fetched
     tariff names input, output, the off-peak fifth and the cache-read fifth, and
@@ -202,6 +209,12 @@ _V4_FLASH = "deepseek-v4-flash"
 _OPENAI = "openai"
 _LUNA = "gpt-5.6-luna"
 
+# Voyage voyage-3, the model `embedding_service.EMBEDDING_MODEL` pins. Fetched
+# 2026-09-14 from https://docs.voyageai.com/docs/pricing, "Older models" table:
+# $0.00006 per thousand tokens, $0.06 per million. One figure, no time-of-day tariff.
+_VOYAGE = "voyage"
+_VOYAGE_3 = "voyage-3"
+
 PRICE_BOOK = PriceBook(
     price_version="2026-08-23.1",
     utc_offset_hours=CAT_UTC_OFFSET_HOURS,
@@ -232,6 +245,11 @@ PRICE_BOOK = PriceBook(
         # tariff rather than a missing row. The hook records zero cache-creation
         # tokens for this provider as well, so this row can only ever yield zero.
         (_OPENAI, _LUNA, TokenKind.CACHE_CREATION): Decimal("0"),
+        # INPUT only. An embedding returns a vector, so an embedding row carries
+        # zero output and zero cache tokens, and the page publishes no tariff for
+        # either. `cost_usd` never looks up a kind whose count is zero, so the book
+        # states what Voyage states and nothing else.
+        (_VOYAGE, _VOYAGE_3, TokenKind.INPUT): Decimal("0.06"),
     },
 )
 

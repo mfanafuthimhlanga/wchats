@@ -424,6 +424,12 @@ _AGENT_TURN = ModelRoute(OPENAI_PROVIDER, AGENT_TURN_MODEL, reasoning_effort="no
 #: nobody chose, and every reader downstream would report the new one as the
 #: model that ran. A test injects a different table through `route_for`'s
 #: `routes` argument instead.
+#:
+#:
+#: THE TWO EMBEDDING PURPOSES ARE DELIBERATELY NOT HERE (#265). They live in
+#: `app.services.embedding_ledger.EMBEDDING_PURPOSES`, whose module docstring
+#: carries the reason; `tests/unit/test_embedding_ledger.py` pins the two tables
+#: as disjoint.
 PURPOSE_ROUTES: Mapping[str, ModelRoute] = MappingProxyType({
     # The Ragas metrics, one purpose each, so a rollup shows which dimension
     # spent the money and a calibration figure names the Judge it measured.

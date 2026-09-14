@@ -71,6 +71,7 @@ import structlog
 from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.log_bounds import log_failure
+from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.redis_tls import redis_ssl_kwargs
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.domain.ingestion_job import IngestionJob
@@ -88,6 +89,22 @@ log = structlog.get_logger(__name__)
 _url_clean = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
 _ssl_opts: dict = redis_ssl_kwargs(_url_clean)
 _redis = redis_lib.from_url(_url_clean, **_ssl_opts)
+
+
+def _ledger_for(job: IngestionJob, conn_str: str) -> LedgerContext:
+    """Who this ingest's embedding spend is billed to, and which database records it.
+
+    The three ids the chain already carries, plus where the spend is written, the
+    shape `metadata.py` builds for the same chain. The dsn reaches
+    `ledger_recorder` here and travels no further, because LedgerContext holds no
+    connection string and has no field that could (project rule 1).
+    """
+    return LedgerContext(
+        tenant_id=job.tenant_id,
+        agent_id=job.agent_id,
+        job_id=job.job_id,
+        recorder=ledger_recorder(conn_str),
+    )
 
 
 @celery_app.task(
@@ -208,7 +225,7 @@ def embed_and_migrate(self, job: IngestionJob) -> IngestionJob:
                 texts = [row[1] for row in rows]
 
                 # Call embedding service (batches at 128, tenacity retry)
-                embeddings = embed_chunks(texts)
+                embeddings = embed_chunks(texts, _ledger_for(job, conn_str))
 
                 # ----------------------------------------------------------
                 # Layer 4 write-level idempotency:

@@ -49,6 +49,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.model_doubles import ledger
+
 # ---------------------------------------------------------------------------
 # Provider seam fixture — force Voyage path for all tests in this module
 # ---------------------------------------------------------------------------
@@ -79,7 +81,7 @@ def test_embed_chunks_returns_empty_for_empty_input():
     from app.services.embedding_service import embed_chunks
 
     with patch("app.services.embedding_service._vo") as mock_vo:
-        result = embed_chunks([])
+        result = embed_chunks([], ledger())
 
     assert result == [], f"Expected [] but got {result!r}"
     mock_vo.embed.assert_not_called()
@@ -99,8 +101,8 @@ def test_embed_chunks_batches_at_128():
     from app.services.embedding_service import embed_chunks
 
     with patch("app.services.embedding_service._vo") as mock_vo:
-        mock_vo.embed.return_value = MagicMock(embeddings=[[0.1] * 1024] * 128)
-        result = embed_chunks(["t"] * 256)
+        mock_vo.embed.return_value = MagicMock(embeddings=[[0.1] * 1024] * 128, total_tokens=640)
+        result = embed_chunks(["t"] * 256, ledger())
 
     assert mock_vo.embed.call_count == 2, (
         f"Expected 2 Voyage API calls (256/128=2 batches) but got {mock_vo.embed.call_count}"
@@ -123,8 +125,8 @@ def test_embed_chunks_uses_pinned_model():
     from app.services.embedding_service import EMBEDDING_MODEL, embed_chunks
 
     with patch("app.services.embedding_service._vo") as mock_vo:
-        mock_vo.embed.return_value = MagicMock(embeddings=[[0.1] * 1024])
-        embed_chunks(["t"])
+        mock_vo.embed.return_value = MagicMock(embeddings=[[0.1] * 1024], total_tokens=5)
+        embed_chunks(["t"], ledger())
 
         call_kwargs = mock_vo.embed.call_args.kwargs
         actual_model = call_kwargs.get("model") or mock_vo.embed.call_args.args[1] if mock_vo.embed.call_args.args and len(mock_vo.embed.call_args.args) > 1 else call_kwargs.get("model")
@@ -148,8 +150,8 @@ def test_embed_chunks_uses_input_type_document():
     from app.services.embedding_service import embed_chunks
 
     with patch("app.services.embedding_service._vo") as mock_vo:
-        mock_vo.embed.return_value = MagicMock(embeddings=[[0.1] * 1024])
-        embed_chunks(["t"])
+        mock_vo.embed.return_value = MagicMock(embeddings=[[0.1] * 1024], total_tokens=5)
+        embed_chunks(["t"], ledger())
 
         call_kwargs = mock_vo.embed.call_args.kwargs
         actual_input_type = call_kwargs.get("input_type")
@@ -174,9 +176,9 @@ def test_embed_chunks_raises_on_count_mismatch():
 
     with patch("app.services.embedding_service._vo") as mock_vo:
         # Return only 5 embeddings for 10 input texts
-        mock_vo.embed.return_value = MagicMock(embeddings=[[0.1] * 1024] * 5)
+        mock_vo.embed.return_value = MagicMock(embeddings=[[0.1] * 1024] * 5, total_tokens=50)
         with pytest.raises(RuntimeError, match="embedding count mismatch"):
-            embed_chunks(["t"] * 10)
+            embed_chunks(["t"] * 10, ledger())
 
 
 # ---------------------------------------------------------------------------
@@ -199,13 +201,13 @@ def test_embed_batch_retries_on_exception():
         call_count += 1
         if call_count == 1:
             raise Exception("transient API error")
-        return MagicMock(embeddings=[[0.2] * 1024])
+        return MagicMock(embeddings=[[0.2] * 1024], total_tokens=5)
 
     with patch("app.services.embedding_service._vo") as mock_vo:
         mock_vo.embed.side_effect = _side_effect
         # Patch tenacity sleep to avoid real delays during the test
         with patch("tenacity.nap.time.sleep"):
-            result = embed_chunks(["t"])
+            result = embed_chunks(["t"], ledger())
 
     assert mock_vo.embed.call_count >= 2, (
         f"Expected at least 2 calls (1 failure + 1 retry) but got {mock_vo.embed.call_count}"
