@@ -387,3 +387,137 @@ class TestReadAgentLedger:
         assert "mc.agent_id = %(agent_id)s" in sql
         assert "mc.at >= %(start)s" in sql
         assert "ORDER BY" not in sql
+
+
+class TestByJobIsTheGrainABillIsArguedAt:
+    """`by_job` puts one eval run beside one customer turn (#207 companion).
+
+    `by_purpose` says what the money bought and `by_conversation` says which
+    Customer it served. Neither answers "which single piece of work cost the
+    most", which is the question a surprising bill starts from, and an eval run
+    that outran its ceiling is exactly the job that answers it.
+    """
+
+    def test_a_turn_job_carries_its_whole_row_priced_a_second_way(self):
+        rows = turn(TURN_A, CONV_1)
+
+        out = summarise_usage(rows, window_days=7)
+
+        assert out["by_job"] == [
+            {
+                "job_id": TURN_A,
+                "calls": 5,
+                "cost_usd": pytest.approx(usd(rows)),
+                "cost_zar": pytest.approx(zar(rows)),
+                "unpriced_calls": 0,
+                "unrated_calls": 0,
+                "price_gaps": [],
+                "purposes": ["agent_turn", "auditor", "gatekeeper", "strategist"],
+                "is_turn": True,
+            }
+        ]
+
+    def test_is_turn_separates_the_customer_turn_from_the_eval_run(self):
+        """One job a Customer waited for, one the platform chose to run."""
+        judges = [
+            LedgerRow(call(f"judge_{n}", job_id=EVAL_RUN), None)
+            for n in ("faithfulness", "relevancy", "precision")
+        ]
+        out = summarise_usage(turn(TURN_A, CONV_1) + judges, window_days=7)
+
+        by_id = {job["job_id"]: job for job in out["by_job"]}
+        assert by_id[TURN_A]["is_turn"] is True
+        assert by_id[EVAL_RUN]["is_turn"] is False
+        assert by_id[EVAL_RUN]["calls"] == 3
+        assert by_id[EVAL_RUN]["cost_usd"] == pytest.approx(usd(judges))
+        assert by_id[EVAL_RUN]["purposes"] == [
+            "judge_faithfulness", "judge_precision", "judge_relevancy"
+        ]
+
+    def test_a_call_belonging_to_no_job_is_absent_here_and_present_in_total(self):
+        """`ModelCall.job_id` is None for a call outside any unit of work.
+
+        Pooling those under a null key would read as one enormous job, and
+        sorting a None key against strings raises.
+        """
+        rows = turn(TURN_A, CONV_1) + [LedgerRow(call("rollup", job_id=None), None)]
+
+        out = summarise_usage(rows, window_days=7)
+
+        assert [job["job_id"] for job in out["by_job"]] == [TURN_A]
+        assert out["total"]["calls"] == 6
+        assert out["total"]["cost_usd"] == pytest.approx(usd(rows))
+
+    def _one_call_jobs(self, count: int) -> list[LedgerRow]:
+        """`count` jobs of one call each, every one a different price."""
+        return [
+            LedgerRow(call("agent_turn", job_id=f"job-{n:03d}", output_tokens=100 + n), None)
+            for n in range(count)
+        ]
+
+    def test_the_dearest_twenty_survive_the_cap_in_descending_order(self):
+        out = summarise_usage(self._one_call_jobs(25), window_days=7)
+
+        listed = out["by_job"]
+        assert len(listed) == 20
+        assert [job["job_id"] for job in listed] == [
+            f"job-{n:03d}" for n in range(24, 4, -1)
+        ]
+
+    def test_the_cap_never_moves_the_window_total(self):
+        """The list is a reading aid; `total` still holds every job's money."""
+        rows = self._one_call_jobs(25)
+
+        out = summarise_usage(rows, window_days=7)
+
+        assert out["total"]["calls"] == 25
+        assert out["total"]["cost_usd"] == pytest.approx(usd(rows))
+        assert sum(job["cost_usd"] for job in out["by_job"]) < out["total"]["cost_usd"]
+
+    def test_an_unpriced_job_nulls_its_money_names_the_gap_and_sorts_last(self):
+        rows = self._one_call_jobs(3)
+        rows.append(
+            LedgerRow(call("agent_turn", job_id="job-zzz", served_model="mystery-9"), None)
+        )
+
+        out = summarise_usage(rows, window_days=7)
+
+        last = out["by_job"][-1]
+        assert last["job_id"] == "job-zzz"
+        assert last["cost_usd"] is None and last["cost_zar"] is None
+        assert last["unpriced_calls"] == 1
+        assert last["price_gaps"] == [
+            {"provider": "openai", "served_model": "mystery-9", "call_count": 1}
+        ]
+
+    def test_a_job_older_than_the_fx_table_keeps_its_dollars_and_loses_its_rand(self):
+        rows = [LedgerRow(call("agent_turn", job_id=EVAL_RUN, at=BEFORE_FX_UTC), None)]
+
+        out = summarise_usage(rows, window_days=90)
+
+        [job] = out["by_job"]
+        assert job["cost_usd"] == pytest.approx(usd(rows))
+        assert job["cost_zar"] is None
+        assert job["unrated_calls"] == 1
+
+    def test_the_job_count_says_how_many_the_cap_left_out(self):
+        """The list is capped at twenty, so without this a window holding four
+        hundred jobs and one holding twenty read the same on the screen."""
+        out = summarise_usage(self._one_call_jobs(25), window_days=7)
+
+        assert out["jobs"] == 25
+        assert len(out["by_job"]) == 20
+
+    def test_the_count_is_jobs_and_not_calls(self):
+        """One turn is five calls and one job, and the two must not be confused."""
+        out = summarise_usage(turn(TURN_A, CONV_1) + turn(TURN_B, CONV_2), window_days=7)
+
+        assert out["jobs"] == 2
+        assert out["total"]["calls"] == 10
+
+    def test_a_call_with_no_job_is_not_counted_as_one(self):
+        rows = turn(TURN_A, CONV_1) + [LedgerRow(call("rollup", job_id=None), None)]
+
+        out = summarise_usage(rows, window_days=7)
+
+        assert out["jobs"] == 1
