@@ -110,7 +110,9 @@ from collections.abc import Mapping
 
 import psycopg2
 import structlog
+from celery.exceptions import SoftTimeLimitExceeded
 
+from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.log_bounds import log_failure
 from app.core.model_client import LedgerContext, ledger_recorder
@@ -132,10 +134,12 @@ from app.services.eval_service import (
     VERIFIED_QA_PROMOTION_DECISION,
     build_eval_result,
     build_eval_run_config,
+    build_judge_records,
     dataset_composition,
     dataset_of,
     insert_eval_run,
     invocation_provenance,
+    mark_eval_run_did_not_finish,
     question_resolution_provenance,
     read_run_ledger,
     run_ragas_eval,
@@ -153,7 +157,7 @@ from app.services.scenario_service import (
     mine_production_scenarios,
     store_scenarios,
 )
-from app.worker.celery_app import celery_app
+from app.worker.celery_app import BROKER_VISIBILITY_TIMEOUT_S, celery_app
 
 log = structlog.get_logger(__name__)
 
@@ -267,6 +271,56 @@ def _agent_turn_timeout_s() -> int:
 #: opened (#213).
 GENERATION_SKIP_AT_ROWS = 10
 GENERATED_SUITE_SIZE = 20
+
+
+# ---------------------------------------------------------------------------
+# How long the worker lets one eval run before it interrupts it (#207)
+# ---------------------------------------------------------------------------
+# NOTHING USED TO END A LONG EVAL. `celery_app.py` sets no `task_time_limit` and
+# no `soft_time_limit`, so the only thing that stopped a run that outgrew the
+# deployment checklist's wait was a worker SIGTERM, and `acks_late=True` turns
+# that into a redelivery. Scoring starts again from the first scenario and every
+# judge call the killed attempt made is billed for nothing.
+#
+# BOTH NUMBERS ARE DERIVED FROM THE BROKER'S OWN TIMEOUT rather than chosen
+# beside it. A limit later than `BROKER_VISIBILITY_TIMEOUT_S` buys nothing, since
+# the redelivery lands first and a second worker starts the same run. So the hard
+# limit sits `EVAL_REDELIVERY_MARGIN_S` inside it, and the soft limit
+# `EVAL_SOFT_LIMIT_HANDLER_S` inside that.
+#
+# THE ORDERING IS THE CONTRACT AND IT HAS FOUR TERMS, stated once in
+# `app/core/config.py` beside the three gaps that produce it and pinned by
+# `test_the_four_bounds_are_ordered`:
+#
+#   checklist ceiling <= EVAL_SOFT_TIME_LIMIT_S
+#                      < EVAL_HARD_TIME_LIMIT_S
+#                      < BROKER_VISIBILITY_TIMEOUT_S
+#
+# The first relation is NOT free, and reading it as free is how the first version
+# of this was wrong. `checklist_wait_ceiling_s` grows with the rows the eval will
+# score (#213), so the widest wait the code can open is bounded by the eval's own
+# invocation ceiling, not by `CHECKLIST_WAIT_CEILING_S`. That function caps itself
+# at `EVAL_SOFT_TIME_LIMIT_S - EVAL_SOFT_LIMIT_HANDOVER_S` to hold the relation.
+#
+# ON WINDOWS THE LIMITS DO NOT FIRE, for two separate reasons that this comment
+# used to run together. Celery raises `SoftTimeLimitExceeded` from a SIGUSR1
+# handler and Windows has no SIGUSR1 at all. And the solo pool implements no time
+# limits on any platform, because there is no child process to signal; only the
+# prefork pool does, which is what production runs on Linux. The handler is
+# therefore exercised by unit tests that raise the exception directly, never by a
+# wall clock on this box.
+EVAL_HARD_TIME_LIMIT_S = BROKER_VISIBILITY_TIMEOUT_S - settings.EVAL_REDELIVERY_MARGIN_S
+EVAL_SOFT_TIME_LIMIT_S = EVAL_HARD_TIME_LIMIT_S - settings.EVAL_SOFT_LIMIT_HANDLER_S
+
+#: The widest wait a deployment checklist may open on an eval. Past this the
+#: checklist would still be waiting when the worker interrupted the run, so the
+#: report would describe a run that was stopped on its behalf without knowing it.
+CHECKLIST_WAIT_CAP_S = EVAL_SOFT_TIME_LIMIT_S - settings.EVAL_SOFT_LIMIT_HANDOVER_S
+
+#: What the interrupted run's own row says about why it stopped.
+EVAL_TIME_LIMIT_REASON = (
+    f"the worker's soft time limit of {EVAL_SOFT_TIME_LIMIT_S}s interrupted scoring"
+)
 
 
 def eval_run_bound_s() -> float:
@@ -1169,7 +1223,11 @@ def _scenario_dict(row: Mapping) -> dict:
 
 
 def _record_and_judge(
-    run_id: str, scored_scenarios: list, ledger: LedgerContext, conn_str: str
+    run_id: str,
+    scored_scenarios: list,
+    ledger: LedgerContext,
+    conn_str: str,
+    partial: list | None = None,
 ) -> tuple[dict, list]:
     """Write every measured row, then put the Judge's rows to the Judge.
 
@@ -1180,12 +1238,15 @@ def _record_and_judge(
     scored and as passed or failed. No rewrite is asked for it: the rule reads
     the response alone.
 
+    `partial` is the list `run_eval_suite` hands down so that an interruption
+    leaves the scored rows behind it rather than inside a cancelled gather (#207).
+
     Returns (run_ragas_eval's payload, the rows it was handed).
     """
     judged, checked = split_checked_rows(scored_scenarios)
     annotated = annotate_resolved_questions(judged, ledger=ledger)
     write_eval_samples(run_id, [*annotated, *checked], conn_str)
-    results = run_ragas_eval(judged, ledger)
+    results = run_ragas_eval(judged, ledger, partial=partial)
     results["clarifying_verdicts"] = clarifying_verdicts(checked)
     return results, judged
 
@@ -1197,12 +1258,12 @@ def _score_run(
     run_id: str,
     scored_scenarios: list,
     conn_str: str,
+    partial: list | None = None,
 ) -> tuple[dict, dict]:
     """Score the answered turns, persist what the Judge said, close the run.
 
     The whole of `run_eval_suite`'s measured path, lifted out so the task body
-    stays under its complexity pin and so the ordering below has room to be
-    explained where it happens.
+    stays under its pin. `partial` is the accumulator #207 threads to the Judge.
 
     THE ORDER IS THE POINT, and each step is placed against a death in the middle
     of it:
@@ -1236,7 +1297,7 @@ def _score_run(
         config patch `question_resolution_provenance` produced.
     """
     ledger = _run_ledger(tenant_id, agent_id, run_id, conn_str)
-    results, judged = _record_and_judge(run_id, scored_scenarios, ledger, conn_str)
+    results, judged = _record_and_judge(run_id, scored_scenarios, ledger, conn_str, partial)
     write_eval_results(run_id, results["judge_records"], conn_str)
     question_resolution = question_resolution_provenance(judged, results["scores"])
     if not update_eval_run_config(run_id, question_resolution, conn_str):
@@ -1252,6 +1313,176 @@ def _score_run(
     return results, question_resolution
 
 
+def _record_empty_run(
+    agent_id: str, conn_str: str, composition: dict, dataset_column_available: bool
+) -> dict:
+    """Record a run that selected no scenarios, terminally. Its own report.
+
+    A RUN THAT COVERED NOTHING STILL HAPPENED (P2 review). This path used to
+    return without writing anything, so production held no eval_runs row and the
+    deploy gate reported EVAL_SIGNAL_NO_RUNS, the same signal as an agent nobody
+    has ever tried to evaluate, and one that blocks the deploy with nothing on
+    the record to explain why. Two consequences, both bad: the owner is told
+    "quality has never been measured" when the truth is "this tenant has no
+    scenarios to measure against", and run_deployment_checklist's day-1 remedy
+    would re-fire on every readiness check forever because the state it keys off
+    never changes.
+
+    So the empty run is recorded terminally, with its composition (attempted=0,
+    valid=0) stamped on it. The gate then reads a completed run that produced no
+    valid score, which is EVAL_SIGNAL_NO_VALID_SCORES: it still blocks, honestly, and
+    converges.
+
+    The write is best effort. Failing to record an empty run must not turn a
+    nothing-to-do into a retry storm, so it is logged at error level and the
+    report says `run_recorded: False`. The denominators travel either way: a run
+    that scored nothing has to be readable as such rather than as an absent key
+    a caller might treat as "not applicable".
+
+    Extracted from `run_eval_suite` when the soft time limit's handler joined it,
+    to pay for the lines rather than raise the pin (#207).
+    """
+    empty_run_id = str(uuid.uuid4())
+    run_recorded = False
+    try:
+        empty_attribution = build_eval_run_config(agent_id, conn_str, dataset=composition)
+        insert_eval_run(
+            empty_run_id,
+            f"m6:{agent_id}",
+            empty_attribution["prompt_version_id"],
+            empty_attribution["config"],
+            conn_str,
+        )
+        update_eval_run_status(
+            empty_run_id, "complete", finished_at=True, conn_str=conn_str
+        )
+        run_recorded = True
+    except Exception as record_exc:
+        log_failure(
+            log, "run_eval_suite.empty_run_record_failed", record_exc, level="error",
+            agent_id=agent_id,
+            run_id=empty_run_id,
+            detail="no eval_runs row explains why this agent's deploy is blocked",
+        )
+    return {
+        "status": "no_scenarios",
+        "run_id": empty_run_id if run_recorded else None,
+        "run_recorded": run_recorded,
+        "attempted": 0,
+        "valid": 0,
+        "scored": 0,
+        "dataset_column_available": dataset_column_available,
+    }
+
+
+def _opened_run(
+    task, agent_id: str, conn_str: str, run_id: str, composition: dict
+) -> tuple[dict | None, bool]:
+    """Stamp this run's configuration onto PRODUCTION. (attribution, recorded).
+
+    `build_eval_run_config` never raises: an unattributable run is worth less
+    than an attributed one but far more than no run at all, so a collector
+    failure degrades attribution and names itself in `config["unavailable"]`.
+    The INSERT can raise, and this is where the retry for that lives.
+
+    A SOFT TIME LIMIT HERE IS RE-RAISED RATHER THAN RETRIED (#207). It is an
+    `Exception` subclass, so the retry arm below would otherwise take it and hand
+    the whole eval to another worker over a bound that has already expired. The
+    caller catches it around this call and closes the row out, which is a no-op
+    when the INSERT never landed.
+
+    THE CALL SITE SITS OUTSIDE THE TASK'S BIG TRY, and deliberately. `task.retry`
+    signals by raising, and outside a worker it re-raises the original exception,
+    so a retry routed through that handler would be marked as a failure of a run
+    that had not started. The soft limit gets its own two lines there instead.
+
+    Extracted from `run_eval_suite` so the write can sit inside the try that
+    catches that limit without the task body growing.
+
+    Returns:
+        (attribution, config_recorded), or (None, False) when the retries are
+        spent and the caller should give up.
+    """
+    attribution = build_eval_run_config(agent_id, conn_str, dataset=composition)
+    try:
+        config_recorded = insert_eval_run(
+            run_id,
+            f"m6:{agent_id}",
+            attribution["prompt_version_id"],
+            attribution["config"],
+            conn_str,
+        )
+    except SoftTimeLimitExceeded:
+        raise
+    except Exception as exc:
+        log_failure(log, "run_eval_suite.insert_eval_run_failed", exc, level="error", agent_id=agent_id)
+        if task.request.retries >= task.max_retries:
+            return None, False
+        raise task.retry(exc=exc, countdown=2 ** task.request.retries)
+    return attribution, config_recorded
+
+
+def _stopped_by_the_time_limit(
+    agent_id: str, run_id: str, conn_str: str, scored: list
+) -> dict:
+    """Close a run the worker interrupted, keeping the rows the Judge returned.
+
+    WHAT IS SAVED DEPENDS ON WHERE THE LIMIT LANDED, and the first version of
+    this docstring claimed otherwise. The limit can fire during the agent
+    invocation, which runs to `eval_run_bound_s()` and is well inside the soft
+    limit. Nothing is written then, because `write_eval_samples` has not run and
+    `scored` is empty, and the run ends carrying only the config it was inserted
+    with. It can fire during scoring, after the samples are written, and then
+    `scored` holds the rows that completed. Or after scoring returned, in the
+    writes that follow, and then `scored` holds every row of a whole run
+    (`run_ragas_eval` fills it on the way out for exactly that case).
+
+    Each row in `scored` is four judge calls the tenant has already paid for, and
+    they are written at the same grain a finished run writes them.
+
+    NO `eval_runs.result` IS BUILT. The record is what the deploy gate reads, and
+    a record assembled from a fraction of the dataset would report pass rates
+    over a denominator nobody chose. The run says `did_not_finish` and carries
+    its rows; every reader of an unfinished run treats it as an absent
+    measurement, which is the project's own rule that missing data is never
+    passing data.
+    """
+    records = build_judge_records(scored)
+    results_written = False
+    if records:
+        try:
+            write_eval_results(run_id, records, conn_str)
+            results_written = True
+        except Exception as exc:
+            log_failure(
+                log, "run_eval_suite.partial_results_unwritten", exc, level="error",
+                agent_id=agent_id,
+                run_id=run_id,
+                detail="the judge calls this run paid for leave no row behind",
+            )
+    marked = mark_eval_run_did_not_finish(run_id, conn_str, EVAL_TIME_LIMIT_REASON)
+    log.warning(
+        "run_eval_suite.soft_time_limit_exceeded",
+        agent_id=agent_id,
+        run_id=run_id,
+        soft_time_limit_s=EVAL_SOFT_TIME_LIMIT_S,
+        scored=len(scored),
+        results_written=results_written,
+        marked_did_not_finish=marked,
+        detail=(
+            "scoring was interrupted; the run is closed out as did_not_finish "
+            "and the rows it had scored are kept"
+        ),
+    )
+    return {
+        "status": "did_not_finish",
+        "run_id": run_id,
+        "scored": len(scored),
+        "results_written": results_written,
+        "marked_did_not_finish": marked,
+    }
+
+
 # ---------------------------------------------------------------------------
 # EVL-02 / EVL-03 / EVL-05: run_eval_suite — per-agent eval run (D-10 LOCKED)
 # ---------------------------------------------------------------------------
@@ -1263,6 +1494,11 @@ def _score_run(
     max_retries=2,
     default_retry_delay=30,
     queue="runtime",
+    # The two limits #207 added. See EVAL_SOFT_TIME_LIMIT_S above for why both
+    # are derived from BROKER_VISIBILITY_TIMEOUT_S, and the `except
+    # SoftTimeLimitExceeded` below for what the soft one buys.
+    soft_time_limit=EVAL_SOFT_TIME_LIMIT_S,
+    time_limit=EVAL_HARD_TIME_LIMIT_S,
     name="app.worker.tasks.runtime.eval.run_eval_suite",
 )
 def run_eval_suite(self, agent_id: str) -> dict:
@@ -1283,7 +1519,26 @@ def run_eval_suite(self, agent_id: str) -> dict:
                 → patch the observation onto the run's config on PRODUCTION
                 → run Ragas eval over the rows that answered (no database)
                 → write results to PRODUCTION → mark complete on PRODUCTION.
+           except SoftTimeLimitExceeded: keep what was scored, mark
+                did_not_finish, RETURN.
            except: mark failed on PRODUCTION.
+
+    WHY THE TIME LIMIT'S HANDLER RETURNS RATHER THAN RAISES (#207). This task is
+    `acks_late=True`, so the broker holds the message until the function comes
+    back and hands it to another worker if it does not. Raising out of the
+    interruption would therefore buy the redelivery the limit exists to prevent:
+    a second worker starts the same eval, puts sixty scenarios to the agent
+    again and re-buys every judge call, having learnt nothing from the first
+    attempt. Returning acks the message.
+
+    RETURNING IS THE IDEMPOTENT CHOICE BECAUSE THE RUN IS ALREADY ON THE RECORD.
+    A redelivery is only worth having when a rerun would produce the answer the
+    lost attempt did not, and a rerun of this one would not. Whatever exhausted
+    the limit is still true, and the rows this attempt paid for are written
+    before it returns. The run is closed out as `did_not_finish`, which every
+    reader treats as an absent measurement rather than a pass, so nothing ships
+    on a partial score. The retry is the next nightly beat or the owner's next
+    "Run Now", on the same terms as the post-invocation failure path below.
 
     No verified_qa promotion happens here. See the module docstring for the
     two locks and eval_service.VERIFIED_QA_PROMOTION_DECISION for the
@@ -1462,65 +1717,9 @@ def run_eval_suite(self, agent_id: str) -> dict:
             agent_id=agent_id,
             dataset_column_available=dataset_column_available,
         )
-        # A RUN THAT COVERED NOTHING STILL HAPPENED (P2 review). This path used
-        # to return without writing anything, so production held no eval_runs
-        # row and the deploy gate reported EVAL_SIGNAL_NO_RUNS — the same signal
-        # as an agent nobody has ever tried to evaluate, and one that blocks the
-        # deploy with nothing on the record to explain why. Two consequences,
-        # both bad: the owner is told "quality has never been measured" when the
-        # truth is "this tenant has no scenarios to measure against", and
-        # run_deployment_checklist's day-1 remedy (dispatching the first eval,
-        # step 4b there) would re-fire on every readiness check forever because
-        # the state it keys off never changes.
-        #
-        # So the empty run is recorded terminally, with its composition
-        # (attempted=0, valid=0) stamped on it. The gate then reads a completed
-        # run that produced no valid score — EVAL_SIGNAL_NO_VALID_SCORES, which
-        # still blocks, honestly, and converges.
-        empty_run_id = str(uuid.uuid4())
-        run_recorded = False
-        try:
-            empty_attribution = build_eval_run_config(
-                agent_id, conn_str, dataset=composition
-            )
-            insert_eval_run(
-                empty_run_id,
-                f"m6:{agent_id}",
-                empty_attribution["prompt_version_id"],
-                empty_attribution["config"],
-                conn_str,
-            )
-            update_eval_run_status(
-                empty_run_id, "complete", finished_at=True, conn_str=conn_str
-            )
-            run_recorded = True
-        except Exception as record_exc:
-            # Best-effort: failing to record an empty run must not turn a
-            # nothing-to-do into a retry storm. It is logged at error level
-            # because the consequence — an unexplained permanent block — is the
-            # thing this write exists to prevent.
-            log_failure(
-                log,
-                "run_eval_suite.empty_run_record_failed",
-                record_exc,
-                level="error",
-                agent_id=agent_id,
-                run_id=empty_run_id,
-                detail="no eval_runs row explains why this agent's deploy is "
-                    "blocked",
-            )
-        # The denominators travel even on the empty path. A run that scored
-        # nothing must be readable as such rather than as an absent key a caller
-        # might treat as "not applicable".
-        return {
-            "status": "no_scenarios",
-            "run_id": empty_run_id if run_recorded else None,
-            "run_recorded": run_recorded,
-            "attempted": 0,
-            "valid": 0,
-            "scored": 0,
-            "dataset_column_available": dataset_column_available,
-        }
+        return _record_empty_run(
+            agent_id, conn_str, composition, dataset_column_available
+        )
 
     # ------------------------------------------------------------------
     # Step 5 — Insert the eval_run row on PRODUCTION, stamped with the
@@ -1530,25 +1729,28 @@ def run_eval_suite(self, agent_id: str) -> dict:
     # than an attributed one but far more than no run at all, so a collector
     # failure degrades attribution and names itself in config["unavailable"].
     # ------------------------------------------------------------------
+    #
+    # THE MINT IS OUTSIDE THE TRY AND THE INSERT IS INSIDE IT (#207). The id has
+    # to exist before the handler below can name a row, and `uuid4` cannot fail;
+    # the write can, and a soft time limit landing in it used to leave a row
+    # saying 'running' that nothing would ever close.
+    # ------------------------------------------------------------------
     run_id = str(uuid.uuid4())
-    attribution = build_eval_run_config(agent_id, conn_str, dataset=composition)
     try:
-        config_recorded = insert_eval_run(
-            run_id,
-            f"m6:{agent_id}",
-            attribution["prompt_version_id"],
-            attribution["config"],
-            conn_str,
+        attribution, config_recorded = _opened_run(
+            self, agent_id, conn_str, run_id, composition
         )
-    except Exception as exc:
-        log_failure(log, "run_eval_suite.insert_eval_run_failed", exc, level="error", agent_id=agent_id)
-        if self.request.retries >= self.max_retries:
-            return {}
-        raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+    except SoftTimeLimitExceeded:
+        return _stopped_by_the_time_limit(agent_id, run_id, conn_str, [])
+    if attribution is None:
+        return {}
 
     # Set the moment the first turn could have run. A retry after that point
     # re-invokes the whole set — see the `except` below.
     agent_was_invoked = False
+    # Every score row the Judge finishes, as it finishes, so the soft time
+    # limit's handler has something to write (#207).
+    scored_so_far: list = []
     try:
         # Filter scenarios — reference_answer already required by the SQL query above,
         # but double-check here for safety. This is the VALID set: rows that
@@ -1624,6 +1826,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
             results, question_resolution = _score_run(
                 tenant_id=tenant_id, agent_id=agent_id, run_id=run_id,
                 scored_scenarios=scored_scenarios, conn_str=conn_str,
+                partial=scored_so_far,
             )
 
         # (attempted, valid, scored) for the run and for each dataset. Computed
@@ -1687,6 +1890,12 @@ def run_eval_suite(self, agent_id: str) -> dict:
             invocation_recorded=invocation_recorded,
             result_recorded=result_recorded,
         )
+
+    except SoftTimeLimitExceeded:
+        # BEFORE `except Exception`, which would otherwise take it. This is an
+        # Exception subclass, and the generic handler marks the run 'failed' and
+        # throws the scored rows away.
+        return _stopped_by_the_time_limit(agent_id, run_id, conn_str, scored_so_far)
 
     except Exception as exc:
         log_failure(

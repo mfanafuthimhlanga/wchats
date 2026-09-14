@@ -537,6 +537,76 @@ _GET_RUN_RESULTS_PRE_0023_SQL = """
 #: verdict, no gate.
 _NO_JUDGE_ROW = {"score": None, "measured": False, "verdict": None, "threshold": None}
 
+#: The run's own header, read beside its rows so the rows have a denominator.
+#: WITHOUT IT A STOPPED RUN RENDERED AS A SHORT GREEN ONE (#207). An eval the
+#: worker interrupted at row 12 of 31 leaves twelve scenarios of real judge rows,
+#: and this route returned them with nothing saying the run never finished, so a
+#: reader counted twelve passes and called the agent measured.
+_GET_RUN_HEADER_SQL = """
+    SELECT er.status, er.result FROM eval_runs er WHERE er.id = %(run_id)s::uuid
+"""
+
+#: The pre-0022 shape, on `_LIST_EVAL_RUNS_PRE_0022_SQL`'s terms. A tenant DB
+#: without `eval_runs.result` holds no record, so the counts read as unknown and
+#: the status still travels.
+_GET_RUN_HEADER_PRE_0022_SQL = """
+    SELECT er.status FROM eval_runs er WHERE er.id = %(run_id)s::uuid
+"""
+
+
+async def _fetch_run_header(conn_str: str, run_id: str) -> dict:
+    """The run's status and its own denominators. Every value may be None.
+
+    A run with no row at all answers all-None rather than raising. The rows this
+    route returns are the subject, and a header that could not be read must not
+    take them with it.
+    """
+    params = {"run_id": run_id}
+    try:
+        rows = await asyncio.to_thread(
+            _query_tenant_db_sync, conn_str, _GET_RUN_HEADER_SQL, params
+        )
+    except psycopg2.errors.UndefinedColumn:
+        log.info("get_eval_run_results.result_column_absent", run_id=run_id)
+        narrow = await asyncio.to_thread(
+            _query_tenant_db_sync, conn_str, _GET_RUN_HEADER_PRE_0022_SQL, params
+        )
+        rows = [(*row, None) for row in narrow]
+    if not rows:
+        return {"status": None, "attempted": None, "valid": None, "scored": None}
+    status, payload = rows[0]
+    record = _record_of(run_id, payload)
+    return {
+        "status": status,
+        "attempted": record.attempted if record is not None else None,
+        "valid": record.valid if record is not None else None,
+        "scored": record.scored if record is not None else None,
+    }
+
+
+def _scenarios_from_rows(rows: list[tuple]) -> dict[str, dict]:
+    """Group the judge rows by scenario, each read exactly as it was written.
+
+    A metric with no row at all reads the same as a row the judge scored nothing
+    for, which is what both of them are. Nothing is decided here.
+
+    Extracted from `get_eval_run_results` when the run header joined it, to pay
+    for the lines rather than raise the pin (#207).
+    """
+    scenarios: dict[str, dict] = {}
+    for scenario_id, question, source, metric, score, verdict, threshold in rows:
+        sid = str(scenario_id)
+        if sid not in scenarios:
+            scenarios[sid] = {
+                "scenario_id": sid,
+                "question": question or "",
+                "source": source or "generated",
+                "metrics": {key: dict(_NO_JUDGE_ROW) for key in METRIC_KEYS},
+            }
+        if metric in scenarios[sid]["metrics"]:
+            scenarios[sid]["metrics"][metric] = _judge_reading(score, verdict, threshold)
+    return scenarios
+
 
 def _judge_reading(score, verdict, threshold) -> dict:
     """One stored judge row, rendered without deciding anything.
@@ -587,7 +657,16 @@ async def get_eval_run_results(
         Same IDOR prevention as list_eval_runs — agent ownership verified.
 
     Response shape:
-        {"results": [{scenario_id, question, source, scores, metrics, passed}]}
+        {"run": {status, attempted, valid, scored},
+         "results": [{scenario_id, question, source, scores, metrics, passed}]}
+
+    `run` IS WHAT MAKES THE ROWS READABLE (#207). A run the deployment
+    checklist's ceiling or the worker's soft time limit stopped part way carries
+    real judge rows for the scenarios it reached and none for the rest, and
+    without the run's own status and denominators beside them those twelve rows
+    render as a short green run. `status` other than "complete" means the rows
+    are a fraction, and `attempted` says a fraction of what. Every count is None
+    for a run that wrote no record, which is unknown rather than zero.
 
     passed is the conjunction of the `binary_verdict` values stored on the
     scenario's two gated rows (D-21 LOCKED). The route reaches no verdict of its
@@ -621,24 +700,12 @@ async def get_eval_run_results(
     # 3. Query tenant DB in a thread pool
     rows = await _fetch_run_results(conn_str, str(run_id))
 
-    # 4. Group rows by scenario_id, each row read exactly as it was written:
-    #    (scenario_id, question, source, metric, score, binary_verdict,
-    #    threshold). A metric with no row at all reads the same as a row the
-    #    judge scored nothing for, which is what both of them are. No reading.
-    scenarios: dict[str, dict] = {}
-    for scenario_id, question, source, metric, score, verdict, threshold in rows:
-        sid = str(scenario_id)
-        if sid not in scenarios:
-            scenarios[sid] = {
-                "scenario_id": sid,
-                "question": question or "",
-                "source": source or "generated",
-                "metrics": {key: dict(_NO_JUDGE_ROW) for key in METRIC_KEYS},
-            }
-        if metric in scenarios[sid]["metrics"]:
-            scenarios[sid]["metrics"][metric] = _judge_reading(
-                score, verdict, threshold
-            )
+    # 3b. The run's own status and denominators, so the rows below have
+    #     something to be a fraction OF (#207).
+    run = await _fetch_run_header(conn_str, str(run_id))
+
+    # 4. Group rows by scenario_id, each row read exactly as it was written.
+    scenarios = _scenarios_from_rows(rows)
 
     # 5. `scenario_verdict` is the conjunction of the stored verdicts over the
     #    two GATED metrics (D-21), and it is the rule the run counted its own
@@ -671,8 +738,9 @@ async def get_eval_run_results(
         # verdict is a run that decided nothing, and it should be visible here
         # without anyone opening the response body.
         unverdicted_scenario_count=sum(1 for r in results if r["passed"] is None),
+        run_status=run["status"],
     )
-    return {"results": results}
+    return {"run": run, "results": results}
 
 
 # ---------------------------------------------------------------------------

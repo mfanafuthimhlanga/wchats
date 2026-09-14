@@ -908,6 +908,12 @@ class TestListEvalRuns:
 # ---------------------------------------------------------------------------
 
 
+#: A run that reached the end of its own body. The tests below are about the
+#: judge rows, so they hold the header still; the class after them is about the
+#: header itself.
+_COMPLETE_HEADER = {"status": "complete", "attempted": 1, "valid": 1, "scored": 1}
+
+
 class TestGetEvalRunResults:
     """Tests for GET /api/v1/agents/{agent_id}/eval-runs/{run_id}/results."""
 
@@ -928,6 +934,7 @@ class TestGetEvalRunResults:
             with (
                 patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://fake/db"),
                 patch("app.api.v1.evals.asyncio.to_thread", new=AsyncMock(return_value=fake_rows)),
+                patch("app.api.v1.evals._fetch_run_header", new=AsyncMock(return_value=_COMPLETE_HEADER)),
             ):
                 async with AsyncClient(
                     transport=ASGITransport(app=app), base_url="http://test"
@@ -977,6 +984,7 @@ class TestGetEvalRunResults:
             with (
                 patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://fake/db"),
                 patch("app.api.v1.evals.asyncio.to_thread", new=AsyncMock(return_value=passing_rows)),
+                patch("app.api.v1.evals._fetch_run_header", new=AsyncMock(return_value=_COMPLETE_HEADER)),
             ):
                 async with AsyncClient(
                     transport=ASGITransport(app=app), base_url="http://test"
@@ -1019,6 +1027,7 @@ class TestGetEvalRunResults:
             with (
                 patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://fake/db"),
                 patch("app.api.v1.evals.asyncio.to_thread", new=AsyncMock(return_value=failing_rows)),
+                patch("app.api.v1.evals._fetch_run_header", new=AsyncMock(return_value=_COMPLETE_HEADER)),
             ):
                 async with AsyncClient(
                     transport=ASGITransport(app=app), base_url="http://test"
@@ -1063,6 +1072,7 @@ class TestGetEvalRunResults:
             with (
                 patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://fake/db"),
                 patch("app.api.v1.evals.asyncio.to_thread", new=AsyncMock(return_value=rows)),
+                patch("app.api.v1.evals._fetch_run_header", new=AsyncMock(return_value=_COMPLETE_HEADER)),
             ):
                 async with AsyncClient(
                     transport=ASGITransport(app=app), base_url="http://test"
@@ -1107,6 +1117,7 @@ class TestGetEvalRunResults:
             with (
                 patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://fake/db"),
                 patch("app.api.v1.evals.asyncio.to_thread", new=to_thread),
+                patch("app.api.v1.evals._fetch_run_header", new=AsyncMock(return_value=_COMPLETE_HEADER)),
             ):
                 async with AsyncClient(
                     transport=ASGITransport(app=app), base_url="http://test"
@@ -1320,6 +1331,7 @@ class TestGetEvalRunResults:
             with (
                 patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://fake/db"),
                 patch("app.api.v1.evals.asyncio.to_thread", new=AsyncMock(return_value=[])),
+                patch("app.api.v1.evals._fetch_run_header", new=AsyncMock(return_value=_COMPLETE_HEADER)),
             ):
                 async with AsyncClient(
                     transport=ASGITransport(app=app), base_url="http://test"
@@ -1528,3 +1540,88 @@ class TestTriggerEvalRun:
             )
 
         assert response.status_code in (401, 403)
+
+
+class TestTheRunHeaderSaysWhetherTheRowsAreTheWholeRun:
+    """#207 review. A stopped run's rows rendered as a short green run.
+
+    An eval the checklist's ceiling or the worker's soft time limit stopped at
+    scenario 12 of 31 leaves twelve scenarios of real judge rows in
+    `eval_results`, and this route returned them with nothing beside them saying
+    the run never finished. A reader counted twelve passes and called the agent
+    measured.
+    """
+
+    async def _get(self, header_rows):
+        """Drive the route with `header_rows` as the eval_runs SELECT's answer."""
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+        mock_db = _make_mock_db_returning_agent(ready_agent)
+        run_id = uuid4()
+        scenario_id = str(uuid4())
+        answers = [_fake_eval_results_rows(str(run_id), scenario_id), header_rows]
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+        try:
+            with (
+                patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://fake/db"),
+                patch(
+                    "app.api.v1.evals.asyncio.to_thread",
+                    new=AsyncMock(side_effect=answers),
+                ),
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await client.get(
+                        f"/api/v1/agents/{ready_agent.id}/eval-runs/{run_id}/results",
+                        headers={"X-API-Key": "vrd_live_test"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+        return response
+
+    async def test_a_stopped_run_says_so_beside_its_rows(self):
+        """The rows are real and the status is what makes them a fraction."""
+        response = await self._get([("did_not_finish", None)])
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["run"]["status"] == "did_not_finish", (
+            "the rows of a run nobody finished came back with nothing saying so"
+        )
+        assert body["results"], "the rows it did score still travel"
+
+    async def test_the_denominator_travels_when_the_run_recorded_one(self):
+        """`attempted` is what the returned rows are a fraction of."""
+        record = _record_payload(
+            str(uuid4()),
+            golden=_outcome(*_NO_ROWS),
+            exploratory=_outcome(31, 31, 31, 0.9, 0.9, 0.9, 0.9),
+        )
+        response = await self._get([("complete", record)])
+
+        body = response.json()
+        assert body["run"]["status"] == "complete"
+        assert body["run"]["attempted"] is not None
+        assert body["run"]["valid"] is not None
+
+    async def test_a_run_with_no_record_reports_unknown_counts_never_zero(self):
+        """Zero would assert the run covered nothing, which nobody measured."""
+        response = await self._get([("did_not_finish", None)])
+
+        run = response.json()["run"]
+        assert run["attempted"] is None and run["valid"] is None
+        assert run["scored"] is None
+
+    async def test_a_run_row_that_is_not_there_does_not_take_the_rows_with_it(self):
+        """The judge rows are the subject; an unreadable header costs itself."""
+        response = await self._get([])
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["run"] == {
+            "status": None, "attempted": None, "valid": None, "scored": None
+        }
+        assert len(body["results"]) == 1

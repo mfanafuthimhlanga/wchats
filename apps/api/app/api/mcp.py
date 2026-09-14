@@ -267,7 +267,9 @@ TOOLS: tuple[_Tool, ...] = (
     ),
     _Tool(
         "get_eval_results",
-        "Read per-scenario results for one eval run.",
+        "Read per-scenario results for one eval run. `run.status` other than "
+        "'complete' means the rows are a fraction of the run, and `run.attempted` "
+        "says a fraction of what.",
         "GET",
         "/api/v1/agents/{agent_id}/eval-runs/{run_id}/results",
         ("agent_id", "run_id"),
@@ -348,7 +350,9 @@ TOOLS: tuple[_Tool, ...] = (
         "get_usage",
         "What the Agent's model calls cost over the last window_days (default "
         "7, max 90), priced from the ledger: per purpose, per day, per "
-        "conversation, and per customer turn with every judge call included. "
+        "conversation, per job (the twenty dearest of `jobs`, each flagged "
+        "is_turn), and "
+        "per customer turn with every judge call included. "
         "A null cost means a call the price book could not price, never free.",
         "GET",
         "/api/v1/agents/{agent_id}/usage",

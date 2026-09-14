@@ -110,7 +110,7 @@ from app.services.deployment_service import (
     running_runs_since,
     verdict_warnings,
 )
-from app.services.eval_service import read_eval_result
+from app.services.eval_service import close_newest_running_eval_run, read_eval_result
 from app.services.red_team_service import read_red_team_result
 from app.worker.celery_app import celery_app
 
@@ -120,9 +120,25 @@ log = structlog.get_logger(__name__)
 # the service's own run_orchestrator bridge cannot drift apart. They had.
 from app.services.deployment_service import ORCHESTRATOR_TIMEOUT_S  # noqa: E402
 
+#: What the eval_runs row says about why it stopped, when the checklist rather
+#: than the eval itself closed it out. Stored on the run's config, so a reader
+#: holding the row knows the wait expired on it and no judge outage did.
+EVAL_CEILING_REASON = "the deployment checklist's wait ceiling expired"
 
-def _dispatch_eval_run(agent_id: str) -> bool:
-    """Start an eval suite for this agent. Returns True iff it was dispatched.
+#: The signal a revoke sends the running eval. It raises SoftTimeLimitExceeded
+#: inside the task, which is the exception `run_eval_suite`'s handler catches.
+#: `_revoked_eval_task` says what the alternatives do instead.
+EVAL_REVOKE_SIGNAL = "SIGUSR1"
+
+
+# THE ID THIS RETURNS IS WHAT LETS THE CEILING STOP THE SPEND (#207). It used to
+# hand back a bare True, so when the wait expired the checklist reported
+# `eval_did_not_finish` and had nothing to name in a revoke. The eval carried on
+# calling the Judge and charging the tenant for a measurement no reader was ever
+# going to see. `chain(...).apply_async()` answers with the AsyncResult of the
+# chain's TAIL, which here is `run_eval_suite`.
+def _dispatch_eval_run(agent_id: str) -> str | None:
+    """Start an eval suite for this agent. Returns the scoring task's id, or None.
 
     THE DAY-1 PATH HAD NO WAY TO PRODUCE AN EVAL RUN (P2 review). Making
     EVAL_SIGNAL_NO_RUNS hard-block is right — an agent with no measurement has
@@ -170,15 +186,16 @@ def _dispatch_eval_run(agent_id: str) -> bool:
             run_eval_suite,
         )
 
-        chain(
-            generate_eval_suite.si(agent_id),
-            run_eval_suite.si(agent_id),
-        ).apply_async(queue="runtime")
-        log.info("run_deployment_checklist.eval_dispatched", agent_id=agent_id)
-        return True
+        task_id = str(
+            chain(generate_eval_suite.si(agent_id), run_eval_suite.si(agent_id))
+            .apply_async(queue="runtime")
+            .id
+        )
+        log.info("run_deployment_checklist.eval_dispatched", agent_id=agent_id, eval_task_id=task_id)
+        return task_id
     except Exception as exc:
         log_failure(log, "run_deployment_checklist.eval_dispatch_failed", exc, agent_id=agent_id)
-        return False
+        return None
 
 
 def _dispatch_red_team_run(agent_id: str) -> bool:
@@ -255,17 +272,33 @@ def rows_the_eval_will_score(scorable_count: int) -> int:
 
 
 def checklist_wait_ceiling_s(scorable_count: int) -> int:
-    """How long this checklist will wait: the floor, or the eval's own size (#213).
+    """How long this checklist will wait: the floor, the eval's size, or the cap.
 
     31 scenarios scored in about 2680 s on staging at four and at eight in
     flight, so the judge path is rate-bound and the wait has to grow with the
-    rows the eval scores rather than with anything the worker can do. The
+    rows the eval scores rather than with anything the worker can do (#213). The
     constant stays as the floor so a small golden set is not waited on for
     longer than before.
+
+    AND THE CAP IS WHAT KEEPS THE CHECKLIST AHEAD OF THE WORKER (#207).
+    `CHECKLIST_WAIT_CAP_S` is the eval task's soft time limit less a handover,
+    so the checklist always gives up first and the revoke, not the limit, is what
+    normally stops a run. Without it a 60-row suite opened a 7200 s wait against
+    a 6600 s soft limit, and the report would have described a run the worker had
+    already interrupted on the checklist's behalf.
+
+    The cap can bind below the floor only if somebody sets the two settings
+    against each other, so `min` is applied to the grown value and the floor
+    keeps its own guarantee.
     """
+    from app.worker.tasks.runtime.eval import CHECKLIST_WAIT_CAP_S  # noqa: PLC0415
+
     return max(
         settings.CHECKLIST_WAIT_CEILING_S,
-        rows_the_eval_will_score(scorable_count) * settings.CHECKLIST_WAIT_PER_SCENARIO_S,
+        min(
+            rows_the_eval_will_score(scorable_count) * settings.CHECKLIST_WAIT_PER_SCENARIO_S,
+            CHECKLIST_WAIT_CAP_S,
+        ),
     )
 
 
@@ -378,6 +411,140 @@ def _log_wait_outcome(agent_id: str, state: dict, waited_s: float) -> None:
             waited_s=round(waited_s, 1),
             eval_status=statuses.get("eval"),
             red_team_status=statuses.get("red_team"),
+        )
+
+
+def _revoked_eval_task(agent_id: str, state: dict) -> bool:
+    """Tell the worker to stop the eval this wait gave up on. True iff asked (#207).
+
+    `terminate=True` is what reaches a task that has already STARTED, the only
+    case here, because the eval the ceiling expired on is by definition running.
+
+    THE SIGNAL IS SIGUSR1, AND THE CHOICE IS THE WHOLE POINT OF THE REVOKE.
+    SIGUSR1 is the signal billiard's pool installs `soft_timeout_sighandler` on
+    (billiard/pool.py), and that handler raises `SoftTimeLimitExceeded` inside
+    the running task, so `run_eval_suite`'s own handler catches it, writes the
+    rows the Judge already returned and closes the run out. SIGTERM does not do
+    that. billiard's `_shutdown_handler` (billiard/common.py) raises `SystemExit`
+    in the child, which is a BaseException that neither
+    `except SoftTimeLimitExceeded` nor `except Exception` catches, so the first
+    version of this revoke stopped the spend and threw away every scored row on
+    the way out. SIGKILL is worse again, because no handler runs at all.
+
+    A REVOKE ACKS THE MESSAGE rather than redelivering it. `Request.on_failure`
+    announces a revoked task as handled (celery/worker/request.py), so
+    `acks_late=True` does not hand this eval to a second worker. A state opened
+    before this existed carries no id, which reads as "cannot revoke" and is
+    logged rather than guessed at. Revoking an id this checklist did not dispatch
+    would stop somebody else's run.
+    """
+    task_id = state.get("eval_task_id")
+    if not isinstance(task_id, str) or not task_id:
+        log.warning(
+            "run_deployment_checklist.eval_not_revokable",
+            agent_id=agent_id,
+            run_id=state["run_id"],
+            detail=(
+                "this wait carries no eval task id, so the broker cannot be told "
+                "to stop the run it expired on; the eval keeps billing until it "
+                "reaches its own time limit"
+            ),
+        )
+        return False
+    try:
+        celery_app.control.revoke(task_id, terminate=True, signal=EVAL_REVOKE_SIGNAL)
+    except Exception as exc:
+        log_failure(
+            log, "run_deployment_checklist.eval_revoke_failed", exc, level="error",
+            agent_id=agent_id,
+            run_id=state["run_id"],
+            eval_task_id=task_id,
+            detail="the eval goes on calling the Judge on the tenant's money",
+        )
+        return False
+    log.warning(
+        "run_deployment_checklist.eval_revoked",
+        agent_id=agent_id,
+        run_id=state["run_id"],
+        eval_task_id=task_id,
+        detail=(
+            "the wait expired, so the run it grades is stopped rather than left "
+            "scoring a measurement nothing will read"
+        ),
+    )
+    return True
+
+
+def _marked_did_not_finish(agent_id: str, conn_str: str, state: dict) -> str | None:
+    """Close this wait's still-running eval row out. The row id, or None.
+
+    ONLY A WAIT THAT DISPATCHED AN EVAL WRITES HERE. Without an `eval_task_id`
+    this checklist has no task of its own in flight, and the running row it would
+    find belongs to something else. `_open_wait`'s docstring names the case. A
+    run already going when the dispatch was made absorbs it, so the row at or
+    after the boundary is that run rather than this checklist's.
+
+    THE ROW IS NOT THE ONE THE TASK MINTED, AND CANNOT BE. `run_eval_suite`
+    creates its `eval_runs` id after it starts, so nothing at dispatch time knows
+    it and no id crosses back over the broker. The closest identity available is
+    the newest run still going at or after this wait's own boundary, which is
+    what this takes. The residual is in the plan.
+
+    NEWEST RATHER THAN OLDEST. `running_runs_since` answers with the oldest,
+    which on an adopted boundary is the orphan this wait widened itself to admit
+    rather than the run its own dispatch caused.
+
+    ONLY A ROW STILL SAYING 'running' MOVES, and the UPDATE carries that
+    condition itself rather than trusting the read above it. The revoked task may
+    reach its own handler first and mark the run before this statement runs, and
+    a second write would then overwrite a terminal status with this one.
+
+    ONE CONNECTION FOR THE SELECT, THE UPDATE AND THE CONFIG PATCH. Three would
+    pay three Neon handshakes on a path that runs at the end of every expired
+    wait, and two of them could reach a database the first one no longer can.
+
+    A tenant DB that cannot be read leaves the row alone. The report is unchanged
+    either way. The wait never saw this half reach terminal, so
+    `_collect_signals` substitutes `did_not_finish` and the gate blocks whatever
+    the row says.
+    """
+    if not isinstance(state.get("eval_task_id"), str):
+        return None
+    since = datetime.fromisoformat(state["since"])
+    return close_newest_running_eval_run(
+        agent_id, conn_str, since, EVAL_CEILING_REASON
+    )
+
+
+def _close_the_wait(agent_id: str, conn_str: str, state: dict, waited_s: float) -> None:
+    """Say how the wait ended, and stop what it stopped waiting for (#207).
+
+    Reporting the expiry and ending the spend are one moment. They used to be
+    only the first, so the checklist told the owner the eval had not finished and
+    then left it running. Judge calls landed on the tenant's bill for a run whose
+    numbers the report had already declared absent.
+
+    The eval alone. A red-team run reaches the same report through the same
+    substitution, and it is the long, model-heavy scoring loop that #207
+    measured; stopping the red-team half is `.dev/plans/` work, not this fold.
+
+    NOTHING HERE MAY FAIL THE CHECKLIST. This sits outside step 7's try, on the
+    stretch #125 is about. An exception across it would leave the row 'running'
+    with no terminal update, and the guard would refuse every re-run behind it.
+    The report the owner is owed does not depend on the spend having stopped.
+    """
+    _log_wait_outcome(agent_id, state, waited_s)
+    if state["statuses"]["eval"] is not None:
+        return
+    try:
+        _revoked_eval_task(agent_id, state)
+        _marked_did_not_finish(agent_id, conn_str, state)
+    except Exception as exc:
+        log_failure(
+            log, "run_deployment_checklist.wait_not_closed", exc, level="error",
+            agent_id=agent_id,
+            run_id=state["run_id"],
+            detail="the eval was not stopped and goes on billing until its own limit",
         )
 
 
@@ -505,6 +672,7 @@ def _open_wait(run_id: str, agent_id: str, conn_str: str) -> dict:
     is the price of the boundary that keeps last night's run out.
     """
     since = _dispatch_moment(conn_str)
+    eval_task_id = _dispatch_eval_run(agent_id)
     return {
         "run_id": run_id,
         "since": since.isoformat(),
@@ -514,7 +682,11 @@ def _open_wait(run_id: str, agent_id: str, conn_str: str) -> dict:
         # the boundary in the wrong place, so they are never the same field.
         "started_at": datetime.now(timezone.utc).isoformat(),
         "statuses": {"eval": None, "red_team": None},
-        "eval_dispatched": _dispatch_eval_run(agent_id),
+        "eval_dispatched": bool(eval_task_id),
+        # The message the ceiling revokes (#207). A state written before that
+        # ticket carries none, and `_revoked_eval_task` says so rather than
+        # guessing at an id.
+        "eval_task_id": eval_task_id if isinstance(eval_task_id, str) else None,
         "red_team_dispatched": _dispatch_red_team_run(agent_id),
         # Zero passes taken, which is what the freshly inserted row's own column
         # says too (#124). The first pass claims pass 0 and hands pass 1 on.
@@ -1641,7 +1813,7 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
     if _wait_continues(pending, waited_s, _ceiling_of(state)):
         return _hand_off(agent_id, run_id, state, pending, waited_s)
 
-    _log_wait_outcome(agent_id, state, waited_s)
+    _close_the_wait(agent_id, conn_str, state, waited_s)
 
     # ------------------------------------------------------------------
     # Step 4 — Collect the five signals and the BLR-02 envelope hash. Always

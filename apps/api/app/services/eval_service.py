@@ -64,6 +64,7 @@ import json
 import time
 import uuid
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from types import MappingProxyType
 
 import pandas as pd
@@ -1498,11 +1499,25 @@ def _resolved_inputs(valid_scenarios: Sequence[Mapping]) -> list[str | None]:
 #
 # A progress line every `_SCORING_PROGRESS_EVERY` samples carries the count and the
 # elapsed seconds, so a slow run and a stuck one no longer look the same.
+#
+# `sink` IS HOW A FINISHED ROW SURVIVES AN INTERRUPTION (#207). The gather is
+# cancelled when the worker's soft time limit fires and everything it was holding
+# goes with it, so a row the tenant has already paid four judge calls for is only
+# recoverable if it left the coroutine as it completed.
+#
+# IT CARRIES (sample index, row) AND NOT THE ROW ALONE, because rows finish in
+# whatever order the judge answers, `EVAL_SCORING_CONCURRENCY` of them at a time.
+# `attribute_returned_rows` takes a positional shortcut whenever the returned
+# count equals the sent count, so a sink that happened to hold every row, in
+# completion order, would have written all four of each scenario's scores against
+# a different scenario. The index is the sample's own position and the caller
+# sorts on it before attribution.
 async def _score_samples(
     metrics: list,
     samples: list,
     concurrency: int | None = None,
     resolved_inputs: Sequence[str | None] | None = None,
+    sink: list | None = None,
 ) -> list[dict]:
     """Score every validated sample against every metric, one row per sample.
 
@@ -1511,14 +1526,14 @@ async def _score_samples(
     lose the three metrics that did return. The row carries user_input and
     reference because attribute_returned_rows matches on that pair, so the
     rewrite in `resolved_inputs` reaches `RESOLVED_INPUT_METRICS` and never the
-    row.
+    row. `sink` takes `(sample index, row)`, for the reason the note above gives.
     """
     bound = concurrency if concurrency is not None else settings.EVAL_SCORING_CONCURRENCY
     gate = asyncio.Semaphore(max(1, bound))
     started = time.monotonic()
     done = 0
 
-    async def score_one(sample, resolved: str | None) -> dict:
+    async def score_one(index: int, sample, resolved: str | None) -> dict:
         nonlocal done
         async with gate:
             row: dict = {
@@ -1541,6 +1556,8 @@ async def _score_samples(
                     float(value) if value is not None and value == value else None  # NaN check
                 )
             done += 1
+            if sink is not None:
+                sink.append((index, row))
             if done % _SCORING_PROGRESS_EVERY == 0 or done == len(samples):
                 log.info(
                     "run_ragas_eval.progress",
@@ -1553,7 +1570,8 @@ async def _score_samples(
     # `strict=True`: a wrong-length list would pair a rewrite with somebody else's
     # sample, which is a scored measurement about the wrong question.
     resolved = list(resolved_inputs) if resolved_inputs is not None else [None] * len(samples)
-    return list(await asyncio.gather(*(score_one(s, r) for s, r in zip(samples, resolved, strict=True))))
+    paired = zip(samples, resolved, strict=True)
+    return list(await asyncio.gather(*(score_one(i, s, r) for i, (s, r) in enumerate(paired))))
 
 
 def _placed_score_rows(
@@ -1593,7 +1611,98 @@ def _placed_score_rows(
     return score_rows, unattributed
 
 
-def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
+def _ragas_samples(scenarios: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(the samples Ragas will validate, the scenarios they came from), same order.
+
+    One filter, applied once and read twice. It was written out twice inside
+    `run_ragas_eval`, so the pairing that `_resolved_inputs` and
+    `attribute_returned_rows` both read rested on two comprehensions being kept
+    identical by hand.
+
+    D-02 LOCKED: the ground-truth field is `reference`, renamed in Ragas 0.4.x.
+    """
+    valid_scenarios = [s for s in scenarios if s.get("reference_answer")]
+    samples = [
+        {
+            "user_input": s["question"],
+            "response": s.get("agent_response", ""),
+            "retrieved_contexts": s.get("retrieved_contexts", []),
+            "reference": s["reference_answer"],   # D-02 LOCKED
+        }
+        for s in valid_scenarios
+    ]
+    return samples, valid_scenarios
+
+
+def _attributed(rows: list, valid_scenarios: list[dict]) -> tuple[list[dict], int]:
+    """(score rows keyed to their scenarios, rows that could not be placed).
+
+    Positional attribution holds only while the judge returns one row per sample
+    in order, which is the assumption this pair of functions exists to remove. A
+    row carrying no key columns is offered as None and dropped rather than
+    assigned to whichever scenario sits at its index.
+
+    The columns come from the one `METRIC_KEYS` tuple rather than a local literal
+    list. Audit D3 is a second copy of a column name drifting from the first, and
+    this module writes these same four names into `eval_results`, reports them
+    per dataset and hands them to the console.
+
+    Takes rows rather than a DataFrame, so the interrupted path can hand it the
+    plain dicts the sink collected (#207).
+    """
+    have_keys = all(
+        all(col in row for col in SAMPLE_KEY_COLUMNS) for row in rows
+    )
+    keys: list[tuple[str, str] | None] = [
+        (str(row.get("user_input", "")), str(row.get("reference", "")))
+        if have_keys
+        else None
+        for row in rows
+    ]
+    return _placed_score_rows(
+        rows, attribute_returned_rows(keys, valid_scenarios), valid_scenarios,
+        list(METRIC_KEYS),
+    )
+
+
+def _sink_rows(finished: Sequence[tuple[int, dict]]) -> list[dict]:
+    """The sink's rows back in SAMPLE order, which is the order attribution needs.
+
+    Rows reach the sink in completion order, `EVAL_SCORING_CONCURRENCY` in flight,
+    and `attribute_returned_rows` falls back to position whenever the count it is
+    given matches the count sent. Without this sort a sink that held every row
+    would have written each scenario's four scores against a neighbour (#207).
+    """
+    return [row for _, row in sorted(finished, key=lambda pair: pair[0])]
+
+
+def _fill_partial(
+    partial: list | None,
+    rows: list[dict],
+    valid_scenarios: list[dict],
+    *,
+    attributed: bool = False,
+) -> None:
+    """Hand the caller the best score rows available, replacing what it holds.
+
+    REPLACING, NOT APPENDING. This is called twice on one run, once when scoring
+    returns and again if anything after it raises, and the second set is the same
+    rows read a second time rather than more of them. Appending would double every
+    scenario and `write_eval_results` would write each judge decision twice.
+
+    THE SUCCESS CALL IS THE ONE THAT IS EASY TO MISS. Six tenant DB round trips
+    stand between scoring returning and the run being marked complete, and a soft
+    time limit landing in any of them would otherwise reach the task's handler
+    with an empty accumulator and throw a fully scored run away.
+    """
+    if partial is None:
+        return
+    partial[:] = rows if attributed else _attributed(rows, valid_scenarios)[0]
+
+
+def run_ragas_eval(
+    scenarios: list[dict], ledger: LedgerContext, partial: list | None = None
+) -> dict:
     """Run Ragas 0.4.x evaluation over a list of eval scenarios.
 
     Builds an EvaluationDataset from the scenarios and scores it with the four
@@ -1627,6 +1736,13 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
               `retrieved_contexts` column. Scoring faithfulness against contexts
               the agent never saw is D1 in a different costume.
         ledger: who every judge call is billed to, and where its row goes.
+        partial: a list this function fills with the best score rows it has,
+            twice (#207). Once when scoring returns, so a soft time limit landing
+            in the writes that follow still finds a whole run; and again if the
+            scoring itself is interrupted, with the rows that had finished. The
+            second fill REPLACES the first rather than adding to it. The tenant
+            has already paid four judge calls for every row in there, and without
+            this they are lost with the coroutine and re-bought by the next run.
 
     Returns:
         Dict with five keys:
@@ -1643,21 +1759,7 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
             "sent" / "returned" / "unattributed": the judge's own denominators.
                 `returned < sent` is a partial outage; `unattributed > 0` means rows came back that cannot be placed.
     """
-    # Filter to only scenarios that have a reference_answer (required by Ragas)
-    # D-02 LOCKED: field name is 'reference' (renamed in Ragas 0.4.x)
-    samples = [
-        {
-            "user_input": s["question"],
-            "response": s.get("agent_response", ""),
-            "retrieved_contexts": s.get("retrieved_contexts", []),
-            "reference": s["reference_answer"],   # D-02 LOCKED
-        }
-        for s in scenarios
-        if s.get("reference_answer")
-    ]
-
-    # Keep only the scenarios that produced samples (same order)
-    valid_scenarios = [s for s in scenarios if s.get("reference_answer")]
+    samples, valid_scenarios = _ragas_samples(scenarios)
 
     if not samples:
         log.warning("run_ragas_eval.no_valid_scenarios")
@@ -1678,31 +1780,19 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
 
     metrics = _build_ragas_metrics(ledger, _VoyageRagasEmbedding())
 
-    df = pd.DataFrame(asyncio.run(_score_samples(metrics, list(dataset.samples), resolved_inputs=_resolved_inputs(valid_scenarios))))
+    # `finished` collects (sample index, row) as each row's four metrics come
+    # back, so an interruption leaves the rows the tenant already paid for
+    # recoverable rather than cancelled with the gather (#207).
+    finished: list[tuple[int, dict]] = []
+    try:
+        df = pd.DataFrame(asyncio.run(_score_samples(metrics, list(dataset.samples), resolved_inputs=_resolved_inputs(valid_scenarios), sink=finished)))
+    except Exception:
+        _fill_partial(partial, _sink_rows(finished), valid_scenarios)
+        raise
 
-    # Build per-scenario score dicts. The metric names come from the one
-    # METRIC_KEYS tuple rather than a local literal list: audit D3 is a second
-    # copy of a column name drifting from the first, and this module writes
-    # these same four names into eval_results, reports them per dataset and
-    # hands them to the console.
-    metric_columns = list(METRIC_KEYS)
-
-    # Which scenario each returned row is about. See attribute_returned_rows:
-    # positional attribution holds only when the judge returned one row per
-    # sample, and this is where that used to be assumed.
     returned_rows = [row for _, row in df.iterrows()]
-    have_key_columns = all(col in df.columns for col in SAMPLE_KEY_COLUMNS)
-    returned_keys: list[tuple[str, str] | None] = [
-        (str(row.get("user_input", "")), str(row.get("reference", "")))
-        if have_key_columns
-        else None
-        for row in returned_rows
-    ]
-    attribution = attribute_returned_rows(returned_keys, valid_scenarios)
-
-    score_rows, unattributed = _placed_score_rows(
-        returned_rows, attribution, valid_scenarios, metric_columns
-    )
+    score_rows, unattributed = _attributed(returned_rows, valid_scenarios)
+    _fill_partial(partial, score_rows, valid_scenarios, attributed=True)
 
     # NO RUN-LEVEL MEAN IS COMPUTED HERE. This used to return a `means` dict
     # over the attributed rows and nothing in `app/` read it: the run's numbers
@@ -1715,7 +1805,6 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
             sent=len(samples),
             returned=len(returned_rows),
             unattributed=unattributed,
-            have_key_columns=have_key_columns,
             detail=(
                 "the judge returned rows that cannot be matched to a scenario; "
                 "they are counted and dropped rather than assigned by position"
@@ -2082,6 +2171,159 @@ def update_eval_run_status(
         conn.close()
 
     log.info("update_eval_run_status.complete", eval_run_id=eval_run_id, status=status)
+
+
+#: The status of a run that was stopped rather than finished (#207): the
+#: checklist's wait expired on it, or the worker's soft time limit interrupted it.
+#:
+#: DELIBERATELY NOT IN `deployment_service.TERMINAL_RUN_STATUSES`. A checklist
+#: poll that read this as terminal would go on to collect the run's record and
+#: grade whatever partial scores it holds. It is not a completed measurement, so
+#: the wait keeps reading the half as absent and the gate blocks. Every later
+#: reader refuses it too: `_fetch_eval_summary_sync` answers anything other than
+#: 'complete' with EVAL_SIGNAL_RUN_FAILED.
+EVAL_RUN_DID_NOT_FINISH = "did_not_finish"
+
+#: Closes a run out ONLY while it still says 'running'. The condition is in the
+#: statement rather than in a read above it, because the two writers race: a
+#: revoked task can reach its own handler while the checklist's UPDATE is in
+#: flight, and the loser of that race must not overwrite a terminal status.
+_CLOSE_RUNNING_EVAL_RUN_SQL = """
+    UPDATE eval_runs
+    SET status = %(status)s, finished_at = NOW()
+    WHERE id = %(id)s::uuid AND status = 'running'
+"""
+
+#: The NEWEST eval run of this agent's still going at or after a boundary.
+#: Newest, because a wait whose boundary was moved back to adopt an orphan would
+#: otherwise close out the orphan rather than the run its own dispatch caused.
+_NEWEST_RUNNING_EVAL_RUN_SQL = """
+    SELECT id::text FROM eval_runs
+    WHERE kind = %(kind)s AND started_at >= %(since)s AND status = 'running'
+    ORDER BY started_at DESC LIMIT 1
+"""
+
+#: The config patch a closed-out run carries, so a reader holding the row learns
+#: which bound stopped it rather than inferring a judge outage.
+_DID_NOT_FINISH_PATCH_SQL = """
+    UPDATE eval_runs
+    SET config = COALESCE(config, '{}'::jsonb) || %(patch)s::jsonb
+    WHERE id = %(id)s::uuid
+"""
+
+
+def _closed_running_run(cur, run_id: str, reason: str) -> bool:
+    """The two statements that close one run out, on a cursor the caller owns.
+
+    The status UPDATE first, because it is the one that decides the race, and the
+    reason only if it won. A patch written beside a status somebody else set
+    would describe the wrong stop.
+
+    The patch tolerates a tenant DB predating alembic_tenant 0013 the way
+    `update_eval_run_config` does, except that here the caller's transaction is
+    already open, so a missing column is caught and reported rather than left to
+    abort the status write with it.
+    """
+    cur.execute(
+        _CLOSE_RUNNING_EVAL_RUN_SQL, {"status": EVAL_RUN_DID_NOT_FINISH, "id": run_id}
+    )
+    if cur.rowcount != 1:
+        return False
+    try:
+        cur.execute(
+            _DID_NOT_FINISH_PATCH_SQL,
+            {"patch": json.dumps({"did_not_finish": {"reason": reason}}), "id": run_id},
+        )
+    except psycopg2.errors.UndefinedColumn:
+        log.warning("eval_run_did_not_finish.config_column_absent", run_id=run_id)
+    return True
+
+
+def mark_eval_run_did_not_finish(run_id: str, conn_str: str, reason: str) -> bool:
+    """Close a still-running eval run out as `did_not_finish`. PRODUCTION.
+
+    `run_eval_suite`'s own call, made from the handler the worker's soft time
+    limit lands in, where the run id is already known (#207).
+
+    IDEMPOTENT BY THE STATEMENT'S OWN WHERE CLAUSE. A second call finds the row
+    already terminal and reports False, so the reason is stamped once, by
+    whichever writer actually moved the row.
+
+    Never raises. A row left saying 'running' is worse than this returning False,
+    and failing a task that still has rows to write is worse than both.
+
+    Returns:
+        True when this call moved the row, False when it was already terminal,
+        the write failed, or the tenant DB could not be reached.
+    """
+    try:
+        conn = psycopg2.connect(conn_str, connect_timeout=CONNECT_TIMEOUT_S)
+        try:
+            with conn.cursor() as cur:
+                moved = _closed_running_run(cur, run_id, reason)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        log_failure(
+            log, "mark_eval_run_did_not_finish.failed", exc, level="error",
+            run_id=run_id,
+            detail="the row still reads 'running' for a run nothing will finish",
+        )
+        return False
+    if moved:
+        log.warning("mark_eval_run_did_not_finish.closed", run_id=run_id, reason=reason)
+    return moved
+
+
+def close_newest_running_eval_run(
+    agent_id: str, conn_str: str, since: datetime, reason: str
+) -> str | None:
+    """Close out the newest eval run still going at or after `since`. PRODUCTION.
+
+    The deployment checklist's call, made when its wait ceiling expires (#207).
+    It has no run id to name, because `run_eval_suite` mints one after it starts
+    and nothing crosses back over the broker, so the boundary and the 'running'
+    status are the whole identity available.
+
+    ONE CONNECTION FOR ALL THREE STATEMENTS. The SELECT, the conditional UPDATE
+    and the config patch run on one cursor inside one transaction, so the row
+    this call read is the row it writes and no second Neon handshake sits on the
+    end of an expired wait.
+
+    Never raises, on `mark_eval_run_did_not_finish`'s terms.
+
+    Returns:
+        The id of the run this call closed, or None when nothing was running,
+        another writer got there first, or the tenant DB could not be reached.
+    """
+    try:
+        conn = psycopg2.connect(conn_str, connect_timeout=CONNECT_TIMEOUT_S)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    _NEWEST_RUNNING_EVAL_RUN_SQL,
+                    {"kind": f"m6:{agent_id}", "since": since},
+                )
+                row = cur.fetchone()
+                if row is None:
+                    return None
+                run_id = str(row[0])
+                moved = _closed_running_run(cur, run_id, reason)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        log_failure(
+            log, "close_newest_running_eval_run.failed", exc, level="error",
+            agent_id=agent_id,
+            detail="a run nothing will finish still reads 'running'",
+        )
+        return None
+    if not moved:
+        return None
+    log.warning("close_newest_running_eval_run.closed", run_id=run_id, reason=reason)
+    return run_id
 
 
 # ---------------------------------------------------------------------------
