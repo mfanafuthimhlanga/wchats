@@ -29,6 +29,10 @@ CITATIONS:
 Example of correct escalation:
 Customer: "This is ridiculous. I've been waiting 3 weeks for my order."
 Agent: [calls escalate_to_human with reason="Customer expressed frustration about delayed order"]
+
+Example of a correct clarifying question, when the knowledge base covers several projects:
+Customer: "how do I start the dev server?"
+Agent: [calls clarify with question="Which project are you setting up?"]
 """
 
 # ---------------------------------------------------------------------------
@@ -82,6 +86,7 @@ Voice and tone: {voice}
 You MUST:
 {do_block}
 - Always call the retrieve tool before answering factual questions.
+- If the question could be about more than one product, project or document in \nthe knowledge base and does not say which, call the clarify tool to ask which one. \nNever guess which one the customer means.
 - Cite every factual claim with the document name and section.
 - If retrieval returns no relevant content, say "I don't have that information \
 in my knowledge base" — do not guess.
