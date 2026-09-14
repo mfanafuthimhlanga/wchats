@@ -11,7 +11,7 @@ claude mcp add --transport http wchats https://<api-host>/mcp --header "Authoriz
 ```
 
 The tenant API key (`vrd_live_...`) is the only credential (ADR 0004). `X-API-Key` works as
-the header name too. A successful connection lists eighteen tools.
+the header name too. A successful connection lists twenty tools.
 
 ## The tools
 
@@ -22,6 +22,7 @@ the header name too. A successful connection lists eighteen tools.
 | `update_soul` | `PATCH /api/v1/agents/{agent_id}` |
 | `upload_documents` | `POST /api/v1/agents/{agent_id}/documents` |
 | `register_golden_scenarios` | `POST /api/v1/agents/{agent_id}/golden-scenarios` |
+| `draft_golden_scenarios` | `POST .../golden-scenarios/drafts` |
 | `get_job` | `GET /api/v1/jobs/{job_id}` |
 | `trigger_eval` | `POST /api/v1/agents/{agent_id}/eval-runs/trigger` |
 | `list_eval_runs` | `GET /api/v1/agents/{agent_id}/eval-runs` |
@@ -35,6 +36,7 @@ the header name too. A successful connection lists eighteen tools.
 | `acknowledge_warning` | `POST .../checklist-runs/{run_id}/acknowledge` |
 | `approve_deployment` | `POST /api/v1/agents/{agent_id}/approve-deployment` |
 | `get_embed_snippet` | `GET /api/v1/agents/{agent_id}/embed-snippet` |
+| `get_usage` | `GET /api/v1/agents/{agent_id}/usage` |
 
 Each tool is its route: same request schema, same validation, same status codes. An error
 from the route arrives as an `isError` tool result carrying the HTTP status and detail.

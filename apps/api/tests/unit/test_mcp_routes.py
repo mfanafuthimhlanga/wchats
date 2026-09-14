@@ -2,7 +2,7 @@
 Unit tests for the MCP endpoint (app/api/mcp.py, #56).
 
 Protocol surface:
-    1. tools/list returns the nineteen tools in deterministic order with cache hints
+    1. tools/list returns the twenty tools in deterministic order with cache hints
     2. GET and DELETE /mcp return 405 with Allow: POST
     3. No credential returns 401
     4. Unknown method returns HTTP 404 with JSON-RPC -32601
@@ -29,15 +29,18 @@ import re
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 
 # conftest.py sets required env vars before any app import
+from app.api import mcp as mcp_module
 from app.api.deps import get_async_db, get_credential_kind, get_current_tenant
 from app.api.mcp import PROTOCOL_VERSION, TOOLS, get_mcp_tenant
 from app.core.security import hash_api_key, hmac_key_prefix
 from app.main import app
 from app.models.agent import Agent
 from app.models.tenant import Tenant
+from app.schemas.eval import GoldenScenariosRegisterRequest
 
 EXPECTED_TOOL_NAMES = [
     "create_agent",
@@ -59,6 +62,7 @@ EXPECTED_TOOL_NAMES = [
     "acknowledge_warning",
     "approve_deployment",
     "get_embed_snippet",
+    "get_usage",
 ]
 
 # Decision #10's fourteen, verbatim from the resolution comment.
@@ -120,7 +124,7 @@ def _override_outer_auth(tenant: Tenant) -> None:
 
 
 class TestToolsList:
-    async def test_lists_the_nineteen_tools_in_deterministic_order(self):
+    async def test_lists_the_twenty_tools_in_deterministic_order(self):
         tenant = _make_fake_tenant()
         _override_outer_auth(tenant)
         try:
@@ -354,16 +358,145 @@ class TestToolWrapping:
         assert payload["status"] == 404  # 401 here means the key never crossed
 
 
+class TestQueryParams:
+    async def test_get_usage_sends_window_days_as_a_query_param(self):
+        """get_usage: window_days leaves the arguments and reaches the route's query."""
+        tenant = _make_fake_tenant()
+        agent = MagicMock(spec=Agent)
+        agent.id = uuid4()
+        agent.tenant_id = tenant.id
+        agent.deleted_at = None
+        agent.neon_connection_string = b"encrypted"
+        _override_outer_auth(tenant)
+        app.dependency_overrides[get_current_tenant] = lambda: tenant
+        app.dependency_overrides[get_credential_kind] = lambda: "api_key"
+        mock_db = AsyncMock()
+        mock_db.get = AsyncMock(return_value=agent)
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+        try:
+            with (
+                patch("app.api.v1.metrics.fernet_decrypt", return_value="postgresql://fake"),
+                patch(
+                    "app.api.v1.metrics.read_agent_usage",
+                    return_value={"window_days": 30, "total": {"calls": 0, "unpriced_calls": 0}},
+                ) as mock_usage,
+            ):
+                response = await _post(
+                    _rpc(
+                        "tools/call",
+                        params={
+                            "name": "get_usage",
+                            "arguments": {"agent_id": str(agent.id), "window_days": 30},
+                        },
+                    )
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        result = response.json()["result"]
+        assert not result.get("isError"), result["content"][0]["text"]
+        assert json.loads(result["content"][0]["text"])["window_days"] == 30
+        mock_usage.assert_called_once_with("postgresql://fake", str(agent.id), 30)
+
+    async def test_get_usage_without_window_days_lets_the_route_default_to_seven(self):
+        """An omitted optional query param is absent, not null: the route's default wins."""
+        tenant = _make_fake_tenant()
+        agent = MagicMock(spec=Agent)
+        agent.id = uuid4()
+        agent.tenant_id = tenant.id
+        agent.deleted_at = None
+        agent.neon_connection_string = b"encrypted"
+        _override_outer_auth(tenant)
+        app.dependency_overrides[get_current_tenant] = lambda: tenant
+        app.dependency_overrides[get_credential_kind] = lambda: "api_key"
+        mock_db = AsyncMock()
+        mock_db.get = AsyncMock(return_value=agent)
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+        try:
+            with (
+                patch("app.api.v1.metrics.fernet_decrypt", return_value="postgresql://fake"),
+                patch(
+                    "app.api.v1.metrics.read_agent_usage",
+                    return_value={"window_days": 7, "total": {"calls": 0, "unpriced_calls": 0}},
+                ) as mock_usage,
+            ):
+                response = await _post(
+                    _rpc(
+                        "tools/call",
+                        params={"name": "get_usage", "arguments": {"agent_id": str(agent.id)}},
+                    )
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        result = response.json()["result"]
+        assert not result.get("isError"), result["content"][0]["text"]
+        mock_usage.assert_called_once_with("postgresql://fake", str(agent.id), 7)
+
+    async def test_a_window_over_ninety_days_comes_back_as_the_routes_422(self):
+        """The bound in the schema is the route's own, and the route is what enforces it."""
+        tenant = _make_fake_tenant()
+        agent = MagicMock(spec=Agent)
+        agent.id = uuid4()
+        agent.tenant_id = tenant.id
+        agent.deleted_at = None
+        agent.neon_connection_string = b"encrypted"
+        _override_outer_auth(tenant)
+        app.dependency_overrides[get_current_tenant] = lambda: tenant
+        app.dependency_overrides[get_credential_kind] = lambda: "api_key"
+        mock_db = AsyncMock()
+        mock_db.get = AsyncMock(return_value=agent)
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+        try:
+            with patch("app.api.v1.metrics.read_agent_usage") as mock_usage:
+                response = await _post(
+                    _rpc(
+                        "tools/call",
+                        params={
+                            "name": "get_usage",
+                            "arguments": {"agent_id": str(agent.id), "window_days": 91},
+                        },
+                    )
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        result = response.json()["result"]
+        assert result["isError"] is True
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["status"] == 422
+        mock_usage.assert_not_called()
+
+    def test_get_usage_schema_names_window_days_as_optional(self):
+        tool = next(t for t in TOOLS if t.name == "get_usage")
+        assert tool.query_params == ("window_days",)
+        assert tool.input_schema["required"] == ["agent_id"]
+        assert tool.input_schema["properties"]["window_days"]["maximum"] == 90
+        assert tool.input_schema["properties"]["window_days"]["default"] == 7
+        assert tool.input_schema["additionalProperties"] is False
+        # agent_id is spelled by _merge_schema, the same as every other tool's.
+        assert tool.input_schema["properties"]["agent_id"] == mcp_module._UUID_PARAM
+
+    def test_a_query_param_colliding_with_a_body_field_raises_at_import(self):
+        """The shadow the guard exists to stop: _call_tool pops the query param out
+        of the arguments, so a body field of the same name never reaches the route."""
+        with pytest.raises(RuntimeError, match=r"tool schema collision on \['source_file'\]"):
+            mcp_module._merge_schema((), GoldenScenariosRegisterRequest, ("source_file",))
+
+
 # ---------------------------------------------------------------------------
 # 12. Table invariants
 # ---------------------------------------------------------------------------
 
 
 class TestToolTable:
-    def test_nineteen_tools_with_legal_unique_names(self):
+    def test_twenty_tools_with_legal_unique_names(self):
         names = [t.name for t in TOOLS]
-        assert len(names) == 19
-        assert len(set(names)) == 19
+        assert len(names) == 20
+        assert len(set(names)) == 20
         for name in names:
             assert re.fullmatch(r"[A-Za-z0-9_.\-]{1,128}", name)
 

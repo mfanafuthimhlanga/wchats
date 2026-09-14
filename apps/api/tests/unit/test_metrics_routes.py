@@ -27,6 +27,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import psycopg2
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -258,6 +259,10 @@ class TestGetAgentMetricsRoute:
                     "app.api.v1.metrics.compute_agent_metrics",
                     return_value=fake_metrics,
                 ) as mock_compute,
+                patch(
+                    "app.api.v1.metrics.read_agent_usage",
+                    return_value={"turns": {"count": 5, "cost_per_turn_usd": 0.0042}},
+                ) as mock_usage,
             ):
                 async with AsyncClient(
                     transport=ASGITransport(app=_test_app), base_url="http://test"
@@ -267,8 +272,9 @@ class TestGetAgentMetricsRoute:
             _test_app.dependency_overrides.clear()
 
         assert response.status_code == 200
-        assert response.json() == fake_metrics
+        assert response.json() == {**fake_metrics, "turns": {"count": 5, "cost_per_turn_usd": 0.0042}}
         mock_compute.assert_called_once()
+        mock_usage.assert_called_once_with("postgresql://fake/tenantdb", str(ready_agent.id), 7)
 
     async def test_window_days_query_param_forwarded_to_service(self):
         """?window_days=30 is forwarded to compute_agent_metrics."""
@@ -286,6 +292,7 @@ class TestGetAgentMetricsRoute:
                     "app.api.v1.metrics.compute_agent_metrics",
                     return_value={"window_days": 30},
                 ) as mock_compute,
+                patch("app.api.v1.metrics.read_agent_usage", return_value={"turns": {}}),
             ):
                 async with AsyncClient(
                     transport=ASGITransport(app=_test_app), base_url="http://test"
@@ -298,3 +305,164 @@ class TestGetAgentMetricsRoute:
 
         assert response.status_code == 200
         mock_compute.assert_called_once_with("postgresql://fake/tenantdb", 30)
+
+
+class TestTheLedgerNeverTakesTheHeadlineDown:
+    """A ledger read that fails costs the `turns` key and nothing else.
+
+    The KPIs come from `turn_metrics`; the whole-turn cost comes from
+    `model_calls` in the same database and enriches them. A 500 for the Live
+    region because the enrichment failed is the tail wagging the dog.
+    """
+
+    async def _get_metrics(self, usage_side_effect):
+        fake_tenant = _make_fake_tenant()
+        agent = _make_ready_agent(fake_tenant)
+        mock_db = _make_mock_db_returning_agent(agent)
+        fake_metrics = {"sample_size": 42, "window_days": 7, "cost_per_session": 0.03}
+
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+        try:
+            with (
+                patch("app.api.v1.metrics.fernet_decrypt", return_value="postgresql://secret@host/db"),
+                patch("app.api.v1.metrics.compute_agent_metrics", return_value=dict(fake_metrics)),
+                patch("app.api.v1.metrics.read_agent_usage", side_effect=usage_side_effect),
+                patch.object(metrics_module, "log") as mock_log,
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=_test_app), base_url="http://test"
+                ) as client:
+                    response = await client.get(f"/api/v1/agents/{agent.id}/metrics")
+        finally:
+            _test_app.dependency_overrides.clear()
+        return response, fake_metrics, mock_log, str(agent.id)
+
+    async def test_a_broken_ledger_read_still_returns_200_with_the_metrics(self):
+        response, fake_metrics, _, _ = await self._get_metrics(
+            RuntimeError("tenant DB refused the connection")
+        )
+
+        assert response.status_code == 200
+        assert response.json() == fake_metrics
+        assert "turns" not in response.json()
+
+    async def test_the_failure_line_names_the_agent_and_the_exception_and_no_dsn(self):
+        response, _, mock_log, agent_id = await self._get_metrics(
+            RuntimeError("could not connect to postgresql://secret@host/db")
+        )
+
+        assert response.status_code == 200
+        event, fields = mock_log.error.call_args.args[0], mock_log.error.call_args.kwargs
+        assert event == "agent_metrics.ledger_failed"
+        assert fields["agent_id"] == agent_id
+        assert fields["window_days"] == 7
+        assert fields["error_type"] == "RuntimeError"
+        assert fields["detail"] == "the whole-turn cost is omitted rather than reported as zero"
+        assert "conn_str" not in fields
+
+    async def test_a_tenant_db_without_the_ledger_table_warns_and_omits_turns(self):
+        """A tenant DB older than alembic_tenant 0019 has no model_calls at all."""
+        response, fake_metrics, mock_log, agent_id = await self._get_metrics(
+            psycopg2.errors.UndefinedTable('relation "model_calls" does not exist')
+        )
+
+        assert response.status_code == 200
+        assert response.json() == fake_metrics
+        mock_log.error.assert_not_called()
+        event, fields = mock_log.warning.call_args.args[0], mock_log.warning.call_args.kwargs
+        assert event == "agent_metrics.ledger_absent"
+        assert fields["agent_id"] == agent_id
+        assert fields["window_days"] == 7
+        assert fields["detail"] == (
+            "tenant DB predates alembic_tenant 0019, so no turn cost is reported"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Route layer: GET /agents/{agent_id}/usage
+# ---------------------------------------------------------------------------
+
+
+class TestGetAgentUsageRoute:
+    async def test_returns_404_on_cross_tenant_idor(self):
+        fake_tenant = _make_fake_tenant()
+        other_tenant = _make_fake_tenant()
+        foreign_agent = _make_ready_agent(other_tenant)
+        mock_db = _make_mock_db_returning_agent(foreign_agent)
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+        try:
+            with patch("app.api.v1.metrics.read_agent_usage") as mock_usage:
+                async with AsyncClient(
+                    transport=ASGITransport(app=_test_app), base_url="http://test"
+                ) as client:
+                    response = await client.get(f"/api/v1/agents/{foreign_agent.id}/usage")
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert response.status_code == 404
+        mock_usage.assert_not_called()
+
+    async def test_returns_404_when_neon_connection_string_absent(self):
+        fake_tenant = _make_fake_tenant()
+        agent = _make_ready_agent(fake_tenant)
+        agent.neon_connection_string = None
+        mock_db = _make_mock_db_returning_agent(agent)
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=_test_app), base_url="http://test"
+            ) as client:
+                response = await client.get(f"/api/v1/agents/{agent.id}/usage")
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Agent database not provisioned"
+
+    async def test_returns_the_usage_dict_and_forwards_window_days(self):
+        fake_tenant = _make_fake_tenant()
+        agent = _make_ready_agent(fake_tenant)
+        mock_db = _make_mock_db_returning_agent(agent)
+        fake_usage = {
+            "window_days": 30,
+            "price_version": "2026-08-23.1",
+            "total": {"calls": 31, "cost_usd": 0.0209808, "cost_zar": 0.336, "unpriced_calls": 0},
+            "turns": {"calls": 31, "cost_usd": 0.0209808, "cost_zar": 0.336, "unpriced_calls": 0,
+                      "count": 5, "cost_per_turn_usd": 0.00419616},
+            "by_purpose": [], "by_day": [], "by_conversation": [],
+        }
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+        try:
+            with (
+                patch("app.api.v1.metrics.fernet_decrypt", return_value="postgresql://fake/tenantdb"),
+                patch("app.api.v1.metrics.read_agent_usage", return_value=fake_usage) as mock_usage,
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=_test_app), base_url="http://test"
+                ) as client:
+                    response = await client.get(f"/api/v1/agents/{agent.id}/usage?window_days=30")
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        assert response.json() == fake_usage
+        mock_usage.assert_called_once_with("postgresql://fake/tenantdb", str(agent.id), 30)
+
+    async def test_window_days_above_ninety_is_422(self):
+        fake_tenant = _make_fake_tenant()
+        agent = _make_ready_agent(fake_tenant)
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: _make_mock_db_returning_agent(agent)
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=_test_app), base_url="http://test"
+            ) as client:
+                response = await client.get(f"/api/v1/agents/{agent.id}/usage?window_days=91")
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert response.status_code == 422
