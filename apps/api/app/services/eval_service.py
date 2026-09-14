@@ -111,6 +111,7 @@ from app.domain.judge_identity import JUDGE_PROMPT_VERSION, JudgeIdentity
 from app.domain.judge_record import JudgeRecord, scenario_verdict
 from app.domain.model_call import ModelCall
 from app.services.clarifying_check import CLARIFYING_CHECK_KEY
+from app.services.embedding_ledger import EMBED_QUERY, VOYAGE_PROVIDER, record_embedding
 from app.services.embedding_service import EMBEDDING_MODEL, _get_vo
 from app.services.judge_llm import build_judge_llm
 
@@ -1426,10 +1427,25 @@ class _VoyageRagasEmbedding(BaseRagasEmbedding):
     keep relevancy scored in the same vector space the corpus was embedded in
     (voyage-3, pinned by embedding_service). Scoring it through a different
     embedding model would measure the model swap, not the answer.
+
+    One row per `embed_text` call under `embed_query`, billed to the run's ledger
+    like the four judge purposes beside it (#265). Relevancy is the only metric
+    that embeds, and each call it makes is its own Voyage request.
     """
+
+    def __init__(self, ledger: LedgerContext):
+        super().__init__()
+        self._ledger = ledger
 
     def embed_text(self, text: str, **kwargs) -> list[float]:  # noqa: ARG002
         result = _get_vo().embed([text], model=EMBEDDING_MODEL, input_type="query")
+        record_embedding(
+            self._ledger,
+            purpose=EMBED_QUERY,
+            provider=VOYAGE_PROVIDER,
+            model=EMBEDDING_MODEL,
+            input_tokens=result.total_tokens,
+        )
         return result.embeddings[0]
 
     async def aembed_text(self, text: str, **kwargs) -> list[float]:  # noqa: ARG002
@@ -1676,7 +1692,7 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
     # sample Ragas would reject never reaches a metric.
     dataset = EvaluationDataset.from_list(samples)
 
-    metrics = _build_ragas_metrics(ledger, _VoyageRagasEmbedding())
+    metrics = _build_ragas_metrics(ledger, _VoyageRagasEmbedding(ledger))
 
     df = pd.DataFrame(asyncio.run(_score_samples(metrics, list(dataset.samples), resolved_inputs=_resolved_inputs(valid_scenarios))))
 

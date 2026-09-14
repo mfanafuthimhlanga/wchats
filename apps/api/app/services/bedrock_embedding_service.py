@@ -31,6 +31,13 @@ Design decisions:
         (outside the retry loop) since a consistent dim mismatch is a
         configuration error, not a transient API error.
 
+    One ledger row per invoke_model call (#265). Titan takes one inputText per
+        request, so a 500-chunk ingest makes 500 requests and leaves 500 rows,
+        which is what keeps `calls` meaning provider requests in every rollup.
+        The cost is one psycopg2 connection per row, the same cost every chat
+        purpose already pays. A body carrying no `inputTextTokenCount` leaves no
+        row at all rather than one claiming zero tokens.
+
     active_embedding_model(): Returns the effective model id for the current
         provider. Used to populate embeddings.model so the corpus records
         which model produced each vector.
@@ -46,6 +53,8 @@ import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
+from app.core.model_client import LedgerContext
+from app.services.embedding_ledger import BEDROCK_PROVIDER, purpose_for, record_embedding
 
 log = structlog.get_logger(__name__)
 
@@ -76,19 +85,23 @@ def _get_bedrock():
     wait=wait_exponential(multiplier=1, min=2, max=30),
     stop=stop_after_attempt(5),
 )
-def _invoke_one(text: str) -> list[float]:
+def _invoke_one(text: str) -> dict:
     """Invoke Bedrock Titan v2 for a single input text string.
 
     Retries on any Exception (same policy as _embed_batch in embedding_service.py):
     transient network errors, throttling, and service unavailable responses all
-    benefit from exponential backoff. Returns the raw embedding vector without
-    dimension validation — the guard lives in embed_texts().
+    benefit from exponential backoff. Returns the parsed body without dimension
+    validation. The guard lives in embed_texts().
+
+    The whole body rather than the vector alone, because the ledger row needs
+    `inputTextTokenCount` and it arrives on the same response (#265).
 
     Args:
         text: A single text string to embed.
 
     Returns:
-        Float vector as returned by Bedrock (length should equal EMBED_DIM).
+        The parsed response body: `embedding` (length should equal EMBED_DIM) and
+        `inputTextTokenCount`.
     """
     response = _get_bedrock().invoke_model(
         modelId=settings.BEDROCK_EMBED_MODEL_ID,
@@ -98,16 +111,49 @@ def _invoke_one(text: str) -> list[float]:
             "normalize": True,
         }),
     )
-    return json.loads(response["body"].read())["embedding"]
+    return json.loads(response["body"].read())
 
 
-def embed_texts(texts: list[str], input_type: str) -> list[list[float]]:
+def _invoke_and_record(text: str, purpose: str, ledger: LedgerContext) -> list[float]:
+    """One text to one vector, leaving one ledger row for the request it made.
+
+    The row is written BEFORE the dimension guard, because the request was made
+    and paid for whether or not the vector is usable. Recording after the guard
+    would drop the spend of exactly the call that went wrong.
+
+    Raises:
+        RuntimeError: Bedrock returned a vector whose length is not EMBED_DIM.
+    """
+    body = _invoke_one(text)
+    record_embedding(
+        ledger,
+        purpose=purpose,
+        provider=BEDROCK_PROVIDER,
+        model=settings.BEDROCK_EMBED_MODEL_ID,
+        input_tokens=body.get("inputTextTokenCount"),
+    )
+    vector = body["embedding"]
+    if len(vector) != EMBED_DIM:
+        raise RuntimeError(
+            f"bedrock embedding dim mismatch: got {len(vector)}, expected {EMBED_DIM}"
+        )
+    return vector
+
+
+def embed_texts(texts: list[str], input_type: str, ledger: LedgerContext) -> list[list[float]]:
     """Embed a list of text strings using Bedrock Titan Text Embeddings v2.
 
     Loops one Titan invoke_model call per text (Titan v2 accepts a single
-    inputText per call — no batching API). input_type is accepted for interface
-    parity with the Voyage/Cohere seam and logged at debug, but Titan v2 has no
+    inputText per call, with no batching API). input_type picks the ledger purpose
+    (`embed_query` or `embed_document`) and is logged at debug; Titan v2 has no
     document/query prompt distinction so it does not affect the call body.
+
+    ONE LEDGER ROW PER invoke_model, NOT PER embed_texts CALL (#265). Each loop
+    iteration is one provider request, and `calls` in every rollup counts provider
+    requests for every other purpose, so a Titan row that covered a whole batch
+    would make `calls` mean two different things in one table. Recording inside
+    the loop also means the dimension guard below cannot lose spend: the texts
+    already invoked are already recorded when it raises.
 
     Dimension guard: after each _invoke_one() call, asserts len(vector) == EMBED_DIM.
     If Bedrock returns an unexpected dimension (e.g., 512 from a model config
@@ -116,7 +162,9 @@ def embed_texts(texts: list[str], input_type: str) -> list[list[float]]:
 
     Args:
         texts:      List of text strings to embed.
-        input_type: "document" or "query" — accepted for interface parity.
+        input_type: "document" or "query". Picks the ledger purpose.
+        ledger:     who this spend is billed to and where each row goes. Required,
+                    because a call that records nothing is issue #265.
 
     Returns:
         List of EMBED_DIM-dimensional float vectors, one per input text.
@@ -124,7 +172,9 @@ def embed_texts(texts: list[str], input_type: str) -> list[list[float]]:
 
     Raises:
         RuntimeError: If Bedrock returns a vector with length != EMBED_DIM.
+        ValueError:   input_type is neither "query" nor "document".
     """
+    purpose = purpose_for(input_type)
     if not texts:
         return []
 
@@ -134,15 +184,7 @@ def embed_texts(texts: list[str], input_type: str) -> list[list[float]]:
         input_type=input_type,
     )
 
-    result: list[list[float]] = []
-    for text in texts:
-        vector = _invoke_one(text)
-        if len(vector) != EMBED_DIM:
-            raise RuntimeError(
-                f"bedrock embedding dim mismatch: got {len(vector)}, expected {EMBED_DIM}"
-            )
-        result.append(vector)
-    return result
+    return [_invoke_and_record(text, purpose, ledger) for text in texts]
 
 
 def active_embedding_model() -> str:

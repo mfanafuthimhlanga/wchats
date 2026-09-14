@@ -55,12 +55,37 @@ import structlog
 
 from app.core.database import get_sync_db
 from app.core.log_bounds import log_failure
+from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.services import bedrock_embedding_service
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
+
+
+def _dsn_and_ledger(agent: Agent) -> tuple[str, LedgerContext]:
+    """The pooled dsn for the DML, and who the re-embed's spend is billed to.
+
+    Both read while the control-DB session is still open, the rule
+    `validators.py:_ledger_for` states. A detached Agent raises on attribute
+    access rather than answering. The dsn is never logged (T-13-04-03), and it
+    reaches `ledger_recorder` and travels no further (project rule 1).
+
+    `job_id` is None. A backfill is not a job, so its rows belong to the tenant
+    and the agent and to no run; the daily rollup counts them and a per-job read
+    does not.
+    """
+    conn_str = fernet_decrypt(
+        require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string")
+    )
+    return conn_str, LedgerContext(
+        tenant_id=str(agent.tenant_id),
+        agent_id=str(agent.id),
+        job_id=None,
+        recorder=ledger_recorder(conn_str),
+    )
+
 
 # Batch size: small enough that each commit completes quickly (resumability),
 # large enough to amortise Bedrock per-call overhead.
@@ -81,7 +106,7 @@ def reembed_corpus(self, agent_id: str) -> dict:
     Selects all chunks whose embeddings.model IS DISTINCT FROM the active Bedrock
     model id (includes chunks with no embedding row — NULL IS DISTINCT FROM target
     is TRUE), re-embeds them in batches using
-    bedrock_embedding_service.embed_texts(texts, "document"), and upserts each via
+    bedrock_embedding_service.embed_texts(texts, "document", ledger), and upserts each via
     INSERT ... ON CONFLICT (chunk_id) DO UPDATE SET model=..., vector=..., created_at=now().
 
     Each batch is committed before fetching the next, making the task resumable:
@@ -115,7 +140,7 @@ def reembed_corpus(self, agent_id: str) -> dict:
             return {"agent_id": agent_id, "total_reembedded": 0, "model": target_model}
 
         # conn_str and direct_conn_str are NEVER logged (T-13-04-03)
-        conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))           # pooled  → DML
+        conn_str, ledger = _dsn_and_ledger(agent)                                                                             # pooled  → DML
         direct_conn_str = fernet_decrypt(require_ciphertext(agent.neon_direct_connection_string, "agents.neon_direct_connection_string"))  # direct → REINDEX
 
     # ------------------------------------------------------------------
@@ -160,7 +185,7 @@ def reembed_corpus(self, agent_id: str) -> dict:
 
             # Re-embed via Bedrock Titan v2 using the "document" input type.
             # embed_texts raises RuntimeError if dim != 1024 (dim guard in 13-02).
-            vectors = bedrock_embedding_service.embed_texts(texts, "document")
+            vectors = bedrock_embedding_service.embed_texts(texts, "document", ledger)
 
             # Write-level idempotency: ON CONFLICT (chunk_id) DO UPDATE.
             # Safe to re-run — no duplicate rows, just model + vector overwrite.

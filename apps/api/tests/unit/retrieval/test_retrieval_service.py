@@ -28,6 +28,7 @@ from app.services.retrieval_service import (
     vector_search,
     verified_qa_lookup,
 )
+from tests.model_doubles import ledger
 
 # ---------------------------------------------------------------------------
 # RetrievalStrategy defaults
@@ -75,11 +76,18 @@ class TestEmbedQuery:
 
     @patch("app.services.retrieval_service._get_vo")
     def test_uses_query_input_type(self, mock_get_vo):
-        mock_vo = MagicMock()
-        mock_vo.embed.return_value.embeddings = [[0.1] * 1024]
-        mock_get_vo.return_value = mock_vo
+        """`total_tokens` is a real int, not a MagicMock attribute.
 
-        result = embed_query("what is the refund policy?")
+        Without it `ModelCall` refuses the row, `record_embedding` swallows the
+        refusal, and every assertion below still passes while the ledger path
+        runs entirely through its failure branch (#265 review).
+        """
+        mock_vo = MagicMock()
+        mock_vo.embed.return_value = MagicMock(embeddings=[[0.1] * 1024], total_tokens=8)
+        mock_get_vo.return_value = mock_vo
+        rows = []
+
+        result = embed_query("what is the refund policy?", ledger(rows))
 
         mock_vo.embed.assert_called_once_with(
             ["what is the refund policy?"],
@@ -87,16 +95,17 @@ class TestEmbedQuery:
             input_type="query",
         )
         assert result == [0.1] * 1024
+        assert [(row.purpose, row.input_tokens) for row in rows] == [("embed_query", 8)]
 
     @patch("app.services.retrieval_service._get_vo")
     def test_returns_first_embedding(self, mock_get_vo):
         vec_a = [0.1] * 1024
         vec_b = [0.9] * 1024
         mock_vo = MagicMock()
-        mock_vo.embed.return_value.embeddings = [vec_a, vec_b]
+        mock_vo.embed.return_value = MagicMock(embeddings=[vec_a, vec_b], total_tokens=9)
         mock_get_vo.return_value = mock_vo
 
-        result = embed_query("query")
+        result = embed_query("query", ledger())
         assert result == vec_a  # always index [0]
 
 

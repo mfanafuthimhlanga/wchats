@@ -432,3 +432,72 @@ def test_celery_app_includes_runtime_retrieve():
     assert "app.worker.tasks.runtime.retrieve" in includes, (
         f"runtime.retrieve not in celery_app include: {includes}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The embedding's ledger row bills to this turn (#265)
+# ---------------------------------------------------------------------------
+
+def test_retrieve_and_rank_bills_the_embedding_to_this_turn():
+    """The query embedding is retrieval spend, so its row carries the turn's
+    job_id and the agent's tenant. Before #265 the call left no row at all and
+    retrieval cost per turn read as zero in every rollup.
+
+    The ledger built here is what `embed_query` records through, so an argument
+    dropped at this call site is a turn whose retrieval spend is invisible.
+    """
+    from app.worker.tasks.runtime.retrieve import retrieve_and_rank
+
+    job_id = str(uuid.uuid4())
+    agent_id = str(uuid.uuid4())
+    tenant_id = str(uuid.uuid4())
+    agent = _make_agent(agent_id=agent_id)
+    agent.tenant_id = tenant_id
+    job = _make_job(job_id=job_id)
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = None
+    mock_db.get.side_effect = [agent, job]
+
+    mock_db_ctx = MagicMock()
+    mock_db_ctx.__enter__ = MagicMock(return_value=mock_db)
+    mock_db_ctx.__exit__ = MagicMock(return_value=False)
+
+    seen: list = []
+    recorder_dsns: list = []
+
+    def fake_embed_query(query, ledger):
+        seen.append(ledger)
+        return [0.2] * 1024
+
+    def fake_ledger_recorder(dsn):
+        recorder_dsns.append(dsn)
+        return lambda call: None
+
+    with (
+        patch("app.worker.tasks.runtime.retrieve.get_sync_db", return_value=mock_db_ctx),
+        patch("app.worker.tasks.runtime.retrieve.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.retrieve.ledger_recorder", fake_ledger_recorder),
+        patch("app.worker.tasks.runtime.retrieve.embed_query", fake_embed_query),
+        patch("app.worker.tasks.runtime.retrieve.verified_qa_lookup", return_value=None),
+        patch("app.worker.tasks.runtime.retrieve.rrf_fuse", return_value=RrfFusion(
+            fused=_empty("rrf"),
+            vector_candidates=_empty("vector"),
+            bm25_candidates=_empty("bm25"),
+        )),
+        patch("app.worker.tasks.runtime.retrieve.rerank", return_value=_empty("rerank")),
+        patch("app.worker.tasks.runtime.retrieve.build_trace", return_value={}),
+        patch("app.worker.tasks.runtime.retrieve.emit"),
+    ):
+        retrieve_and_rank.run(job_id=job_id, agent_id=agent_id, query="test")
+
+    assert len(seen) == 1, f"Expected one embedding call, got {len(seen)}"
+    ledger = seen[0]
+    assert ledger.job_id == job_id
+    assert ledger.agent_id == agent_id
+    assert ledger.tenant_id == tenant_id
+    # The row has to land in the TENANT's database, and LedgerContext holds no
+    # dsn to assert on (project rule 1), so the recorder's argument is the check.
+    assert recorder_dsns == ["postgresql://tenant"], (
+        f"The recorder must be bound to the decrypted tenant dsn, got {recorder_dsns!r}"
+    )

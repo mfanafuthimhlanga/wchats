@@ -352,6 +352,30 @@ def test_embed_and_migrate_calls_voyage_via_service(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Test 3b: the embedding's ledger row bills to this ingest job (#265)
+# ---------------------------------------------------------------------------
+
+
+def test_embed_and_migrate_bills_the_embedding_to_this_job(monkeypatch):
+    """The ledger handed to embed_chunks carries the three ids the chain already
+    holds, so an ingest's embedding spend reads back under its own job.
+
+    Before #265 the call left no row at all and embedding cost per ingest was
+    unknown in every rollup. An argument dropped at this call site puts it back.
+    """
+    mock_db, mock_dml_conn, mock_reindex_conn, _, _, mock_embed, mock_emit, _ = _build_standard_mocks()
+
+    _run_task_with_mocks(monkeypatch, mock_db, mock_dml_conn, mock_reindex_conn, mock_embed, mock_emit)
+
+    ledger = mock_embed.call_args[0][1]
+    assert (ledger.tenant_id, ledger.agent_id, ledger.job_id) == (
+        JOB.tenant_id,
+        JOB.agent_id,
+        JOB.job_id,
+    ), f"Expected the chain's three ids on the ledger but got {ledger!r}"
+
+
+# ---------------------------------------------------------------------------
 # Test 4: ON CONFLICT (chunk_id) DO UPDATE SQL shape
 # ---------------------------------------------------------------------------
 

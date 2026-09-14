@@ -48,6 +48,7 @@ import structlog
 
 from app.core.config import settings
 from app.core.log_bounds import log_failure
+from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.redis_tls import redis_ssl_kwargs
 from app.domain.context_frame import (
     RETRIEVED_CONTEXT_FOOTER as _RETRIEVED_CONTEXT_FOOTER,
@@ -92,6 +93,61 @@ def _get_qembed_redis() -> redis_lib.Redis:
         _ssl_opts: dict = redis_ssl_kwargs(_url_clean)
         _qembed_redis = redis_lib.from_url(_url_clean, **_ssl_opts)
     return _qembed_redis
+
+
+def _cached_query_vector(cache_key: str) -> list[float] | None:
+    """The stored vector for this key, or None when Redis has none or cannot answer.
+
+    Its own try, so a read failure costs one provider call and nothing else.
+    """
+    try:
+        cached = _get_qembed_redis().get(cache_key)
+    except Exception as exc:  # noqa: BLE001
+        log_failure(log, "retrieve_tool.cache_error", exc, note="cache read failed, embedding directly")
+        return None
+    if cached is None:
+        return None
+    log.debug("retrieve_tool.cache_hit", key_prefix="qembed:")
+    return json.loads(cached)  # type: ignore[arg-type]  # sync redis client returns bytes|str
+
+
+def _store_query_vector(cache_key: str, vector: list[float]) -> None:
+    """Keep this vector for an hour. A write failure costs the next turn a call."""
+    try:
+        _get_qembed_redis().setex(cache_key, 3600, json.dumps(vector))
+    except Exception as exc:  # noqa: BLE001
+        log_failure(log, "retrieve_tool.cache_error", exc, note="cache write failed, vector still returned")
+
+
+def _embed_with_cache(q: str, ledger: LedgerContext) -> list[float]:
+    """The query vector, from Redis when it is there and from the provider when not.
+
+    D-13: read-through cache, key `qembed:<sha256-hex-of-query-utf8>`, TTL 3600s.
+    Repeat questions cost zero provider calls (supports D-09 $0 path). The cache
+    is an optimisation, never a correctness dependency, so a Redis failure on
+    either side of the provider call is logged and the vector still comes back.
+
+    THE PROVIDER CALL SITS BETWEEN THE TWO CACHE OPERATIONS AND OUTSIDE BOTH
+    TRIES. One try around all three ran the embedding a second time whenever
+    `setex` raised after a successful call, so one question was paid for twice
+    and left two `embed_query` ledger rows (#265 review). The three steps fail
+    independently now, and this function makes at most one provider call.
+
+    A cache hit spends nothing and leaves no ledger row, which is the honest
+    reading of a turn that made no provider call. A miss records one.
+
+    Runs in an executor thread, so `ledger` is handed in. Reading a ContextVar
+    here would see the default, the Pitfall 4 rule every seam in this module
+    follows.
+    """
+    cache_key = "qembed:" + hashlib.sha256(q.encode("utf-8")).hexdigest()
+    cached = _cached_query_vector(cache_key)
+    if cached is not None:
+        return cached
+    vector = embed_query(q, ledger)
+    _store_query_vector(cache_key, vector)
+    return vector
+
 
 # ---------------------------------------------------------------------------
 # Module-level constants
@@ -218,6 +274,25 @@ _verified_session_token_var: ContextVar[str] = ContextVar("verified_session_toke
 # an empty job_id and a warning — proving the ContextVar plumbing is exercised
 # when a real job_id IS set (see retrieve_tool's Pitfall 4 local-read comment).
 _job_id_var: ContextVar[str] = ContextVar("job_id", default="")
+
+
+def _embedding_ledger() -> LedgerContext:
+    """Who this turn's query embedding is billed to, from the bound tool context.
+
+    Call it in an async tool body and hand the result to the executor. The four
+    ContextVars are read here, not in the thread, the Pitfall 4 rule above.
+
+    An unbound `job_id` is None rather than "": ModelCall refuses an empty string
+    for an optional id, and None is how the ledger spells "no job", which is what
+    an empty var means.
+    """
+    return LedgerContext(
+        tenant_id=_tenant_id_var.get(),
+        agent_id=_agent_id_var.get() or None,
+        job_id=_job_id_var.get() or None,
+        recorder=ledger_recorder(_conn_str_var.get()),
+    )
+
 
 # OPS-06: context-window budget used for ctx_window_utilization (retrieved_tokens
 # / CONTEXT_WINDOW_BUDGET). Matches the 200k-token model window referenced in
@@ -712,6 +787,9 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     # D1/P1b: same rule, same reason — read the mode into a local here rather
     # than inside the executor lambda, which would see the default.
     side_effects = _side_effects_var.get()
+    # #265: the embedding's ledger row bills to this turn. Built here, in the
+    # async body, for the same Pitfall 4 reason as every local above.
+    ledger = _embedding_ledger()
 
     if count > _RETRIEVE_CALLS_PER_TURN_MAX:
         log.warning(
@@ -754,28 +832,8 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     # Run blocking retrieval calls in executor to keep the async tool cooperative.
     loop = asyncio.get_running_loop()
 
-    # D-13: Redis read-through cache for query embeddings.
-    # Key: qembed:<sha256-hex-of-query-utf8>  |  TTL: 3600s (1 hour)
-    # Repeat questions cost zero Voyage calls (supports D-09 $0 path).
-    # Any cache error falls back to a direct embed_query call — the cache is
-    # an optimisation, never a correctness dependency.
-    def _embed_with_cache(q: str) -> list[float]:
-        cache_key = "qembed:" + hashlib.sha256(q.encode("utf-8")).hexdigest()
-        try:
-            rc = _get_qembed_redis()
-            cached = rc.get(cache_key)
-            if cached is not None:
-                log.debug("retrieve_tool.cache_hit", key_prefix="qembed:")
-                return json.loads(cached)  # type: ignore[arg-type]  # sync redis client returns bytes|str
-            vector = embed_query(q)
-            rc.setex(cache_key, 3600, json.dumps(vector))
-            return vector
-        except Exception as exc:  # noqa: BLE001
-            log_failure(log, "retrieve_tool.cache_error", exc, note="falling back to direct embed_query")
-            return embed_query(q)
-
     query_vector: list[float] = await loop.run_in_executor(
-        None, lambda: _embed_with_cache(query)
+        None, lambda: _embed_with_cache(query, ledger)
     )
     # conn_str and strategy are locals captured from the async body — safe for
     # executor threads (no ContextVar.get() calls inside the lambdas).

@@ -3,7 +3,8 @@ retrieval_service — Core retrieval primitives for M3 Hybrid Retrieval.
 
 Implements:
   - RetrievalStrategy: Pydantic config model (fetched from agents.retrieval_strategy JSONB)
-  - embed_query: Voyage query embedding (input_type="query" — critical distinction from "document")
+  - embed_queries / embed_query: query embedding through the provider seam,
+    one ledger row per call. input_type="query" is the critical distinction from "document"
   - vector_search: pgvector HNSW cosine search against tenant embeddings
   - bm25_search: native tsvector + ts_rank_cd only (deprecated Neon extensions not used)
   - rrf_fuse: Single SQL CTE with FULL OUTER JOIN + RRF formula (k=60 hardcoded SQL literal)
@@ -41,7 +42,8 @@ from pydantic import BaseModel, ConfigDict
 from app.core.config import settings
 from app.core.model_client import LedgerContext, route_for
 from app.domain.retrieved_context import RetrievedChunk, RetrievedContext
-from app.services.embedding_service import _get_vo
+from app.services.embedding_ledger import EMBED_QUERY, VOYAGE_PROVIDER, record_embedding
+from app.services.embedding_service import EMBEDDING_MODEL, _get_vo
 from app.services.tool_loop import first_choice
 
 log = structlog.get_logger(__name__)
@@ -74,11 +76,12 @@ class RetrievalStrategy(BaseModel):
 # Query embedding
 # ---------------------------------------------------------------------------
 
-def embed_query(query_text: str) -> list[float]:
-    """Embed a user query using the configured EMBEDDING_PROVIDER.
+def embed_queries(texts: list[str], ledger: LedgerContext) -> list[list[float]]:
+    """Embed one or more query strings using the configured EMBEDDING_PROVIDER.
 
     When EMBEDDING_PROVIDER=bedrock (default): delegates to
-    bedrock_embedding_service.embed_texts([query_text], "query")[0].
+    bedrock_embedding_service.embed_texts(texts, "query", ledger), which leaves
+    one ledger row per text because Titan takes one text per request.
     Titan v2 has no document/query distinction but input_type is passed for
     interface parity and future provider flexibility.
 
@@ -90,17 +93,45 @@ def embed_query(query_text: str) -> list[float]:
     embed_chunks() (embedding_service). Mixed-space vectors make cosine
     similarity meaningless (T-13-02-01).
 
+    The batch form is the one with a body because the provider branch was written
+    twice, here and in rrf_fuse_with_expansion, and a ledger row added to one copy
+    and not the other is half a query's retrieval spend (#265). One row per
+    provider request, so the whole variant set is one Voyage call and one row.
+
     Args:
-        query_text: The raw user query string.
+        texts:  Raw query strings, one or more.
+        ledger: who this spend is billed to and where the row goes.
 
     Returns:
-        1024-dimensional float vector (matches embeddings.vector VECTOR(1024) column).
+        One 1024-dimensional float vector per text, in the order given.
     """
     if settings.EMBEDDING_PROVIDER == "bedrock":
         # Lazy import — keeps this module importable without boto3/AWS creds
         import app.services.bedrock_embedding_service as _bedrock_svc  # noqa: PLC0415
-        return _bedrock_svc.embed_texts([query_text], "query")[0]
-    return _get_vo().embed([query_text], model="voyage-3", input_type="query").embeddings[0]
+        return _bedrock_svc.embed_texts(texts, "query", ledger)
+    result = _get_vo().embed(texts, model=EMBEDDING_MODEL, input_type="query")
+    record_embedding(
+        ledger,
+        purpose=EMBED_QUERY,
+        provider=VOYAGE_PROVIDER,
+        model=EMBEDDING_MODEL,
+        input_tokens=result.total_tokens,
+    )
+    return result.embeddings
+
+
+def embed_query(query_text: str, ledger: LedgerContext) -> list[float]:
+    """The one-query form of `embed_queries`, which is what every turn calls.
+
+    Args:
+        query_text: The raw user query string.
+        ledger:     who this spend is billed to and where the row goes. Required,
+                    because a call that records nothing is issue #265.
+
+    Returns:
+        1024-dimensional float vector (matches embeddings.vector VECTOR(1024) column).
+    """
+    return embed_queries([query_text], ledger)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -527,14 +558,8 @@ def rrf_fuse_with_expansion(
 
     variants = _expand_query(query_text, ledger)
 
-    # Batch-embed ALL variants through the provider seam (no direct Voyage call when bedrock)
-    if settings.EMBEDDING_PROVIDER == "bedrock":
-        import app.services.bedrock_embedding_service as _bedrock_svc  # noqa: PLC0415
-        all_embeddings = _bedrock_svc.embed_texts(variants, "query")
-    else:
-        all_embeddings = _get_vo().embed(
-            variants, model="voyage-3", input_type="query"
-        ).embeddings
+    # Batch-embed ALL variants through the one provider seam, which records the row.
+    all_embeddings = embed_queries(variants, ledger)
 
     # Merge RRF results across all variants, keeping each chunk's best score
     all_fused: dict[str, RetrievedChunk] = {}

@@ -26,6 +26,13 @@ Model pinning decision (Voyage fallback path):
     any input list into batches of exactly BATCH_SIZE before calling the API.
     (Bedrock Titan v2 loops per-text internally in bedrock_embedding_service.)
 
+Ledger (#265):
+    Every embedding call leaves a `model_calls` row under purpose `embed_document`,
+    one per provider request: one per 128-text Voyage batch, and one per
+    bedrock_embedding_service.embed_texts call. The `ledger` argument carries the
+    tenant, agent and job ids and the recorder bound to the tenant database; it
+    holds no connection string and has no field that could (project rule 1).
+
 Count-mismatch guard:
     After collecting all embeddings, embed_chunks() asserts
     len(all_embeddings) == len(texts). If the provider returns a different
@@ -59,6 +66,8 @@ import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
+from app.core.model_client import LedgerContext
+from app.services.embedding_ledger import EMBED_DOCUMENT, VOYAGE_PROVIDER, record_embedding
 
 log = structlog.get_logger(__name__)
 
@@ -107,8 +116,8 @@ def _get_vo():
     wait=wait_exponential(multiplier=1, min=2, max=30),
     stop=stop_after_attempt(5),
 )
-def _embed_batch(texts: list[str]) -> list[list[float]]:
-    """Embed one batch of up to BATCH_SIZE texts.
+def _embed_batch(texts: list[str], ledger: LedgerContext) -> list[list[float]]:
+    """Embed one batch of up to BATCH_SIZE texts, and record what it spent.
 
     Retries on any voyageai exception — Voyage SDK exception hierarchy
     is not exhaustively documented; tenacity defaults to "retry on any
@@ -116,22 +125,42 @@ def _embed_batch(texts: list[str]) -> list[list[float]]:
     errors will burn 5 retries and then fail the task, which is
     observable in logs. M3 may narrow this.
 
+    One ledger row per batch (#265). THE RECORDING SITS INSIDE THE RETRIED BODY,
+    after the provider has answered, so a batch that took three attempts leaves
+    one row rather than three. That holds only because `record_embedding` never
+    raises: a recorder that did would fail the attempt after the money was spent,
+    and tenacity would buy the same batch again.
+
+    `total_tokens` is this batch's figure and not a running one. The client
+    builds a fresh `EmbeddingsObject` per embed call
+    (`.venv/Lib/site-packages/voyageai/client.py:91`); see
+    `app/services/embedding_ledger.py` for why that matters to the row.
+
     Args:
-        texts: List of text strings, len(texts) <= BATCH_SIZE.
+        texts:  List of text strings, len(texts) <= BATCH_SIZE.
+        ledger: who this spend is billed to and where the row goes.
 
     Returns:
         List of 1024-dimensional float vectors, one per input text.
     """
     result = _get_vo().embed(texts, model=EMBEDDING_MODEL, input_type="document")
+    record_embedding(
+        ledger,
+        purpose=EMBED_DOCUMENT,
+        provider=VOYAGE_PROVIDER,
+        model=EMBEDDING_MODEL,
+        input_tokens=result.total_tokens,
+    )
     return result.embeddings
 
 
-def embed_chunks(texts: list[str]) -> list[list[float]]:
+def embed_chunks(texts: list[str], ledger: LedgerContext) -> list[list[float]]:
     """Embed a list of texts using the configured EMBEDDING_PROVIDER.
 
     When EMBEDDING_PROVIDER=bedrock (default): delegates to
-    bedrock_embedding_service.embed_texts(texts, "document"). Bedrock Titan v2
-    loops one call per text internally; no 128-item batching needed.
+    bedrock_embedding_service.embed_texts(texts, "document", ledger). Bedrock
+    Titan v2 loops one call per text internally, one ledger row each; no 128-item
+    batching needed.
 
     When EMBEDDING_PROVIDER=voyage (fallback): splits texts into BATCH_SIZE-item
     batches, calls _embed_batch for each, and concatenates the results.
@@ -141,7 +170,9 @@ def embed_chunks(texts: list[str]) -> list[list[float]]:
     propagating as a silent chunk_id ↔ vector mismatch.
 
     Args:
-        texts: List of pre-sanitized chunk text strings.
+        texts:  List of pre-sanitized chunk text strings.
+        ledger: who this ingest's embedding spend is billed to and where each row
+                goes. Required, because a call that records nothing is issue #265.
 
     Returns:
         List of 1024-dimensional float vectors, same order as input texts.
@@ -158,14 +189,14 @@ def embed_chunks(texts: list[str]) -> list[list[float]]:
     if settings.EMBEDDING_PROVIDER == "bedrock":
         # Lazy import — keeps this module importable without boto3/AWS creds
         import app.services.bedrock_embedding_service as _bedrock_svc  # noqa: PLC0415
-        all_embeddings = _bedrock_svc.embed_texts(texts, "document")
+        all_embeddings = _bedrock_svc.embed_texts(texts, "document", ledger)
     else:
         # Voyage fallback path (unchanged from M2)
         all_embeddings = []
         for i in range(0, len(texts), BATCH_SIZE):
             batch = texts[i : i + BATCH_SIZE]
             log.debug("embedding_service.batch", batch_start=i, batch_size=len(batch))
-            all_embeddings.extend(_embed_batch(batch))
+            all_embeddings.extend(_embed_batch(batch, ledger))
 
     if len(all_embeddings) != len(texts):
         raise RuntimeError(
