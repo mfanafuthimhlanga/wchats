@@ -1,7 +1,9 @@
 """The MCP server: one stateless POST at /mcp (#56, ADR 0004).
 
-Fifteen tools, each a one-to-one wrapper over an existing REST route: the
-fourteen lifecycle operations decision #10 lists, plus golden registration.
+Twenty tools, each a one-to-one wrapper over an existing REST route: the
+fourteen lifecycle operations decision #10 lists, golden registration and
+drafting, three listing and reading tools beside them, and get_usage, which
+says what the Agent's model calls cost.
 The server carries no business logic. A tools/call builds the tool's REST
 request and replays it against this same FastAPI app in-process, so the
 route's own auth, ownership checks, validation and status codes are the
@@ -103,20 +105,28 @@ _UPLOAD_SCHEMA: dict[str, Any] = {
 
 
 def _merge_schema(
-    path_params: tuple[str, ...], body_model: type[BaseModel] | None
+    path_params: tuple[str, ...],
+    body_model: type[BaseModel] | None,
+    query_params: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Path params plus the route's request schema, as one JSON Schema object.
 
     The body model's schema is spread at the top level so a tool call reads as
     one flat argument object; a name collision between a path param and a body
     field would silently shadow, so it fails at import instead.
+
+    A query param colliding with a body field is the same shadow from the other
+    side. `_call_tool` pops every query param out of the arguments before it
+    builds the JSON body, so a name in both places reaches the query string and
+    leaves the body without it, and the route sees a field the caller sent go
+    missing. That also fails at import.
     """
     properties: dict[str, Any] = {p: _UUID_PARAM for p in path_params}
     required = list(path_params)
     defs: dict[str, Any] = {}
     if body_model is not None:
         body = body_model.model_json_schema()
-        overlap = set(properties) & set(body.get("properties", {}))
+        overlap = (set(properties) | set(query_params)) & set(body.get("properties", {}))
         if overlap:
             raise RuntimeError(f"tool schema collision on {sorted(overlap)}")
         properties.update(body.get("properties", {}))
@@ -134,6 +144,21 @@ def _merge_schema(
     return schema
 
 
+#: get_usage takes no body, so its schema is the path param spelled the way
+#: every other tool spells it plus the one query param the route accepts. The
+#: bounds are the route's own `Query(7, ge=1, le=90)`, repeated here so a client
+#: can refuse an out-of-range window before the call, and enforced by the route
+#: either way.
+_USAGE_SCHEMA: dict[str, Any] = _merge_schema(("agent_id",), None)
+_USAGE_SCHEMA["properties"]["window_days"] = {
+    "type": "integer",
+    "minimum": 1,
+    "maximum": 90,
+    "default": 7,
+    "description": "How many CAT days to price, today included.",
+}
+
+
 class _Tool:
     """One tool row: the route it wraps and the schema callers see."""
 
@@ -146,6 +171,7 @@ class _Tool:
         path_params: tuple[str, ...],
         body_model: type[BaseModel] | None = None,
         input_schema: dict[str, Any] | None = None,
+        query_params: tuple[str, ...] = (),
     ) -> None:
         self.name = name
         self.description = description
@@ -153,10 +179,11 @@ class _Tool:
         self.path = path
         self.path_params = path_params
         self.body_model = body_model
+        self.query_params = query_params
         self.input_schema = (
             input_schema
             if input_schema is not None
-            else _merge_schema(path_params, body_model)
+            else _merge_schema(path_params, body_model, query_params)
         )
 
 
@@ -316,6 +343,18 @@ TOOLS: tuple[_Tool, ...] = (
         "GET",
         "/api/v1/agents/{agent_id}/embed-snippet",
         ("agent_id",),
+    ),
+    _Tool(
+        "get_usage",
+        "What the Agent's model calls cost over the last window_days (default "
+        "7, max 90), priced from the ledger: per purpose, per day, per "
+        "conversation, and per customer turn with every judge call included. "
+        "A null cost means a call the price book could not price, never free.",
+        "GET",
+        "/api/v1/agents/{agent_id}/usage",
+        ("agent_id",),
+        input_schema=_USAGE_SCHEMA,
+        query_params=("window_days",),
     ),
 )
 
@@ -484,6 +523,9 @@ async def _call_tool(
         )
 
     kwargs: dict[str, Any] = {}
+    params = {p: args.pop(p) for p in tool.query_params if p in args}
+    if params:
+        kwargs["params"] = params
     if tool.name == "upload_documents":
         try:
             kwargs = _build_upload(args)
