@@ -52,9 +52,9 @@ from app.core.model_client import OPENAI_PROVIDER, LedgerContext, route_for
 #: `TURN_HISTORY_MAX_ROW_CHARS` = 4000 characters, about 1000 tokens of English
 #: prose. Verdicted, that is about 1250 tokens of restated claims, about 900 of
 #: reasons and about 300 of JSON keys and punctuation, so about 2500 in all, and
-#: 4096 clears it with headroom. Ragas names the same figure in
-#: `_map_openai_params`: "Default max_tokens=1024 may not be sufficient.
-#: Consider increasing to 4096+".
+#: 4096 clears it with headroom. Ragas names the same figure in the
+#: `_map_openai_params` docstring, which says the 1024 default may not be
+#: sufficient and suggests 4096 or more through `llm_factory`.
 #:
 #: ONE NUMBER FOR EVERY JUDGE PURPOSE. A ceiling costs nothing until it is
 #: reached, so the two metrics that cannot truncate carry the same figure rather
