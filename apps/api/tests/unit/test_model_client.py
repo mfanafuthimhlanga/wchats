@@ -849,6 +849,11 @@ EVERY_PURPOSE = [
     "judge_context_precision",
     "judge_context_recall",
     "judge_retrieval_faithfulness",
+    # Added by #274. The instrument behind the gated `answer_relevancy` metric.
+    # `judge_answer_relevancy` above still bills the ragas figure, which is
+    # reported and gates nothing now; these are two Judges and two spends, so a
+    # rollup that shared a purpose could not say what the gate cost (ADR 0013).
+    "judge_relevance",
     # Added by #227 PR 2. Not a judge: it rewrites a multi-turn scenario's last
     # customer message as a standalone question so relevancy is scored against
     # what was asked. Its own row so a rollup does not report the Judge as

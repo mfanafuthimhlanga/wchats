@@ -11,7 +11,7 @@ claude mcp add --transport http wchats https://<api-host>/mcp --header "Authoriz
 ```
 
 The tenant API key (`vrd_live_...`) is the only credential (ADR 0004). `X-API-Key` works as
-the header name too. A successful connection lists twenty tools.
+the header name too. A successful connection lists twenty-one tools.
 
 ## The tools
 
@@ -25,8 +25,9 @@ the header name too. A successful connection lists twenty tools.
 | `draft_golden_scenarios` | `POST .../golden-scenarios/drafts` |
 | `get_job` | `GET /api/v1/jobs/{job_id}` |
 | `trigger_eval` | `POST /api/v1/agents/{agent_id}/eval-runs/trigger` |
-| `list_eval_runs` | `GET /api/v1/agents/{agent_id}/eval-runs` |
+| `list_eval_runs` | `GET /api/v1/agents/{agent_id}/eval-runs?kind=eval\|rejudge` |
 | `get_eval_results` | `GET /api/v1/agents/{agent_id}/eval-runs/{run_id}/results` |
+| `rejudge_eval_run` | `POST .../eval-runs/{run_id}/rejudge` |
 | `trigger_red_team` | `POST /api/v1/agents/{agent_id}/red-team-runs` |
 | `list_red_team_runs` | `GET /api/v1/agents/{agent_id}/red-team-runs` |
 | `get_red_team_run` | `GET /api/v1/agents/{agent_id}/red-team-runs/{run_id}` |
@@ -47,7 +48,12 @@ Trigger tools return immediately, and the id they return is the dispatched task,
 run. Poll the matching reader until the newest run is terminal:
 
 - `create_agent` and `upload_documents` return a job id: poll `get_job`.
-- `trigger_eval`: poll `list_eval_runs`.
+- `trigger_eval`: poll `list_eval_runs`, whose default `kind=eval` lists the runs that
+  measured the Agent.
+- `rejudge_eval_run`: poll `list_eval_runs(kind: "rejudge")`. A rejudge never appears in the
+  default listing, because it measured no agent turn and reading it as the Agent's current
+  quality would report the past as the present. Each row names the `source_run_id` it
+  rescored.
 - `trigger_red_team`: poll `list_red_team_runs`; run ids for `get_red_team_run` come from
   the list, never from the trigger response.
 - `run_checklist`: poll `list_checklist_runs`; the run id and warning ids that

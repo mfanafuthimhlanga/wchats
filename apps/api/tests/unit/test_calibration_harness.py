@@ -1876,9 +1876,26 @@ _SPLIT_SCORES = {
 }
 
 
-def _stored_payload(artifact: pathlib.Path) -> dict:
+def _stored_envelope(artifact: pathlib.Path) -> dict:
+    """The whole file. A status, the stamps, and one record per dimension."""
     with artifact.open(encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def _stored_payload(artifact: pathlib.Path) -> dict:
+    """The figures this loop measured, which live on a dimension since #274.
+
+    `compute_correlation` scores the five AI-SPEC dimensions together and reports
+    one pooled figure, so the artifact stores it under `POOLED_DIMENSION` and
+    every assertion below reads it through here. `written_at` is stamped on the
+    envelope by the writer and nothing else sets it, so it is lifted in rather
+    than read from a dimension that does not carry it.
+    """
+    envelope = _stored_envelope(artifact)
+    part = (envelope.get("dimensions") or {}).get(cc.POOLED_DIMENSION)
+    if part is None:
+        return envelope
+    return {**part, "written_at": envelope["written_at"]}
 
 
 class TestEveryScoringRunLeavesARecord:
@@ -2123,16 +2140,42 @@ class TestTheArtifactIsReadBackByTheApp:
         result = cc.compute_correlation(_judge_returning(_PERFECT, identity=identity))
         artifact = cc.write_calibration_artifact(result, tmp_path / "calibration.json")
 
-        loaded = load_calibration_status(artifact, identity)
+        loaded = load_calibration_status(artifact, {cc.POOLED_DIMENSION: identity})
 
         assert loaded == dataclasses.replace(
-            cc.calibration_record(result), written_at=loaded.written_at
+            cc.envelope_record({cc.POOLED_DIMENSION: result}),
+            written_at=loaded.written_at,
         ), "every field but the stamp the writer adds"
         assert loaded.written_at is not None
         assert loaded.calibrated is True
-        assert loaded.judge_identity == identity
+        assert loaded.judge_identity is None, "an envelope names no Judge of its own"
+        assert loaded.dimensions[cc.POOLED_DIMENSION].judge_identity == identity
 
-    def test_the_stored_file_holds_exactly_the_nineteen_keys(
+    def test_the_envelope_holds_one_record_per_dimension(
+        self, calibration_tree, tmp_path
+    ):
+        """The artifact is an envelope since #274 (ARTIFACT_VERSION 2).
+
+        A run scored by two instruments has no one Judge and no pooled kappa that
+        means anything, so the file carries a status over its parts and one
+        record per dimension. This loop has one part, named `pooled`, because it
+        scores the five AI-SPEC dimensions together.
+        """
+        calibration_tree(_FOUR_ROWS)
+        result = cc.compute_correlation(
+            _judge_returning(_PERFECT, identity=_artifact_identity())
+        )
+
+        artifact = cc.write_calibration_artifact(result, tmp_path / "calibration.json")
+
+        envelope = _stored_envelope(artifact)
+        assert list(envelope["dimensions"]) == [cc.POOLED_DIMENSION]
+        assert envelope["judge_identity"] is None, "an envelope names no Judge"
+        assert envelope["kappa"] is None, "an envelope carries no figure of its own"
+        assert envelope["dimensions"][cc.POOLED_DIMENSION]["kappa"] == pytest.approx(1.0)
+        assert envelope["artifact_version"] == 2
+
+    def test_the_stored_file_holds_exactly_the_twenty_keys(
         self, calibration_tree, tmp_path
     ):
         """A literal key set over the FILE, not over the record.
@@ -2149,6 +2192,7 @@ class TestTheArtifactIsReadBackByTheApp:
         artifact = cc.write_calibration_artifact(result, tmp_path / "calibration.json")
 
         assert set(_stored_payload(artifact)) == {
+            "dimensions",
             "status",
             "reason",
             "judge_identity",
@@ -2330,7 +2374,9 @@ class TestTheArtifactIsReadBackByTheApp:
             tmp_path / "calibration.json",
         )
 
-        loaded = load_calibration_status(artifact, _artifact_identity(model="gpt-4o-legacy"))
+        loaded = load_calibration_status(
+            artifact, {cc.POOLED_DIMENSION: _artifact_identity(model="gpt-4o-legacy")}
+        )
 
         assert loaded.calibrated is False
         assert loaded.reason == "identity_mismatch"
@@ -2364,7 +2410,81 @@ class TestTheArtifactIsReadBackByTheApp:
         assert stored["pairs"] >= 1
         assert stored["scored_pairs"] == 0, "the sheet carries no 1-5 score"
 
-        loaded = load_calibration_status(cc.CALIBRATION_ARTIFACT_JSON, identity)
+        loaded = load_calibration_status(
+            cc.CALIBRATION_ARTIFACT_JSON, {cc.POOLED_DIMENSION: identity}
+        )
 
         assert loaded.calibrated is True
         assert loaded.reason is None
+
+
+class TestTheIdentityIsAskedPerDimension:
+    """`judge_identity_for_run` answers about one dimension since #274.
+
+    A run is scored by two instruments now. Asked about the pooled rows it finds
+    two identities and answers None, which is what made every eval run report
+    `no_single_judge_identity`. Asked about one dimension it names that
+    dimension's Judge, which is the grain the artifact stores and the grain the
+    deploy summary compares on.
+
+    IT IS TESTED HERE AND NOT THROUGH `score_run`, because that loop already
+    bundles the rows per dimension and hands each bundle its own table: the
+    filter would look load-bearing there while doing nothing. This drives the
+    function with the pooled table that makes it matter.
+    """
+
+    def _pooled_table(self) -> dict:
+        ragas = JudgeIdentity(
+            model="gpt-5.6-luna", reasoning_effort="none", prompt_version="ragas-0.4.3"
+        )
+        relevance = JudgeIdentity(
+            model="gpt-5.6-luna",
+            reasoning_effort="none",
+            prompt_version="relevance-judge-v1",
+        )
+        return {
+            "identities": {"faithfulness": ragas, "answer_relevancy": relevance},
+            "result": {
+                "table": [
+                    {
+                        "scenario_id": "S-001",
+                        "dimension": "faithfulness",
+                        "judge_verdict": "PASS",
+                        "judge_identity": ragas,
+                    },
+                    {
+                        "scenario_id": "S-001",
+                        "dimension": "answer_relevancy",
+                        "judge_verdict": "FAIL",
+                        "judge_identity": relevance,
+                    },
+                ]
+            },
+        }
+
+    def test_each_dimension_names_its_own_judge(self):
+        """The mutation this test exists for: drop the dimension filter."""
+        pooled = self._pooled_table()
+
+        for dimension, identity in pooled["identities"].items():
+            assert (
+                cc.judge_identity_for_run(pooled["result"], dimension) == identity
+            ), dimension
+
+    def test_the_pooled_question_still_answers_none_when_they_disagree(self):
+        """Unchanged, and it is why the per-dimension question had to exist."""
+        pooled = self._pooled_table()
+
+        assert cc.judge_identity_for_run(pooled["result"]) is None
+
+    def test_a_dimension_nobody_scored_names_no_judge(self):
+        pooled = self._pooled_table()
+
+        assert cc.judge_identity_for_run(pooled["result"], "context_recall") is None
+
+    def test_a_row_the_judge_never_scored_does_not_name_the_judge(self):
+        """Scored rows only. A row with no verdict contributed nothing to the kappa."""
+        pooled = self._pooled_table()
+        pooled["result"]["table"][0]["judge_verdict"] = None
+
+        assert cc.judge_identity_for_run(pooled["result"], "faithfulness") is None

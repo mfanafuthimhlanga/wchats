@@ -16,6 +16,8 @@ Usage:
     python apps/api/tests/evals/calibration/calibrate_run.py --sheet <run_id>
     python apps/api/tests/evals/calibration/calibrate_run.py --second-pass <run_id>
     python apps/api/tests/evals/calibration/calibrate_run.py --score <run_id>
+    python apps/api/tests/evals/calibration/calibrate_run.py --score <run_id> \
+        --labels-from <source_run_id>
 
     --sheet        writes runs/<run_id>/human_scores.csv: one row per (scenario,
                    gated metric) with the question, the agent's answer, the
@@ -27,7 +29,15 @@ Usage:
                    as `compute_correlation.py --emit-second-pass`.
     --score        reads both sheets, joins each label to the run's stored
                    verdict, and writes calibration.json where the deploy gate
-                   reads it. Spends nothing.
+                   reads it. Spends nothing. One figure PER GATED DIMENSION
+                   since #274, because the two are scored by two instruments and
+                   one kappa over their pooled rows would be a number about two
+                   populations that were never one.
+    --labels-from  read the sheets from ANOTHER run's directory. A rejudge run
+                   (#274) rescored a source run's stored answers, so the source
+                   run's labels are about the same answers and the copied
+                   samples keep the same scenario ids. Nothing is copied on
+                   disk.
 
 Environment:
     CALIBRATION_TENANT_DSN   the tenant database the run lives in. Read for
@@ -40,6 +50,7 @@ setup error, 3 not calibrated yet, 5 a sheet was written.
 from __future__ import annotations
 
 import csv
+import dataclasses
 import json
 import os
 import pathlib
@@ -338,6 +349,13 @@ def score_run(
 ) -> dict:
     """Pair every labelled row with its stored verdict and measure agreement.
 
+    ONE RESULT PER GATED DIMENSION SINCE #274, returned as
+    `{"dimensions": {metric: result}}`. A run is scored by two instruments now,
+    ragas faithfulness and the relevance Judge, and one kappa over their pooled
+    rows would be a coefficient about two populations that were never one. Each
+    dimension reaches `compute_correlation.agreement_result` on its own rows, so
+    the floors, the ceiling and the status rule are the harness's unchanged.
+
     Same shape as `compute_correlation`'s loop with three differences stated
     here: the judge is a lookup; a row whose scenario has no sample is an error
     rather than a missing file; and a deflected response is recognised on the
@@ -347,34 +365,23 @@ def score_run(
 
     parsed = cc.read_human_score_rows(sheet)
     if parsed["missing_file"]:
-        return {
-            "status": cc.STATUS_SETUP_ERROR,
-            "kappa": None, "judge_interval": None, "ceiling_interval": None,
-            "difference_interval": None, "gate": None, "matthews": None,
-            "cells": None, "rho": None, "scored_pairs": 0, "pairs": 0,
-            "pair_rate": None, "attempted": 0, "valid": 0,
-            "errors": [f"{sheet} not found. Write it with --sheet first."],
-            "table": [],
-        }
+        return _every_dimension(
+            cc.STATUS_SETUP_ERROR, 0,
+            [f"{sheet} not found. Write it with --sheet first."],
+        )
     if parsed["valid"] == 0:
-        return {
-            "status": cc.STATUS_NOT_CALIBRATED_YET,
-            "kappa": None, "judge_interval": None, "ceiling_interval": None,
-            "difference_interval": None, "gate": None, "matthews": None,
-            "cells": None, "rho": None, "scored_pairs": 0, "pairs": 0,
-            "pair_rate": None, "attempted": parsed["attempted"], "valid": 0,
-            "errors": [], "table": [],
-        }
+        return _every_dimension(
+            cc.STATUS_NOT_CALIBRATED_YET, parsed["attempted"], []
+        )
 
     by_scenario = {s["scenario_id"]: s for s in samples}
     judge = stored_judge(verdicts)
 
-    human_scores: list[float] = []
-    judge_scores: list[float] = []
-    binary_pairs: list[tuple[bool, bool]] = []
-    judged_rows: list[tuple[str, str, bool]] = []
-    errors: list[str] = []
-    table: list[dict] = []
+    # ONE BUNDLE PER GATED DIMENSION (#274). A row that never reaches a pair
+    # still lands on its dimension's `errors` and `table`, so a dimension whose
+    # judge went dark reports the gap rather than vanishing from the artifact.
+    bundles = {metric: _Bundle() for metric in GATED_METRICS}
+    ungated: list[str] = []
 
     for row in parsed["rows"]:
         sid, dim = row["scenario_id"], row["dimension"]
@@ -384,45 +391,115 @@ def score_run(
             "human_verdict": row["human_verdict"], "human": h_score,
             "judge_verdict": None, "judge": None, "judge_identity": None,
         }
+        if dim not in GATED_METRICS:
+            # No bundle to put it on. It is counted once, for the reader, and it
+            # belongs to no dimension's figure because the run stores no verdict
+            # for it.
+            ungated.append(f"{sid}/{dim}: not a gated metric; the run stores no verdict for it")
+            continue
+        bundle = bundles[dim]
+        bundle.attempted += 1
+        bundle.valid += 1
+
         sample = by_scenario.get(sid)
         if sample is None:
-            errors.append(f"{sid}/{dim}: no eval_samples row for this scenario in the run")
-            table.append({**entry, "reason": "ERROR: no sample for this scenario"})
-            continue
-        if dim not in GATED_METRICS:
-            errors.append(f"{sid}/{dim}: not a gated metric; the run stores no verdict for it")
-            table.append({**entry, "reason": f"ERROR: {dim} carries no verdict"})
+            bundle.errors.append(f"{sid}/{dim}: no eval_samples row for this scenario in the run")
+            bundle.table.append({**entry, "reason": "ERROR: no sample for this scenario"})
             continue
 
         verdict = judge(sid, dim)
         entry["judge_identity"] = verdict.get("judge_identity")
         if verdict["score"] == 0:
-            errors.append(f"{sid}/{dim}: {verdict['reason']}")
-            table.append({**entry, "reason": verdict["reason"]})
+            bundle.errors.append(f"{sid}/{dim}: {verdict['reason']}")
+            bundle.table.append({**entry, "reason": verdict["reason"]})
             continue
         if (sample.get("response") or "").strip() == PII_DEFLECTION:
-            errors.append(
+            bundle.errors.append(
                 f"{sid}/{dim}: the stored response is the PII firewall's deflection, so "
                 "it is excluded from the agreement matrix."
             )
-            table.append({**entry, "reason": "excluded: PII deflection"})
+            bundle.table.append({**entry, "reason": "excluded: PII deflection"})
             continue
 
-        binary_pairs.append((h_passed, verdict["verdict"] == "PASS"))
-        judged_rows.append((sid, dim, h_passed))
+        bundle.binary_pairs.append((h_passed, verdict["verdict"] == "PASS"))
+        bundle.judged_rows.append((sid, dim, h_passed))
         if h_score is not None:
-            human_scores.append(float(h_score))
-            judge_scores.append(float(verdict["score"]))
-        table.append({
+            bundle.human_scores.append(float(h_score))
+            bundle.judge_scores.append(float(verdict["score"]))
+        bundle.table.append({
             **entry,
             "judge_verdict": verdict["verdict"], "judge": verdict["score"],
             "reason": verdict["reason"],
         })
 
-    return cc.agreement_result(
-        parsed, binary_pairs, judged_rows, human_scores, judge_scores, errors, table,
-        second_pass_path=second_pass,
-    )
+    return {
+        "dimensions": {
+            metric: cc.agreement_result(
+                {"attempted": bundle.attempted, "valid": bundle.valid,
+                 "rows": [], "missing_file": False},
+                bundle.binary_pairs, bundle.judged_rows,
+                bundle.human_scores, bundle.judge_scores,
+                bundle.errors + ungated, bundle.table,
+                second_pass_path=second_pass,
+            )
+            if bundle.valid
+            else _unmeasured_dimension(bundle, ungated)
+            for metric, bundle in bundles.items()
+        }
+    }
+
+
+def _every_dimension(status: str, attempted: int, errors: list[str]) -> dict:
+    """The same answer for every gated dimension, in the per-dimension shape.
+
+    A sheet nobody wrote and a sheet nobody filled say nothing about either
+    instrument, so both dimensions say the same thing rather than one of them
+    being absent from the artifact and read as a dimension nobody scores.
+    """
+    return {
+        "dimensions": {
+            metric: {
+                "status": status,
+                "kappa": None, "judge_interval": None, "ceiling_interval": None,
+                "difference_interval": None, "gate": None, "matthews": None,
+                "cells": None, "rho": None, "scored_pairs": 0, "pairs": 0,
+                "pair_rate": None, "attempted": attempted, "valid": 0,
+                "errors": list(errors), "table": [],
+            }
+            for metric in GATED_METRICS
+        }
+    }
+
+
+@dataclasses.dataclass
+class _Bundle:
+    """One dimension's pairs, rows and denominators, accumulated as rows are read."""
+
+    binary_pairs: list = dataclasses.field(default_factory=list)
+    judged_rows: list = dataclasses.field(default_factory=list)
+    human_scores: list = dataclasses.field(default_factory=list)
+    judge_scores: list = dataclasses.field(default_factory=list)
+    errors: list = dataclasses.field(default_factory=list)
+    table: list = dataclasses.field(default_factory=list)
+    attempted: int = 0
+    valid: int = 0
+
+
+def _unmeasured_dimension(bundle: _Bundle, ungated: list[str]) -> dict:
+    """A dimension the sheet holds no labelled row for.
+
+    `not_calibrated_yet` and not an error: nobody labelled it, which is a fact
+    about the sheet. `agreement_result` cannot be asked, because `pair_rate` is
+    pairs over valid and valid is zero.
+    """
+    return {
+        "status": cc.STATUS_NOT_CALIBRATED_YET,
+        "kappa": None, "judge_interval": None, "ceiling_interval": None,
+        "difference_interval": None, "gate": None, "matthews": None,
+        "cells": None, "rho": None, "scored_pairs": 0, "pairs": 0,
+        "pair_rate": None, "attempted": bundle.attempted, "valid": 0,
+        "errors": bundle.errors + ungated, "table": bundle.table,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -431,21 +508,63 @@ def score_run(
 
 USAGE = (
     "usage: calibrate_run.py (--sheet | --second-pass | --score) <run_id>",
+    "                        [--labels-from <source_run_id>]",
     "  --sheet        write the labelling sheet for the run",
     "  --second-pass  write the blind second sheet from the finished first",
     "  --score        join the labels to the run's stored verdicts and write calibration.json",
+    "  --labels-from  score <run_id>'s verdicts against ANOTHER run's sheets.",
+    "                 A rejudge rescored the source run's stored answers, so the",
+    "                 source run's labels describe them and the scenario ids match.",
 )
+
+
+def print_run_reports(by_dimension: dict) -> int:
+    """One report per dimension, and the worst exit code of them.
+
+    THE WORST WINS, matching `combined_status`: a caller reading the exit code
+    is asking whether the gated pair is calibrated, and one dimension passing
+    while the other fails is not a pass.
+    """
+    codes = []
+    for name, result in sorted(by_dimension.items()):
+        print("")
+        print(f"=== {name} ===")
+        codes.append(cc.print_run_report(result))
+    return max(codes) if codes else cc.EXIT_NOT_CALIBRATED_YET
+
+
+def _parse(args: list[str]) -> tuple[str, str, str] | None:
+    """(flag, run_id, labels_run_id) or None when the arguments are not usable.
+
+    `--labels-from` defaults to the run itself, which is every call that is not
+    scoring a rejudge.
+    """
+    if len(args) not in (2, 4) or args[0] not in ("--sheet", "--second-pass", "--score"):
+        return None
+    flag, run_id = args[0], args[1]
+    labels_run_id = run_id
+    if len(args) == 4:
+        if args[2] != "--labels-from" or flag != "--score":
+            return None
+        labels_run_id = args[3]
+    return flag, run_id, labels_run_id
 
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
-    if len(args) != 2 or args[0] not in ("--sheet", "--second-pass", "--score"):
+    parsed_args = _parse(args)
+    if parsed_args is None:
         for line in USAGE:
             print(line)
         return cc.EXIT_SETUP_ERROR
-    flag, run_id = args
-    sheet = run_dir(run_id) / SHEET_NAME
-    pass2 = run_dir(run_id) / PASS2_NAME
+    flag, run_id, labels_run_id = parsed_args
+    # THE SHEETS COME FROM THE RUN THAT WAS LABELLED, THE VERDICTS FROM THE RUN
+    # THAT WAS SCORED. For an ordinary run they are the same run. For a rejudge
+    # they are not: the labels describe the source run's stored answers, which
+    # are the answers the rejudge scored, and the scenario ids are unchanged by
+    # the copy, so the join is exact and no file is moved to make it.
+    sheet = run_dir(labels_run_id) / SHEET_NAME
+    pass2 = run_dir(labels_run_id) / PASS2_NAME
 
     if flag == "--sheet":
         code, messages = write_sheet(fetch_samples(run_id, tenant_dsn()), sheet)
@@ -455,7 +574,7 @@ def main(argv: list[str] | None = None) -> int:
         dsn = tenant_dsn()
         result = score_run(fetch_samples(run_id, dsn), fetch_verdicts(run_id, dsn), sheet, pass2)
         cc.write_calibration_artifact(result, cc.CALIBRATION_ARTIFACT_JSON, sheet=sheet)
-        return cc.print_run_report(result)
+        return print_run_reports(result["dimensions"])
     for message in messages:
         print(message)
     return code

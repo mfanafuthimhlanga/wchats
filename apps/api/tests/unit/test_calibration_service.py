@@ -57,7 +57,32 @@ def _identity(**overrides) -> JudgeIdentity:
     return JudgeIdentity(**fields)
 
 
+#: The gated dimension every helper here measures. One is enough to drive the
+#: matching rules; `test_calibration_harness.py` drives the two-dimension case.
+DIMENSION = "faithfulness"
+
+
+def _identities(identity: JudgeIdentity | None = None) -> dict:
+    """What the loader takes since #274: metric to the Judge the run used for it."""
+    return {DIMENSION: identity or _identity()}
+
+
 def _calibrated(identity: JudgeIdentity) -> CalibrationStatus:
+    """The artifact as it is written now: an envelope over one gated dimension.
+
+    The envelope names no Judge and carries no figures. Every figure is on the
+    dimension that measured it, which is what #274 made true of a run scored by
+    two instruments and is therefore true of the file that describes one.
+    """
+    return CalibrationStatus(
+        status=STATUS_CALIBRATED,
+        labels_made_at="2026-08-29T10:15:00+00:00",
+        harness_version="compute_correlation-2026-08-29",
+        dimensions={DIMENSION: _measured(identity)},
+    )
+
+
+def _measured(identity: JudgeIdentity) -> CalibrationStatus:
     return CalibrationStatus(
         status=STATUS_CALIBRATED,
         judge_identity=identity,
@@ -75,6 +100,16 @@ def _calibrated(identity: JudgeIdentity) -> CalibrationStatus:
         valid=32,
         labels_made_at="2026-08-29T10:15:00+00:00",
         harness_version="compute_correlation-2026-08-29",
+    )
+
+
+def _nameless_envelope(part: CalibrationStatus) -> CalibrationStatus:
+    """An envelope whose one dimension carries figures and names no Judge."""
+    return CalibrationStatus(
+        status=STATUS_NOT_CALIBRATED_YET,
+        reason="no_single_judge_identity",
+        harness_version="compute_correlation.py@2",
+        dimensions={DIMENSION: part},
     )
 
 
@@ -98,6 +133,10 @@ def _nameless_run() -> CalibrationStatus:
     )
 
 
+def _nameless_artifact() -> CalibrationStatus:
+    return _nameless_envelope(_nameless_run())
+
+
 def _write(path: Path, record: CalibrationStatus) -> Path:
     path.write_text(json.dumps(record.payload), encoding="utf-8")
     return path
@@ -108,47 +147,49 @@ class TestTheMatchingArtifact:
         identity = _identity()
         artifact = _write(tmp_path / "calibration.json", _calibrated(identity))
 
-        status = load_calibration_status(artifact, identity)
+        status = load_calibration_status(artifact, _identities(identity))
 
         assert status.calibrated is True
         assert status.status == STATUS_CALIBRATED
         assert status.reason is None
-        assert status.judge_identity == identity
+        assert status.judge_identity is None, "an envelope names no Judge of its own"
+        assert status.dimensions[DIMENSION].judge_identity == identity
 
     def test_the_loaded_record_carries_its_intervals(self, tmp_path):
         """The three intervals are what ticket 17 shows beside a block reason."""
         identity = _identity()
         artifact = _write(tmp_path / "calibration.json", _calibrated(identity))
 
-        status = load_calibration_status(artifact, identity)
+        status = load_calibration_status(artifact, _identities(identity))
 
-        assert status.judge_interval == Interval(low=0.41, high=0.83, point=0.62, usable=True)
-        assert status.ceiling_interval == Interval(low=0.55, high=0.91, point=0.74, usable=True)
-        assert status.difference_interval == Interval(
+        part = status.dimensions[DIMENSION]
+        assert part.judge_interval == Interval(low=0.41, high=0.83, point=0.62, usable=True)
+        assert part.ceiling_interval == Interval(low=0.55, high=0.91, point=0.74, usable=True)
+        assert part.difference_interval == Interval(
             low=-0.09, high=0.24, point=0.12, usable=True
         )
-        assert status.kappa == 0.62
-        assert status.matthews == 0.64
+        assert part.kappa == 0.62
+        assert part.matthews == 0.64
 
     def test_the_loaded_record_equals_what_was_written(self, tmp_path):
         identity = _identity()
         record = _calibrated(identity)
         artifact = _write(tmp_path / "calibration.json", record)
 
-        assert load_calibration_status(artifact, identity) == record
+        assert load_calibration_status(artifact, _identities(identity)) == record
 
     def test_a_path_like_object_is_accepted(self, tmp_path):
         """The setting arrives as a string and a caller may hold a Path."""
         identity = _identity()
         artifact = _write(tmp_path / "calibration.json", _calibrated(identity))
 
-        assert load_calibration_status(str(artifact), identity).calibrated is True
+        assert load_calibration_status(str(artifact), _identities(identity)).calibrated is True
 
 
 class TestTheFailurePaths:
     def test_a_missing_file_reads_no_artifact(self, tmp_path):
         """What a container reads, because .dockerignore excludes tests/."""
-        status = load_calibration_status(tmp_path / "nothing.json", _identity())
+        status = load_calibration_status(tmp_path / "nothing.json", _identities(_identity()))
 
         assert status.status == STATUS_NOT_CALIBRATED_YET
         assert status.reason == "no_artifact"
@@ -158,7 +199,7 @@ class TestTheFailurePaths:
         artifact = tmp_path / "calibration.json"
         artifact.write_text("{ this was half written when the run died", encoding="utf-8")
 
-        status = load_calibration_status(artifact, _identity())
+        status = load_calibration_status(artifact, _identities(_identity()))
 
         assert status.status == STATUS_NOT_CALIBRATED_YET
         assert status.reason == "unreadable"
@@ -169,16 +210,21 @@ class TestTheFailurePaths:
         directory = tmp_path / "calibration.json"
         directory.mkdir()
 
-        assert load_calibration_status(directory, _identity()).reason == "unreadable"
+        assert load_calibration_status(directory, _identities(_identity())).reason == "unreadable"
 
     def test_json_this_record_refuses_reads_invalid(self, tmp_path):
-        """Calibrated with no Judge attached. The record refuses it, so does this."""
+        """Calibrated with no Judge attached. The record refuses it, so does this.
+
+        The envelope is allowed to name no Judge, because its dimensions do, so
+        the null goes on the DIMENSION: that is the record claiming a figure over
+        a Judge nobody can name, which is the shape the rule refuses.
+        """
         artifact = tmp_path / "calibration.json"
         payload = _calibrated(_identity()).payload
-        payload["judge_identity"] = None
+        payload["dimensions"][DIMENSION]["judge_identity"] = None
         artifact.write_text(json.dumps(payload), encoding="utf-8")
 
-        status = load_calibration_status(artifact, _identity())
+        status = load_calibration_status(artifact, _identities(_identity()))
 
         assert status.status == STATUS_NOT_CALIBRATED_YET
         assert status.reason == "invalid"
@@ -187,7 +233,7 @@ class TestTheFailurePaths:
         artifact = tmp_path / "calibration.json"
         artifact.write_text(json.dumps(["calibrated"]), encoding="utf-8")
 
-        assert load_calibration_status(artifact, _identity()).reason == "invalid"
+        assert load_calibration_status(artifact, _identities(_identity())).reason == "invalid"
 
     def test_a_run_with_no_single_judge_reads_no_single_judge_identity(self, tmp_path):
         """Settled before any I/O. No artifact can match a run that used two Judges."""
@@ -201,7 +247,7 @@ class TestTheFailurePaths:
     def test_an_artifact_for_another_judge_reads_identity_mismatch(self, tmp_path):
         artifact = _write(tmp_path / "calibration.json", _calibrated(_identity()))
 
-        status = load_calibration_status(artifact, _identity(model="gpt-4o-legacy"))
+        status = load_calibration_status(artifact, _identities(_identity(model="gpt-4o-legacy")))
 
         assert status.status == STATUS_NOT_CALIBRATED_YET
         assert status.reason == "identity_mismatch"
@@ -213,14 +259,14 @@ class TestTheFailurePaths:
         harder."""
         artifact = _write(tmp_path / "calibration.json", _calibrated(_identity()))
 
-        status = load_calibration_status(artifact, _identity(reasoning_effort="high"))
+        status = load_calibration_status(artifact, _identities(_identity(reasoning_effort="high")))
 
         assert status.reason == "identity_mismatch"
 
     def test_a_mismatch_on_prompt_version_alone_is_still_a_mismatch(self, tmp_path):
         artifact = _write(tmp_path / "calibration.json", _calibrated(_identity()))
 
-        status = load_calibration_status(artifact, _identity(prompt_version="ragas-0.5.0"))
+        status = load_calibration_status(artifact, _identities(_identity(prompt_version="ragas-0.5.0")))
 
         assert status.reason == "identity_mismatch"
 
@@ -231,19 +277,19 @@ class TestTheFailurePaths:
         was a different one. Nobody was measured. The two send an owner to
         different work.
         """
-        artifact = _write(tmp_path / "calibration.json", _nameless_run())
+        artifact = _write(tmp_path / "calibration.json", _nameless_artifact())
 
-        status = load_calibration_status(artifact, _identity())
+        status = load_calibration_status(artifact, _identities(_identity()))
 
         assert status.status == STATUS_NOT_CALIBRATED_YET
         assert status.reason == "artifact_names_no_judge"
 
     def test_a_nameless_artifact_is_answered_before_the_comparison(self, tmp_path):
         """Whichever Judge the run used. There is nothing on the file to compare."""
-        artifact = _write(tmp_path / "calibration.json", _nameless_run())
+        artifact = _write(tmp_path / "calibration.json", _nameless_artifact())
 
         for run in (_identity(), _identity(model="something-else")):
-            assert load_calibration_status(artifact, run).reason == (
+            assert load_calibration_status(artifact, _identities(run)).reason == (
                 "artifact_names_no_judge"
             ), run
 
@@ -252,7 +298,7 @@ class TestTheFailurePaths:
         artifact = tmp_path / "calibration.json"
         artifact.write_bytes(b"\0" * (2 * 1024 * 1024))
 
-        status = load_calibration_status(artifact, _identity())
+        status = load_calibration_status(artifact, _identities(_identity()))
 
         assert status.status == STATUS_NOT_CALIBRATED_YET
         assert status.reason == "unreadable"
@@ -262,25 +308,26 @@ class TestTheFailurePaths:
         artifact = _write(tmp_path / "calibration.json", _calibrated(_identity()))
         assert artifact.stat().st_size <= MAX_ARTIFACT_BYTES
 
-        assert load_calibration_status(artifact, _identity()).calibrated is True
+        assert load_calibration_status(artifact, _identities(_identity())).calibrated is True
 
     def test_every_reason_the_loader_can_return_is_a_declared_absence(self, tmp_path):
         """`CalibrationStatus.absent` holds a closed set, so a reason invented in
         the loader would be refused at construction. This walks the loader's own
         six and pins them to that set."""
         reasons = {
-            load_calibration_status(tmp_path / "gone.json", _identity()).reason,
+            load_calibration_status(tmp_path / "gone.json", _identities(_identity())).reason,
             _unreadable_status(tmp_path).reason,
             _invalid_status(tmp_path).reason,
             load_calibration_status(
                 _write(tmp_path / "ok.json", _calibrated(_identity())), None
             ).reason,
             load_calibration_status(
-                _write(tmp_path / "nameless.json", _nameless_run()), _identity()
+                _write(tmp_path / "nameless.json", _nameless_artifact()),
+                _identities(),
             ).reason,
             load_calibration_status(
                 _write(tmp_path / "ok.json", _calibrated(_identity())),
-                _identity(model="other"),
+                _identities(_identity(model="other")),
             ).reason,
         }
 
@@ -303,14 +350,14 @@ class TestItNeverRaises:
         huge.write_bytes(b"\0" * (2 * 1024 * 1024))
 
         cases = [
-            (tmp_path / "gone.json", _identity()),
-            (broken, _identity()),
-            (refused, _identity()),
-            (directory, _identity()),
-            (huge, _identity()),
+            (tmp_path / "gone.json", _identities()),
+            (broken, _identities()),
+            (refused, _identities()),
+            (directory, _identities()),
+            (huge, _identities()),
             (good, None),
-            (nameless, _identity()),
-            (good, _identity(model="somebody-elses-judge")),
+            (nameless, _identities()),
+            (good, _identities(_identity(model="somebody-elses-judge"))),
         ]
 
         for path, identity in cases:
@@ -330,7 +377,7 @@ class TestTheMismatchLog:
         run = _identity(model="gpt-4o-legacy", prompt_version="ragas-0.5.0")
 
         with structlog.testing.capture_logs() as logs:
-            load_calibration_status(artifact, run)
+            load_calibration_status(artifact, _identities(run))
 
         entry = _one_event(logs, "calibration_identity_mismatch")
         assert entry["run_model"] == "gpt-4o-legacy"
@@ -347,7 +394,7 @@ class TestTheMismatchLog:
         )
 
         with structlog.testing.capture_logs() as logs:
-            load_calibration_status(artifact, _identity(reasoning_effort="low"))
+            load_calibration_status(artifact, _identities(_identity(reasoning_effort="low")))
 
         entry = _one_event(logs, "calibration_identity_mismatch")
         assert entry["run_reasoning_effort"] == "low"
@@ -363,7 +410,7 @@ class TestTheMismatchLog:
         artifact = _write(tmp_path / "calibration.json", _calibrated(_identity()))
 
         with structlog.testing.capture_logs() as logs:
-            load_calibration_status(artifact, _identity(model="gpt-4o-legacy"))
+            load_calibration_status(artifact, _identities(_identity(model="gpt-4o-legacy")))
 
         entry = _one_event(logs, "calibration_identity_mismatch")
         assert set(entry) == {
@@ -382,7 +429,7 @@ class TestTheMismatchLog:
         artifact.write_text("{", encoding="utf-8")
 
         with structlog.testing.capture_logs() as logs:
-            load_calibration_status(artifact, _identity())
+            load_calibration_status(artifact, _identities(_identity()))
 
         entry = _one_event(logs, "calibration_artifact_unreadable")
         assert entry["path"] == str(artifact)
@@ -401,7 +448,7 @@ class TestTheMismatchLog:
         artifact.write_text(json.dumps(payload), encoding="utf-8")
 
         with structlog.testing.capture_logs() as logs:
-            load_calibration_status(artifact, _identity())
+            load_calibration_status(artifact, _identities(_identity()))
 
         entry = _one_event(logs, "calibration_artifact_invalid")
         assert "made_up" in entry["error"]
@@ -415,7 +462,7 @@ class TestTheMismatchLog:
         artifact = tmp_path / "calibration.json"
         artifact.write_text(json.dumps(payload), encoding="utf-8")
 
-        status = load_calibration_status(artifact, _identity())
+        status = load_calibration_status(artifact, _identities(_identity()))
 
         assert status.status == STATUS_NOT_CALIBRATED_YET
         assert status.reason == "invalid"
@@ -427,7 +474,7 @@ class TestTheMismatchLog:
         artifact.write_text(json.dumps(payload), encoding="utf-8")
 
         with structlog.testing.capture_logs() as logs:
-            load_calibration_status(artifact, _identity())
+            load_calibration_status(artifact, _identities(_identity()))
 
         entry = _one_event(logs, "calibration_artifact_invalid")
         assert entry["reader_artifact_version"] == ARTIFACT_VERSION
@@ -440,7 +487,7 @@ class TestTheMismatchLog:
         artifact.write_text(json.dumps(["calibrated"]), encoding="utf-8")
 
         with structlog.testing.capture_logs() as logs:
-            load_calibration_status(artifact, _identity())
+            load_calibration_status(artifact, _identities(_identity()))
 
         entry = _one_event(logs, "calibration_artifact_invalid")
         assert entry["artifact_version"] is None
@@ -450,10 +497,10 @@ class TestTheMismatchLog:
         """Three fields, all of them the run's. The artifact has no identity to
         print, and printing three Nones beside three real values is what made the
         old mismatch line read as a bug in the loader."""
-        artifact = _write(tmp_path / "calibration.json", _nameless_run())
+        artifact = _write(tmp_path / "calibration.json", _nameless_artifact())
 
         with structlog.testing.capture_logs() as logs:
-            load_calibration_status(artifact, _identity(model="gpt-5.6-luna"))
+            load_calibration_status(artifact, _identities(_identity(model="gpt-5.6-luna")))
 
         entry = _one_event(logs, "calibration_artifact_names_no_judge")
         assert entry["run_model"] == "gpt-5.6-luna"
@@ -469,7 +516,7 @@ class TestTheMismatchLog:
         """`no_artifact` said the same thing about a healthy container and a typo
         in the setting. `parent_exists` is the field that separates them."""
         with structlog.testing.capture_logs() as logs:
-            load_calibration_status(tmp_path / "gone.json", _identity())
+            load_calibration_status(tmp_path / "gone.json", _identities(_identity()))
 
         entry = _one_event(logs, "calibration_artifact_absent")
         assert entry["path"] == str(tmp_path / "gone.json")
@@ -477,7 +524,7 @@ class TestTheMismatchLog:
 
     def test_a_missing_directory_is_the_shape_that_reads_as_a_typo(self, tmp_path):
         with structlog.testing.capture_logs() as logs:
-            load_calibration_status(tmp_path / "nodir" / "gone.json", _identity())
+            load_calibration_status(tmp_path / "nodir" / "gone.json", _identities(_identity()))
 
         entry = _one_event(logs, "calibration_artifact_absent")
         assert entry["parent_exists"] is False
@@ -486,7 +533,7 @@ class TestTheMismatchLog:
         """The normal state of a container. A warning per deploy summary would
         train an operator to ignore the log, which is why the line is info."""
         with structlog.testing.capture_logs() as logs:
-            load_calibration_status(tmp_path / "gone.json", _identity())
+            load_calibration_status(tmp_path / "gone.json", _identities(_identity()))
 
         assert [entry["log_level"] for entry in logs] == ["info"]
 
@@ -495,7 +542,7 @@ class TestTheMismatchLog:
         artifact.write_bytes(b"\0" * (2 * 1024 * 1024))
 
         with structlog.testing.capture_logs() as logs:
-            load_calibration_status(artifact, _identity())
+            load_calibration_status(artifact, _identities(_identity()))
 
         entry = _one_event(logs, "calibration_artifact_unreadable")
         assert entry["size_bytes"] == 2 * 1024 * 1024
@@ -506,7 +553,7 @@ class TestTheMismatchLog:
         artifact = _write(tmp_path / "calibration.json", _calibrated(identity))
 
         with structlog.testing.capture_logs() as logs:
-            load_calibration_status(artifact, identity)
+            load_calibration_status(artifact, _identities(identity))
 
         assert logs == []
 
@@ -582,13 +629,13 @@ class TestTheDeploySummarySelection:
 def _unreadable_status(tmp_path: Path) -> CalibrationStatus:
     artifact = tmp_path / "unreadable.json"
     artifact.write_text("{", encoding="utf-8")
-    return load_calibration_status(artifact, _identity())
+    return load_calibration_status(artifact, _identities(_identity()))
 
 
 def _invalid_status(tmp_path: Path) -> CalibrationStatus:
     artifact = tmp_path / "invalid.json"
     artifact.write_text(json.dumps({"status": "made_up"}), encoding="utf-8")
-    return load_calibration_status(artifact, _identity())
+    return load_calibration_status(artifact, _identities(_identity()))
 
 
 def _one_event(logs: list[dict], event: str) -> dict:

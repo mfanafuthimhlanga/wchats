@@ -159,6 +159,22 @@ _USAGE_SCHEMA["properties"]["window_days"] = {
 }
 
 
+#: `list_eval_runs` takes one query parameter since #274, and the enum is here so
+#: a caller sees the two kinds before the call rather than in a 400 after it. The
+#: route validates it either way; this is the description, not the guard.
+_EVAL_RUNS_SCHEMA: dict[str, Any] = _merge_schema(("agent_id",), None)
+_EVAL_RUNS_SCHEMA["properties"]["kind"] = {
+    "type": "string",
+    "enum": ["eval", "rejudge"],
+    "default": "eval",
+    "description": (
+        "'eval' lists the runs that measured the Agent. 'rejudge' lists the runs "
+        "that rescored a finished run's stored answers, each carrying the "
+        "source_run_id it rescored."
+    ),
+}
+
+
 class _Tool:
     """One tool row: the route it wraps and the schema callers see."""
 
@@ -260,16 +276,32 @@ TOOLS: tuple[_Tool, ...] = (
     ),
     _Tool(
         "list_eval_runs",
-        "List an Agent's eval runs with each run's stored record.",
+        "List an Agent's eval runs with each run's stored record. kind 'eval' "
+        "(the default) lists the runs that measured the Agent, which is what a "
+        "trigger polls for; kind 'rejudge' lists the runs that rescored a "
+        "finished run's stored answers, each naming its source_run_id.",
         "GET",
         "/api/v1/agents/{agent_id}/eval-runs",
         ("agent_id",),
+        input_schema=_EVAL_RUNS_SCHEMA,
+        query_params=("kind",),
     ),
     _Tool(
         "get_eval_results",
         "Read per-scenario results for one eval run.",
         "GET",
         "/api/v1/agents/{agent_id}/eval-runs/{run_id}/results",
+        ("agent_id", "run_id"),
+    ),
+    _Tool(
+        "rejudge_eval_run",
+        "Rescore a finished eval run's stored answers with today's Judges. No "
+        "agent turn runs and the source run is never written: the two gated "
+        "metrics are scored over the answers that run recorded, into a new run "
+        "that names it as its source. Re-running it with the same Judge returns "
+        "the run that already exists rather than paying again." + _POLL_EVAL,
+        "POST",
+        "/api/v1/agents/{agent_id}/eval-runs/{run_id}/rejudge",
         ("agent_id", "run_id"),
     ),
     _Tool(

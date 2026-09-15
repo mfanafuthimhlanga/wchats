@@ -8,10 +8,16 @@ What must NOT move is the other gated metric. All four Ragas metrics name
 sample, so putting the rewrite into the sample would have moved faithfulness too,
 and faithfulness had no owner fail in #58: there is nothing wrong with it to fix.
 
-`RESOLVED_INPUT_METRICS` is the whole guard, and these tests are what make it one:
-relevancy sees the rewrite, the other three see the bytes they saw before this
-existed, and the returned row keeps the raw question because that is the half of
-the attribution key `attribute_returned_rows` matches on.
+`RESOLVED_INPUT_METRICS` is the whole guard for the ragas side, and these tests
+are what make it one: relevancy sees the rewrite, the other three see the bytes
+they saw before this existed, and the returned row keeps the raw question because
+that is the half of the attribution key `attribute_returned_rows` matches on.
+
+#274 SPLIT RELEVANCY IN TWO AND BOTH HALVES READ THE REWRITE. The gated column is
+`relevance_judge`, which takes the resolved question on every call and so needs no
+entry in the tuple; `ragas_answer_relevancy` is the reported figure and is what
+the tuple now names. Faithfulness, precision and recall are unmoved, which is the
+property this module was written to defend.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.services import eval_service
+from tests.model_doubles import ledger
 
 RAW = "how do I start the dev server?"
 RESOLVED = "How do I start the dev server for Mellow's Earth Elements?"
@@ -40,6 +47,30 @@ class _RecordingMetric:
         return SimpleNamespace(value=1.0)
 
 
+#: The four ragas columns and the name each metric instance answers to. The two
+#: differ on one row: #274 renamed the column `answer_relevancy` fills, and
+#: `_METRIC_ASCORE_ARGS` is still keyed on ragas' own name.
+RAGAS_NAME_BY_COLUMN = {
+    "faithfulness": "faithfulness",
+    "ragas_answer_relevancy": "answer_relevancy",
+    "context_precision": "context_precision",
+    "context_recall": "context_recall",
+}
+
+
+class _RecordingJudge:
+    """Stands in for `relevance_judge.judge_relevance`, recording its arguments."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, str]] = []
+
+    def __call__(self, question, response, *, ledger):  # noqa: ARG002
+        from app.services.relevance_judge import RelevanceVerdict
+
+        self.calls.append((question, response))
+        return RelevanceVerdict(verdict="pass", reason="canned")
+
+
 def _sample(user_input: str = RAW):
     return SimpleNamespace(
         user_input=user_input,
@@ -50,25 +81,41 @@ def _sample(user_input: str = RAW):
 
 
 def _score(resolved_inputs, samples=None):
-    metrics = [_RecordingMetric(name) for name in eval_service.METRIC_KEYS]
-    rows = asyncio.run(
-        eval_service._score_samples(
-            metrics,
-            samples if samples is not None else [_sample()],
-            concurrency=1,
-            resolved_inputs=resolved_inputs,
+    """(recorded metrics by COLUMN, returned rows, the doubled Judge)."""
+    metrics = [
+        (column, _RecordingMetric(name))
+        for column, name in RAGAS_NAME_BY_COLUMN.items()
+    ]
+    judge = _RecordingJudge()
+    real = eval_service.judge_relevance
+    eval_service.judge_relevance = judge
+    try:
+        rows = asyncio.run(
+            eval_service._score_samples(
+                metrics,
+                samples if samples is not None else [_sample()],
+                concurrency=1,
+                resolved_inputs=resolved_inputs,
+                relevance_ledger=ledger(),
+            )
         )
-    )
-    return {m.name: m for m in metrics}, rows
+    finally:
+        eval_service.judge_relevance = real
+    return dict(metrics), rows, judge
 
 
 def test_relevancy_is_scored_against_the_rewrite():
-    scored, _rows = _score([RESOLVED])
+    scored, _rows, judge = _score([RESOLVED])
 
-    [call] = scored["answer_relevancy"].calls
+    [call] = scored["ragas_answer_relevancy"].calls
     assert call["user_input"] == RESOLVED, (
-        "relevancy was scored against the raw follow-up, which is the defect "
-        "#227 exists to fix"
+        "the reported ragas relevancy was scored against the raw follow-up, "
+        "which is the defect #227 exists to fix"
+    )
+    assert judge.calls == [(RESOLVED, _sample().response)], (
+        "the GATED relevance Judge was scored against the raw follow-up. It is "
+        "the half of relevancy a deploy reads, so this is the #227 defect on the "
+        "column that matters (#274)"
     )
 
 
@@ -82,12 +129,20 @@ def test_relevancy_is_scored_against_the_rewrite():
 RAW_INPUT_METRICS = ("faithfulness", "context_precision", "context_recall")
 
 
-def test_the_two_lists_between_them_cover_every_metric():
-    """So a fifth metric cannot arrive covered by neither list."""
-    assert set(RAW_INPUT_METRICS) | set(eval_service.RESOLVED_INPUT_METRICS) == set(
-        eval_service.METRIC_KEYS
+def test_the_lists_between_them_cover_every_metric():
+    """So a sixth metric cannot arrive covered by none of them.
+
+    Three lists now. The Judge's column is neither raw nor in the tuple: it takes
+    the rewrite unconditionally, which is why it is named on its own here.
+    """
+    covered = (
+        set(RAW_INPUT_METRICS)
+        | set(eval_service.RESOLVED_INPUT_METRICS)
+        | {eval_service.RELEVANCE_METRIC}
     )
+    assert covered == set(eval_service.METRIC_KEYS)
     assert not set(RAW_INPUT_METRICS) & set(eval_service.RESOLVED_INPUT_METRICS)
+    assert eval_service.RELEVANCE_METRIC not in RAW_INPUT_METRICS
 
 
 @pytest.mark.parametrize("metric", RAW_INPUT_METRICS)
@@ -98,7 +153,7 @@ def test_every_other_metric_sees_the_question_byte_for_byte(metric):
     path can make THIS test fail, it moved the OTHER deploy gate as well, which
     nothing in #227 asked for.
     """
-    scored, _rows = _score([RESOLVED])
+    scored, _rows, _judge = _score([RESOLVED])
 
     [call] = scored[metric].calls
     assert call["user_input"] == RAW, (
@@ -114,7 +169,7 @@ def test_the_returned_row_keeps_the_raw_question():
     come back unattributed rather than mis-scored, which is a louder failure but
     still a lost run.
     """
-    _scored, [row] = _score([RESOLVED])
+    _scored, [row], _judge = _score([RESOLVED])
 
     assert row["user_input"] == RAW
     assert row["reference"] == REFERENCE
@@ -129,21 +184,23 @@ def test_a_single_turn_scenario_is_scored_exactly_as_before():
     Every metric, including relevancy, sees the raw question, so a relevancy score
     from before this PR and one from after are the same measurement.
     """
-    scored, [row] = _score([None])
+    scored, [row], judge = _score([None])
 
-    for name in eval_service.METRIC_KEYS:
-        [call] = scored[name].calls
+    for column in RAGAS_NAME_BY_COLUMN:
+        [call] = scored[column].calls
         assert call["user_input"] == RAW
+    assert judge.calls == [(RAW, _sample().response)]
     assert row["user_input"] == RAW
 
 
 def test_omitting_the_rewrites_entirely_scores_every_metric_raw():
     """The default, which is what every caller but `run_ragas_eval` passes."""
-    scored, _rows = _score(None)
+    scored, _rows, judge = _score(None)
 
-    for name in eval_service.METRIC_KEYS:
-        [call] = scored[name].calls
+    for column in RAGAS_NAME_BY_COLUMN:
+        [call] = scored[column].calls
         assert call["user_input"] == RAW
+    assert judge.calls == [(RAW, _sample().response)]
 
 
 def test_a_rewrite_list_of_the_wrong_length_raises_rather_than_mispairing():
@@ -161,8 +218,12 @@ def test_relevancy_is_the_only_metric_that_takes_the_rewrite():
 
     Adding a gated metric here changes what its calibration was measured on.
     """
-    assert eval_service.RESOLVED_INPUT_METRICS == ("answer_relevancy",)
+    assert eval_service.RESOLVED_INPUT_METRICS == ("ragas_answer_relevancy",)
     assert set(eval_service.RESOLVED_INPUT_METRICS) <= set(eval_service.METRIC_KEYS)
+    assert not hasattr(eval_service, "REWRITE_SCORED_METRICS"), (
+        "the provenance counts read RELEVANCE_METRIC alone now: the warning they "
+        "feed is about the gated number, and the reported ragas figure is not it"
+    )
 
 
 def test_a_rewrite_of_nothing_but_whitespace_never_reaches_relevancy():
@@ -180,7 +241,10 @@ def test_a_rewrite_of_nothing_but_whitespace_never_reaches_relevancy():
         "whitespace while the sample row and the run record both say otherwise"
     )
 
-    scored, _rows = _score(resolved)
+    scored, _rows, judge = _score(resolved)
 
-    [call] = scored["answer_relevancy"].calls
+    [call] = scored["ragas_answer_relevancy"].calls
     assert call["user_input"] == RAW
+    assert judge.calls == [(RAW, _sample().response)], (
+        "a blank rewrite reached the gated Judge"
+    )
