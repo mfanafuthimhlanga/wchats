@@ -71,6 +71,9 @@ PAYLOAD_KEYS = [
     "harness_version",
     "written_at",
     "artifact_version",
+    # Added by #274. One record per gated dimension, because a run scored by two
+    # instruments has no one Judge and no pooled kappa that means anything.
+    "dimensions",
 ]
 
 INTERVAL_KEYS = ["low", "high", "point", "usable"]

@@ -1293,15 +1293,18 @@ def _compute_verdict(agent_id: str, conn_str: str, state: dict) -> Verdict:
     sentence.
 
     The calibration identity comes off the eval record, exactly as
-    `_calibration_block` takes it: `judge_identity` is run-level and is already
-    None when the four metric routes disagree, and no record has no identity to
-    ask about at all. Both reach the loader as None and come back as
-    `not_calibrated_yet` with reason `no_single_judge_identity`, which blocks.
+    `_calibration_block` takes it: `judge_identities` is per gated dimension
+    (#274), and a record that names no Judge for one of them, or no record at
+    all, reaches the loader as None and comes back `not_calibrated_yet` with
+    reason `no_single_judge_identity`. THAT DOES NOT BLOCK. Nothing reads the
+    calibration key to refuse a deploy: `apply_signal_evidence_gate` is a floor
+    on the signal's presence and on red-team severity, and `decide` carries the
+    status without gating on it (#54).
     """
     eval_record, red_team_record = _awaited_records(agent_id, conn_str, state)
     calibration = load_calibration_status(
         settings.CALIBRATION_ARTIFACT_PATH,
-        eval_record.judge_identity if eval_record is not None else None,
+        eval_record.judge_identities if eval_record is not None else None,
     )
     verdict = decide(
         eval_record,

@@ -123,7 +123,13 @@ ABSENT_REASONS = (
 
 #: Which construction rules built the record. Bumped when a stored artifact from
 #: an older build would be read wrongly rather than refused.
-ARTIFACT_VERSION = 1
+#:
+#: 1 to 2 at #274. A run is scored by two instruments now, ragas faithfulness and
+#: `relevance-judge-v1`, so one record over one Judge cannot describe it. The
+#: record became an ENVELOPE carrying one record per gated dimension, and a
+#: version 1 artifact read as version 2 would claim a figure over both dimensions
+#: that was measured over the pooled rows of neither.
+ARTIFACT_VERSION = 2
 
 
 class InvalidCalibrationStatus(ValueError):
@@ -307,6 +313,22 @@ def _require_members(record: CalibrationStatus) -> None:
             "CalibrationStatus needs judge_identity as a JudgeIdentity or None, got "
             f"{type(record.judge_identity).__name__}"
         )
+    if record.dimensions is not None:
+        if not isinstance(record.dimensions, Mapping):
+            raise InvalidCalibrationStatus(
+                "CalibrationStatus needs dimensions as a mapping or None, got "
+                f"{type(record.dimensions).__name__}"
+            )
+        wrong = sorted(
+            f"{name}={type(part).__name__}"
+            for name, part in record.dimensions.items()
+            if not isinstance(part, CalibrationStatus)
+        )
+        if wrong:
+            raise InvalidCalibrationStatus(
+                "CalibrationStatus needs every dimension as a CalibrationStatus, "
+                f"got {', '.join(wrong)}"
+            )
     for name in ("judge_interval", "ceiling_interval", "difference_interval"):
         value = getattr(record, name)
         if value is not None and not isinstance(value, Interval):
@@ -357,11 +379,25 @@ def _require_calibrated_is_earned(record: CalibrationStatus) -> None:
     """
     if record.status != STATUS_CALIBRATED:
         return
-    if record.judge_identity is None:
+    if record.judge_identity is None and not record.dimensions:
         raise InvalidCalibrationStatus(
             "CalibrationStatus cannot be calibrated with no judge_identity. A "
             "calibration figure with no Judge attached covers every Judge and none."
         )
+    if record.judge_identity is None:
+        # AN ENVELOPE EARNS `calibrated` FROM ITS PARTS (#274). A run scored by
+        # two instruments has no one Judge to name, so the envelope names none
+        # and every dimension under it names its own. Each one has already been
+        # through this same rule, so an envelope that is calibrated is one whose
+        # every dimension was measured against a nameable Judge and passed.
+        for name, part in (record.dimensions or {}).items():
+            if part.status != STATUS_CALIBRATED:
+                raise InvalidCalibrationStatus(
+                    f"CalibrationStatus is calibrated while its {name} dimension "
+                    f"is {part.status!r}. An envelope is only as calibrated as "
+                    "its least calibrated part."
+                )
+        return
     for name in ("beats_chance", "ceiling_beats_chance", "reaches_ceiling"):
         if getattr(record, name) is not True:
             raise InvalidCalibrationStatus(
@@ -386,6 +422,12 @@ def _require_calibrated_shows_its_working(record: CalibrationStatus) -> None:
     the floor. `_require_counts` already holds `scored_pairs <= pairs`.
     """
     if record.status != STATUS_CALIBRATED:
+        return
+    if record.judge_identity is None and record.dimensions:
+        # AN ENVELOPE CARRIES NO MEASUREMENT OF ITS OWN (#274). Its dimensions do,
+        # and each of them has already been held to every line below. Demanding a
+        # pooled kappa here would ask for a number over two populations that were
+        # never pooled.
         return
     for name in ("judge_interval", "ceiling_interval"):
         interval = getattr(record, name)
@@ -558,6 +600,7 @@ class CalibrationStatus:
     harness_version: str | None = None
     written_at: str | None = None
     artifact_version: int = ARTIFACT_VERSION
+    dimensions: Mapping[str, CalibrationStatus] | None = None
 
     def __post_init__(self) -> None:
         _require_members(self)
@@ -699,6 +742,11 @@ class CalibrationStatus:
             "harness_version": self.harness_version,
             "written_at": self.written_at,
             "artifact_version": self.artifact_version,
+            "dimensions": (
+                {name: part.payload for name, part in self.dimensions.items()}
+                if self.dimensions is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -768,6 +816,32 @@ def _stored_fields(payload: Mapping) -> dict:
         "harness_version": _required_key(payload, "harness_version"),
         "written_at": _required_key(payload, "written_at"),
         "artifact_version": _stored_artifact_version(payload),
+        "dimensions": _stored_dimensions(payload),
+    }
+
+
+def _stored_dimensions(payload: Mapping) -> Mapping[str, CalibrationStatus] | None:
+    """One record per gated dimension, rebuilt, or None on a record that has none.
+
+    Null is a real answer and an absent key is not, the same rule
+    `_stored_identity` applies: a version 2 artifact always writes the key, so a
+    file without it is a file this reader cannot vouch for.
+
+    Each part goes back through `from_payload`, so a dimension that breaks a
+    construction rule refuses the whole envelope rather than being believed
+    because it was already written down.
+    """
+    stored = _required_key(payload, "dimensions")
+    if stored is None:
+        return None
+    if not isinstance(stored, Mapping):
+        raise InvalidCalibrationStatus(
+            f"CalibrationStatus needs dimensions as a mapping or null, got "
+            f"{type(stored).__name__}"
+        )
+    return {
+        str(name): CalibrationStatus.from_payload(part)
+        for name, part in stored.items()
     }
 
 
