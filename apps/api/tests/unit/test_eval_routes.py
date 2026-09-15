@@ -159,9 +159,12 @@ def _fake_eval_runs_rows() -> list[tuple]:
     """Two fake eval_run rows: one carrying a record, one that never wrote one.
 
     Column order matches _LIST_EVAL_RUNS_SQL: id, started_at, finished_at,
-    status, result. The first run scored 20 exploratory rows and designated no
-    golden ones, which is the ordinary tenant. The second died before the write
-    and has no numbers at all.
+    status, result, source_run_id. The first run scored 20 exploratory rows and
+    designated no golden ones, which is the ordinary tenant. The second died
+    before the write and has no numbers at all.
+
+    `source_run_id` is null on both, because both measured an agent. Only a
+    rejudge carries one (#274).
     """
     measured_id = str(uuid4())
     return [
@@ -175,6 +178,7 @@ def _fake_eval_runs_rows() -> list[tuple]:
                 golden=_outcome(*_NO_ROWS),
                 exploratory=_outcome(20, 20, 20, 0.87, 0.91, 0.83, 0.79),
             ),
+            None,
         ),
         (
             str(uuid4()),
@@ -182,6 +186,7 @@ def _fake_eval_runs_rows() -> list[tuple]:
             datetime(2026, 5, 22, 2, 1, 0, tzinfo=timezone.utc),
             "failed",
             None,  # the run failed before it recorded anything
+            None,  # and it measured an agent, so it rescored no run
         ),
     ]
 
@@ -208,6 +213,7 @@ def _judge_outage_run_rows() -> list[tuple]:
                 golden=_outcome(*_NO_ROWS),
                 exploratory=_outcome(30, 30, 0, None, None, None, None),
             ),
+            None,
         ),
     ]
 
@@ -233,6 +239,7 @@ def _both_datasets_scored_rows() -> list[tuple]:
                     20, 20, 18, 0.71, 0.70, 0.69, 0.68, failed=6, unmeasured=2
                 ),
             ),
+            None,
         ),
     ]
 
@@ -271,9 +278,11 @@ def _fake_eval_results_rows(run_id: str, scenario_id: str) -> list[tuple]:
     """Rows for a single scenario with all four metrics, all above their gate."""
     scores = {
         "faithfulness": 0.95,
-        "answer_relevancy": 0.88,
+        # 1.0 rather than a similarity, because #274 made this column a decision.
+        "answer_relevancy": 1.0,
         "context_precision": 0.90,
         "context_recall": 0.85,
+        "ragas_answer_relevancy": 0.88,
     }
     return [_judge_row(scenario_id, metric, scores[metric]) for metric in METRIC_KEYS]
 
@@ -358,10 +367,15 @@ class TestListEvalRuns:
     ) -> dict:
         """Drive GET /eval-runs over *rows* and return the parsed body.
 
-        pre_0022 stands in for a tenant DB that predates migration 0022: the
-        wide SELECT raises UndefinedColumn, the narrow one returns the same runs
-        with their record column stripped, and every run has to report result
-        "absent" rather than a number recovered from somewhere else.
+        pre_0022 stands in for a tenant DB that predates migration 0022: every
+        rung of the read ladder that names a column it lacks raises
+        UndefinedColumn, the narrowest returns the same runs with their record
+        and source columns stripped, and every run has to report result "absent"
+        rather than a number recovered from somewhere else.
+
+        THE LADDER HAS THREE RUNGS SINCE #274, because 0030 added
+        `source_run_id`. A pre-0022 tenant lacks both columns, so two refusals
+        precede the narrow read.
 
         query_error is anything else the runs query can raise. It must surface.
         """
@@ -376,6 +390,7 @@ class TestListEvalRuns:
             calls: list = [query_error]
         elif pre_0022:
             calls = [
+                psycopg2.errors.UndefinedColumn("column er.source_run_id does not exist"),
                 psycopg2.errors.UndefinedColumn("column er.result does not exist"),
                 [row[:4] for row in rows],
                 _fake_ledger_rows(),
@@ -437,6 +452,7 @@ class TestListEvalRuns:
                 # came back with nothing at all.
                 exploratory=_outcome(30, 30, 30, 0.0, None, None, None),
             ),
+            None,
         )
 
         body = await self._get_runs([row])
@@ -508,6 +524,7 @@ class TestListEvalRuns:
                 golden=_outcome(*_NO_ROWS),
                 exploratory=_outcome(20, 20, 7, 0.42, 0.91, 0.83, 0.79),
             ),
+            None,
         )
         after = (await self._get_runs([edited]))["eval_runs"][0]
 
@@ -608,7 +625,7 @@ class TestListEvalRuns:
         payload = rows[0][4]
         payload["datasets"]["exploratory"]["scored"] = 99
 
-        body = await self._get_runs([(*rows[0][:4], payload)])
+        body = await self._get_runs([(*rows[0][:4], payload, None)])
         run = body["eval_runs"][0]
 
         assert run["result"] == "absent"
@@ -634,7 +651,7 @@ class TestListEvalRuns:
             "temperature": 0.7,
         }
 
-        body = await self._get_runs([(*rows[0][:4], payload), rows[1]])
+        body = await self._get_runs([(*rows[0][:4], payload, None), rows[1]])
 
         assert len(body["eval_runs"]) == 2
         assert body["eval_runs"][0]["result"] == "absent"
@@ -649,7 +666,7 @@ class TestListEvalRuns:
         payload = rows[0][4]
         payload["judge_identity"] = "gpt-5.6-luna"
 
-        body = await self._get_runs([(*rows[0][:4], payload)])
+        body = await self._get_runs([(*rows[0][:4], payload, None)])
 
         assert body["eval_runs"][0]["result"] == "absent"
 
@@ -664,7 +681,7 @@ class TestListEvalRuns:
         payload = rows[0][4]
         payload["attempted"] = 999
 
-        body = await self._get_runs([(*rows[0][:4], payload)])
+        body = await self._get_runs([(*rows[0][:4], payload, None)])
 
         assert body["eval_runs"][0]["result"] == "absent"
         assert body["eval_runs"][0]["scenario_count"] is None
@@ -952,7 +969,10 @@ class TestGetEvalRunResults:
         assert "passed" in result
         scores = result["scores"]
         assert abs(scores["faithfulness"] - 0.95) < 0.001
-        assert abs(scores["answer_relevancy"] - 0.88) < 0.001
+        assert abs(scores["answer_relevancy"] - 1.0) < 0.001
+        assert abs(scores["ragas_answer_relevancy"] - 0.88) < 0.001, (
+            "the ragas figure still reaches the console, reported and ungated"
+        )
 
     async def test_passed_flag_true_when_both_stored_verdicts_are_true(self):
         """passed=True when both gated rows carry a True verdict."""
@@ -1528,3 +1548,287 @@ class TestTriggerEvalRun:
             )
 
         assert response.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+# POST /agents/{agent_id}/eval-runs/{run_id}/rejudge, a second opinion (#274)
+# ---------------------------------------------------------------------------
+
+
+class TestRejudgeEvalRun:
+    """Tests for POST /api/v1/agents/{agent_id}/eval-runs/{run_id}/rejudge."""
+
+    async def test_returns_202_with_both_ids(self):
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+        mock_db = _make_mock_db_returning_agent(ready_agent)
+        source_run_id = uuid4()
+
+        fake_task_id = str(uuid4())
+        mock_async_result = MagicMock()
+        mock_async_result.id = fake_task_id
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            with patch(
+                "app.api.v1.evals.rejudge_eval_run.apply_async",
+                return_value=mock_async_result,
+            ) as dispatch:
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await client.post(
+                        f"/api/v1/agents/{ready_agent.id}/eval-runs/{source_run_id}/rejudge",
+                        headers={"X-API-Key": "vrd_live_test"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 202
+        body = response.json()
+        assert body["status"] == "queued"
+        assert body["task_id"] == fake_task_id
+        assert body["source_run_id"] == str(source_run_id)
+
+        kwargs = dispatch.call_args.kwargs["kwargs"]
+        assert kwargs == {
+            "agent_id": str(ready_agent.id),
+            "source_run_id": str(source_run_id),
+        }, "the task args carry two ids and nothing else (project rule 1)"
+        assert dispatch.call_args.kwargs["queue"] == "runtime"
+
+    async def test_returns_404_on_cross_tenant_idor(self):
+        """The tenant boundary. A run id is checked by the database it opens."""
+        fake_tenant = _make_fake_tenant()
+        other_tenant = _make_fake_tenant()
+        foreign_agent = _make_ready_agent(other_tenant)
+        mock_db = _make_mock_db_returning_agent(foreign_agent)
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    f"/api/v1/agents/{foreign_agent.id}/eval-runs/{uuid4()}/rejudge",
+                    headers={"X-API-Key": "vrd_live_test"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 404
+
+    async def test_returns_404_when_agent_not_found(self):
+        fake_tenant = _make_fake_tenant()
+        mock_db = _make_mock_db_returning_agent(None)
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    f"/api/v1/agents/{uuid4()}/eval-runs/{uuid4()}/rejudge",
+                    headers={"X-API-Key": "vrd_live_test"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 404
+
+    async def test_requires_api_key(self):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/api/v1/agents/{uuid4()}/eval-runs/{uuid4()}/rejudge",
+            )
+
+        assert response.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+# GET /agents/{agent_id}/eval-runs?kind=, which runs the console sees (#274)
+# ---------------------------------------------------------------------------
+
+
+class TestTheListingIsScopedToOneKind:
+    """A rejudge run is the newest row in `eval_runs` the moment one is dispatched.
+
+    It carries no `result`, it measured two metrics and no agent turn, and before
+    the filter this listing returned it first, so the console read it as the
+    agent's current quality. Every other reader of a run was already kind-scoped;
+    this one is the one the owner looks at.
+    """
+
+    async def _list(self, agent, tenant, seen, query=""):
+        mock_db = _make_mock_db_returning_agent(agent)
+        app.dependency_overrides[get_current_tenant] = lambda: tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        def _query(conn_str, sql, params):
+            seen.append((sql, params))
+            return []
+
+        try:
+            with (
+                patch("app.api.v1.evals._query_tenant_db_sync", _query),
+                patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://fake/db"),
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    return await client.get(
+                        f"/api/v1/agents/{agent.id}/eval-runs{query}",
+                        headers={"X-API-Key": "vrd_live_test"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_the_default_listing_asks_only_for_this_agents_eval_runs(self):
+        """The mutation this test exists for: remove the kind filter.
+
+        Without it the query returns every row in the table, and the newest is a
+        rejudge as soon as one has run.
+        """
+        tenant = _make_fake_tenant()
+        agent = _make_ready_agent(tenant)
+        seen: list = []
+
+        response = await self._list(agent, tenant, seen)
+
+        assert response.status_code == 200
+        assert response.json()["kind"] == "eval"
+        sql, params = seen[0]
+        assert "WHERE er.kind = %(kind)s" in sql, (
+            "the listing reads eval_runs with no kind filter, so a rejudge run "
+            "is the newest row it returns"
+        )
+        assert params == {"kind": f"m6:{agent.id}"}
+
+    async def test_the_rejudge_kind_lists_the_rejudge_runs(self):
+        tenant = _make_fake_tenant()
+        agent = _make_ready_agent(tenant)
+        seen: list = []
+
+        response = await self._list(agent, tenant, seen, query="?kind=rejudge")
+
+        assert response.status_code == 200
+        assert response.json()["kind"] == "rejudge"
+        _sql, params = seen[0]
+        assert params == {"kind": f"rejudge:{agent.id}"}
+
+    async def test_a_kind_nobody_named_is_refused_rather_than_sent_to_sql(self):
+        """The value reaches a SQL parameter, so the set is named and not passed through."""
+        tenant = _make_fake_tenant()
+        agent = _make_ready_agent(tenant)
+        seen: list = []
+
+        response = await self._list(agent, tenant, seen, query="?kind=m6")
+
+        assert response.status_code == 400
+        assert seen == [], "an unvalidated kind reached the tenant database"
+
+    async def test_a_rejudge_row_carries_the_run_it_rescored(self):
+        """The join a reader needs to tell a second opinion from a second measurement."""
+        tenant = _make_fake_tenant()
+        agent = _make_ready_agent(tenant)
+        source_run_id = uuid4()
+        run_id = uuid4()
+        mock_db = _make_mock_db_returning_agent(agent)
+        app.dependency_overrides[get_current_tenant] = lambda: tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        def _query(conn_str, sql, params):
+            if "eval_runs" in sql:
+                return [(run_id, None, None, "complete", None, source_run_id)]
+            return [(0, 0, 0)]
+
+        try:
+            with (
+                patch("app.api.v1.evals._query_tenant_db_sync", _query),
+                patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://fake/db"),
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await client.get(
+                        f"/api/v1/agents/{agent.id}/eval-runs?kind=rejudge",
+                        headers={"X-API-Key": "vrd_live_test"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+        [row] = response.json()["eval_runs"]
+        assert row["source_run_id"] == str(source_run_id)
+        assert row["id"] == str(run_id)
+
+    async def test_an_eval_run_carries_no_source_and_says_so_with_null(self):
+        tenant = _make_fake_tenant()
+        agent = _make_ready_agent(tenant)
+        mock_db = _make_mock_db_returning_agent(agent)
+        app.dependency_overrides[get_current_tenant] = lambda: tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        def _query(conn_str, sql, params):
+            if "eval_runs" in sql:
+                return [(uuid4(), None, None, "complete", None, None)]
+            return [(0, 0, 0)]
+
+        try:
+            with (
+                patch("app.api.v1.evals._query_tenant_db_sync", _query),
+                patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://fake/db"),
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await client.get(
+                        f"/api/v1/agents/{agent.id}/eval-runs",
+                        headers={"X-API-Key": "vrd_live_test"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+        [row] = response.json()["eval_runs"]
+        assert row["source_run_id"] is None
+
+    async def test_a_tenant_behind_0030_still_lists_its_runs(self):
+        """The read ladder. No rejudge has ever run on such a tenant, so null is true."""
+        tenant = _make_fake_tenant()
+        agent = _make_ready_agent(tenant)
+        mock_db = _make_mock_db_returning_agent(agent)
+        app.dependency_overrides[get_current_tenant] = lambda: tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        def _query(conn_str, sql, params):
+            if "source_run_id" in sql:
+                raise psycopg2.errors.UndefinedColumn("source_run_id does not exist")
+            if "eval_runs" in sql:
+                return [(uuid4(), None, None, "complete", None)]
+            return [(0, 0, 0)]
+
+        try:
+            with (
+                patch("app.api.v1.evals._query_tenant_db_sync", _query),
+                patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://fake/db"),
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await client.get(
+                        f"/api/v1/agents/{agent.id}/eval-runs",
+                        headers={"X-API-Key": "vrd_live_test"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        [row] = response.json()["eval_runs"]
+        assert row["source_run_id"] is None
