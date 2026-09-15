@@ -20,7 +20,11 @@ from pydantic import BaseModel
 from ragas.llms import InstructorLLM
 
 from app.core.model_client import LedgerContext
-from app.services.judge_llm import LunaInstructorLLM, build_judge_llm
+from app.services.judge_llm import (
+    JUDGE_MAX_COMPLETION_TOKENS,
+    LunaInstructorLLM,
+    build_judge_llm,
+)
 
 TENANT = "11111111-1111-1111-1111-111111111111"
 
@@ -82,7 +86,9 @@ class TestTheJudgeSendsWhatTheProviderAccepts:
         asyncio.run(_judge_through(sent, monkeypatch).agenerate("score this", _Verdict))
 
         assert "max_tokens" not in sent, f"the judge still sends max_tokens: {sent.get('max_tokens')!r}"
-        assert sent["max_completion_tokens"] == 1024
+        # The builder's figure, not ragas's 1024. #279 raised it and
+        # test_faithfulness_judge_truncation.py holds the number itself.
+        assert sent["max_completion_tokens"] == JUDGE_MAX_COMPLETION_TOKENS
 
     def test_the_rest_of_the_body_is_unchanged_by_the_rename(self, monkeypatch):
         """Only the rename. Ragas's reasoning-model branch would also force
@@ -97,6 +103,12 @@ class TestTheJudgeSendsWhatTheProviderAccepts:
         assert sent["tools"], "instructor's forced tool is what the provider checks the effort against"
 
     def test_the_mapping_renames_only_when_max_tokens_is_present(self):
+        """The subclass alone, built without the builder's cap.
+
+        1024 here is ragas's own `InstructorModelArgs` default, which is what
+        this construction inherits. `build_judge_llm` overrides it (#279); this
+        test is about the rename and not about the size.
+        """
         llm = LunaInstructorLLM(client=object(), model="gpt-5.6-luna", provider="openai", temperature=0)
 
         mapped = llm._map_provider_params()
