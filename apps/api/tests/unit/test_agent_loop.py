@@ -39,6 +39,7 @@ WHAT THE BUDGET TESTS PRICE
 
 from __future__ import annotations
 
+import json
 import threading
 import uuid
 from dataclasses import replace
@@ -52,6 +53,7 @@ from app.core.config import settings
 from app.core.model_client import route_for
 from app.domain.model_call import ModelCall, ModelSource
 from app.services.agent_loop import (
+    CLARIFIED,
     MAX_MODEL_CALLS_PER_TURN,
     RETRIEVE_CHUNKS_KEY,
     RETRIEVE_CHUNKS_PARSED,
@@ -74,6 +76,7 @@ from app.services.agent_tools import (
     get_tool_results,
     record_suppressed_side_effect,
 )
+from app.services.clarifying_check import is_clarifying_question, turn_asked_to_clarify
 from tests.agent_loop_doubles import STOP_REASONS
 
 TENANT = "11111111-1111-1111-1111-111111111111"
@@ -177,6 +180,11 @@ def _text_wire(text: str, is_error: bool = False) -> dict:
 
 async def _echo_handler(args):
     return _text_wire(f"echo {args.get('query', '')}")
+
+
+async def _clarify_handler(args):
+    """`clarify_tool`'s own contract in one line. The question is the result."""
+    return _text_wire(args["question"])
 
 
 def _turn(client, *, tools=(), max_model_calls=MAX_MODEL_CALLS_PER_TURN,
@@ -1285,6 +1293,252 @@ class TestEscalation:
 
 
 # ---------------------------------------------------------------------------
+# Clarify ends the turn (#280)
+# ---------------------------------------------------------------------------
+
+#: The opener four projects in the corpus can all answer, and the question the
+#: owner labelled as the correct reply to it.
+AMBIGUOUS_QUESTION = "Which project are you setting up?"
+
+#: What the agent served instead on five of run 735fb9fa's ten ambiguous rows.
+#: Long, declarative, and about a project the customer never named.
+GUESSED_ANSWER = (
+    "Run `pnpm dev` from the repository root. That starts the storefront on port "
+    "3000 and rebuilds on save. If the port is taken, pass `--port`.\n\n"
+    "CITATIONS:\n- Document: Storefront README | Section: 2.1"
+)
+
+
+def _clarify_call(call_id: str, question: str = AMBIGUOUS_QUESTION):
+    """One `clarify` call as the model writes it."""
+    return _tool_call(call_id, "clarify", json.dumps({"question": question}))
+
+
+class TestClarifyEndsTheTurn:
+    """The customer reads the question, and only the question (#280, ADR 0012).
+
+    WHAT WENT WRONG. On eval run 735fb9fa the agent called `clarify` on all ten
+    ambiguous openers, which is what #255 changed the prompt to get. On five of
+    them it then went on in the same turn, retrieved, and answered about a
+    project the customer had not named. The loop had no rule about `clarify`, so
+    the tool result went back to the model like any other and the model spent its
+    remaining calls answering.
+
+    THAT IS TWO FAILURES IN ONE. The customer was served an answer to a question
+    they never asked. And ADR 0012 reads the turn's LAST tool call as the
+    evidence that it asked, so a `retrieve` after the `clarify` made the row a
+    `golden_failure` and blocked the deploy.
+
+    WHY THE LOOP AND NOT THE PROMPT. The issue offered both. A prompt sentence
+    cannot be mutated and observed to go red, and this repo does not count a
+    guard it has not seen fail. The loop owns the served text, so the loop is
+    where the rule can be tested.
+    """
+
+    def _asked_then_answered(self) -> _Client:
+        """The failing shape, in two replies. This is the repro."""
+        return _Client(
+            _completion(
+                tool_calls=[_clarify_call("call-1")], finish_reason="tool_calls"
+            ),
+            _completion(content=GUESSED_ANSWER, finish_reason="stop"),
+        )
+
+    async def test_a_turn_that_asked_then_answered_serves_the_question(self):
+        """THE REPRO. Red before the fix, with GUESSED_ANSWER as the served text."""
+        out, _ = await _drive(
+            _turn(self._asked_then_answered(), tools=[_tool("clarify", _clarify_handler)]),
+            message="how do I start the dev server?",
+        )
+
+        assert out["response_text"] == AMBIGUOUS_QUESTION, (
+            f"the customer was served {out['response_text']!r}. The agent asked "
+            "which project and then answered about one of them in the same turn, "
+            "which is the defect on five of run 735fb9fa's ten ambiguous rows."
+        )
+
+    async def test_the_served_text_of_an_asking_turn_passes_the_text_rule(self):
+        """The property ADR 0012 holds an owner's reference to, now held by the turn.
+
+        `is_clarifying_question` is the rule the scenario writer applies to a
+        reference answer, so a pair cannot demand a behaviour its own reference
+        would fail. An ambiguous turn that serves anything else is the agent
+        failing a bar its own dataset clears.
+        """
+        out, _ = await _drive(
+            _turn(self._asked_then_answered(), tools=[_tool("clarify", _clarify_handler)])
+        )
+
+        assert is_clarifying_question(out["response_text"]), (
+            f"{out['response_text']!r} does not read as a clarifying question. "
+            "It ends in no question mark, or it runs past CLARIFYING_MAX_WORDS."
+        )
+
+    async def test_the_tool_log_ends_on_clarify_so_the_row_reads_as_asked(self):
+        """`turn_asked_to_clarify` is the eval's verdict, and it reads this log.
+
+        The loop and the rule are driven together on purpose. Each was correct
+        about its own half while the pair disagreed, which is how five rows came
+        back as `golden_failure` with a clarify call plainly in the log.
+        """
+        out, _ = await _drive(
+            _turn(self._asked_then_answered(), tools=[_tool("clarify", _clarify_handler)])
+        )
+
+        assert turn_asked_to_clarify(out["tool_calls_log"]) is True
+        assert out["stop_reason"] == CLARIFIED
+
+    async def test_a_turn_whose_only_call_is_clarify_serves_exactly_the_question(self):
+        """No second model call, so nothing composes prose around the question."""
+        client = _Client(
+            _completion(tool_calls=[_clarify_call("call-1")], finish_reason="tool_calls")
+        )
+
+        out, _ = await _drive(_turn(client, tools=[_tool("clarify", _clarify_handler)]))
+
+        assert out["response_text"] == AMBIGUOUS_QUESTION
+        assert out["num_turns"] == 1, (
+            f"the loop made {out['num_turns']} model calls for a turn that had "
+            "already asked the customer a question"
+        )
+
+    async def test_prose_in_the_same_reply_as_the_clarify_call_is_not_served(self):
+        """The model's lead-in goes. A turn serves the question or it serves an answer.
+
+        A reply may carry text AND tool calls, and `run_agent_loop` appends that
+        text to `response_parts` before the calls run. "Let me check." in front
+        of the question is harmless; the storefront's `pnpm dev` in front of it
+        is the same defect one reply earlier.
+        """
+        client = _Client(
+            _completion(
+                content=GUESSED_ANSWER,
+                tool_calls=[_clarify_call("call-1")],
+                finish_reason="tool_calls",
+            )
+        )
+
+        out, _ = await _drive(_turn(client, tools=[_tool("clarify", _clarify_handler)]))
+
+        assert out["response_text"] == AMBIGUOUS_QUESTION
+
+    async def test_a_tool_after_clarify_in_the_same_reply_never_runs(self):
+        """One reply asking for both. The question stands and the retrieve is dropped."""
+        client = _Client(
+            _completion(
+                tool_calls=[
+                    _clarify_call("call-1"),
+                    _tool_call("call-2", "retrieve", '{"query": "dev server"}'),
+                ],
+                finish_reason="tool_calls",
+            )
+        )
+
+        out, _ = await _drive(
+            _turn(
+                client,
+                tools=[_tool("clarify", _clarify_handler), _tool("retrieve", _echo_handler)],
+            )
+        )
+
+        assert [entry["tool_name"] for entry in out["tool_calls_log"]] == ["clarify"]
+        assert out["response_text"] == AMBIGUOUS_QUESTION
+
+    async def test_a_retrieve_before_the_clarify_is_kept_and_still_asks(self):
+        """ADR 0012's allowed shape. Retrieving first, seeing four projects, then asking.
+
+        The chunks stay in `tool_calls_log`, which is what `published_context`
+        and the eval's context capture read, and the turn still ends asking.
+        """
+        client = _Client(
+            _completion(
+                tool_calls=[_tool_call("call-1", "retrieve", '{"query": "dev server"}')],
+                finish_reason="tool_calls",
+            ),
+            _completion(tool_calls=[_clarify_call("call-2")], finish_reason="tool_calls"),
+        )
+
+        out, _ = await _drive(
+            _turn(
+                client,
+                tools=[_tool("clarify", _clarify_handler), _tool("retrieve", _echo_handler)],
+            )
+        )
+
+        assert [entry["tool_name"] for entry in out["tool_calls_log"]] == [
+            "retrieve",
+            "clarify",
+        ]
+        assert out["response_text"] == AMBIGUOUS_QUESTION
+        assert turn_asked_to_clarify(out["tool_calls_log"]) is True
+
+    async def test_a_retrieving_turn_is_untouched(self):
+        """The control. Nothing about an answering turn moved.
+
+        Without this, a rule that ended every turn on its first tool call would
+        satisfy every assertion above.
+        """
+        answer = "Fourteen days, unopened."
+        client = _Client(
+            _completion(
+                tool_calls=[_tool_call("call-1", "retrieve", '{"query": "returns"}')],
+                finish_reason="tool_calls",
+            ),
+            _completion(content=answer, finish_reason="stop"),
+        )
+
+        out, _ = await _drive(
+            _turn(client, tools=[_tool("retrieve", _echo_handler)])
+        )
+
+        assert out["response_text"] == answer
+        assert out["stop_reason"] == "stop"
+        assert out["num_turns"] == 2
+
+    async def test_a_clarify_that_did_not_run_ends_nothing(self):
+        """The rule `_note_escalation` holds, on the tool beside it.
+
+        The model sent no `question`, so `clarify_tool` raises KeyError and
+        `dispatch` returns an error wire. A turn cannot serve a question nobody
+        wrote, so the loop reads the error back to the model and runs on.
+        """
+        client = _Client(
+            _completion(
+                tool_calls=[_tool_call("call-1", "clarify", "{}")],
+                finish_reason="tool_calls",
+            ),
+            _completion(content=AMBIGUOUS_QUESTION, finish_reason="stop"),
+        )
+
+        out, _ = await _drive(_turn(client, tools=[_tool("clarify", _clarify_handler)]))
+
+        assert out["stop_reason"] == "stop"
+        assert out["response_text"] == AMBIGUOUS_QUESTION
+        assert out["num_turns"] == 2
+
+    async def test_the_firewall_still_scans_a_question_that_ends_the_turn(self):
+        """#50's property is that no caller of this loop can skip the scan.
+
+        An early return is exactly how a path stops reaching the seam's exit, so
+        the question takes the same route a leaking answer does.
+        """
+        leaking = "Shall I resend it to jane.smith@gmail.example?"
+        client = _Client(
+            _completion(
+                tool_calls=[_clarify_call("call-1", leaking)], finish_reason="tool_calls"
+            )
+        )
+
+        out, _ = await _drive(_turn(client, tools=[_tool("clarify", _clarify_handler)]))
+
+        assert out["pii_detector"] is not None, (
+            f"the question was served as {out['response_text']!r} with no "
+            "detector recorded, so it left the loop without being scanned"
+        )
+        assert out["response_text"] != leaking
+
+
+# ---------------------------------------------------------------------------
 # The two ceilings
 # ---------------------------------------------------------------------------
 
@@ -1433,8 +1687,8 @@ class TestTheStopReasonVocabulary:
     vocabulary the tests use against the vocabulary the loop emits.
 
     WHAT THIS ADDS THAT THE TESTS ABOVE DO NOT. Each ending is already pinned by
-    name, one assertion per ending. That is five literals, and a sixth ending
-    arrives with no literal at all. This drives all five and reads them against
+    name, one assertion per ending. That is six literals, and a seventh ending
+    arrives with no literal at all. This drives all six and reads them against
     one declared set, so a new ending is red here until the set is told about it,
     and the set stays evidence rather than another hand-written guess.
 
@@ -1468,6 +1722,17 @@ class TestTheStopReasonVocabulary:
                 max_budget_usd=0.0005,
                 calls=[_luna_call(1000, 500)],
             ),
+            "the agent asked the customer a question": _turn(
+                _Client(
+                    _completion(
+                        tool_calls=[
+                            _tool_call("call-1", "clarify", '{"question": "Which project?"}')
+                        ],
+                        finish_reason="tool_calls",
+                    )
+                ),
+                tools=[_tool("clarify", _clarify_handler)],
+            ),
         }
 
         recorded = {}
@@ -1475,12 +1740,12 @@ class TestTheStopReasonVocabulary:
             out, _ = await _drive(turn)
             recorded[name] = out["stop_reason"]
 
-        # The control. Five endings that all recorded the same word would satisfy
+        # The control. Six endings that all recorded the same word would satisfy
         # the membership check below without any of them being driven.
         assert len(set(recorded.values())) == len(recorded), (
-            f"two of the five endings recorded the same word: {recorded}. The "
+            f"two of the six endings recorded the same word: {recorded}. The "
             "harness stopped reaching the endings it names, so the membership "
-            "check under it is reading one ending five times."
+            "check under it is reading one ending six times."
         )
 
         unknown = {n: r for n, r in recorded.items() if r not in STOP_REASONS}
