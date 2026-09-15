@@ -1358,12 +1358,18 @@ class TestClarifyEndsTheTurn:
         )
 
     async def test_the_served_text_of_an_asking_turn_passes_the_text_rule(self):
-        """The property ADR 0012 holds an owner's reference to, now held by the turn.
+        """This fixture's question clears `is_clarifying_question`. Nothing more.
 
-        `is_clarifying_question` is the rule the scenario writer applies to a
-        reference answer, so a pair cannot demand a behaviour its own reference
-        would fail. An ambiguous turn that serves anything else is the agent
-        failing a bar its own dataset clears.
+        THE LOOP DOES NOT BOUND THE SERVED TEXT, and this test does not claim it
+        does. `is_clarifying_question` is the rule the scenario WRITER applies to
+        an owner's reference answer, so a pair cannot demand a behaviour its own
+        reference would fail. The loop serves whatever the model wrote, and a
+        model that writes sixty words ending in a full stop serves that.
+
+        What the fix guarantees is that the served text is the question and the
+        question alone. Whether that question reads as one is the model's to get
+        right, and it is what the eval measures, so a bound here would be the
+        product asserting its own score.
         """
         out, _ = await _drive(
             _turn(self._asked_then_answered(), tools=[_tool("clarify", _clarify_handler)])
@@ -1422,13 +1428,20 @@ class TestClarifyEndsTheTurn:
 
         assert out["response_text"] == AMBIGUOUS_QUESTION
 
-    async def test_a_tool_after_clarify_in_the_same_reply_never_runs(self):
-        """One reply asking for both. The question stands and the retrieve is dropped."""
+    async def test_clarify_beside_an_escalation_escalates_and_still_asks(self):
+        """Both run. The first version of this fix cancelled the escalation.
+
+        `_run_tool_calls` returned on the first call that ended the turn, so a
+        reply asking for `clarify` and `escalate_to_human` together left the
+        conversation unmarked, sent no mail, and came back `escalated` False,
+        while the customer read a question. Every call of the batch runs now, and
+        the clarify is sorted to the end so the tool log still ends on it.
+        """
         client = _Client(
             _completion(
                 tool_calls=[
                     _clarify_call("call-1"),
-                    _tool_call("call-2", "retrieve", '{"query": "dev server"}'),
+                    _tool_call("call-2", "escalate_to_human", '{"reason": "asked three times"}'),
                 ],
                 finish_reason="tool_calls",
             )
@@ -1437,12 +1450,165 @@ class TestClarifyEndsTheTurn:
         out, _ = await _drive(
             _turn(
                 client,
-                tools=[_tool("clarify", _clarify_handler), _tool("retrieve", _echo_handler)],
+                tools=[
+                    _tool("clarify", _clarify_handler),
+                    _tool("escalate_to_human", _echo_handler),
+                ],
             )
         )
 
-        assert [entry["tool_name"] for entry in out["tool_calls_log"]] == ["clarify"]
+        assert out["escalated"] is True, (
+            "the escalation was cancelled by the clarify beside it, so nothing "
+            "marked the conversation and no mail left the building"
+        )
+        assert out["escalation_reason"] == "asked three times"
         assert out["response_text"] == AMBIGUOUS_QUESTION
+        assert [entry["tool_name"] for entry in out["tool_calls_log"]] == [
+            "escalate_to_human",
+            "clarify",
+        ], "clarify has to be the LAST entry, since ADR 0012 reads the last one"
+
+    async def test_clarify_beside_a_confirmation_runs_the_confirmation(self):
+        """A mutating skill in the same batch is a side effect, not a draft.
+
+        `confirm_action` writes a pending confirmation the customer was already
+        told about. Dropping it on the way out of the turn loses the write and
+        leaves the customer waiting on an approval nobody recorded.
+        """
+        ran: list[dict] = []
+
+        async def _confirm(args):
+            ran.append(args)
+            return _text_wire("Reference rtx-9 is with an approver.")
+
+        client = _Client(
+            _completion(
+                tool_calls=[
+                    _clarify_call("call-1"),
+                    _tool_call("call-2", "confirm_action", '{"reference": "rtx-9"}'),
+                ],
+                finish_reason="tool_calls",
+            )
+        )
+
+        out, _ = await _drive(
+            _turn(
+                client,
+                tools=[
+                    _tool("clarify", _clarify_handler),
+                    _tool("confirm_action", _confirm),
+                ],
+            )
+        )
+
+        assert ran == [{"reference": "rtx-9"}], "the confirmation handler never ran"
+        assert out["response_text"] == AMBIGUOUS_QUESTION
+        assert [entry["tool_name"] for entry in out["tool_calls_log"]] == [
+            "confirm_action",
+            "clarify",
+        ]
+
+    async def test_the_batch_keeps_the_order_the_model_wrote_around_the_clarify(self):
+        """Only the clarify moves. `sorted` is stable, so the rest hold their places."""
+        client = _Client(
+            _completion(
+                tool_calls=[
+                    _tool_call("call-1", "retrieve", '{"query": "first"}'),
+                    _clarify_call("call-2"),
+                    _tool_call("call-3", "lookup_structured", '{"table": "orders"}'),
+                ],
+                finish_reason="tool_calls",
+            )
+        )
+
+        out, _ = await _drive(
+            _turn(
+                client,
+                tools=[
+                    _tool("clarify", _clarify_handler),
+                    _tool("retrieve", _echo_handler),
+                    _tool("lookup_structured", _echo_handler),
+                ],
+            )
+        )
+
+        assert [entry["tool_name"] for entry in out["tool_calls_log"]] == [
+            "retrieve",
+            "lookup_structured",
+            "clarify",
+        ]
+
+    async def test_a_blank_question_ends_nothing(self):
+        """An empty bubble is not a clarifying question, and the eval drops the row.
+
+        The loop owns the served text, so the guard lives beside the one that
+        reads the error wire rather than only in `clarify_tool`. A double, a
+        replay, or any other producer of a blank wire reaches this line too.
+        """
+        client = _Client(
+            _completion(
+                tool_calls=[_tool_call("call-1", "clarify", '{"question": "   "}')],
+                finish_reason="tool_calls",
+            ),
+            _completion(content=AMBIGUOUS_QUESTION, finish_reason="stop"),
+        )
+
+        out, _ = await _drive(_turn(client, tools=[_tool("clarify", _clarify_handler)]))
+
+        assert out["stop_reason"] == "stop"
+        assert out["response_text"] == AMBIGUOUS_QUESTION
+        assert out["num_turns"] == 2
+
+    async def test_a_clarified_turn_widens_no_pii_allowlist(self):
+        """A question quotes nothing, so it gets the narrowest allowlist there is.
+
+        `published_context` exempts the tenant's own published contact details so
+        a correct ANSWER may quote the address in the corpus. A `retrieve` in the
+        same batch as the `clarify` would otherwise carry that exemption into a
+        reply that is only a question.
+        """
+        address = "orders@earthelements.example"
+        chunk_wire = {
+            "content": [{"type": "text", "text": f"Contact us on {address}."}],
+            "_retrieved_context": {
+                "chunks": [
+                    {
+                        "chunk_id": "c1",
+                        "document_id": "d1",
+                        "content": f"Contact us on {address}.",
+                        "score": 0.9,
+                        "rank": 1,
+                    }
+                ]
+            },
+        }
+
+        async def _retrieve(args):
+            return chunk_wire
+
+        client = _Client(
+            _completion(
+                tool_calls=[
+                    _tool_call("call-1", "retrieve", '{"query": "contact"}'),
+                    _clarify_call("call-2", f"Shall I mail {address} for you?"),
+                ],
+                finish_reason="tool_calls",
+            )
+        )
+
+        out, _ = await _drive(
+            _turn(
+                client,
+                tools=[_tool("clarify", _clarify_handler), _tool("retrieve", _retrieve)],
+            )
+        )
+
+        assert out["pii_published_chunks"] == 0, (
+            "the retrieve in the same batch widened the allowlist for a reply "
+            "that is only a question"
+        )
+        assert out["pii_detector"] is not None
+        assert address not in out["response_text"]
 
     async def test_a_retrieve_before_the_clarify_is_kept_and_still_asks(self):
         """ADR 0012's allowed shape. Retrieving first, seeing four projects, then asking.

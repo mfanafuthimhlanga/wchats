@@ -437,3 +437,62 @@ def test_the_judge_gets_one_element_per_chunk_not_one_repr_per_call() -> None:
         "a Python repr of the chunk dicts reached the judge; the transport "
         "encoding is then most of its token budget and is scored as evidence"
     )
+
+
+# ---------------------------------------------------------------------------
+# The seam skips a turn that asked rather than answered (#280)
+# ---------------------------------------------------------------------------
+
+
+class TestAClarifiedTurnIsNotJudged:
+    """`_dispatch_validation_chain` reads `stop_reason` and returns None.
+
+    The four validators ask whether an ANSWER was grounded, safe and on
+    strategy. A clarifying question retrieves nothing and answers nothing, so
+    the Gatekeeper and the Auditor score it against an empty context and flag
+    it. `bench_service` files the flagged turn as a failing trace,
+    `mine_production_scenarios` mines it as an unanswered question, and three in
+    one day move the retrieval strategy.
+
+    The wiring, that the task hands its own `stop_reason` to this seam, is
+    pinned in tests/unit/test_agent_task.py. This is the seam's half.
+    """
+
+    @staticmethod
+    def _dispatch(stop_reason):
+        with (
+            patch.object(agent_module, "celery_chain") as chain,
+            patch.object(agent_module, "run_gatekeeper"),
+            patch.object(agent_module, "run_auditor"),
+            patch.object(agent_module, "run_strategist"),
+            patch.object(agent_module, "run_retrieval_faithfulness"),
+        ):
+            returned = agent_module._dispatch_validation_chain(
+                agent_id="agent-1",
+                job_id="job-280",
+                response_text="Which project are you setting up?",
+                message="how do I start the dev server?",
+                conversation_id="conv-1",
+                tool_calls_log=[{"tool_name": "clarify", "input": {"question": "Which?"}}],
+                stop_reason=stop_reason,
+            )
+            return returned, chain
+
+    def test_a_clarified_turn_dispatches_nothing(self) -> None:
+        returned, chain = self._dispatch(agent_module.CLARIFIED)
+
+        chain.assert_not_called()
+        assert returned is None, (
+            f"the seam returned {returned!r} for a turn it did not judge. None is "
+            "what says no chain was dispatched; a JSON string reads as a context "
+            "some judge was handed."
+        )
+
+    def test_any_other_ending_still_dispatches(self) -> None:
+        """The control. A seam that returned early for everything passes the test above."""
+        for ending in ("stop", "max_model_calls", "budget_exceeded", "no_choices", None):
+            returned, chain = self._dispatch(ending)
+
+            chain.assert_called_once()
+            chain.return_value.apply_async.assert_called_once_with(queue="runtime")
+            assert returned is not None, f"stop_reason={ending!r} skipped the judges"
