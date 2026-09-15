@@ -1,0 +1,365 @@
+{
+  "source_file": "260915-hiring-manager.json",
+  "pairs": [
+    {
+      "question": "Walk me through how a customer message moves through W Chats.",
+      "reference_answer": "The FastAPI control plane never does work inline. Anything long-running goes to Celery across two queues. `pipeline` carries ingestion, embedding and staleness, and `runtime` carries agent turns, evals, red team and the validators. A task publishes to the Redis channel `job_events:{job_id}`, the SSE endpoint subscribes, and a `job_events` table keeps the stream for late-join replay. Retrieval fuses pgvector cosine search with BM25 over native `tsvector` and `ts_rank_cd` in one SQL CTE, reranks the fused candidates, and reads a `verified_qa` cache first.",
+      "turns": [
+        {"role": "user", "content": "I've got your portfolio open and I want to start with W Chats."},
+        {"role": "assistant", "content": "Sure. What would you like to know about W Chats?"}
+      ],
+      "topic": "project:architecture",
+      "source": "wchats.md#Architecture"
+    },
+    {
+      "question": "If I cloned W Chats this afternoon, what would I have to run to see it working and see the tests pass?",
+      "reference_answer": "W Chats runs as local processes and there is no Docker path. Start `redis-server`, then `uvicorn app.main:app --reload` from `apps/api`, then `celery -A app.worker.celery_app worker -Q pipeline` and `celery -A app.worker.celery_app worker -Q runtime`, and `pnpm dev` from `apps/admin`. For the backend, `uv sync --extra dev --extra pipeline` then `.venv/Scripts/python.exe scripts/gates.py full`. The console and the widget run `pnpm exec tsc --noEmit`, `pnpm run test:unit`, `pnpm run test:e2e`, and `pnpm run build && node scripts/check-size.mjs` at 20480 bytes gzipped or less.",
+      "turns": [
+        {"role": "user", "content": "I want to understand what it takes to work on W Chats day to day."},
+        {"role": "assistant", "content": "Happy to go through that. Where should I start?"}
+      ],
+      "topic": "project:runtime",
+      "source": "wchats.md#Runtime and tests"
+    },
+    {
+      "question": "What is the biggest thing you would change about W Chats if you picked it up again tomorrow?",
+      "reference_answer": "`README.md` states that there is no always-on deployment today. The system runs from local processes. Pricing is the other open item. The business model canvas records the pricing model as locked at milestone M8 once cost-per-tenant data exists, and `prd.md` lists pricing as an open decision deferred to the same milestone.",
+      "turns": [
+        {"role": "user", "content": "I like asking people what they are unhappy with in their own work."},
+        {"role": "assistant", "content": "That is a fair question. Which project do you want me to take?"},
+        {"role": "user", "content": "W Chats."}
+      ],
+      "topic": "project:change",
+      "source": "wchats.md#What it is, wchats.md#Business model"
+    },
+    {
+      "question": "The Mellow's Earth Elements storefront has no backend at all. What does that buy you and what does it cost you?",
+      "reference_answer": "An order moves through three steps, all of them in the browser. `CartContext` holds the line items and writes them to `localStorage`, the delivery form validates against the zod schema in `src/components/checkout/delivery-form-schema.ts`, and `src/services/orderService.ts` sanitises each string, revalidates the order against the delivery details and the cart, and generates the reference number the confirmation screen shows. Nothing is sent to a server. The design goal is a static single-page app you can host anywhere, and because no order reaches a server the owner matches payments to references by hand.",
+      "turns": [
+        {"role": "user", "content": "Next one on the list is the perfume storefront."},
+        {"role": "assistant", "content": "That is Mellow's Earth Elements. What do you want to know about it?"}
+      ],
+      "topic": "project:architecture",
+      "source": "mellows-earth-elements.md#Architecture, mellows-earth-elements.md#Business model"
+    },
+    {
+      "question": "Why React and Vite for a shop that is really a catalogue and a cart?",
+      "reference_answer": "The storefront runs React 19.2.7 and react-dom 19.2.7 with TypeScript 7.0.2 on Vite 8.1.5, Tailwind CSS 4.3.3 through `@tailwindcss/postcss`, and shadcn/ui built on Radix primitives. Routing is react-router-dom 7.18.1 across six lazy-loaded routes. Forms use react-hook-form 7.53 with zod 4.4.3 via `@hookform/resolvers` 5.4. `vite.config.ts` splits the bundle by hand into vendor, ui, router, query and icons chunks, targets es2020 and minifies with terser. The hero scene uses three 0.185.1 with `@react-three/fiber` 9.6.1 and `@react-three/drei` 10.7.7.",
+      "turns": [
+        {"role": "user", "content": "I want to push on some of the technology choices in the storefront."},
+        {"role": "assistant", "content": "Go ahead. Which choice?"}
+      ],
+      "topic": "project:stack",
+      "source": "mellows-earth-elements.md#Stack"
+    },
+    {
+      "question": "Who pays for Mellow's Earth Elements, and how does the money actually reach the owner?",
+      "reference_answer": "The business sells its own physical goods direct to the customer and revenue is the product price. The storefront takes no payment and charges no fee of its own, so there is no subscription, no commission and no tier. The catalog holds 17 products across Perfumes and Skin Care priced between R70 and R350, with combo packs at R280 and R320, and `src/pages/Checkout.tsx` adds a flat R30 delivery fee for Tembisa. The customer sees the bank account details from `PaymentInfo.tsx` and an order reference, and pays by transfer out of band.",
+      "turns": [
+        {"role": "user", "content": "Let's talk about the commercial side of the storefront."},
+        {"role": "assistant", "content": "Sure. What would you like to cover?"}
+      ],
+      "topic": "project:business",
+      "source": "mellows-earth-elements.md#Business model"
+    },
+    {
+      "question": "Talk me through what happens in Sentinel when somebody hits the distress button.",
+      "reference_answer": "`README.md` states the core moment, the distress button fires and the 3D coordinate appears on the security manager's screen. `sentinel-server` is a Fastify 5 API that broadcasts over `ws /ws` and reaches Memgraph over bolt, and `sentinel-web` is a React Router single-page app whose `/app` route lazy-loads `Shell3D`. State is one Memgraph graph whose Cypher migrations create `Building`, `Floor`, `Zone`, `Exit`, `Asset`, `AgentInsight`, `FloorTransition` and `FloorCalibration` among others. Three agent processes run beside the server on ports 3001, 3002 and 3003.",
+      "turns": [
+        {"role": "user", "content": "Sentinel OHS is the one I understand least from the outside."},
+        {"role": "assistant", "content": "Then let's start wherever is most useful. What would you like?"}
+      ],
+      "topic": "project:architecture",
+      "source": "sentinel-ohs.md#What it is, sentinel-ohs.md#Architecture"
+    },
+    {
+      "question": "Who is the buyer for Sentinel, and how were you planning to sell it to them?",
+      "reference_answer": "The buyer is fixed in the PRD. `prd.md` describes high-occupancy banking and financial-services headquarters and names the Chief Safety Officer and the Security Manager as the two stakeholder roles the product is pitched to, with the target building at 500 to 1,500 employees across 20 to 40 floors. Distribution in this repository is a live demonstration rather than a self-serve funnel. `prd.md` specifies a 12 to 15 minute walkthrough across desktop and mobile with both stakeholder roles present, and defines success as the Security Manager saying the organisation needs it.",
+      "turns": [
+        {"role": "user", "content": "Staying on Sentinel, I want the commercial picture."},
+        {"role": "assistant", "content": "Happy to. What part of it?"}
+      ],
+      "topic": "project:business",
+      "source": "sentinel-ohs.md#Business model"
+    },
+    {
+      "question": "Sentinel is the oldest of these. What would you do differently if you started it again?",
+      "reference_answer": "A successor repository, `sentinel-v2`, restates the product as a corporate life-safety command layer for large US campuses and treats this version as reference only, and it restates the addressable market as large US campuses rather than banking alone. `prd.md` frames the intent of this version in one line, Sentinel is not OHS software, it is an evaluation harness for a physical environment.",
+      "turns": [
+        {"role": "user", "content": "I want to hear where you think Sentinel fell short."},
+        {"role": "assistant", "content": "Fair. Shall I take the product direction or the code?"},
+        {"role": "user", "content": "The product direction."}
+      ],
+      "topic": "project:change",
+      "source": "sentinel-ohs.md#What it is, sentinel-ohs.md#Business model"
+    },
+    {
+      "question": "Why Go for Beekeeper when everything else you have built is Python or TypeScript?",
+      "reference_answer": "Beekeeper ships as a single static Go binary with no external runtime dependencies, on Go 1.25.11, module `github.com/home-beekeeper/beekeeper`. Direct dependencies are cobra 1.10.2 for the CLI, bubbletea v2.0.6 and lipgloss v2.0.3 for the terminal dashboard, mmap-go 1.2.0 for the catalog, bbolt 1.5.0, fsnotify 1.10.1, cilium/ebpf 0.21.0 and elastic/go-seccomp-bpf 1.6.0 for the Linux sensor, and tekert/golang-etw 0.6.2 for Windows ETW. It runs on a PreToolUse hook, and `internal/catalog` memory-maps the catalog so no invocation pays a cold load.",
+      "turns": [
+        {"role": "user", "content": "Beekeeper is the odd one out in your portfolio."},
+        {"role": "assistant", "content": "It is the only Go project. What do you want to know?"}
+      ],
+      "topic": "project:stack",
+      "source": "beekeeper.md#Stack, beekeeper.md#Architecture"
+    },
+    {
+      "question": "How do you know Beekeeper is safe to put in front of your own agent? What does the test story look like?",
+      "reference_answer": "`make test` runs `go test -race -count=1 ./...`, `make vet` runs `go vet ./...`, and `make coverage` runs `go test ./... -coverprofile=coverage.out -covermode=set` followed by `BEEKEEPER_COVERPROFILE=coverage.out go test ./internal/coveragegate -run TestCoverageFloor -count=1 -v`. `internal/policy` is a pure function library with no I/O, which is what those tests hold. `SECURITY.md` records reproducible builds, cosign signatures, SLSA L3 provenance and a CycloneDX SBOM.",
+      "turns": [
+        {"role": "user", "content": "A tool that blocks my agent's tool calls had better be correct."},
+        {"role": "assistant", "content": "Agreed. Which part of Beekeeper do you want to press on?"}
+      ],
+      "topic": "project:runtime",
+      "source": "beekeeper.md#Runtime and tests, beekeeper.md#Architecture"
+    },
+    {
+      "question": "Beekeeper is free. So what is the business case for spending your time on it?",
+      "reference_answer": "The binary is free. `LICENSE` is Apache 2.0 and no repository states a price, a tier or a paid edition for Beekeeper itself. `competitor_intel.md` turns that into the position, fail-closed and self-hostable, a single static Go binary, local-first, Apache 2.0, no source leaves the machine. It is placed against Socket, Snyk and Dependabot, each free at entry with paid team, per-developer or enterprise plans. `target_personas.md` names the primary user as an agent-forward staff engineer or solo founder running Claude Code, Codex or Cursor daily.",
+      "turns": [
+        {"role": "user", "content": "I want to understand why you built Beekeeper at all."},
+        {"role": "assistant", "content": "Sure. Are you asking about the threat it answers or the commercial side?"},
+        {"role": "user", "content": "The commercial side."}
+      ],
+      "topic": "project:business",
+      "source": "beekeeper.md#Business model"
+    },
+    {
+      "question": "What is Interview Volt actually built on? Is there an application in there?",
+      "reference_answer": "It is a markdown vault driven by four Claude Code slash commands rather than an application. The repository carries no `package.json`, no `pyproject.toml`, no lockfile and no build step, so there is nothing to install and no dependency tree. The four commands are Claude Code custom slash commands in `.claude/commands/`, each a markdown file with YAML frontmatter carrying `description` and `argument-hint`. The only external requirement is a Claude Code installation with access to this repository and to the source of the three projects the questions anchor to.",
+      "turns": [
+        {"role": "user", "content": "The last repository on your list is Interview Volt."},
+        {"role": "assistant", "content": "That one is the interview practice harness. What would you like to know?"}
+      ],
+      "topic": "project:stack",
+      "source": "interview-volt.md#What it is, interview-volt.md#Stack"
+    },
+    {
+      "question": "How do you actually use Interview Volt in a week?",
+      "reference_answer": "There is no build, no test suite and no package manager, and the repository runs inside Claude Code. `drills/protocol.md` sets the weekly rhythm. Monday `/trap wchats` for 30 minutes, Tuesday `/mock python` plus `/drill` for 40, Wednesday `/trap sentinel` or `/trap beekeeper` for 30, Thursday `/mock ai` for 40, Friday `/mock frontend` or `/mock growth` for 30, Saturday `/drill 20` on everything due for 20, and Sunday read one `.local/patches/*.md` and apply one. `protocol.md` states the standing rule, an ungraded session is a session that did not happen.",
+      "turns": [
+        {"role": "user", "content": "Interview Volt only counts if you use it."},
+        {"role": "assistant", "content": "That is the right test of it. What do you want to know?"}
+      ],
+      "topic": "project:runtime",
+      "source": "interview-volt.md#Runtime and tests"
+    },
+    {
+      "question": "Where is Interview Volt right now, and what is left to do on it?",
+      "reference_answer": "`README.md` records the status as scaffolded and populated, not yet drilled. The repository carries one commercial signal for a reader. `README.md` records that the claim ledger found three false claims on the owner's portfolio site and one headline feature that is not wired to the path it claims to be on, and states that fixing those is the point of the exercise.",
+      "turns": [
+        {"role": "user", "content": "Be straight with me about how finished Interview Volt is."},
+        {"role": "assistant", "content": "I can be. Do you want the status or the findings it has produced?"},
+        {"role": "user", "content": "Both."}
+      ],
+      "topic": "project:change",
+      "source": "interview-volt.md#What it is, interview-volt.md#Business model"
+    },
+    {
+      "question": "Which of your projects runs a queue, and why did that one need it?",
+      "reference_answer": "W Chats. The FastAPI control plane never does work inline, so anything long-running goes to Celery across two queues. `pipeline` carries ingestion, embedding and staleness, and `runtime` carries agent turns, evals, red team and the validators. Mellow's Earth Elements needs none of that. It runs entirely in the browser, an order moves through three steps all of them in the browser, and nothing is sent to a server.",
+      "turns": [
+        {"role": "user", "content": "I want to compare the projects rather than take them one at a time."},
+        {"role": "assistant", "content": "Go ahead, I can answer across them."}
+      ],
+      "topic": "comparison",
+      "source": "wchats.md#Architecture, mellows-earth-elements.md#Architecture"
+    },
+    {
+      "question": "Two of these are multi-tenant. How does each one keep one tenant's data away from another's?",
+      "reference_answer": "W Chats gives each tenant its own Neon project holding `documents`, `chunks`, embeddings on an HNSW index, `conversations`, `messages`, `tool_calls`, `eval_runs`, `red_team_findings`, `turn_metrics` and `retrieval_metrics`, with a separate control database for `tenants`, `agents`, `jobs`, `capability_envelopes`, `tool_calls_audit` and `prompt_versions`. Sentinel OHS keeps state as one Memgraph graph and the server asserts at boot that every graph node carries a `tenantId`, with `src/tenant/tenantRoutes.ts` adding per-tenant configuration.",
+      "turns": [
+        {"role": "user", "content": "I'd like to cut across the portfolio on one theme."},
+        {"role": "assistant", "content": "Sure. Which theme?"},
+        {"role": "user", "content": "Tenancy."}
+      ],
+      "topic": "comparison",
+      "source": "wchats.md#Architecture, sentinel-ohs.md#Architecture, sentinel-ohs.md#Business model"
+    },
+    {
+      "question": "You picked Postgres in one project and a graph database in another. What made those different calls?",
+      "reference_answer": "W Chats stores in Neon Postgres with pgvector HNSW indexes, plus Redis as broker and pub/sub, and retrieval fuses pgvector cosine search with BM25 over native `tsvector` and `ts_rank_cd` in one SQL CTE. Sentinel OHS keeps state as one Memgraph graph on Bolt port 7687, whose Cypher migrations create `Building`, `Floor`, `Zone`, `Exit`, `Asset`, `FloorTransition`, `FloorCalibration` and `ScheduledDrill`, and the product puts the building on screen in 3D and drives it from live signals.",
+      "turns": [
+        {"role": "user", "content": "Data stores are where I usually find the real decisions."},
+        {"role": "assistant", "content": "Then ask across the projects and I'll compare them."}
+      ],
+      "topic": "comparison",
+      "source": "wchats.md#Stack, sentinel-ohs.md#Architecture, sentinel-ohs.md#Stack"
+    },
+    {
+      "question": "Both the storefront and Sentinel put three.js on screen. Is that the same piece of work twice?",
+      "reference_answer": "No. In Mellow's Earth Elements, `src/components/three/MeridianHeroScene.tsx` renders the hero with react-three-fiber, on three 0.185.1 with `@react-three/fiber` 9.6.1 and `@react-three/drei` 10.7.7. In Sentinel OHS the 3D is the product. `sentinel-web` is a React Router single-page app whose `/app` route lazy-loads `Shell3D`, on three 0.175.0 with `@react-three/fiber` 9.1.2, `@react-three/drei` 10.7.7 and `@react-three/postprocessing` 3.0.4, and the distress button fires and the 3D coordinate appears on the security manager's screen.",
+      "turns": [
+        {"role": "user", "content": "I noticed three.js shows up twice in your portfolio."},
+        {"role": "assistant", "content": "It does. What would you like to know about that?"}
+      ],
+      "topic": "comparison",
+      "source": "mellows-earth-elements.md#Architecture, sentinel-ohs.md#Architecture, sentinel-ohs.md#Stack"
+    },
+    {
+      "question": "Only one of these charges a subscription. Which one, and what do the others run on?",
+      "reference_answer": "W Chats is the subscription. SaaS tiers named Starter, Growth and Pro charge per agent per month against a conversation cap, conversations above the cap bill as monthly overage, and a managed service add-on covers weekly digest review, custom red-team scenarios and SLA support. Beekeeper is free, `LICENSE` is Apache 2.0, and no repository states a price, a tier or a paid edition for Beekeeper itself. Mellow's Earth Elements sells its own physical goods direct to the customer, so revenue is the product price.",
+      "turns": [
+        {"role": "user", "content": "Let's line the projects up on revenue."},
+        {"role": "assistant", "content": "I can do that. What do you want to compare?"}
+      ],
+      "topic": "comparison",
+      "source": "wchats.md#Business model, beekeeper.md#Business model, mellows-earth-elements.md#Business model"
+    },
+    {
+      "question": "If I unplugged the network, which of your projects still works, and which one needs the most services running?",
+      "reference_answer": "Beekeeper still works. It ships as a single static Go binary with no external runtime dependencies, local-first, with no source leaving the machine, and its state lives under `%APPDATA%\\beekeeper` on Windows and `~/.beekeeper` on Unix. W Chats needs the most running. `redis-server`, `uvicorn app.main:app --reload`, a Celery worker on `-Q pipeline`, a second on `-Q runtime`, and `pnpm dev` for the console, all as local processes with no Docker path.",
+      "turns": [
+        {"role": "user", "content": "I want to know what each project depends on to work at all."},
+        {"role": "assistant", "content": "Ask across them and I'll compare."}
+      ],
+      "topic": "comparison",
+      "source": "beekeeper.md#What it is, beekeeper.md#Architecture, wchats.md#Runtime and tests"
+    },
+    {
+      "question": "and how do you stop it saying something wrong to a customer?",
+      "reference_answer": "W Chats holds the agent back from customers until it clears a gate. The third step of the journey, Test, runs the eval suite and then the red team, and the fourth, Deploy, clears the pre-deployment checklist and produces a widget snippet for the owner's own site. The `runtime` queue carries agent turns, evals, red team and the validators, and retrieval reads a `verified_qa` cache first.",
+      "turns": [
+        {"role": "user", "content": "Let's talk about W Chats, the support agent platform."},
+        {"role": "assistant", "content": "Happy to. What would you like to know about W Chats?"}
+      ],
+      "topic": "follow-up",
+      "source": "wchats.md#What it is, wchats.md#Architecture"
+    },
+    {
+      "question": "and how do you test it?",
+      "reference_answer": "Sentinel OHS runs `cd sentinel-mobile && npm test`, which is jest. `sentinel-mobile` is an Expo Router app with `(employee)`, `(warden)` and `(admin)` route groups, on expo 55, expo-router 55.0.11, react-native 0.79.4, react-native-ble-manager 12.4.5, react-native-wifi-reborn 4.13.6, expo-notifications, zustand 5.0.12 and jest 30 with jest-expo.",
+      "turns": [
+        {"role": "user", "content": "Let's do Sentinel OHS."},
+        {"role": "assistant", "content": "Sentinel puts a building on screen in 3D and drives it from live signals. What do you want to know?"},
+        {"role": "user", "content": "The mobile app."}
+      ],
+      "topic": "follow-up",
+      "source": "sentinel-ohs.md#Runtime and tests, sentinel-ohs.md#Architecture, sentinel-ohs.md#Stack"
+    },
+    {
+      "question": "and what happens when it says no?",
+      "reference_answer": "On a block, `internal/check/deny_render.go` writes the deny payload for that harness and the process exits 2. `internal/audit` appends an NDJSON record either way. The decision runs from the harness firing a PreToolUse hook that calls `beekeeper check`, which loads layered configuration across system, user, project and environment layers, memory-maps the catalog, and evaluates against `internal/policy`, a pure function library with no I/O.",
+      "turns": [
+        {"role": "user", "content": "Tell me about Beekeeper."},
+        {"role": "assistant", "content": "Beekeeper is threat intelligence for autonomous coding agents. Which part?"},
+        {"role": "user", "content": "How a single decision runs."}
+      ],
+      "topic": "follow-up",
+      "source": "beekeeper.md#Architecture"
+    },
+    {
+      "question": "and what does delivery cost?",
+      "reference_answer": "`src/pages/Checkout.tsx` adds a flat R30 delivery fee for Tembisa, and names Tembisa in the comment beside it, which fixes the delivery area the code serves.",
+      "turns": [
+        {"role": "user", "content": "I'm looking at the Mellow's Earth Elements storefront."},
+        {"role": "assistant", "content": "The storefront is a single-page app that runs entirely in the browser. What do you want to know?"},
+        {"role": "user", "content": "The checkout."}
+      ],
+      "topic": "follow-up",
+      "source": "mellows-earth-elements.md#What it is, mellows-earth-elements.md#Business model"
+    },
+    {
+      "question": "and how does it decide what comes back?",
+      "reference_answer": "`/grade` writes a transcript to `.local/transcripts/YYYY-MM-DD-<lane>.md` and files each mistake, and it carries a five-dimension rubric scored 1 to 5, correctness, specificity, tradeoff literacy, failure-mode thinking and composure. `/drill` updates `review/queue.md` during the session, advancing a hit through 2, 5, 12 and 30 day intervals and resetting a miss to 2 days, and retires a card only after two clean hits at 12 day spacing or wider.",
+      "turns": [
+        {"role": "user", "content": "Last one, Interview Volt."},
+        {"role": "assistant", "content": "That is the interview practice vault. What about it?"},
+        {"role": "user", "content": "The grading and the review queue."}
+      ],
+      "topic": "follow-up",
+      "source": "interview-volt.md#Architecture, interview-volt.md#Stack"
+    },
+    {
+      "question": "and how do the migrations work there?",
+      "reference_answer": "`apps/api/railway.api.toml` runs a `preDeployCommand` that migrates the control database and every tenant database before any service serves new code. Two Alembic chains migrate them, `alembic/versions` for the control database and `alembic_tenant/versions` for each tenant's Neon project.",
+      "turns": [
+        {"role": "user", "content": "Back to W Chats for a second, the deployment side."},
+        {"role": "assistant", "content": "W Chats deploys to Railway. What do you want to know?"}
+      ],
+      "topic": "follow-up",
+      "source": "wchats.md#Stack, wchats.md#Architecture"
+    },
+    {
+      "question": "how do you test it?",
+      "reference_answer": "Which project do you mean, W Chats, Mellow's Earth Elements, Sentinel OHS or Beekeeper?",
+      "turns": [],
+      "ambiguous": true,
+      "topic": "ambiguous:tests",
+      "source": "none, the question names no project"
+    },
+    {
+      "question": "where does it run in production?",
+      "reference_answer": "Which project are you asking about, W Chats on Railway, Mellow's Earth Elements on Vercel, or Beekeeper on the Go module proxy and GitHub Releases?",
+      "turns": [],
+      "ambiguous": true,
+      "topic": "ambiguous:deploy",
+      "source": "none, the question names no project"
+    },
+    {
+      "question": "what does it cost?",
+      "reference_answer": "Which project's cost do you mean, W Chats, Mellow's Earth Elements or Beekeeper?",
+      "turns": [],
+      "ambiguous": true,
+      "topic": "ambiguous:pricing",
+      "source": "none, the question names no project"
+    },
+    {
+      "question": "what's it built with?",
+      "reference_answer": "Which project's stack do you want, W Chats, Mellow's Earth Elements, Sentinel OHS, Beekeeper or Interview Volt?",
+      "turns": [],
+      "ambiguous": true,
+      "topic": "ambiguous:stack",
+      "source": "none, the question names no project"
+    },
+    {
+      "question": "what database does it use?",
+      "reference_answer": "Which project do you mean, W Chats on Neon Postgres, Sentinel OHS on Memgraph, or the storefront on localStorage?",
+      "turns": [],
+      "ambiguous": true,
+      "topic": "ambiguous:datastore",
+      "source": "none, the question names no project"
+    },
+    {
+      "question": "What does the Growth tier cost a month?",
+      "reference_answer": "The documents do not state a price. They name SaaS tiers Starter, Growth and Pro charging per agent per month against a conversation cap, and record the pricing model as locked at milestone M8 once cost-per-tenant data exists, with `prd.md` listing pricing as an open decision deferred to the same milestone.",
+      "turns": [
+        {"role": "user", "content": "I'm looking at W Chats as something a business would buy."},
+        {"role": "assistant", "content": "W Chats charges per agent per month on named tiers. What would you like to know?"}
+      ],
+      "topic": "gap:price",
+      "source": "wchats.md#Business model, no price stated"
+    },
+    {
+      "question": "How many orders a month does Mellow's Earth Elements actually take?",
+      "reference_answer": "The documents do not say. They describe the catalog, the cart and the bank-transfer checkout, and because no order reaches a server there is no order count in them.",
+      "turns": [
+        {"role": "user", "content": "I want a sense of the scale of the storefront business."},
+        {"role": "assistant", "content": "Happy to cover what the documents hold. What are you after?"}
+      ],
+      "topic": "gap:volume",
+      "source": "mellows-earth-elements.md#Business model, no volume stated"
+    },
+    {
+      "question": "When did you ship the first version of Beekeeper?",
+      "reference_answer": "The documents do not give a ship date. They give the install path as a `go install` of `github.com/home-beekeeper/beekeeper/cmd/beekeeper` at v2.0.0, with distribution over the Go module proxy and GitHub Releases, and no release date anywhere.",
+      "turns": [
+        {"role": "user", "content": "I'd like to place Beekeeper on a timeline."},
+        {"role": "assistant", "content": "I can tell you what the documents record about it. What would you like?"}
+      ],
+      "topic": "gap:date",
+      "source": "beekeeper.md#What it is, beekeeper.md#Runtime and tests, no ship date stated"
+    },
+    {
+      "question": "What is the uptime on the W Chats agent, and what is your p95 response time?",
+      "reference_answer": "The documents do not report uptime or latency figures. `README.md` states that there is no always-on deployment today and that the system runs from local processes.",
+      "turns": [
+        {"role": "user", "content": "I care about how a system behaves once it is live."},
+        {"role": "assistant", "content": "Understood. Which project should I take?"},
+        {"role": "user", "content": "W Chats."}
+      ],
+      "topic": "gap:metric",
+      "source": "wchats.md#What it is, no operational metrics stated"
+    }
+  ]
+}
