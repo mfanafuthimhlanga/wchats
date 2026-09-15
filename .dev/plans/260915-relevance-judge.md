@@ -291,6 +291,14 @@ Every file this branch touches, run together after the mutations were restored:
 fast gates passed in 289.4s.
 ```
 
+The whole unit suite, which is what `gates.py full` adds, run after every mutation was
+restored. The blast radius reached the calibration harness and the deploy summary, so the
+focused set alone was not enough evidence:
+
+```
+5242 passed, 14 skipped, 43 warnings in 1361.84s (0:22:41)
+```
+
 ## Migration round trip
 
 0030 up, down to 0029, up again, through `migrations.run_tenant_migrations` against the
