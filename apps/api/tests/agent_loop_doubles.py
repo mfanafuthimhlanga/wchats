@@ -37,8 +37,9 @@ from __future__ import annotations
 
 #: Every word `run_agent_loop` can put in `stop_reason`, and nothing else.
 #:
-#: Two sources. The loop names three endings of its own: it ran out of model
-#: calls, it ran out of budget, or the reply carried no choices to read. For
+#: Two sources. The loop names four endings of its own: it ran out of model
+#: calls, it ran out of budget, the reply carried no choices to read, or the
+#: agent called `clarify` and the turn ended on the question (#280). For
 #: every other ending it passes the provider's `finish_reason` straight through,
 #: and since #49 that provider is OpenAI, whose chat completions send `stop`,
 #: `length`, `tool_calls`, `content_filter` and the deprecated `function_call`.
@@ -57,6 +58,7 @@ STOP_REASONS = frozenset(
         "max_model_calls",
         "budget_exceeded",
         "no_choices",
+        "clarified",
         "stop",
         "length",
         "tool_calls",

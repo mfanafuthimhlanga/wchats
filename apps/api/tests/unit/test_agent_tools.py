@@ -486,6 +486,60 @@ def test_clarify_returns_question_text():
     result = _run(_fn(agent_tools.clarify_tool)({"question": "Which size?"}))
 
     assert result["content"][0]["text"] == "Which size?"
+    assert "is_error" not in result
+
+
+def test_clarify_error_wires_a_question_that_is_not_a_string():
+    """A number killed the whole customer turn, not just the call (#280).
+
+    `wire_text` joins the content blocks with `str.join`, which raises TypeError
+    on a non-string. That happens in `_run_tool_call` AFTER `dispatch` returned,
+    where nothing catches it, so the turn died and the customer saw agent.failed.
+    An error wire is the readable answer, and the model can call again.
+    """
+    for bad in (3, None, ["Which size?"], {"text": "Which size?"}):
+        result = _run(_fn(agent_tools.clarify_tool)({"question": bad}))
+
+        assert result["is_error"] is True, f"{bad!r} came back as a servable question"
+        assert "non-empty string" in result["content"][0]["text"]
+
+
+def test_clarify_error_wires_a_blank_question():
+    """An empty bubble is not a clarifying question.
+
+    `agent_loop` serves this text and ends the turn on it, so a blank one leaves
+    the customer with nothing and the eval drops the row for an empty response.
+    """
+    for blank in ("", "   ", "\n\t"):
+        result = _run(_fn(agent_tools.clarify_tool)({"question": blank}))
+
+        assert result["is_error"] is True, f"{blank!r} came back as a servable question"
+
+
+def test_clarify_error_wires_a_missing_question():
+    """The required key absent. `args.get` rather than a KeyError the loop logs."""
+    result = _run(_fn(agent_tools.clarify_tool)({}))
+
+    assert result["is_error"] is True
+
+
+def test_the_clarify_description_tells_the_model_the_question_is_the_whole_reply():
+    """The tool's own contract, where the model reads it (#280).
+
+    The loop discards every other part of the turn once clarify runs, so a model
+    told only "ask a clarifying question" writes the answer beside the call and
+    watches it vanish. The schema's `question` description says the same thing,
+    because a model that skims the tool list still reads the argument.
+    """
+    assert agent_tools.clarify_tool.name == "clarify"
+    description = agent_tools.clarify_tool.description
+    assert "ENDS your turn" in description
+    assert "entire reply the customer sees" in description
+    assert "nothing is added to it" in description
+    assert "inside\n`question`" in description or "inside `question`" in description
+
+    argument = agent_tools.clarify_tool.input_schema["properties"]["question"]["description"]
+    assert "whole reply the customer will see" in argument
 
 
 # ---------------------------------------------------------------------------

@@ -75,6 +75,7 @@ from app.models.agent import Agent
 from app.models.job import Job
 from app.models.prompt_version import PromptVersion
 from app.services.agent_loop import (
+    CLARIFIED,
     RETRIEVE_CHUNKS_SOURCE_KEY,
     RETRIEVE_CHUNKS_UNPARSED,
     RETRIEVE_JUDGE_CHUNKS_KEY,
@@ -240,6 +241,21 @@ def _judge_retrieved_context(tool_calls_log: list[dict]) -> tuple[list[str], dic
     return contexts, counts
 
 
+# A CLARIFIED TURN IS NOT JUDGED (#280).
+#
+# The four validators ask whether an ANSWER was grounded, safe and on strategy.
+# A clarifying question answers nothing and retrieves nothing, so the Gatekeeper
+# and the Auditor score it against an empty context and flag it. `bench_service`
+# then files the turn as a failing trace, `mine_production_scenarios` mines it as
+# an unanswered question, and three flagged turns in a day move the retrieval
+# strategy. Every one of those measures a turn that behaved correctly, which is
+# the measurement-layer defect this repo keeps closing.
+#
+# The decision reads `stop_reason` and nothing wider, because that is the one
+# value `agent_loop` sets when it ends a turn on the question. Reading the tool
+# log instead would re-derive what the loop already decided, and the two would
+# disagree the first time either moved.
+
 def _dispatch_validation_chain(
     *,
     agent_id: str,
@@ -248,8 +264,12 @@ def _dispatch_validation_chain(
     message: str,
     conversation_id: str,
     tool_calls_log: list[dict],
-) -> str:
+    stop_reason: str | None = None,
+) -> str | None:
     """Build the judge's context and dispatch the validation chain. Returns it.
+
+    A turn that served a clarifying question is skipped and returns None, for the
+    reasons in the block above this function (#280).
 
     THIS FUNCTION EXISTS TO BE TESTABLE, and that is the whole point of the seam.
     An adversarial review of the first version of BACKLOG 5.16 reintroduced the
@@ -266,8 +286,11 @@ def _dispatch_validation_chain(
     spelling its author thought of.
 
     Returns the JSON handed to run_auditor, so a caller (and a test) can assert
-    on exactly what the judge will see.
+    on exactly what the judge will see, or None when no chain was dispatched.
     """
+    if stop_reason == CLARIFIED:
+        log.info("run_agent_turn.validators_skipped", job_id=job_id, agent_id=agent_id, reason="the turn asked a clarifying question and answered nothing")
+        return None
     contexts, counts = _judge_retrieved_context(tool_calls_log)
     retrieved_context_json = json.dumps(contexts)
     # Recorded, not inferred: E2E-6 calibrates this judge, and a calibration run
@@ -1457,7 +1480,7 @@ def run_agent_turn(
                 response_text=response_text,
                 message=message,
                 conversation_id=str(local_conversation_id),
-                tool_calls_log=tool_calls_log,
+                tool_calls_log=tool_calls_log, stop_reason=stop_reason,
             )
 
             log.info(
