@@ -87,13 +87,19 @@ DATASET_GOLDEN = "golden"
 DATASET_EXPLORATORY = "exploratory"
 EVAL_DATASETS: tuple[str, ...] = (DATASET_GOLDEN, DATASET_EXPLORATORY)
 
-#: The four dimensions a run scores, in the order the console reads them.
+#: The dimensions a run scores, in the order the console reads them.
 #: `eval_service.METRIC_KEYS` is the same tuple, for the same reason as above.
+#:
+#: `ragas_answer_relevancy` arrived with #274, which moved the gated
+#: `answer_relevancy` column off ragas onto `relevance_judge` and kept the ragas
+#: figure as a reported number. Last in the tuple so the four channels the
+#: console already draws keep their positions.
 METRIC_KEYS: tuple[str, ...] = (
     "faithfulness",
     "answer_relevancy",
     "context_precision",
     "context_recall",
+    "ragas_answer_relevancy",
 )
 
 #: WHICH SHAPE OF "RETRIEVED CONTEXT" THESE SCORES WERE COMPUTED OVER (#84).
@@ -200,6 +206,87 @@ def _require_text(name: str, value: Any) -> str:
     if not isinstance(value, str) or not value.strip():
         raise InvalidEvalResult(f"EvalResult needs a {name}, got {value!r}")
     return value
+
+
+def _stored_fields(payload: Mapping) -> dict:
+    """Every field of a stored record, read by name, none of them defaulted twice.
+
+    Written out one line per field rather than looped over a key list, so the
+    constructor keyword and the stored key are the same word in the same place
+    and a field added to the record with no line here fails loudly. Lifted out of
+    `from_payload` when #274 added `judge_identities` and the reader went over
+    the complexity standard.
+    """
+    identity = payload.get("judge_identity")
+    datasets = payload.get("datasets") or {}
+    if not isinstance(datasets, Mapping):
+        raise InvalidEvalResult(
+            f"EvalResult needs datasets as a mapping, got {type(datasets).__name__}"
+        )
+    return {
+        "run_id": _required_str(payload, "run_id"),
+        "agent_id": _required_str(payload, "agent_id"),
+        "invocation": Invocation.from_payload(payload.get("invocation") or {}),
+        "datasets": {
+            name: DatasetOutcome.from_payload(value) for name, value in datasets.items()
+        },
+        "requested_model": _required_str(payload, "requested_model"),
+        "cost": Cost.from_payload(payload.get("cost") or {}),
+        "served_model": payload.get("served_model"),
+        "prompt_version_id": payload.get("prompt_version_id"),
+        "judge_identity": JudgeIdentity(**identity) if identity else None,
+        "judge_identities": _stored_identities(payload),
+        # No failures key reads as no failure DETAIL, never as none.
+        "failures": [
+            ScenarioFailure.from_payload(failure)
+            for failure in payload.get("failures") or []
+        ],
+        "context_proxy_version": payload.get(
+            "context_proxy_version", CONTEXT_PROXY_VERSION
+        ),
+        "rule_version": payload.get("rule_version", EVAL_RULE_VERSION),
+        "question_resolution": QuestionResolution.from_payload(
+            payload.get("question_resolution") or {}
+        ),
+    }
+
+
+def _require_identities(identities: Mapping | None) -> None:
+    """Every value under `judge_identities` is a JudgeIdentity, or there are none."""
+    if identities is None:
+        return
+    wrong = sorted(
+        f"{metric}={type(value).__name__}"
+        for metric, value in identities.items()
+        if not isinstance(value, JudgeIdentity)
+    )
+    if wrong:
+        raise InvalidEvalResult(
+            "EvalResult needs every judge_identities value as a JudgeIdentity, "
+            f"got {', '.join(wrong)}"
+        )
+
+
+def _stored_identities(payload: Mapping) -> Mapping[str, JudgeIdentity] | None:
+    """The per-metric Judges a stored run recorded, or None on a pre-#274 run.
+
+    An absent key and a null are the same fact here, unlike the calibration
+    artifact's stricter rule: every `eval_runs.result` written before #274 has
+    no such key, those rows are in tenant databases now, and refusing them would
+    make every historical run unreadable to close a gap that only widened with
+    #274.
+    """
+    stored = payload.get("judge_identities")
+    if stored is None:
+        return None
+    if not isinstance(stored, Mapping):
+        raise InvalidEvalResult(
+            f"EvalResult needs judge_identities as a mapping or null, got "
+            f"{type(stored).__name__}"
+        )
+    return {
+        str(metric): JudgeIdentity(**identity) for metric, identity in stored.items()
+    }
 
 
 def _required_str(payload: Mapping, key: str) -> str:
@@ -978,6 +1065,14 @@ class EvalResult:
                                attributed to. None is a real state: an agent with
                                no production version still runs, off its live
                                soul columns.
+        judge_identities:      the Judge behind each GATED dimension, keyed by
+                               metric. None on a run written before #274, which
+                               is every run whose dimensions shared one Judge.
+                               This is what a calibration artifact is compared
+                               against now: `judge_identity` above went null the
+                               moment `relevance_judge` started authoring its own
+                               prompt, and one null field cannot say which of two
+                               instruments an artifact is about.
         judge_identity:        the Judge behind all four dimensions, when the four
                                routes name one. None when they differ or when a
                                route named no reasoning effort, and the per-call
@@ -1025,6 +1120,7 @@ class EvalResult:
     served_model: str | None = None
     prompt_version_id: str | None = None
     judge_identity: JudgeIdentity | None = None
+    judge_identities: Mapping[str, JudgeIdentity] | None = None
     # The init input, not what the record holds. __post_init__ freezes it.
     failures: Sequence[ScenarioFailure] = ()
     context_proxy_version: str = CONTEXT_PROXY_VERSION
@@ -1057,6 +1153,7 @@ class EvalResult:
                 "EvalResult needs judge_identity as a JudgeIdentity or None, got "
                 f"{type(self.judge_identity).__name__}"
             )
+        _require_identities(self.judge_identities)
         if not isinstance(self.datasets, Mapping):
             raise InvalidEvalResult(
                 f"EvalResult needs datasets as a mapping, got {type(self.datasets).__name__}"
@@ -1151,6 +1248,14 @@ class EvalResult:
             "judge_identity": (
                 dataclasses.asdict(self.judge_identity) if self.judge_identity else None
             ),
+            "judge_identities": (
+                {
+                    metric: dataclasses.asdict(identity)
+                    for metric, identity in self.judge_identities.items()
+                }
+                if self.judge_identities is not None
+                else None
+            ),
             "requested_model": self.requested_model,
             "served_model": self.served_model,
             "invocation": self.invocation.payload,
@@ -1189,37 +1294,8 @@ class EvalResult:
             raise InvalidEvalResult(
                 f"EvalResult needs a mapping, got {type(payload).__name__}"
             )
-        identity = payload.get("judge_identity")
-        datasets = payload.get("datasets") or {}
-        if not isinstance(datasets, Mapping):
-            raise InvalidEvalResult(
-                f"EvalResult needs datasets as a mapping, got {type(datasets).__name__}"
-            )
         try:
-            record = cls(
-                run_id=_required_str(payload, "run_id"),
-                agent_id=_required_str(payload, "agent_id"),
-                invocation=Invocation.from_payload(payload.get("invocation") or {}),
-                datasets={
-                    name: DatasetOutcome.from_payload(value)
-                    for name, value in datasets.items()
-                },
-                requested_model=_required_str(payload, "requested_model"),
-                cost=Cost.from_payload(payload.get("cost") or {}),
-                served_model=payload.get("served_model"),
-                prompt_version_id=payload.get("prompt_version_id"),
-                judge_identity=JudgeIdentity(**identity) if identity else None,
-                # No failures key reads as no failure DETAIL, never as none.
-                failures=[
-                    ScenarioFailure.from_payload(failure)
-                    for failure in payload.get("failures") or []
-                ],
-                context_proxy_version=payload.get(
-                    "context_proxy_version", CONTEXT_PROXY_VERSION
-                ),
-                rule_version=payload.get("rule_version", EVAL_RULE_VERSION),
-                question_resolution=QuestionResolution.from_payload(payload.get("question_resolution") or {}),
-            )
+            record = cls(**_stored_fields(payload))
         except InvalidEvalResult:
             # Already this module's refusal, carrying which rule it broke.
             raise
@@ -1238,12 +1314,12 @@ UNMEASURED = Measurement(value=None, observations=0, measured=False)
 
 
 def unmeasured_metrics() -> dict[str, Measurement]:
-    """The four metrics, none of them read."""
+    """Every metric in METRIC_KEYS, none of them read."""
     return {metric: UNMEASURED for metric in METRIC_KEYS}
 
 
 def metrics_of(outcome: DatasetOutcome) -> dict[str, Measurement]:
-    """One dataset's four metrics, lifted out of the record unchanged.
+    """One dataset's metrics, lifted out of the record unchanged.
 
     A metric the record does not report reads unmeasured, which is the same
     thing it read before the run had a record at all. Nothing is averaged and
