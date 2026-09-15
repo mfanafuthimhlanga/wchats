@@ -124,22 +124,9 @@ def test_0028_is_the_sole_child_of_0027_and_the_tree_is_unforked():
     assert len(parents) == len(set(parents)), "two revisions share a parent"
 
 
-def test_0029_is_the_tenant_head():
-    """Head IDENTITY, moved here from test_migration_tenant_0027.py.
-
-    That file carried this assertion with a docstring saying 0028 would move this
-    line and only this line, and it caught 0028 landing. Moving it is the
-    instruction the test itself gives, and it is not the same as deleting it.
-
-    0029 moved it here (#226); 0030 moves this line and only this line.
-    """
-    revisions = _all_tenant_revisions()
-    parents = {down for down in revisions.values() if down is not None}
-    heads = set(revisions) - parents
-    assert heads == {"0029"}, (
-        f"the tenant head is {sorted(heads)}, not 0029. If a later revision "
-        "landed, move this assertion to its test file rather than deleting it"
-    )
+# HEAD IDENTITY MOVED TO test_migration_tenant_0030.py (#274). This file carried
+# it while 0029 was head, under a docstring saying 0030 would move this line and
+# only this line. It moved; it was not deleted.
 
 
 # ---------------------------------------------------------------------------
