@@ -1,25 +1,86 @@
 {
-  "artifact_version": 1,
-  "attempted": 30,
+  "artifact_version": 2,
+  "attempted": 0,
   "beats_chance": null,
   "ceiling_beats_chance": null,
   "ceiling_interval": null,
   "difference_interval": null,
-  "harness_version": "compute_correlation.py@1",
-  "judge_identity": {
-    "model": "gpt-5.6-luna",
-    "prompt_version": "ragas-0.4.3",
-    "reasoning_effort": "none"
+  "dimensions": {
+    "answer_relevancy": {
+      "artifact_version": 2,
+      "attempted": 0,
+      "beats_chance": null,
+      "ceiling_beats_chance": null,
+      "ceiling_interval": null,
+      "difference_interval": null,
+      "dimensions": null,
+      "harness_version": "compute_correlation.py@2",
+      "judge_identity": null,
+      "judge_interval": null,
+      "kappa": null,
+      "labels_made_at": "2026-09-16T15:14:04.919435+00:00",
+      "matthews": null,
+      "pairs": 0,
+      "reaches_ceiling": null,
+      "reason": null,
+      "scored_pairs": 0,
+      "status": "not_calibrated_yet",
+      "valid": 0,
+      "written_at": null
+    },
+    "faithfulness": {
+      "artifact_version": 2,
+      "attempted": 30,
+      "beats_chance": false,
+      "ceiling_beats_chance": true,
+      "ceiling_interval": {
+        "high": 1.0,
+        "low": 0.36619718309859156,
+        "point": 0.782608695652174,
+        "usable": true
+      },
+      "difference_interval": {
+        "high": 1.1320754716981132,
+        "low": 0.3579474342928661,
+        "point": 0.7625081931396112,
+        "usable": true
+      },
+      "dimensions": null,
+      "harness_version": "compute_correlation.py@2",
+      "judge_identity": {
+        "model": "gpt-5.6-luna",
+        "prompt_version": "ragas-0.4.3",
+        "reasoning_effort": "none"
+      },
+      "judge_interval": {
+        "high": 0.2537313432835821,
+        "low": -0.1864406779661017,
+        "point": 0.020100502512562814,
+        "usable": true
+      },
+      "kappa": 0.020100502512562814,
+      "labels_made_at": "2026-09-16T15:14:04.919435+00:00",
+      "matthews": 0.035955873264830976,
+      "pairs": 30,
+      "reaches_ceiling": false,
+      "reason": "(a) FAILED. The judge's kappa interval [-0.186, 0.254] includes 0, so this corpus does not show it doing better than chance. (b2) FAILED. You agree with yourself more than the judge agrees with you, by 0.763 kappa, and the whole interval [0.358, 1.132] is above 0. The judge is distinguishably worse than you are.",
+      "scored_pairs": 0,
+      "status": "not_calibrated",
+      "valid": 30,
+      "written_at": null
+    }
   },
+  "harness_version": "compute_correlation.py@2",
+  "judge_identity": null,
   "judge_interval": null,
   "kappa": null,
-  "labels_made_at": "2026-09-16T08:37:40.256991+00:00",
+  "labels_made_at": "2026-09-16T15:14:04.919435+00:00",
   "matthews": null,
-  "pairs": 19,
+  "pairs": 0,
   "reaches_ceiling": null,
   "reason": null,
   "scored_pairs": 0,
-  "status": "not_calibrated_yet",
-  "valid": 30,
-  "written_at": "2026-09-16T15:12:03.497747+00:00"
+  "status": "not_calibrated",
+  "valid": 0,
+  "written_at": "2026-09-16T15:29:23.796373+00:00"
 }
