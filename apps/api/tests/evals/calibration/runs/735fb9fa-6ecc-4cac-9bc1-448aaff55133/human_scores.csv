@@ -1,5 +1,5 @@
 scenario_id,dimension,human_verdict,human_score,notes,dataset,question,response,retrieved_contexts,reference,turns,resolved_question
-14d2ec20-366c-423f-91cb-33c0618d95b3,faithfulness,,,,golden,"How is a W Chats agent checked before it goes live, and after?","A W Chats agent is checked in two stages:
+14d2ec20-366c-423f-91cb-33c0618d95b3,faithfulness,pass,,,golden,"How is a W Chats agent checked before it goes live, and after?","A W Chats agent is checked in two stages:
 
 - **Before going live:** the owner runs the **Test** step, which executes the evaluation suite followed by red-team testing. The agent must then clear the **pre-deployment checklist** before the **Deploy** step makes it available and generates the site widget snippet. *(PRODUCT.md — journey/workflow section)*
 - **Afterward:** the documented workflow does not describe a separate production validation or ongoing agent-monitoring process. W Chats does document local regression checks for the platform—backend gates and unit tests, admin type-checking/unit/E2E tests, and a widget build-size check capped at 20,480 gzipped bytes—but these are engineering tests, not explicitly post-launch agent checks. *(README.md — Runtime and tests section)*
@@ -133,7 +133,7 @@ prd.md
 ```
 lists pricing as an open decision deferred to the same milestone.
 Customer segments run from SMB owners handling support on email and WhatsApp today, through South African and emerging-market Shopify, WooCommerce and Wix shops doing 50 to 500 orders a month, to solo founders and ops leads, and eventually agencies bundling W Chats for their clients. Channels are the open-source repository on GitHub as primary discovery, an architecture deep-dive blog and a public demo, the widget itself on customer sites, the founder's South African network, and later app store listings on Shopify and Wix.","Every response passes a three-judge chain. Nightly Ragas evals run with automatic scenario generation, PyRIT red-team agents attack the agent and their high-severity findings block deployment, and an orchestrator reads every signal into a recommendation that a non-technical owner approves.",,
-14d2ec20-366c-423f-91cb-33c0618d95b3,answer_relevancy,,,,golden,"How is a W Chats agent checked before it goes live, and after?","A W Chats agent is checked in two stages:
+14d2ec20-366c-423f-91cb-33c0618d95b3,answer_relevancy,pass,,,golden,"How is a W Chats agent checked before it goes live, and after?","A W Chats agent is checked in two stages:
 
 - **Before going live:** the owner runs the **Test** step, which executes the evaluation suite followed by red-team testing. The agent must then clear the **pre-deployment checklist** before the **Deploy** step makes it available and generates the site widget snippet. *(PRODUCT.md — journey/workflow section)*
 - **Afterward:** the documented workflow does not describe a separate production validation or ongoing agent-monitoring process. W Chats does document local regression checks for the platform—backend gates and unit tests, admin type-checking/unit/E2E tests, and a widget build-size check capped at 20,480 gzipped bytes—but these are engineering tests, not explicitly post-launch agent checks. *(README.md — Runtime and tests section)*
@@ -267,7 +267,7 @@ prd.md
 ```
 lists pricing as an open decision deferred to the same milestone.
 Customer segments run from SMB owners handling support on email and WhatsApp today, through South African and emerging-market Shopify, WooCommerce and Wix shops doing 50 to 500 orders a month, to solo founders and ops leads, and eventually agencies bundling W Chats for their clients. Channels are the open-source repository on GitHub as primary discovery, an architecture deep-dive blog and a public demo, the widget itself on customer sites, the founder's South African network, and later app store listings on Shopify and Wix.","Every response passes a three-judge chain. Nightly Ragas evals run with automatic scenario generation, PyRIT red-team agents attack the agent and their high-severity findings block deployment, and an orchestrator reads every signal into a recommendation that a non-technical owner approves.",,
-17dcd1b3-9b7f-47d8-8200-3b39e764d90f,faithfulness,,,,golden,how is it checked before it goes live?,"Before an agent goes live, W Chats uses a staged flow:
+17dcd1b3-9b7f-47d8-8200-3b39e764d90f,faithfulness,pass,,,golden,how is it checked before it goes live?,"Before an agent goes live, W Chats uses a staged flow:
 
 1. **Test:** It runs the evaluation suite.
 2. **Red team:** It runs adversarial checks and records red-team findings.
@@ -518,7 +518,7 @@ prd.md
 lists pricing as an open decision deferred to the same milestone.
 Customer segments run from SMB owners handling support on email and WhatsApp today, through South African and emerging-market Shopify, WooCommerce and Wix shops doing 50 to 500 orders a month, to solo founders and ops leads, and eventually agencies bundling W Chats for their clients. Channels are the open-source repository on GitHub as primary discovery, an architecture deep-dive blog and a public demo, the widget itself on customer sites, the founder's South African network, and later app store listings on Shopify and Wix.","Every response passes a three-judge chain. Nightly Ragas evals run with automatic scenario generation, PyRIT red-team agents attack the agent and their high-severity findings block deployment, and an orchestrator reads every signal into a recommendation that a non-technical owner approves.","USER: I'm evaluating W Chats for our support desk.
 ASSISTANT: W Chats ingests your documents and deploys an evaluated agent. What do you want to know?",How is the W Chats agent checked before it goes live?
-17dcd1b3-9b7f-47d8-8200-3b39e764d90f,answer_relevancy,,,,golden,how is it checked before it goes live?,"Before an agent goes live, W Chats uses a staged flow:
+17dcd1b3-9b7f-47d8-8200-3b39e764d90f,answer_relevancy,pass,,,golden,how is it checked before it goes live?,"Before an agent goes live, W Chats uses a staged flow:
 
 1. **Test:** It runs the evaluation suite.
 2. **Red team:** It runs adversarial checks and records red-team findings.
@@ -769,7 +769,7 @@ prd.md
 lists pricing as an open decision deferred to the same milestone.
 Customer segments run from SMB owners handling support on email and WhatsApp today, through South African and emerging-market Shopify, WooCommerce and Wix shops doing 50 to 500 orders a month, to solo founders and ops leads, and eventually agencies bundling W Chats for their clients. Channels are the open-source repository on GitHub as primary discovery, an architecture deep-dive blog and a public demo, the widget itself on customer sites, the founder's South African network, and later app store listings on Shopify and Wix.","Every response passes a three-judge chain. Nightly Ragas evals run with automatic scenario generation, PyRIT red-team agents attack the agent and their high-severity findings block deployment, and an orchestrator reads every signal into a recommendation that a non-technical owner approves.","USER: I'm evaluating W Chats for our support desk.
 ASSISTANT: W Chats ingests your documents and deploys an evaluated agent. What do you want to know?",How is the W Chats agent checked before it goes live?
-1adec12b-1740-4551-8992-fc6af194bec0,faithfulness,,,,golden,and how do I preview the production build?,"From the storefront directory, run:
+1adec12b-1740-4551-8992-fc6af194bec0,faithfulness,pass,,,golden,and how do I preview the production build?,"From the storefront directory, run:
 
 ```bash
 pnpm build
@@ -970,7 +970,7 @@ https://mellowsearthelements.com
 ```
 , deployed to Vercel from the repository on every push.","Run `pnpm build`, then `pnpm preview` serves the production build from `dist/`.","USER: I have the Mellow's Earth Elements storefront running with pnpm dev.
 ASSISTANT: Great, the Vite dev server is up. What next?",How do I preview the production build of the Mellow's Earth Elements storefront?
-1adec12b-1740-4551-8992-fc6af194bec0,answer_relevancy,,,,golden,and how do I preview the production build?,"From the storefront directory, run:
+1adec12b-1740-4551-8992-fc6af194bec0,answer_relevancy,pass,,,golden,and how do I preview the production build?,"From the storefront directory, run:
 
 ```bash
 pnpm build
@@ -1171,7 +1171,7 @@ https://mellowsearthelements.com
 ```
 , deployed to Vercel from the repository on every push.","Run `pnpm build`, then `pnpm preview` serves the production build from `dist/`.","USER: I have the Mellow's Earth Elements storefront running with pnpm dev.
 ASSISTANT: Great, the Vite dev server is up. What next?",How do I preview the production build of the Mellow's Earth Elements storefront?
-2905ac71-d5eb-4353-aa85-c2343cb06b11,faithfulness,,,,golden,Talk me through what happens in Sentinel when somebody hits the distress button.,"When someone presses the distress button, Sentinel’s core flow is:
+2905ac71-d5eb-4353-aa85-c2343cb06b11,faithfulness,pass,,,golden,Talk me through what happens in Sentinel when somebody hits the distress button.,"When someone presses the distress button, Sentinel’s core flow is:
 
 1. **A mobile user triggers the distress event.** The mobile app supports employees and floor wardens; those are the two mobile roles described in `PRODUCT.md`.  
 2. **The event is sent through the Fastify server.** The documented runtime path is `mobile / web → Fastify → WebSocket broadcast`, with Memgraph behind the server.  
@@ -1440,7 +1440,7 @@ VITE_DEV_HARNESS
 ```
 .","`README.md` states the core moment, the distress button fires and the 3D coordinate appears on the security manager's screen. `sentinel-server` is a Fastify 5 API that broadcasts over `ws /ws` and reaches Memgraph over bolt, and `sentinel-web` is a React Router single-page app whose `/app` route lazy-loads `Shell3D`. State is one Memgraph graph whose Cypher migrations create `Building`, `Floor`, `Zone`, `Exit`, `Asset`, `AgentInsight`, `FloorTransition` and `FloorCalibration` among others. Three agent processes run beside the server on ports 3001, 3002 and 3003.","USER: Sentinel OHS is the one I understand least from the outside.
 ASSISTANT: Then let's start wherever is most useful. What would you like?",What happens in Sentinel OHS when somebody hits the distress button?
-2905ac71-d5eb-4353-aa85-c2343cb06b11,answer_relevancy,,,,golden,Talk me through what happens in Sentinel when somebody hits the distress button.,"When someone presses the distress button, Sentinel’s core flow is:
+2905ac71-d5eb-4353-aa85-c2343cb06b11,answer_relevancy,pass,,,golden,Talk me through what happens in Sentinel when somebody hits the distress button.,"When someone presses the distress button, Sentinel’s core flow is:
 
 1. **A mobile user triggers the distress event.** The mobile app supports employees and floor wardens; those are the two mobile roles described in `PRODUCT.md`.  
 2. **The event is sent through the Fastify server.** The documented runtime path is `mobile / web → Fastify → WebSocket broadcast`, with Memgraph behind the server.  
@@ -1709,7 +1709,7 @@ VITE_DEV_HARNESS
 ```
 .","`README.md` states the core moment, the distress button fires and the 3D coordinate appears on the security manager's screen. `sentinel-server` is a Fastify 5 API that broadcasts over `ws /ws` and reaches Memgraph over bolt, and `sentinel-web` is a React Router single-page app whose `/app` route lazy-loads `Shell3D`. State is one Memgraph graph whose Cypher migrations create `Building`, `Floor`, `Zone`, `Exit`, `Asset`, `AgentInsight`, `FloorTransition` and `FloorCalibration` among others. Three agent processes run beside the server on ports 3001, 3002 and 3003.","USER: Sentinel OHS is the one I understand least from the outside.
 ASSISTANT: Then let's start wherever is most useful. What would you like?",What happens in Sentinel OHS when somebody hits the distress button?
-2eeef1f2-6e16-4677-9a41-7d4ef2ca728e,faithfulness,,,,golden,Walk me through how a customer message moves through W Chats.,"W Chats’ documented architecture shows this flow:
+2eeef1f2-6e16-4677-9a41-7d4ef2ca728e,faithfulness,pass,,,golden,Walk me through how a customer message moves through W Chats.,"W Chats’ documented architecture shows this flow:
 
 1. **The widget receives the customer message.** The customer-facing widget is a Preact application built with Vite. The retrieved documentation does not specify the exact browser event handler or HTTP/SSE endpoint used for message submission. *(W Chats README/PRODUCT.md; “Stack”)*
 
@@ -1874,7 +1874,7 @@ prd.md
 lists pricing as an open decision deferred to the same milestone.
 Customer segments run from SMB owners handling support on email and WhatsApp today, through South African and emerging-market Shopify, WooCommerce and Wix shops doing 50 to 500 orders a month, to solo founders and ops leads, and eventually agencies bundling W Chats for their clients. Channels are the open-source repository on GitHub as primary discovery, an architecture deep-dive blog and a public demo, the widget itself on customer sites, the founder's South African network, and later app store listings on Shopify and Wix.","The FastAPI control plane never does work inline. Anything long-running goes to Celery across two queues. `pipeline` carries ingestion, embedding and staleness, and `runtime` carries agent turns, evals, red team and the validators. A task publishes to the Redis channel `job_events:{job_id}`, the SSE endpoint subscribes, and a `job_events` table keeps the stream for late-join replay. Retrieval fuses pgvector cosine search with BM25 over native `tsvector` and `ts_rank_cd` in one SQL CTE, reranks the fused candidates, and reads a `verified_qa` cache first.","USER: I've got your portfolio open and I want to start with W Chats.
 ASSISTANT: Sure. What would you like to know about W Chats?",How does a customer message move through W Chats?
-2eeef1f2-6e16-4677-9a41-7d4ef2ca728e,answer_relevancy,,,,golden,Walk me through how a customer message moves through W Chats.,"W Chats’ documented architecture shows this flow:
+2eeef1f2-6e16-4677-9a41-7d4ef2ca728e,answer_relevancy,pass,,,golden,Walk me through how a customer message moves through W Chats.,"W Chats’ documented architecture shows this flow:
 
 1. **The widget receives the customer message.** The customer-facing widget is a Preact application built with Vite. The retrieved documentation does not specify the exact browser event handler or HTTP/SSE endpoint used for message submission. *(W Chats README/PRODUCT.md; “Stack”)*
 
@@ -2039,7 +2039,7 @@ prd.md
 lists pricing as an open decision deferred to the same milestone.
 Customer segments run from SMB owners handling support on email and WhatsApp today, through South African and emerging-market Shopify, WooCommerce and Wix shops doing 50 to 500 orders a month, to solo founders and ops leads, and eventually agencies bundling W Chats for their clients. Channels are the open-source repository on GitHub as primary discovery, an architecture deep-dive blog and a public demo, the widget itself on customer sites, the founder's South African network, and later app store listings on Shopify and Wix.","The FastAPI control plane never does work inline. Anything long-running goes to Celery across two queues. `pipeline` carries ingestion, embedding and staleness, and `runtime` carries agent turns, evals, red team and the validators. A task publishes to the Redis channel `job_events:{job_id}`, the SSE endpoint subscribes, and a `job_events` table keeps the stream for late-join replay. Retrieval fuses pgvector cosine search with BM25 over native `tsvector` and `ts_rank_cd` in one SQL CTE, reranks the fused candidates, and reads a `verified_qa` cache first.","USER: I've got your portfolio open and I want to start with W Chats.
 ASSISTANT: Sure. What would you like to know about W Chats?",How does a customer message move through W Chats?
-4b0b3432-7024-4f12-a9fb-2a01ccbc01a4,faithfulness,,,,golden,What problem does Beekeeper solve?,"Beekeeper solves the supply-chain security problem for autonomous coding agents. An agent may install a dependency, access a file, make a network request, or invoke a tool without knowing that a package version has become malicious—especially after the model’s training cutoff. Beekeeper sits between the agent and its tools, evaluates those actions against corroborated threat intelligence and structural policy, and blocks actions that fail validation.
+4b0b3432-7024-4f12-a9fb-2a01ccbc01a4,faithfulness,pass,,,golden,What problem does Beekeeper solve?,"Beekeeper solves the supply-chain security problem for autonomous coding agents. An agent may install a dependency, access a file, make a network request, or invoke a tool without knowing that a package version has become malicious—especially after the model’s training cutoff. Beekeeper sits between the agent and its tools, evaluates those actions against corroborated threat intelligence and structural policy, and blocks actions that fail validation.
 
 Sources:
 - `beekeeper/README.md` — purpose and threat model
@@ -2192,7 +2192,7 @@ and
 config.json
 ```
 .","A coding agent's knowledge of which packages are safe is frozen at its training cutoff, so it installs the dependency a task needs with no way to know that version shipped a credential stealer after the cutoff. Beekeeper puts a corroborated threat check in front of the install, synced every two hours, with a second-source requirement and an audit trail.",,
-4b0b3432-7024-4f12-a9fb-2a01ccbc01a4,answer_relevancy,,,,golden,What problem does Beekeeper solve?,"Beekeeper solves the supply-chain security problem for autonomous coding agents. An agent may install a dependency, access a file, make a network request, or invoke a tool without knowing that a package version has become malicious—especially after the model’s training cutoff. Beekeeper sits between the agent and its tools, evaluates those actions against corroborated threat intelligence and structural policy, and blocks actions that fail validation.
+4b0b3432-7024-4f12-a9fb-2a01ccbc01a4,answer_relevancy,pass,,,golden,What problem does Beekeeper solve?,"Beekeeper solves the supply-chain security problem for autonomous coding agents. An agent may install a dependency, access a file, make a network request, or invoke a tool without knowing that a package version has become malicious—especially after the model’s training cutoff. Beekeeper sits between the agent and its tools, evaluates those actions against corroborated threat intelligence and structural policy, and blocks actions that fail validation.
 
 Sources:
 - `beekeeper/README.md` — purpose and threat model
@@ -2345,7 +2345,7 @@ and
 config.json
 ```
 .","A coding agent's knowledge of which packages are safe is frozen at its training cutoff, so it installs the dependency a task needs with no way to know that version shipped a credential stealer after the cutoff. Beekeeper puts a corroborated threat check in front of the install, synced every two hours, with a second-source requirement and an audit trail.",,
-532b6b2f-4066-4fc1-8f8d-e94d7a51d9eb,faithfulness,,,,golden,and how do you test it?,"For Sentinel OHS, the mobile app is tested with Jest:
+532b6b2f-4066-4fc1-8f8d-e94d7a51d9eb,faithfulness,pass,,,golden,and how do you test it?,"For Sentinel OHS, the mobile app is tested with Jest:
 
 ```bash
 cd sentinel-mobile
@@ -2568,7 +2568,7 @@ sentinel-server/docker-compose.yml
 , on Bolt port 7687.","Sentinel OHS runs `cd sentinel-mobile && npm test`, which is jest. `sentinel-mobile` is an Expo Router app with `(employee)`, `(warden)` and `(admin)` route groups, on expo 55, expo-router 55.0.11, react-native 0.79.4, react-native-ble-manager 12.4.5, react-native-wifi-reborn 4.13.6, expo-notifications, zustand 5.0.12 and jest 30 with jest-expo.","USER: Let's do Sentinel OHS.
 ASSISTANT: Sentinel puts a building on screen in 3D and drives it from live signals. What do you want to know?
 USER: The mobile app.",How do you test the Sentinel OHS mobile app?
-532b6b2f-4066-4fc1-8f8d-e94d7a51d9eb,answer_relevancy,,,,golden,and how do you test it?,"For Sentinel OHS, the mobile app is tested with Jest:
+532b6b2f-4066-4fc1-8f8d-e94d7a51d9eb,answer_relevancy,pass,,,golden,and how do you test it?,"For Sentinel OHS, the mobile app is tested with Jest:
 
 ```bash
 cd sentinel-mobile
@@ -2791,7 +2791,7 @@ sentinel-server/docker-compose.yml
 , on Bolt port 7687.","Sentinel OHS runs `cd sentinel-mobile && npm test`, which is jest. `sentinel-mobile` is an Expo Router app with `(employee)`, `(warden)` and `(admin)` route groups, on expo 55, expo-router 55.0.11, react-native 0.79.4, react-native-ble-manager 12.4.5, react-native-wifi-reborn 4.13.6, expo-notifications, zustand 5.0.12 and jest 30 with jest-expo.","USER: Let's do Sentinel OHS.
 ASSISTANT: Sentinel puts a building on screen in 3D and drives it from live signals. What do you want to know?
 USER: The mobile app.",How do you test the Sentinel OHS mobile app?
-53b6f7ca-f1ac-4355-8139-a87c3fc8fd4c,faithfulness,,,,golden,Why does the Beekeeper hook exit with code 2 when it blocks a tool call?,"The hook exits with code **2 to signal a policy denial**, not an internal execution failure. The flow is:
+53b6f7ca-f1ac-4355-8139-a87c3fc8fd4c,faithfulness,pass,,,golden,Why does the Beekeeper hook exit with code 2 when it blocks a tool call?,"The hook exits with code **2 to signal a policy denial**, not an internal execution failure. The flow is:
 
 1. The harness invokes the **PreToolUse** hook.
 2. The hook runs `beekeeper check`.
@@ -3075,7 +3075,7 @@ Go to market is a launch-day sequence in
 launch-runbook.md
 ```
 . Show HN opens, an X thread follows at fifteen minutes, r/netsec at thirty, r/commandline at forty-five and Lobsters at an hour, with awesome-list pull requests and directory submissions running through the first two hours, a Dev.to deep dive at two hours and a Bluesky mirror after. The runbook names Tuesday to Thursday, 08:00 to 10:00 ET, as the posting window, and lists nine third-tier directories including Terminal Trove, console.dev, StackShare and SaaSHub.","Exit code 1 reads as a hook error and most harnesses ignore it, so the tool would still run. Exit 2, with the per-harness deny payload, is what the harness honours as a block.",,
-53b6f7ca-f1ac-4355-8139-a87c3fc8fd4c,answer_relevancy,,,,golden,Why does the Beekeeper hook exit with code 2 when it blocks a tool call?,"The hook exits with code **2 to signal a policy denial**, not an internal execution failure. The flow is:
+53b6f7ca-f1ac-4355-8139-a87c3fc8fd4c,answer_relevancy,pass,,,golden,Why does the Beekeeper hook exit with code 2 when it blocks a tool call?,"The hook exits with code **2 to signal a policy denial**, not an internal execution failure. The flow is:
 
 1. The harness invokes the **PreToolUse** hook.
 2. The hook runs `beekeeper check`.
@@ -3359,7 +3359,7 @@ Go to market is a launch-day sequence in
 launch-runbook.md
 ```
 . Show HN opens, an X thread follows at fifteen minutes, r/netsec at thirty, r/commandline at forty-five and Lobsters at an hour, with awesome-list pull requests and directory submissions running through the first two hours, a Dev.to deep dive at two hours and a Bluesky mirror after. The runbook names Tuesday to Thursday, 08:00 to 10:00 ET, as the posting window, and lists nine third-tier directories including Terminal Trove, console.dev, StackShare and SaaSHub.","Exit code 1 reads as a hook error and most harnesses ignore it, so the tool would still run. Exit 2, with the per-harness deny payload, is what the harness honours as a block.",,
-5a09fee5-17fa-4a67-b874-4d9b7d1e9413,faithfulness,,,,golden,What does the Growth tier cost a month?,"I don’t have a monthly price for the Growth tier in the knowledge base. W Chats’ business model specifies Starter, Growth, and Pro tiers priced per agent per month, with conversation caps and overage billing, but the actual pricing is recorded as an open decision deferred to milestone M8.
+5a09fee5-17fa-4a67-b874-4d9b7d1e9413,faithfulness,pass,,,golden,What does the Growth tier cost a month?,"I don’t have a monthly price for the Growth tier in the knowledge base. W Chats’ business model specifies Starter, Growth, and Pro tiers priced per agent per month, with conversation caps and overage billing, but the actual pricing is recorded as an open decision deferred to milestone M8.
 
 CITATIONS:
 - Document: W Chats Business Model Canvas / PRODUCT.md / prd.md | Section: Business model","W Chats
@@ -3507,7 +3507,7 @@ verified_qa
 ```
 cache first.","The documents do not state a price. They name SaaS tiers Starter, Growth and Pro charging per agent per month against a conversation cap, and record the pricing model as locked at milestone M8 once cost-per-tenant data exists, with `prd.md` listing pricing as an open decision deferred to the same milestone.","USER: I'm looking at W Chats as something a business would buy.
 ASSISTANT: W Chats charges per agent per month on named tiers. What would you like to know?",What does the W Chats Growth tier cost per month?
-5a09fee5-17fa-4a67-b874-4d9b7d1e9413,answer_relevancy,,,,golden,What does the Growth tier cost a month?,"I don’t have a monthly price for the Growth tier in the knowledge base. W Chats’ business model specifies Starter, Growth, and Pro tiers priced per agent per month, with conversation caps and overage billing, but the actual pricing is recorded as an open decision deferred to milestone M8.
+5a09fee5-17fa-4a67-b874-4d9b7d1e9413,answer_relevancy,pass,,,golden,What does the Growth tier cost a month?,"I don’t have a monthly price for the Growth tier in the knowledge base. W Chats’ business model specifies Starter, Growth, and Pro tiers priced per agent per month, with conversation caps and overage billing, but the actual pricing is recorded as an open decision deferred to milestone M8.
 
 CITATIONS:
 - Document: W Chats Business Model Canvas / PRODUCT.md / prd.md | Section: Business model","W Chats
@@ -3655,7 +3655,7 @@ verified_qa
 ```
 cache first.","The documents do not state a price. They name SaaS tiers Starter, Growth and Pro charging per agent per month against a conversation cap, and record the pricing model as locked at milestone M8 once cost-per-tenant data exists, with `prd.md` listing pricing as an open decision deferred to the same milestone.","USER: I'm looking at W Chats as something a business would buy.
 ASSISTANT: W Chats charges per agent per month on named tiers. What would you like to know?",What does the W Chats Growth tier cost per month?
-64c7b71f-4caf-40b9-8f8d-f5c29488ab8a,faithfulness,,,,golden,The Mellow's Earth Elements storefront has no backend at all. What does that buy you and what does it cost you?,"For Mellow’s Earth Elements, removing the backend buys simplicity and low operating overhead:
+64c7b71f-4caf-40b9-8f8d-f5c29488ab8a,faithfulness,pass,,,golden,The Mellow's Earth Elements storefront has no backend at all. What does that buy you and what does it cost you?,"For Mellow’s Earth Elements, removing the backend buys simplicity and low operating overhead:
 
 - **Deployment is just a static build.** The app is built with Vite into `dist` and deployed to Vercel on each repository push. It does not need a database, server process, or API layer. *(Mellow’s Earth Elements — Architecture; Stack)*
 - **The storefront can be hosted almost anywhere.** The README describes the design goal as a static single-page app. *(Mellow’s Earth Elements — What it is)*
@@ -3880,7 +3880,7 @@ Sources
 - `src/components/checkout/PaymentInfo.tsx` , `src/components/checkout/delivery-form-schema.ts`
 - `src/components/three/MeridianHeroScene.tsx` , `src/tests/unit/`","An order moves through three steps, all of them in the browser. `CartContext` holds the line items and writes them to `localStorage`, the delivery form validates against the zod schema in `src/components/checkout/delivery-form-schema.ts`, and `src/services/orderService.ts` sanitises each string, revalidates the order against the delivery details and the cart, and generates the reference number the confirmation screen shows. Nothing is sent to a server. The design goal is a static single-page app you can host anywhere, and because no order reaches a server the owner matches payments to references by hand.","USER: Next one on the list is the perfume storefront.
 ASSISTANT: That is Mellow's Earth Elements. What do you want to know about it?","What does having no backend at all for Mellow's Earth Elements storefront buy you, and what does it cost you?"
-64c7b71f-4caf-40b9-8f8d-f5c29488ab8a,answer_relevancy,,,,golden,The Mellow's Earth Elements storefront has no backend at all. What does that buy you and what does it cost you?,"For Mellow’s Earth Elements, removing the backend buys simplicity and low operating overhead:
+64c7b71f-4caf-40b9-8f8d-f5c29488ab8a,answer_relevancy,pass,,,golden,The Mellow's Earth Elements storefront has no backend at all. What does that buy you and what does it cost you?,"For Mellow’s Earth Elements, removing the backend buys simplicity and low operating overhead:
 
 - **Deployment is just a static build.** The app is built with Vite into `dist` and deployed to Vercel on each repository push. It does not need a database, server process, or API layer. *(Mellow’s Earth Elements — Architecture; Stack)*
 - **The storefront can be hosted almost anywhere.** The README describes the design goal as a static single-page app. *(Mellow’s Earth Elements — What it is)*
@@ -4105,7 +4105,7 @@ Sources
 - `src/components/checkout/PaymentInfo.tsx` , `src/components/checkout/delivery-form-schema.ts`
 - `src/components/three/MeridianHeroScene.tsx` , `src/tests/unit/`","An order moves through three steps, all of them in the browser. `CartContext` holds the line items and writes them to `localStorage`, the delivery form validates against the zod schema in `src/components/checkout/delivery-form-schema.ts`, and `src/services/orderService.ts` sanitises each string, revalidates the order against the delivery details and the cart, and generates the reference number the confirmation screen shows. Nothing is sent to a server. The design goal is a static single-page app you can host anywhere, and because no order reaches a server the owner matches payments to references by hand.","USER: Next one on the list is the perfume storefront.
 ASSISTANT: That is Mellow's Earth Elements. What do you want to know about it?","What does having no backend at all for Mellow's Earth Elements storefront buy you, and what does it cost you?"
-6a92be86-b89f-4751-ac2a-61d1aeeee7ab,faithfulness,,,,golden,and what happens when it says no?,"For a single Beekeeper decision:
+6a92be86-b89f-4751-ac2a-61d1aeeee7ab,faithfulness,fail,,"Took the meaning of ""no"" literarily. No does not exists as a concept technically there's either warn or block",golden,and what happens when it says no?,"For a single Beekeeper decision:
 
 1. An agent attempts a tool call.
 2. The harness fires a `PreToolUse` hook.
@@ -4363,7 +4363,7 @@ config.json
 .","On a block, `internal/check/deny_render.go` writes the deny payload for that harness and the process exits 2. `internal/audit` appends an NDJSON record either way. The decision runs from the harness firing a PreToolUse hook that calls `beekeeper check`, which loads layered configuration across system, user, project and environment layers, memory-maps the catalog, and evaluates against `internal/policy`, a pure function library with no I/O.","USER: Tell me about Beekeeper.
 ASSISTANT: Beekeeper is threat intelligence for autonomous coding agents. Which part?
 USER: How a single decision runs.",What happens when a single decision in Beekeeper says no?
-6a92be86-b89f-4751-ac2a-61d1aeeee7ab,answer_relevancy,,,,golden,and what happens when it says no?,"For a single Beekeeper decision:
+6a92be86-b89f-4751-ac2a-61d1aeeee7ab,answer_relevancy,pass,,,golden,and what happens when it says no?,"For a single Beekeeper decision:
 
 1. An agent attempts a tool call.
 2. The harness fires a `PreToolUse` hook.
@@ -4621,7 +4621,7 @@ config.json
 .","On a block, `internal/check/deny_render.go` writes the deny payload for that harness and the process exits 2. `internal/audit` appends an NDJSON record either way. The decision runs from the harness firing a PreToolUse hook that calls `beekeeper check`, which loads layered configuration across system, user, project and environment layers, memory-maps the catalog, and evaluates against `internal/policy`, a pure function library with no I/O.","USER: Tell me about Beekeeper.
 ASSISTANT: Beekeeper is threat intelligence for autonomous coding agents. Which part?
 USER: How a single decision runs.",What happens when a single decision in Beekeeper says no?
-71b3d131-8a73-45ab-8698-0830cdc32643,faithfulness,,,,golden,What does Beekeeper do when only one threat source flags a package?,"I don’t have the specific single-source threshold behavior in my knowledge base. The available Beekeeper documentation says it evaluates package installs against corroboration-based threat intelligence and structural policy, then allows or blocks the operation; it does not state what happens when exactly one threat source flags a package. This may be clarified in the project’s policy or catalog implementation. Contact information is in `beekeeper/SECURITY.md`.
+71b3d131-8a73-45ab-8698-0830cdc32643,faithfulness,pass,,gap in info depth of updated knowledge base. good to acknowledge gap than hallucinate or guess,golden,What does Beekeeper do when only one threat source flags a package?,"I don’t have the specific single-source threshold behavior in my knowledge base. The available Beekeeper documentation says it evaluates package installs against corroboration-based threat intelligence and structural policy, then allows or blocks the operation; it does not state what happens when exactly one threat source flags a package. This may be clarified in the project’s policy or catalog implementation. Contact information is in `beekeeper/SECURITY.md`.
 
 CITATIONS:
 - Document: Beekeeper portfolio corpus | Section: What it is
@@ -4855,7 +4855,7 @@ sets
 output: ""export""
 ```
 so the site is static files with no server runtime.","One source flagging a package produces a warning. Two sources block the install, and three or more block and quarantine it. Only signed sources count toward a block; an unsigned source can warn but never block on its own.",,
-71b3d131-8a73-45ab-8698-0830cdc32643,answer_relevancy,,,,golden,What does Beekeeper do when only one threat source flags a package?,"I don’t have the specific single-source threshold behavior in my knowledge base. The available Beekeeper documentation says it evaluates package installs against corroboration-based threat intelligence and structural policy, then allows or blocks the operation; it does not state what happens when exactly one threat source flags a package. This may be clarified in the project’s policy or catalog implementation. Contact information is in `beekeeper/SECURITY.md`.
+71b3d131-8a73-45ab-8698-0830cdc32643,answer_relevancy,pass,,,golden,What does Beekeeper do when only one threat source flags a package?,"I don’t have the specific single-source threshold behavior in my knowledge base. The available Beekeeper documentation says it evaluates package installs against corroboration-based threat intelligence and structural policy, then allows or blocks the operation; it does not state what happens when exactly one threat source flags a package. This may be clarified in the project’s policy or catalog implementation. Contact information is in `beekeeper/SECURITY.md`.
 
 CITATIONS:
 - Document: Beekeeper portfolio corpus | Section: What it is
@@ -5089,7 +5089,7 @@ sets
 output: ""export""
 ```
 so the site is static files with no server runtime.","One source flagging a package produces a warning. Two sources block the install, and three or more block and quarantine it. Only signed sources count toward a block; an unsigned source can warn but never block on its own.",,
-8013ee2e-e793-4ad4-870b-97ed299de2a0,faithfulness,,,,golden,Why Go for Beekeeper when everything else you have built is Python or TypeScript?,"The portfolio does not state an explicit decision record saying “Go was chosen over Python or TypeScript.” It does show a clear deployment constraint: Beekeeper must sit between an autonomous coding agent and system-level tools, inspect package installs, file access, network calls, and tool calls, and enforce policy before execution. The resulting artifact is a single static binary with no external runtime dependencies. **Beekeeper README.md, “What it is.”**
+8013ee2e-e793-4ad4-870b-97ed299de2a0,faithfulness,pass,,,golden,Why Go for Beekeeper when everything else you have built is Python or TypeScript?,"The portfolio does not state an explicit decision record saying “Go was chosen over Python or TypeScript.” It does show a clear deployment constraint: Beekeeper must sit between an autonomous coding agent and system-level tools, inspect package installs, file access, network calls, and tool calls, and enforce policy before execution. The resulting artifact is a single static binary with no external runtime dependencies. **Beekeeper README.md, “What it is.”**
 
 That makes Go a practical fit for the product’s operating model:
 
@@ -5288,7 +5288,7 @@ BEEKEEPER_*
 ```
 layer.","Beekeeper ships as a single static Go binary with no external runtime dependencies, on Go 1.25.11, module `github.com/home-beekeeper/beekeeper`. Direct dependencies are cobra 1.10.2 for the CLI, bubbletea v2.0.6 and lipgloss v2.0.3 for the terminal dashboard, mmap-go 1.2.0 for the catalog, bbolt 1.5.0, fsnotify 1.10.1, cilium/ebpf 0.21.0 and elastic/go-seccomp-bpf 1.6.0 for the Linux sensor, and tekert/golang-etw 0.6.2 for Windows ETW. It runs on a PreToolUse hook, and `internal/catalog` memory-maps the catalog so no invocation pays a cold load.","USER: Beekeeper is the odd one out in your portfolio.
 ASSISTANT: It is the only Go project. What do you want to know?",Why did you choose Go for Beekeeper when everything else you have built is Python or TypeScript?
-8013ee2e-e793-4ad4-870b-97ed299de2a0,answer_relevancy,,,,golden,Why Go for Beekeeper when everything else you have built is Python or TypeScript?,"The portfolio does not state an explicit decision record saying “Go was chosen over Python or TypeScript.” It does show a clear deployment constraint: Beekeeper must sit between an autonomous coding agent and system-level tools, inspect package installs, file access, network calls, and tool calls, and enforce policy before execution. The resulting artifact is a single static binary with no external runtime dependencies. **Beekeeper README.md, “What it is.”**
+8013ee2e-e793-4ad4-870b-97ed299de2a0,answer_relevancy,pass,,,golden,Why Go for Beekeeper when everything else you have built is Python or TypeScript?,"The portfolio does not state an explicit decision record saying “Go was chosen over Python or TypeScript.” It does show a clear deployment constraint: Beekeeper must sit between an autonomous coding agent and system-level tools, inspect package installs, file access, network calls, and tool calls, and enforce policy before execution. The resulting artifact is a single static binary with no external runtime dependencies. **Beekeeper README.md, “What it is.”**
 
 That makes Go a practical fit for the product’s operating model:
 
@@ -5487,7 +5487,7 @@ BEEKEEPER_*
 ```
 layer.","Beekeeper ships as a single static Go binary with no external runtime dependencies, on Go 1.25.11, module `github.com/home-beekeeper/beekeeper`. Direct dependencies are cobra 1.10.2 for the CLI, bubbletea v2.0.6 and lipgloss v2.0.3 for the terminal dashboard, mmap-go 1.2.0 for the catalog, bbolt 1.5.0, fsnotify 1.10.1, cilium/ebpf 0.21.0 and elastic/go-seccomp-bpf 1.6.0 for the Linux sensor, and tekert/golang-etw 0.6.2 for Windows ETW. It runs on a PreToolUse hook, and `internal/catalog` memory-maps the catalog so no invocation pays a cold load.","USER: Beekeeper is the odd one out in your portfolio.
 ASSISTANT: It is the only Go project. What do you want to know?",Why did you choose Go for Beekeeper when everything else you have built is Python or TypeScript?
-819c84c9-eefd-4845-8510-0709ac91b4a4,faithfulness,,,,golden,which file holds the delivery form fields?,"The delivery form fields are defined in:
+819c84c9-eefd-4845-8510-0709ac91b4a4,faithfulness,pass,,,golden,which file holds the delivery form fields?,"The delivery form fields are defined in:
 
 ```text
 src/components/checkout/delivery-form-schema.ts
@@ -5721,7 +5721,7 @@ and marks both optional, and
 documents a longer list for the deployment platform.",The checkout delivery form fields and their validation rules are defined in `src/components/checkout/delivery-form-schema.ts`.,"USER: I'm changing the checkout flow in the Mellow's Earth Elements storefront.
 ASSISTANT: Okay. Which part of checkout, delivery, payment, or the order summary?
 USER: Delivery.",Which file holds the delivery form fields in the Mellow's Earth Elements storefront checkout flow?
-819c84c9-eefd-4845-8510-0709ac91b4a4,answer_relevancy,,,,golden,which file holds the delivery form fields?,"The delivery form fields are defined in:
+819c84c9-eefd-4845-8510-0709ac91b4a4,answer_relevancy,pass,,,golden,which file holds the delivery form fields?,"The delivery form fields are defined in:
 
 ```text
 src/components/checkout/delivery-form-schema.ts
@@ -5955,7 +5955,7 @@ and marks both optional, and
 documents a longer list for the deployment platform.",The checkout delivery form fields and their validation rules are defined in `src/components/checkout/delivery-form-schema.ts`.,"USER: I'm changing the checkout flow in the Mellow's Earth Elements storefront.
 ASSISTANT: Okay. Which part of checkout, delivery, payment, or the order summary?
 USER: Delivery.",Which file holds the delivery form fields in the Mellow's Earth Elements storefront checkout flow?
-86cfacaa-3750-458d-a75f-1515c28436aa,faithfulness,,,,golden,"What is the risk in promoting answers to a canonical store, and how does W Chats handle it?","The risk is that a generated answer can be promoted from a one-off response into trusted, reusable knowledge even when it is incorrect, unsupported, or later made stale. That can cause the system to repeat the error because retrieval checks the promoted answer first.
+86cfacaa-3750-458d-a75f-1515c28436aa,faithfulness,pass,,,golden,"What is the risk in promoting answers to a canonical store, and how does W Chats handle it?","The risk is that a generated answer can be promoted from a one-off response into trusted, reusable knowledge even when it is incorrect, unsupported, or later made stale. That can cause the system to repeat the error because retrieval checks the promoted answer first.
 
 W Chats addresses this with a gated workflow:
 
@@ -6398,7 +6398,7 @@ and
 VOYAGE_API_KEY
 ```
 .","The risk is promoting a wrong answer to canonical, where it poisons every future query. Promotion is gated behind human approval in a weekly digest, with an invalidation path. Nightly evals run on a Neon database branch so eval traffic never touches production.",,
-86cfacaa-3750-458d-a75f-1515c28436aa,answer_relevancy,,,,golden,"What is the risk in promoting answers to a canonical store, and how does W Chats handle it?","The risk is that a generated answer can be promoted from a one-off response into trusted, reusable knowledge even when it is incorrect, unsupported, or later made stale. That can cause the system to repeat the error because retrieval checks the promoted answer first.
+86cfacaa-3750-458d-a75f-1515c28436aa,answer_relevancy,pass,,,golden,"What is the risk in promoting answers to a canonical store, and how does W Chats handle it?","The risk is that a generated answer can be promoted from a one-off response into trusted, reusable knowledge even when it is incorrect, unsupported, or later made stale. That can cause the system to repeat the error because retrieval checks the promoted answer first.
 
 W Chats addresses this with a gated workflow:
 
@@ -6841,7 +6841,7 @@ and
 VOYAGE_API_KEY
 ```
 .","The risk is promoting a wrong answer to canonical, where it poisons every future query. Promotion is gated behind human approval in a weekly digest, with an invalidation path. Nightly evals run on a Neon database branch so eval traffic never touches production.",,
-8a30b84d-ae37-4a5c-af80-551a61b58e29,faithfulness,,,,golden,and how do the migrations work there?,"On Railway, W Chats runs migrations in `apps/api/railway.api.toml` through `preDeployCommand`, before the service starts serving the new code. That command migrates:
+8a30b84d-ae37-4a5c-af80-551a61b58e29,faithfulness,pass,,,golden,and how do the migrations work there?,"On Railway, W Chats runs migrations in `apps/api/railway.api.toml` through `preDeployCommand`, before the service starts serving the new code. That command migrates:
 
 - the control database; and
 - every tenant database.
@@ -7053,7 +7053,7 @@ VOYAGE_API_KEY
 ```
 .","`apps/api/railway.api.toml` runs a `preDeployCommand` that migrates the control database and every tenant database before any service serves new code. Two Alembic chains migrate them, `alembic/versions` for the control database and `alembic_tenant/versions` for each tenant's Neon project.","USER: Back to W Chats for a second, the deployment side.
 ASSISTANT: W Chats deploys to Railway. What do you want to know?",How do migrations work for deploying W Chats to Railway?
-8a30b84d-ae37-4a5c-af80-551a61b58e29,answer_relevancy,,,,golden,and how do the migrations work there?,"On Railway, W Chats runs migrations in `apps/api/railway.api.toml` through `preDeployCommand`, before the service starts serving the new code. That command migrates:
+8a30b84d-ae37-4a5c-af80-551a61b58e29,answer_relevancy,pass,,,golden,and how do the migrations work there?,"On Railway, W Chats runs migrations in `apps/api/railway.api.toml` through `preDeployCommand`, before the service starts serving the new code. That command migrates:
 
 - the control database; and
 - every tenant database.
@@ -7265,7 +7265,7 @@ VOYAGE_API_KEY
 ```
 .","`apps/api/railway.api.toml` runs a `preDeployCommand` that migrates the control database and every tenant database before any service serves new code. Two Alembic chains migrate them, `alembic/versions` for the control database and `alembic_tenant/versions` for each tenant's Neon project.","USER: Back to W Chats for a second, the deployment side.
 ASSISTANT: W Chats deploys to Railway. What do you want to know?",How do migrations work for deploying W Chats to Railway?
-b28d106f-b858-4251-937c-8254f917dc9c,faithfulness,,,,golden,and what does delivery cost?,"Delivery costs a flat **R30** for the **Tembisa** delivery area. This is configured in `src/pages/Checkout.tsx` and documented in `README.md`.
+b28d106f-b858-4251-937c-8254f917dc9c,faithfulness,pass,,,golden,and what does delivery cost?,"Delivery costs a flat **R30** for the **Tembisa** delivery area. This is configured in `src/pages/Checkout.tsx` and documented in `README.md`.
 
 CITATIONS:
 - Document: Mellow's Earth Elements | Section: Business model
@@ -7493,7 +7493,7 @@ and marks both optional, and
 documents a longer list for the deployment platform.","`src/pages/Checkout.tsx` adds a flat R30 delivery fee for Tembisa, and names Tembisa in the comment beside it, which fixes the delivery area the code serves.","USER: I'm looking at the Mellow's Earth Elements storefront.
 ASSISTANT: The storefront is a single-page app that runs entirely in the browser. What do you want to know?
 USER: The checkout.",What does delivery cost for the Mellow's Earth Elements storefront checkout?
-b28d106f-b858-4251-937c-8254f917dc9c,answer_relevancy,,,,golden,and what does delivery cost?,"Delivery costs a flat **R30** for the **Tembisa** delivery area. This is configured in `src/pages/Checkout.tsx` and documented in `README.md`.
+b28d106f-b858-4251-937c-8254f917dc9c,answer_relevancy,pass,,,golden,and what does delivery cost?,"Delivery costs a flat **R30** for the **Tembisa** delivery area. This is configured in `src/pages/Checkout.tsx` and documented in `README.md`.
 
 CITATIONS:
 - Document: Mellow's Earth Elements | Section: Business model
@@ -7721,7 +7721,7 @@ and marks both optional, and
 documents a longer list for the deployment platform.","`src/pages/Checkout.tsx` adds a flat R30 delivery fee for Tembisa, and names Tembisa in the comment beside it, which fixes the delivery area the code serves.","USER: I'm looking at the Mellow's Earth Elements storefront.
 ASSISTANT: The storefront is a single-page app that runs entirely in the browser. What do you want to know?
 USER: The checkout.",What does delivery cost for the Mellow's Earth Elements storefront checkout?
-b3b62d9b-d282-4642-b38b-ffec1bc70dfe,faithfulness,,,,golden,Why React and Vite for a shop that is really a catalogue and a cart?,"For this storefront, React and Vite are defensible, but not strictly necessary.
+b3b62d9b-d282-4642-b38b-ffec1bc70dfe,faithfulness,pass,,,golden,Why React and Vite for a shop that is really a catalogue and a cart?,"For this storefront, React and Vite are defensible, but not strictly necessary.
 
 **Why React:** the catalogue/cart boundary still has state and interaction: product filtering and routing, cart line-item updates, persistence, checkout validation, and shared UI such as `FloatingCart`. The implementation already separates those concerns through `ProductGrid`, `CartContext`, the delivery form schema, and `orderService`. React provides a direct component model for that composition and state flow.  
 **Source:** *Mellow's Earth Elements — Architecture*
@@ -7937,7 +7937,7 @@ Sources
 - `src/components/checkout/PaymentInfo.tsx` , `src/components/checkout/delivery-form-schema.ts`
 - `src/components/three/MeridianHeroScene.tsx` , `src/tests/unit/`","The storefront runs React 19.2.7 and react-dom 19.2.7 with TypeScript 7.0.2 on Vite 8.1.5, Tailwind CSS 4.3.3 through `@tailwindcss/postcss`, and shadcn/ui built on Radix primitives. Routing is react-router-dom 7.18.1 across six lazy-loaded routes. Forms use react-hook-form 7.53 with zod 4.4.3 via `@hookform/resolvers` 5.4. `vite.config.ts` splits the bundle by hand into vendor, ui, router, query and icons chunks, targets es2020 and minifies with terser. The hero scene uses three 0.185.1 with `@react-three/fiber` 9.6.1 and `@react-three/drei` 10.7.7.","USER: I want to push on some of the technology choices in the storefront.
 ASSISTANT: Go ahead. Which choice?",Why use React and Vite for a storefront that is really a catalogue and a cart?
-b3b62d9b-d282-4642-b38b-ffec1bc70dfe,answer_relevancy,,,,golden,Why React and Vite for a shop that is really a catalogue and a cart?,"For this storefront, React and Vite are defensible, but not strictly necessary.
+b3b62d9b-d282-4642-b38b-ffec1bc70dfe,answer_relevancy,pass,,,golden,Why React and Vite for a shop that is really a catalogue and a cart?,"For this storefront, React and Vite are defensible, but not strictly necessary.
 
 **Why React:** the catalogue/cart boundary still has state and interaction: product filtering and routing, cart line-item updates, persistence, checkout validation, and shared UI such as `FloatingCart`. The implementation already separates those concerns through `ProductGrid`, `CartContext`, the delivery form schema, and `orderService`. React provides a direct component model for that composition and state flow.  
 **Source:** *Mellow's Earth Elements — Architecture*
@@ -8153,7 +8153,7 @@ Sources
 - `src/components/checkout/PaymentInfo.tsx` , `src/components/checkout/delivery-form-schema.ts`
 - `src/components/three/MeridianHeroScene.tsx` , `src/tests/unit/`","The storefront runs React 19.2.7 and react-dom 19.2.7 with TypeScript 7.0.2 on Vite 8.1.5, Tailwind CSS 4.3.3 through `@tailwindcss/postcss`, and shadcn/ui built on Radix primitives. Routing is react-router-dom 7.18.1 across six lazy-loaded routes. Forms use react-hook-form 7.53 with zod 4.4.3 via `@hookform/resolvers` 5.4. `vite.config.ts` splits the bundle by hand into vendor, ui, router, query and icons chunks, targets es2020 and minifies with terser. The hero scene uses three 0.185.1 with `@react-three/fiber` 9.6.1 and `@react-three/drei` 10.7.7.","USER: I want to push on some of the technology choices in the storefront.
 ASSISTANT: Go ahead. Which choice?",Why use React and Vite for a storefront that is really a catalogue and a cart?
-b53e7b2a-b1db-454b-b354-e7bf957159f9,faithfulness,,,,golden,Both the storefront and Sentinel put three.js on screen. Is that the same piece of work twice?,"They are separate implementations, not the same piece of work duplicated.
+b53e7b2a-b1db-454b-b354-e7bf957159f9,faithfulness,fail,,,golden,Both the storefront and Sentinel put three.js on screen. Is that the same piece of work twice?,"They are separate implementations, not the same piece of work duplicated.
 
 - **Mellow’s Earth Elements** uses `three.js` through `react-three-fiber` for `src/components/three/MeridianHeroScene.tsx`, which renders the storefront’s hero scene. *(Mellow’s Earth Elements — Architecture)*
 - **Sentinel OHS** uses `three.js` with `@react-three/fiber`, `@react-three/drei`, and `@react-three/postprocessing`. Its web app lazy-loads `Shell3D`, which displays the building in 3D and connects that view to live safety signals. *(Sentinel OHS — Stack; Sentinel OHS — What it is; Sentinel OHS — Architecture)*
@@ -8508,7 +8508,7 @@ VITE_DEV_HARNESS
 ```
 .","No. In Mellow's Earth Elements, `src/components/three/MeridianHeroScene.tsx` renders the hero with react-three-fiber, on three 0.185.1 with `@react-three/fiber` 9.6.1 and `@react-three/drei` 10.7.7. In Sentinel OHS the 3D is the product. `sentinel-web` is a React Router single-page app whose `/app` route lazy-loads `Shell3D`, on three 0.175.0 with `@react-three/fiber` 9.1.2, `@react-three/drei` 10.7.7 and `@react-three/postprocessing` 3.0.4, and the distress button fires and the 3D coordinate appears on the security manager's screen.","USER: I noticed three.js shows up twice in your portfolio.
 ASSISTANT: It does. What would you like to know about that?",Are the storefront and Sentinel uses of three.js the same piece of work listed twice?
-b53e7b2a-b1db-454b-b354-e7bf957159f9,answer_relevancy,,,,golden,Both the storefront and Sentinel put three.js on screen. Is that the same piece of work twice?,"They are separate implementations, not the same piece of work duplicated.
+b53e7b2a-b1db-454b-b354-e7bf957159f9,answer_relevancy,pass,,,golden,Both the storefront and Sentinel put three.js on screen. Is that the same piece of work twice?,"They are separate implementations, not the same piece of work duplicated.
 
 - **Mellow’s Earth Elements** uses `three.js` through `react-three-fiber` for `src/components/three/MeridianHeroScene.tsx`, which renders the storefront’s hero scene. *(Mellow’s Earth Elements — Architecture)*
 - **Sentinel OHS** uses `three.js` with `@react-three/fiber`, `@react-three/drei`, and `@react-three/postprocessing`. Its web app lazy-loads `Shell3D`, which displays the building in 3D and connects that view to live safety signals. *(Sentinel OHS — Stack; Sentinel OHS — What it is; Sentinel OHS — Architecture)*
@@ -8863,7 +8863,7 @@ VITE_DEV_HARNESS
 ```
 .","No. In Mellow's Earth Elements, `src/components/three/MeridianHeroScene.tsx` renders the hero with react-three-fiber, on three 0.185.1 with `@react-three/fiber` 9.6.1 and `@react-three/drei` 10.7.7. In Sentinel OHS the 3D is the product. `sentinel-web` is a React Router single-page app whose `/app` route lazy-loads `Shell3D`, on three 0.175.0 with `@react-three/fiber` 9.1.2, `@react-three/drei` 10.7.7 and `@react-three/postprocessing` 3.0.4, and the distress button fires and the 3D coordinate appears on the security manager's screen.","USER: I noticed three.js shows up twice in your portfolio.
 ASSISTANT: It does. What would you like to know about that?",Are the storefront and Sentinel uses of three.js the same piece of work listed twice?
-baa3a4ff-5324-4c89-a94f-a4eb96314c00,faithfulness,,,,golden,How does W Chats retrieve an answer from a business's documents?,"W Chats uses a hybrid retrieval pipeline:
+baa3a4ff-5324-4c89-a94f-a4eb96314c00,faithfulness,pass,,,golden,How does W Chats retrieve an answer from a business's documents?,"W Chats uses a hybrid retrieval pipeline:
 
 1. A business’s documents are stored in that tenant’s dedicated Neon Postgres project.
 2. Documents are split into chunks and indexed in two ways:
@@ -9059,7 +9059,7 @@ prd.md
 ```
 lists pricing as an open decision deferred to the same milestone.
 Customer segments run from SMB owners handling support on email and WhatsApp today, through South African and emerging-market Shopify, WooCommerce and Wix shops doing 50 to 500 orders a month, to solo founders and ops leads, and eventually agencies bundling W Chats for their clients. Channels are the open-source repository on GitHub as primary discovery, an architecture deep-dive blog and a public demo, the widget itself on customer sites, the founder's South African network, and later app store listings on Shopify and Wix.","Docling parses documents structure-aware, Chonkie chunks them, and HyDE metadata feeds a hybrid retriever: vector search plus BM25, fused with RRF and reranked by Voyage. A Strategist agent synthesizes the per-tenant retrieval strategy from an analysis of the data's shape.",,
-baa3a4ff-5324-4c89-a94f-a4eb96314c00,answer_relevancy,,,,golden,How does W Chats retrieve an answer from a business's documents?,"W Chats uses a hybrid retrieval pipeline:
+baa3a4ff-5324-4c89-a94f-a4eb96314c00,answer_relevancy,pass,,,golden,How does W Chats retrieve an answer from a business's documents?,"W Chats uses a hybrid retrieval pipeline:
 
 1. A business’s documents are stored in that tenant’s dedicated Neon Postgres project.
 2. Documents are split into chunks and indexed in two ways:
@@ -9255,7 +9255,7 @@ prd.md
 ```
 lists pricing as an open decision deferred to the same milestone.
 Customer segments run from SMB owners handling support on email and WhatsApp today, through South African and emerging-market Shopify, WooCommerce and Wix shops doing 50 to 500 orders a month, to solo founders and ops leads, and eventually agencies bundling W Chats for their clients. Channels are the open-source repository on GitHub as primary discovery, an architecture deep-dive blog and a public demo, the widget itself on customer sites, the founder's South African network, and later app store listings on Shopify and Wix.","Docling parses documents structure-aware, Chonkie chunks them, and HyDE metadata feeds a hybrid retriever: vector search plus BM25, fused with RRF and reranked by Voyage. A Strategist agent synthesizes the per-tenant retrieval strategy from an analysis of the data's shape.",,
-c4e02b6a-132b-4cd3-a9e1-db6f6e70cafb,faithfulness,,,,golden,and how do I run the unit tests there?,"For the two components you mentioned:
+c4e02b6a-132b-4cd3-a9e1-db6f6e70cafb,faithfulness,pass,,,golden,and how do I run the unit tests there?,"For the two components you mentioned:
 
 ```bash
 cd sentinel-server
@@ -9517,7 +9517,7 @@ Sources
 ```",Sentinel OHS runs its unit tests with vitest in each package: `cd sentinel-server && npx vitest` and `cd sentinel-web && npx vitest`.,"USER: I've cloned Sentinel OHS and want to check my changes.
 ASSISTANT: Good. Which part of Sentinel are you changing, the server or the web app?
 USER: Both, actually.",How do I run the unit tests for both the Sentinel OHS server and web app?
-c4e02b6a-132b-4cd3-a9e1-db6f6e70cafb,answer_relevancy,,,,golden,and how do I run the unit tests there?,"For the two components you mentioned:
+c4e02b6a-132b-4cd3-a9e1-db6f6e70cafb,answer_relevancy,pass,,,golden,and how do I run the unit tests there?,"For the two components you mentioned:
 
 ```bash
 cd sentinel-server
@@ -9779,7 +9779,7 @@ Sources
 ```",Sentinel OHS runs its unit tests with vitest in each package: `cd sentinel-server && npx vitest` and `cd sentinel-web && npx vitest`.,"USER: I've cloned Sentinel OHS and want to check my changes.
 ASSISTANT: Good. Which part of Sentinel are you changing, the server or the web app?
 USER: Both, actually.",How do I run the unit tests for both the Sentinel OHS server and web app?
-c7fa3aff-c7b4-4fab-852b-8f0cb4e2018f,faithfulness,,,,golden,"Only one of these charges a subscription. Which one, and what do the others run on?","The subscription-based project is **W Chats**. Its model uses **Starter, Growth, and Pro SaaS tiers priced per agent per month**, with monthly overage for conversations beyond each tier’s cap. It also plans a managed-service add-on for digest review, custom red-team scenarios, and SLA support. Pricing remains an open decision until milestone M8, when cost-per-tenant data is available.  
+c7fa3aff-c7b4-4fab-852b-8f0cb4e2018f,faithfulness,pass,,,golden,"Only one of these charges a subscription. Which one, and what do the others run on?","The subscription-based project is **W Chats**. Its model uses **Starter, Growth, and Pro SaaS tiers priced per agent per month**, with monthly overage for conversations beyond each tier’s cap. It also plans a managed-service add-on for digest review, custom red-team scenarios, and SLA support. Pricing remains an open decision until milestone M8, when cost-per-tenant data is available.  
 **Source:** W Chats, “Business model.”
 
 The others use different models:
@@ -9883,7 +9883,7 @@ Sources
 - `src/components/checkout/PaymentInfo.tsx` , `src/components/checkout/delivery-form-schema.ts`
 - `src/components/three/MeridianHeroScene.tsx` , `src/tests/unit/`","W Chats is the subscription. SaaS tiers named Starter, Growth and Pro charge per agent per month against a conversation cap, conversations above the cap bill as monthly overage, and a managed service add-on covers weekly digest review, custom red-team scenarios and SLA support. Beekeeper is free, `LICENSE` is Apache 2.0, and no repository states a price, a tier or a paid edition for Beekeeper itself. Mellow's Earth Elements sells its own physical goods direct to the customer, so revenue is the product price.","USER: Let's line the projects up on revenue.
 ASSISTANT: I can do that. What do you want to compare?","Which of the projects charges a subscription, and what do the others run on?"
-c7fa3aff-c7b4-4fab-852b-8f0cb4e2018f,answer_relevancy,,,,golden,"Only one of these charges a subscription. Which one, and what do the others run on?","The subscription-based project is **W Chats**. Its model uses **Starter, Growth, and Pro SaaS tiers priced per agent per month**, with monthly overage for conversations beyond each tier’s cap. It also plans a managed-service add-on for digest review, custom red-team scenarios, and SLA support. Pricing remains an open decision until milestone M8, when cost-per-tenant data is available.  
+c7fa3aff-c7b4-4fab-852b-8f0cb4e2018f,answer_relevancy,pass,,,golden,"Only one of these charges a subscription. Which one, and what do the others run on?","The subscription-based project is **W Chats**. Its model uses **Starter, Growth, and Pro SaaS tiers priced per agent per month**, with monthly overage for conversations beyond each tier’s cap. It also plans a managed-service add-on for digest review, custom red-team scenarios, and SLA support. Pricing remains an open decision until milestone M8, when cost-per-tenant data is available.  
 **Source:** W Chats, “Business model.”
 
 The others use different models:
@@ -9987,7 +9987,7 @@ Sources
 - `src/components/checkout/PaymentInfo.tsx` , `src/components/checkout/delivery-form-schema.ts`
 - `src/components/three/MeridianHeroScene.tsx` , `src/tests/unit/`","W Chats is the subscription. SaaS tiers named Starter, Growth and Pro charge per agent per month against a conversation cap, conversations above the cap bill as monthly overage, and a managed service add-on covers weekly digest review, custom red-team scenarios and SLA support. Beekeeper is free, `LICENSE` is Apache 2.0, and no repository states a price, a tier or a paid edition for Beekeeper itself. Mellow's Earth Elements sells its own physical goods direct to the customer, so revenue is the product price.","USER: Let's line the projects up on revenue.
 ASSISTANT: I can do that. What do you want to compare?","Which of the projects charges a subscription, and what do the others run on?"
-d0d20347-61d5-4cd2-a73e-73dcc2346e3e,faithfulness,,,,golden,You picked Postgres in one project and a graph database in another. What made those different calls?,"The choice followed the dominant access pattern, not a general preference for one database.
+d0d20347-61d5-4cd2-a73e-73dcc2346e3e,faithfulness,pass,,,golden,You picked Postgres in one project and a graph database in another. What made those different calls?,"The choice followed the dominant access pattern, not a general preference for one database.
 
 - **W Chats uses Neon Postgres** because its state is primarily tenant-scoped records, audit data, conversations, documents, chunks, embeddings, and evaluation metrics. The design also benefits from keeping vector search and lexical search together: pgvector HNSW indexes are fused with PostgreSQL `tsvector`/`ts_rank_cd` search in one SQL CTE. That favors relational constraints, migrations, transactional updates, and combined SQL retrieval. *(W Chats — Architecture; W Chats — Stack)*
 
@@ -10254,7 +10254,7 @@ sentinel-server/docker-compose.yml
 ```
 , on Bolt port 7687.","W Chats stores in Neon Postgres with pgvector HNSW indexes, plus Redis as broker and pub/sub, and retrieval fuses pgvector cosine search with BM25 over native `tsvector` and `ts_rank_cd` in one SQL CTE. Sentinel OHS keeps state as one Memgraph graph on Bolt port 7687, whose Cypher migrations create `Building`, `Floor`, `Zone`, `Exit`, `Asset`, `FloorTransition`, `FloorCalibration` and `ScheduledDrill`, and the product puts the building on screen in 3D and drives it from live signals.","USER: Data stores are where I usually find the real decisions.
 ASSISTANT: Then ask across the projects and I'll compare them.",What made you choose Postgres in one project and a graph database in another?
-d0d20347-61d5-4cd2-a73e-73dcc2346e3e,answer_relevancy,,,,golden,You picked Postgres in one project and a graph database in another. What made those different calls?,"The choice followed the dominant access pattern, not a general preference for one database.
+d0d20347-61d5-4cd2-a73e-73dcc2346e3e,answer_relevancy,pass,,,golden,You picked Postgres in one project and a graph database in another. What made those different calls?,"The choice followed the dominant access pattern, not a general preference for one database.
 
 - **W Chats uses Neon Postgres** because its state is primarily tenant-scoped records, audit data, conversations, documents, chunks, embeddings, and evaluation metrics. The design also benefits from keeping vector search and lexical search together: pgvector HNSW indexes are fused with PostgreSQL `tsvector`/`ts_rank_cd` search in one SQL CTE. That favors relational constraints, migrations, transactional updates, and combined SQL retrieval. *(W Chats — Architecture; W Chats — Stack)*
 
@@ -10521,7 +10521,7 @@ sentinel-server/docker-compose.yml
 ```
 , on Bolt port 7687.","W Chats stores in Neon Postgres with pgvector HNSW indexes, plus Redis as broker and pub/sub, and retrieval fuses pgvector cosine search with BM25 over native `tsvector` and `ts_rank_cd` in one SQL CTE. Sentinel OHS keeps state as one Memgraph graph on Bolt port 7687, whose Cypher migrations create `Building`, `Floor`, `Zone`, `Exit`, `Asset`, `FloorTransition`, `FloorCalibration` and `ScheduledDrill`, and the product puts the building on screen in 3D and drives it from live signals.","USER: Data stores are where I usually find the real decisions.
 ASSISTANT: Then ask across the projects and I'll compare them.",What made you choose Postgres in one project and a graph database in another?
-d2e73fc0-1199-43aa-9150-bfa4f52441d0,faithfulness,,,,golden,"If I unplugged the network, which of your projects still works, and which one needs the most services running?","Based on the available project documentation:
+d2e73fc0-1199-43aa-9150-bfa4f52441d0,faithfulness,pass,,,golden,"If I unplugged the network, which of your projects still works, and which one needs the most services running?","Based on the available project documentation:
 
 - **Beekeeper works offline.** It is described as a “single static Go binary,” “local-first,” “self-hostable,” and explicitly states that no source leaves the machine. The retrieved material does not identify a required database, API, or other network service. *(Beekeeper — Business model)*
 
@@ -10802,7 +10802,7 @@ mobile / web -> Fastify (requireAuth scope) -> ws /ws broadcast -> Memgraph over
                                             -> fetch -> agent query 3001 | event 3002 | background 3003
 ```","Beekeeper still works. It ships as a single static Go binary with no external runtime dependencies, local-first, with no source leaving the machine, and its state lives under `%APPDATA%\beekeeper` on Windows and `~/.beekeeper` on Unix. W Chats needs the most running. `redis-server`, `uvicorn app.main:app --reload`, a Celery worker on `-Q pipeline`, a second on `-Q runtime`, and `pnpm dev` for the console, all as local processes with no Docker path.","USER: I want to know what each project depends on to work at all.
 ASSISTANT: Ask across them and I'll compare.","Which of your projects still works if the network is unplugged, and which one needs the most services running?"
-d2e73fc0-1199-43aa-9150-bfa4f52441d0,answer_relevancy,,,,golden,"If I unplugged the network, which of your projects still works, and which one needs the most services running?","Based on the available project documentation:
+d2e73fc0-1199-43aa-9150-bfa4f52441d0,answer_relevancy,pass,,,golden,"If I unplugged the network, which of your projects still works, and which one needs the most services running?","Based on the available project documentation:
 
 - **Beekeeper works offline.** It is described as a “single static Go binary,” “local-first,” “self-hostable,” and explicitly states that no source leaves the machine. The retrieved material does not identify a required database, API, or other network service. *(Beekeeper — Business model)*
 
@@ -11083,7 +11083,7 @@ mobile / web -> Fastify (requireAuth scope) -> ws /ws broadcast -> Memgraph over
                                             -> fetch -> agent query 3001 | event 3002 | background 3003
 ```","Beekeeper still works. It ships as a single static Go binary with no external runtime dependencies, local-first, with no source leaving the machine, and its state lives under `%APPDATA%\beekeeper` on Windows and `~/.beekeeper` on Unix. W Chats needs the most running. `redis-server`, `uvicorn app.main:app --reload`, a Celery worker on `-Q pipeline`, a second on `-Q runtime`, and `pnpm dev` for the console, all as local processes with no Docker path.","USER: I want to know what each project depends on to work at all.
 ASSISTANT: Ask across them and I'll compare.","Which of your projects still works if the network is unplugged, and which one needs the most services running?"
-e2d95570-2494-4397-8d8d-f9a273f7cf82,faithfulness,,,,golden,What does W Chats do?,"W Chats is a multi-tenant platform that converts a business’s documents into a customer-service agent. It prevents the agent from being exposed to customers until it passes evaluation and red-team checks. — **PRODUCT.md, “What it is”**
+e2d95570-2494-4397-8d8d-f9a273f7cf82,faithfulness,pass,,,golden,What does W Chats do?,"W Chats is a multi-tenant platform that converts a business’s documents into a customer-service agent. It prevents the agent from being exposed to customers until it passes evaluation and red-team checks. — **PRODUCT.md, “What it is”**
 
 The workflow has four stages:
 
@@ -11240,7 +11240,7 @@ runs a
 preDeployCommand
 ```
 that migrates the control database and every tenant database before any service serves new code.","W Chats ingests a business's knowledge, deploys an evaluated agent, and monitors it continuously. It is advanced hybrid RAG with a compounding verified-knowledge core, with A2A-native and transactional actions on the roadmap.",,
-e2d95570-2494-4397-8d8d-f9a273f7cf82,answer_relevancy,,,,golden,What does W Chats do?,"W Chats is a multi-tenant platform that converts a business’s documents into a customer-service agent. It prevents the agent from being exposed to customers until it passes evaluation and red-team checks. — **PRODUCT.md, “What it is”**
+e2d95570-2494-4397-8d8d-f9a273f7cf82,answer_relevancy,pass,,,golden,What does W Chats do?,"W Chats is a multi-tenant platform that converts a business’s documents into a customer-service agent. It prevents the agent from being exposed to customers until it passes evaluation and red-team checks. — **PRODUCT.md, “What it is”**
 
 The workflow has four stages:
 
@@ -11397,7 +11397,7 @@ runs a
 preDeployCommand
 ```
 that migrates the control database and every tenant database before any service serves new code.","W Chats ingests a business's knowledge, deploys an evaluated agent, and monitors it continuously. It is advanced hybrid RAG with a compounding verified-knowledge core, with A2A-native and transactional actions on the roadmap.",,
-e43a7e2f-c737-418b-b6da-8f323c571e92,faithfulness,,,,golden,and how do you stop it saying something wrong to a customer?,"W Chats uses several controls to reduce incorrect customer-facing answers:
+e43a7e2f-c737-418b-b6da-8f323c571e92,faithfulness,pass,,,golden,and how do you stop it saying something wrong to a customer?,"W Chats uses several controls to reduce incorrect customer-facing answers:
 
 - **Grounding in the business’s documents:** the agent is built from tenant-provided documents rather than a generic support dataset. Retrieval combines vector search and BM25, reranks candidates, and checks a `verified_qa` cache first. *(W Chats README/PRODUCT.md, “What it is”; W Chats Architecture, “Architecture”)*
 - **A pre-deployment gate:** an agent is held back from customers until it passes the test and red-team stages, followed by the deployment checklist. *(W Chats PRODUCT.md, “What it is”)*
@@ -11603,7 +11603,7 @@ VOYAGE_API_KEY
 ```
 .","W Chats holds the agent back from customers until it clears a gate. The third step of the journey, Test, runs the eval suite and then the red team, and the fourth, Deploy, clears the pre-deployment checklist and produces a widget snippet for the owner's own site. The `runtime` queue carries agent turns, evals, red team and the validators, and retrieval reads a `verified_qa` cache first.","USER: Let's talk about W Chats, the support agent platform.
 ASSISTANT: Happy to. What would you like to know about W Chats?",How do you stop W Chats from saying something wrong to a customer?
-e43a7e2f-c737-418b-b6da-8f323c571e92,answer_relevancy,,,,golden,and how do you stop it saying something wrong to a customer?,"W Chats uses several controls to reduce incorrect customer-facing answers:
+e43a7e2f-c737-418b-b6da-8f323c571e92,answer_relevancy,pass,,,golden,and how do you stop it saying something wrong to a customer?,"W Chats uses several controls to reduce incorrect customer-facing answers:
 
 - **Grounding in the business’s documents:** the agent is built from tenant-provided documents rather than a generic support dataset. Retrieval combines vector search and BM25, reranks candidates, and checks a `verified_qa` cache first. *(W Chats README/PRODUCT.md, “What it is”; W Chats Architecture, “Architecture”)*
 - **A pre-deployment gate:** an agent is held back from customers until it passes the test and red-team stages, followed by the deployment checklist. *(W Chats PRODUCT.md, “What it is”)*
@@ -11809,7 +11809,7 @@ VOYAGE_API_KEY
 ```
 .","W Chats holds the agent back from customers until it clears a gate. The third step of the journey, Test, runs the eval suite and then the red team, and the fourth, Deploy, clears the pre-deployment checklist and produces a widget snippet for the owner's own site. The `runtime` queue carries agent turns, evals, red team and the validators, and retrieval reads a `verified_qa` cache first.","USER: Let's talk about W Chats, the support agent platform.
 ASSISTANT: Happy to. What would you like to know about W Chats?",How do you stop W Chats from saying something wrong to a customer?
-e48d40b8-b690-4b35-a741-81fbe6afd6fa,faithfulness,,,,golden,"Which of your projects runs a queue, and why did that one need it?","**W Chats** is the project that runs a queue. Its FastAPI control plane sends all long-running work to Celery, split across two queues:
+e48d40b8-b690-4b35-a741-81fbe6afd6fa,faithfulness,pass,,,golden,"Which of your projects runs a queue, and why did that one need it?","**W Chats** is the project that runs a queue. Its FastAPI control plane sends all long-running work to Celery, split across two queues:
 
 - `pipeline`: ingestion, embedding, and staleness processing
 - `runtime`: agent turns, evaluations, red-team runs, and validators
@@ -12089,7 +12089,7 @@ config.json
 ```
 .","W Chats. The FastAPI control plane never does work inline, so anything long-running goes to Celery across two queues. `pipeline` carries ingestion, embedding and staleness, and `runtime` carries agent turns, evals, red team and the validators. Mellow's Earth Elements needs none of that. It runs entirely in the browser, an order moves through three steps all of them in the browser, and nothing is sent to a server.","USER: I want to compare the projects rather than take them one at a time.
 ASSISTANT: Go ahead, I can answer across them.","Which of your projects runs a queue, and why did that project need it?"
-e48d40b8-b690-4b35-a741-81fbe6afd6fa,answer_relevancy,,,,golden,"Which of your projects runs a queue, and why did that one need it?","**W Chats** is the project that runs a queue. Its FastAPI control plane sends all long-running work to Celery, split across two queues:
+e48d40b8-b690-4b35-a741-81fbe6afd6fa,answer_relevancy,pass,,,golden,"Which of your projects runs a queue, and why did that one need it?","**W Chats** is the project that runs a queue. Its FastAPI control plane sends all long-running work to Celery, split across two queues:
 
 - `pipeline`: ingestion, embedding, and staleness processing
 - `runtime`: agent turns, evaluations, red-team runs, and validators
@@ -12369,7 +12369,7 @@ config.json
 ```
 .","W Chats. The FastAPI control plane never does work inline, so anything long-running goes to Celery across two queues. `pipeline` carries ingestion, embedding and staleness, and `runtime` carries agent turns, evals, red team and the validators. Mellow's Earth Elements needs none of that. It runs entirely in the browser, an order moves through three steps all of them in the browser, and nothing is sent to a server.","USER: I want to compare the projects rather than take them one at a time.
 ASSISTANT: Go ahead, I can answer across them.","Which of your projects runs a queue, and why did that project need it?"
-e54b8c25-4433-4689-b816-035f39cde664,faithfulness,,,,golden,what should I do if I spot one myself before they do?,"If you identify a weakness first, address it explicitly rather than waiting for the interviewer to discover it. Use this structure:
+e54b8c25-4433-4689-b816-035f39cde664,faithfulness,pass,,,golden,what should I do if I spot one myself before they do?,"If you identify a weakness first, address it explicitly rather than waiting for the interviewer to discover it. Use this structure:
 
 1. **State the limitation precisely.**
 2. **Explain its impact or tradeoff.**
@@ -12565,7 +12565,7 @@ Sources
 - `projects/wchats/` , `projects/beekeeper/` , `projects/sentinel/`
 - `review/queue.md` , `concepts/README.md`","Volunteer the weakness before being caught. Raising it yourself demonstrates judgment, whereas the interviewer identifying the same weakness signals ignorance; the fact is identical but the signal is opposite.","USER: I'm preparing with the interview rules you have and I'm worried about weaknesses in my past work.
 ASSISTANT: The rules cover that directly. Are you asking about how the interviewer raises a weakness, or how you should?",What should I do if I spot a weakness in my past work myself before the interviewer does?
-e54b8c25-4433-4689-b816-035f39cde664,answer_relevancy,,,,golden,what should I do if I spot one myself before they do?,"If you identify a weakness first, address it explicitly rather than waiting for the interviewer to discover it. Use this structure:
+e54b8c25-4433-4689-b816-035f39cde664,answer_relevancy,pass,,,golden,what should I do if I spot one myself before they do?,"If you identify a weakness first, address it explicitly rather than waiting for the interviewer to discover it. Use this structure:
 
 1. **State the limitation precisely.**
 2. **Explain its impact or tradeoff.**
@@ -12761,7 +12761,7 @@ Sources
 - `projects/wchats/` , `projects/beekeeper/` , `projects/sentinel/`
 - `review/queue.md` , `concepts/README.md`","Volunteer the weakness before being caught. Raising it yourself demonstrates judgment, whereas the interviewer identifying the same weakness signals ignorance; the fact is identical but the signal is opposite.","USER: I'm preparing with the interview rules you have and I'm worried about weaknesses in my past work.
 ASSISTANT: The rules cover that directly. Are you asking about how the interviewer raises a weakness, or how you should?",What should I do if I spot a weakness in my past work myself before the interviewer does?
-ef1af484-1ab7-4ef4-be27-9ee1fbaba5f6,faithfulness,,,,golden,How many orders a month does Mellow's Earth Elements actually take?,"The portfolio does not state how many orders Mellow’s Earth Elements receives per month. Its storefront is a static, browser-only application: orders produce client-side references, payments happen by bank transfer, and no orders are sent to a server or stored in a database. That means the repository cannot provide a reliable monthly order count. *(Mellow’s Earth Elements — Business model; Architecture; Stack)*
+ef1af484-1ab7-4ef4-be27-9ee1fbaba5f6,faithfulness,pass,,,golden,How many orders a month does Mellow's Earth Elements actually take?,"The portfolio does not state how many orders Mellow’s Earth Elements receives per month. Its storefront is a static, browser-only application: orders produce client-side references, payments happen by bank transfer, and no orders are sent to a server or stored in a database. That means the repository cannot provide a reliable monthly order count. *(Mellow’s Earth Elements — Business model; Architecture; Stack)*
 
 For the actual figure, use the contact section to ask the owner directly.
 
@@ -12973,7 +12973,7 @@ Permissions-Policy
 ```
 that denies camera, microphone and geolocation.","The documents do not say. They describe the catalog, the cart and the bank-transfer checkout, and because no order reaches a server there is no order count in them.","USER: I want a sense of the scale of the storefront business.
 ASSISTANT: Happy to cover what the documents hold. What are you after?",How many orders per month does Mellow's Earth Elements actually take?
-ef1af484-1ab7-4ef4-be27-9ee1fbaba5f6,answer_relevancy,,,,golden,How many orders a month does Mellow's Earth Elements actually take?,"The portfolio does not state how many orders Mellow’s Earth Elements receives per month. Its storefront is a static, browser-only application: orders produce client-side references, payments happen by bank transfer, and no orders are sent to a server or stored in a database. That means the repository cannot provide a reliable monthly order count. *(Mellow’s Earth Elements — Business model; Architecture; Stack)*
+ef1af484-1ab7-4ef4-be27-9ee1fbaba5f6,answer_relevancy,pass,,,golden,How many orders a month does Mellow's Earth Elements actually take?,"The portfolio does not state how many orders Mellow’s Earth Elements receives per month. Its storefront is a static, browser-only application: orders produce client-side references, payments happen by bank transfer, and no orders are sent to a server or stored in a database. That means the repository cannot provide a reliable monthly order count. *(Mellow’s Earth Elements — Business model; Architecture; Stack)*
 
 For the actual figure, use the contact section to ask the owner directly.
 
@@ -13185,7 +13185,7 @@ Permissions-Policy
 ```
 that denies camera, microphone and geolocation.","The documents do not say. They describe the catalog, the cart and the bank-transfer checkout, and because no order reaches a server there is no order count in them.","USER: I want a sense of the scale of the storefront business.
 ASSISTANT: Happy to cover what the documents hold. What are you after?",How many orders per month does Mellow's Earth Elements actually take?
-f28f6c3f-6ad2-4f3c-a326-56e43c639a74,faithfulness,,,,golden,Why does Beekeeper not block a package the moment one source flags it?,"Beekeeper uses corroboration rather than treating a single source report as conclusive. Its stated design is to evaluate package installs against “corroboration-based threat intelligence and structural policy,” which avoids blocking on an isolated or potentially incorrect signal. (README.md — “What it is”)
+f28f6c3f-6ad2-4f3c-a326-56e43c639a74,faithfulness,pass,,,golden,Why does Beekeeper not block a package the moment one source flags it?,"Beekeeper uses corroboration rather than treating a single source report as conclusive. Its stated design is to evaluate package installs against “corroboration-based threat intelligence and structural policy,” which avoids blocking on an isolated or potentially incorrect signal. (README.md — “What it is”)
 
 The retrieved documentation does not specify the exact threshold—such as how many sources must agree—or the behavior for a single-source flag. It does establish that the decision is made by the local policy evaluator using catalog and configuration data before the tool call runs; a denial is rendered and the process exits with status 2. (README.md — “Architecture”)
 
@@ -13466,7 +13466,7 @@ documents the
 BEEKEEPER_*
 ```
 layer.","A gate that fires on any single hit is a gate developers disable by lunchtime, and a switched-off guard protects nothing. Beekeeper uses a tunable, per-ecosystem agreement threshold: one source warns, two enforce, three trigger quarantine.",,
-f28f6c3f-6ad2-4f3c-a326-56e43c639a74,answer_relevancy,,,,golden,Why does Beekeeper not block a package the moment one source flags it?,"Beekeeper uses corroboration rather than treating a single source report as conclusive. Its stated design is to evaluate package installs against “corroboration-based threat intelligence and structural policy,” which avoids blocking on an isolated or potentially incorrect signal. (README.md — “What it is”)
+f28f6c3f-6ad2-4f3c-a326-56e43c639a74,answer_relevancy,pass,,,golden,Why does Beekeeper not block a package the moment one source flags it?,"Beekeeper uses corroboration rather than treating a single source report as conclusive. Its stated design is to evaluate package installs against “corroboration-based threat intelligence and structural policy,” which avoids blocking on an isolated or potentially incorrect signal. (README.md — “What it is”)
 
 The retrieved documentation does not specify the exact threshold—such as how many sources must agree—or the behavior for a single-source flag. It does establish that the decision is made by the local policy evaluator using catalog and configuration data before the tool call runs; a denial is rendered and the process exits with status 2. (README.md — “Architecture”)
 
