@@ -314,9 +314,10 @@ class Settings(BaseSettings):
     # M5: Verified-QA confidence threshold — auditor confidence must meet this to enqueue candidate
     VERIFIED_QA_CONFIDENCE_THRESHOLD: float = 0.90
 
-    # M6: Eval system thresholds — Ragas metric promotion gates + retrieval cache
+    # Faithfulness is the one judged metric a deploy gates on, and answer
+    # relevancy is reported beside it with no threshold (ADR 0014).
     EVAL_FAITHFULNESS_THRESHOLD: float = 0.90
-    EVAL_RELEVANCY_THRESHOLD: float = 0.90
+    # Cosine similarity a question must reach to be served from verified_qa.
     VERIFIED_QA_HIT_THRESHOLD: float = 0.93
 
     # M7: Red team configuration

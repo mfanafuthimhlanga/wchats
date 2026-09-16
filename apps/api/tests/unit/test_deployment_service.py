@@ -4522,13 +4522,16 @@ class TestRelevancyProvenanceGate:
         assert recommendation == "ship"
         assert warnings == []
 
-    def test_a_run_that_scored_no_relevancy_is_refused_by_name_not_by_share(self):
-        """`relevancy_scored` at zero divides by nothing.
+    def test_a_run_that_scored_no_relevancy_still_ships_on_faithfulness(self):
+        """ADR 0014. `relevancy_scored` at zero divides by nothing and gates nothing.
+
+        Before ADR 0014 this run blocked, because `_unmeasured_gated_metrics`
+        named relevancy as a gated metric no dataset measured. Relevancy is
+        reported now, so the run has the evidence the gate asks for and ships.
 
         This pins the zero denominator, NOT the order of the chain: at zero the
-        share cause returns None whichever arm is asked first, so deleting the
-        third `elif` leaves this green. The ordering is pinned by
-        `test_an_unreadable_verdict_column_is_named_before_the_fallback_share`,
+        share cause returns None whichever arm is asked first. The ordering is
+        pinned by `test_an_unreadable_verdict_column_is_named_before_the_fallback_share`,
         which puts a payload in both states at once.
         """
         record = _record(
@@ -4551,8 +4554,8 @@ class TestRelevancyProvenanceGate:
         recommendation, warnings = apply_signal_evidence_gate(
             "ship", summary, _measured_red_team()
         )
-        assert recommendation == "block"
-        assert "no answers were scored for answer relevancy" in warnings[0].message
+        assert recommendation == "ship"
+        assert warnings == []
 
     def test_an_absent_key_ships_and_an_unreadable_one_refuses(self):
         """ABSENT AND UNREADABLE ARE DIFFERENT CLAIMS.
@@ -4672,3 +4675,81 @@ class TestRelevancyProvenanceGate:
             "both causes are live on this payload; the coarser one is the claim "
             "the owner acts on"
         )
+
+
+class TestRelevancyIsReportedAndGatesNothing:
+    """ADR 0014, at the deploy gate's two relevancy-shaped readers.
+
+    The owner passed relevancy on 30 of 30 labelled rows of run 735fb9fa, so a
+    relevancy gate has no dimension he sometimes fails and can never be shown to
+    catch anything. Faithfulness is the one judged metric a deploy gates on.
+    """
+
+    def _summary(self, record):
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
+            record=record,
+        )
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            return _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+    def test_the_unmeasured_gated_metrics_reader_asks_for_faithfulness_alone(self):
+        """A dataset measuring faithfulness and nothing else is admissible."""
+        from app.services.deployment_service import _unmeasured_gated_metrics
+
+        faithfulness_only = {
+            "datasets": {
+                "exploratory": {
+                    "metrics": {
+                        "faithfulness": {"value": 0.92, "observations": 10, "measured": True},
+                        "answer_relevancy": {"value": None, "observations": 0, "measured": False},
+                    }
+                }
+            }
+        }
+        relevancy_only = {
+            "datasets": {
+                "exploratory": {
+                    "metrics": {
+                        "faithfulness": {"value": None, "observations": 0, "measured": False},
+                        "answer_relevancy": {"value": 0.92, "observations": 10, "measured": True},
+                    }
+                }
+            }
+        }
+
+        assert _unmeasured_gated_metrics(faithfulness_only) == []
+        assert _unmeasured_gated_metrics(relevancy_only) == ["faithfulness"]
+
+    def test_a_run_failing_relevancy_on_every_row_is_measured_and_ships(self):
+        """Every scenario scored 0.01 relevancy and cleared faithfulness.
+
+        The signal stays `measured`, no warning names relevancy, and the number
+        is still on the payload for the console to draw. That last assertion is
+        the half that stops this reading as a deletion.
+        """
+        record = _record(
+            datasets={
+                "exploratory": _outcome(
+                    attempted=30, valid=30, scored=30,
+                    faithfulness=0.94, answer_relevancy=0.01,
+                )
+            },
+        )
+        summary = self._summary(record)
+
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", summary, _measured_red_team()
+        )
+
+        assert summary["eval_signal"] == EVAL_SIGNAL_MEASURED
+        assert recommendation == "ship"
+        assert warnings == []
+        assert summary["metrics"]["answer_relevancy"] == {
+            "value": pytest.approx(0.01),
+            "measured": True,
+            "observations": 10,
+        }

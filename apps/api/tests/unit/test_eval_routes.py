@@ -954,8 +954,8 @@ class TestGetEvalRunResults:
         assert abs(scores["faithfulness"] - 0.95) < 0.001
         assert abs(scores["answer_relevancy"] - 0.88) < 0.001
 
-    async def test_passed_flag_true_when_both_stored_verdicts_are_true(self):
-        """passed=True when both gated rows carry a True verdict."""
+    async def test_passed_flag_true_when_the_stored_gated_verdict_is_true(self):
+        """passed=True when every gated row carries a True verdict (ADR 0014)."""
         fake_tenant = _make_fake_tenant()
         ready_agent = _make_ready_agent(fake_tenant)
         mock_db = _make_mock_db_returning_agent(ready_agent)
@@ -994,9 +994,8 @@ class TestGetEvalRunResults:
     async def test_passed_flag_false_when_a_gated_verdict_is_false(self):
         """passed=False when a GATED metric's stored verdict is False.
 
-        D-21 LOCKED gates on exactly two metrics, faithfulness AND
-        answer_relevancy. Here answer_relevancy scored 0.79 and the writer
-        stamped verdict False against the threshold of the day.
+        ADR 0014 gates on faithfulness alone. Here faithfulness scored 0.79 and
+        the writer stamped verdict False against the threshold of the day.
         """
         fake_tenant = _make_fake_tenant()
         ready_agent = _make_ready_agent(fake_tenant)
@@ -1004,10 +1003,10 @@ class TestGetEvalRunResults:
 
         run_id = uuid4()
         scenario_id = str(uuid4())
-        # answer_relevancy = 0.79 — below threshold, and it IS part of the gate
+        # faithfulness = 0.79, below its threshold, and it IS the gate
         failing_rows = [
-            _judge_row(scenario_id, "faithfulness", 0.95),
-            _judge_row(scenario_id, "answer_relevancy", 0.79),
+            _judge_row(scenario_id, "faithfulness", 0.79),
+            _judge_row(scenario_id, "answer_relevancy", 0.95),
             _judge_row(scenario_id, "context_precision", 0.91),
             _judge_row(scenario_id, "context_recall", 0.93),
         ]
@@ -1036,11 +1035,11 @@ class TestGetEvalRunResults:
     async def test_passed_flag_ignores_ungated_metrics_below_threshold(self):
         """passed stays True when only NON-gated metrics are low.
 
-        Pins the D-21 LOCKED contract: context_precision and context_recall are
-        reported but deliberately NOT part of the promotion gate. A prior version
-        of this suite asserted a 4-metric "any score" rule, which contradicts
-        D-21 — it never ran because the module was uncollectable while the ragas
-        import was broken.
+        Pins the contract ADR 0014 leaves. answer_relevancy, context_precision
+        and context_recall are reported and deliberately NOT part of the
+        promotion gate. A prior version of this suite asserted a 4-metric "any
+        score" rule, which contradicts it and never ran, because the module was
+        uncollectable while the ragas import was broken.
         """
         fake_tenant = _make_fake_tenant()
         ready_agent = _make_ready_agent(fake_tenant)
@@ -1048,10 +1047,10 @@ class TestGetEvalRunResults:
 
         run_id = uuid4()
         scenario_id = str(uuid4())
-        # Both gated metrics pass; both ungated metrics are well below threshold.
+        # The gated metric passes; all three ungated ones sit well below 0.90.
         rows = [
             _judge_row(scenario_id, "faithfulness", 0.95),
-            _judge_row(scenario_id, "answer_relevancy", 0.92),
+            _judge_row(scenario_id, "answer_relevancy", 0.42),
             _judge_row(scenario_id, "context_precision", 0.41),
             _judge_row(scenario_id, "context_recall", 0.39),
         ]
@@ -1145,24 +1144,51 @@ class TestGetEvalRunResults:
         }
 
     async def test_a_gated_metric_that_is_missing_makes_the_verdict_unknown(self):
-        """Half a measurement is not a verdict.
+        """No measurement is not a verdict.
 
-        faithfulness scored 0.99 and answer_relevancy produced nothing, so the
-        two-metric gate (D-21) cannot be evaluated. Reporting passed=false here
-        would attribute a failure to a metric that was never observed.
+        faithfulness produced nothing, so the gate (ADR 0014) cannot be
+        evaluated, and the relevancy score beside it decides nothing. Reporting
+        passed=false here would attribute a failure to a metric that was never
+        observed.
         """
         scenario_id = str(uuid4())
         rows = [
-            _judge_row(scenario_id, "faithfulness", 0.99),
-            _judge_row(scenario_id, "answer_relevancy", None),
+            _judge_row(scenario_id, "faithfulness", None),
+            _judge_row(scenario_id, "answer_relevancy", 0.99),
         ]
 
         body = await self._get_results(rows)
         result = body["results"][0]
 
         assert result["passed"] is None
-        assert result["metrics"]["faithfulness"]["measured"] is True
-        assert result["metrics"]["answer_relevancy"]["measured"] is False
+        assert result["metrics"]["faithfulness"]["measured"] is False
+        assert result["metrics"]["answer_relevancy"]["measured"] is True
+
+    async def test_a_relevancy_row_that_fails_still_ships_and_still_reports(self):
+        """ADR 0014, on the payload the console and get_eval_results read.
+
+        The relevancy score survives the change and is the point of it. The
+        number is on the row, on `metrics` and in the numeric `scores`
+        projection, and nothing about it decides the scenario.
+        """
+        scenario_id = str(uuid4())
+        rows = [
+            _judge_row(scenario_id, "faithfulness", 0.95),
+            _judge_row(scenario_id, "answer_relevancy", 0.02),
+            _judge_row(scenario_id, "context_precision", 0.91),
+            _judge_row(scenario_id, "context_recall", 0.90),
+        ]
+
+        result = (await self._get_results(rows))["results"][0]
+
+        assert result["passed"] is True
+        assert result["metrics"]["answer_relevancy"] == {
+            "score": 0.02,
+            "measured": True,
+            "verdict": None,
+            "threshold": None,
+        }
+        assert abs(result["scores"]["answer_relevancy"] - 0.02) < 1e-9
 
     async def test_a_measured_zero_still_fails(self):
         """The tri-state must not turn a real zero into 'unknown' — that would
@@ -1258,10 +1284,10 @@ class TestGetEvalRunResults:
         assert result["metrics"]["faithfulness"]["verdict"] is None
 
     async def test_an_ungated_metric_carries_no_verdict_and_no_gate(self):
-        """context_precision and context_recall have no threshold anywhere (D-21).
+        """Three of the four metrics have no threshold anywhere (ADR 0014).
 
         Their rows carry none either, so the response reports none. Inventing a
-        gate for them would put two extra failures on every scenario for a
+        gate for them would put three extra failures on every scenario for a
         reader that aggregates verdicts.
         """
         scenario_id = str(uuid4())
@@ -1269,7 +1295,7 @@ class TestGetEvalRunResults:
             await self._get_results(_fake_eval_results_rows(str(uuid4()), scenario_id))
         )["results"][0]
 
-        for metric in ("context_precision", "context_recall"):
+        for metric in ("answer_relevancy", "context_precision", "context_recall"):
             assert result["metrics"][metric]["verdict"] is None
             assert result["metrics"][metric]["threshold"] is None
             assert result["metrics"][metric]["measured"] is True, (

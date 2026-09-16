@@ -56,10 +56,11 @@ SHEET_NAME = "human_scores.csv"
 PASS2_NAME = "human_scores_pass2.csv"
 TENANT_DSN_ENV = "CALIBRATION_TENANT_DSN"
 
-#: The two metrics a deploy is gated on, and so the two a human labels. The
-#: other two carry no verdict on their rows (`threshold_for` returns None), so
-#: there is nothing to agree or disagree with.
-GATED_METRICS: tuple[str, ...] = ("faithfulness", "answer_relevancy")
+#: The metrics a deploy is gated on, and so the ones a human labels.
+#: Faithfulness alone since ADR 0014. The other three carry no verdict on their
+#: rows (`threshold_for` returns None), so there is nothing to agree or disagree
+#: with.
+GATED_METRICS: tuple[str, ...] = ("faithfulness",)
 
 #: What the owner reads on the sheet. `human_verdict` and `human_score` are the
 #: columns `read_human_score_rows` reads; the rest are for reading only.
@@ -254,10 +255,10 @@ def write_sheet(samples: Sequence[Mapping], path: pathlib.Path) -> tuple[int, li
         f"Wrote {path}: {rows} row(s), {len(samples)} scenario(s) x "
         f"{len(GATED_METRICS)} metric(s), verdict column empty.",
         "Fill human_verdict with pass or fail per row. faithfulness asks whether the",
-        "response is supported by the retrieved contexts; answer_relevancy asks whether",
-        "it answers the question. WHERE resolved_question IS FILLED, JUDGE AGAINST THAT",
-        "ONE: it is what the Judge was scored on, and labelling the raw question there",
-        "compares two different measurements. The Judge's verdicts are not on this sheet.",
+        "response is supported by the retrieved contexts. WHERE resolved_question IS",
+        "FILLED, JUDGE AGAINST THAT ONE: it is what the Judge was scored on, and",
+        "labelling the raw question there compares two different measurements. The",
+        "Judge's verdicts are not on this sheet.",
     ]
 
 

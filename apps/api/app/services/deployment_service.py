@@ -2507,8 +2507,9 @@ def _relevancy_provenance_cause(eval_summary: dict) -> str | None:
     refuses. A gate that cannot read its evidence has not been satisfied.
 
     `relevancy_scored` at zero returns None rather than dividing. That run scored
-    relevancy on nothing, which `_unmeasured_gated_metrics` already refuses by
-    name; reporting it twice would tell the owner the second-best cause.
+    relevancy on nothing, and since ADR 0014 relevancy is reported rather than
+    gated, so a run that scored none of it still has faithfulness to be judged
+    on. There is no share to read and no cause to report.
     """
     if "question_resolution" not in eval_summary:
         return None
@@ -2531,9 +2532,10 @@ def _quality_evidence_warning(eval_summary: dict) -> DeploymentWarning | None:
 
     THREE CAUSES, ONE REMEDY. A gated metric no dataset measured, a run whose
     per-scenario verdicts could not be read at all, and a relevancy number mostly
-    measured against follow-ups the resolver could not rewrite. All three are
-    missing evidence and none is a low score, so all three refuse rather than
-    being narrated as quality.
+    measured against follow-ups the resolver could not rewrite (ADR 0011, which
+    ADR 0014 leaves standing over a metric that is now reported rather than
+    gated). All three are missing evidence and none is a low score, so all three
+    refuse rather than being narrated as quality.
 
     THE ORDER IS THE SPECIFICITY ORDER, and it decides which cause an owner is
     sent after when a run has more than one. "Nothing scored relevancy" and "most

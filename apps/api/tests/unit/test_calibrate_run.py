@@ -187,6 +187,7 @@ def test_the_sheet_has_one_row_per_gated_metric_with_the_text_and_no_verdict(tmp
         rows = list(csv.DictReader(fh))
     assert len(rows) == 3 * len(cr.GATED_METRICS)
     assert {r["dimension"] for r in rows} == set(cr.GATED_METRICS)
+    assert set(cr.GATED_METRICS) == {"faithfulness"}, "ADR 0014"
     first = rows[0]
     assert first["question"] == "Q1?" and first["response"] == "A1." and first["reference"] == "R1."
     assert first["retrieved_contexts"] == "c1a\n\nc1b"
@@ -194,7 +195,26 @@ def test_the_sheet_has_one_row_per_gated_metric_with_the_text_and_no_verdict(tmp
     assert "judge" not in "".join(rows[0].keys()).lower(), "the Judge's verdict must not be on the sheet"
     # It is the sheet compute_correlation's reader accepts.
     parsed = cc.read_human_score_rows(sheet)
-    assert parsed["attempted"] == 6 and parsed["valid"] == 0
+    assert parsed["attempted"] == 3 * len(cr.GATED_METRICS) and parsed["valid"] == 0
+
+
+def test_a_thirty_scenario_run_asks_the_owner_for_thirty_faithfulness_labels(tmp_path):
+    """ADR 0014. Relevancy is reported, so nobody labels it to calibrate a gate.
+
+    The owner passed relevancy on 30 of 30 rows of run 735fb9fa, which is a
+    kappa that cannot be computed and a sitting that bought nothing. One row per
+    scenario is the whole change to what the sheet costs him.
+    """
+    sheet = tmp_path / "runs" / "r30" / "human_scores.csv"
+
+    code, _messages = cr.write_sheet(_samples(30), sheet)
+
+    assert code == cc.EXIT_SECOND_PASS_EMITTED
+    with sheet.open(newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    assert len(rows) == 30
+    assert [r["dimension"] for r in rows] == ["faithfulness"] * 30
+    assert len({r["scenario_id"] for r in rows}) == 30
 
 
 def test_the_sheet_refuses_to_overwrite_and_refuses_an_empty_run(tmp_path):
@@ -284,7 +304,7 @@ def test_a_judge_that_agrees_with_a_consistent_owner_is_calibrated(run_tree):
     result = cr.score_run(samples, verdicts, sheet, pass2)
 
     assert result["status"] == cc.STATUS_CALIBRATED, result["errors"]
-    assert result["pairs"] == 24
+    assert result["pairs"] == 12 * len(cr.GATED_METRICS)
     assert result["cells"]["judge_too_lenient"] == 0 and result["cells"]["judge_too_harsh"] == 0
     assert all(e["judge_identity"] == JudgeIdentity(**IDENTITY) for e in result["table"])
 
@@ -298,7 +318,7 @@ def test_a_judge_that_passes_what_the_owner_fails_is_not_calibrated(run_tree):
     result = cr.score_run(samples, verdicts, sheet, pass2)
 
     assert result["status"] != cc.STATUS_CALIBRATED
-    assert result["cells"]["judge_too_lenient"] == 4
+    assert result["cells"]["judge_too_lenient"] == 2 * len(cr.GATED_METRICS)
     assert result["kappa"] is None or result["kappa"] < 0.01
 
 
@@ -335,7 +355,7 @@ def test_a_deflection_a_missing_sample_and_a_non_gated_dimension_never_enter_the
 
     result = cr.score_run(samples, verdicts, sheet, pass2)
 
-    assert result["pairs"] == 24 - 2 - 2
+    assert result["pairs"] == (12 - 2) * len(cr.GATED_METRICS)
     reasons = "\n".join(result["errors"])
     assert "PII firewall" in reasons
     assert "no eval_samples row" in reasons

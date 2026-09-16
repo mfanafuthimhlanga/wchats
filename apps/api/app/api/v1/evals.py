@@ -196,10 +196,10 @@ _LIST_EVAL_RUNS_PRE_0022_SQL = """
 # waiting to happen.
 METRIC_KEYS = EVAL_METRIC_KEYS
 
-# The two metrics the promotion gate is defined over (D-21 LOCKED). Imported
-# beside `threshold_for`, which returns a number for exactly these two, rather
-# than restated: `deployment_service` counts verdicts over the same pair, and a
-# console that gates on faithfulness while a deploy gate reads three metrics is
+# The metrics the promotion gate is defined over. Faithfulness alone since ADR
+# 0014. Imported beside `threshold_for`, which returns a number for exactly this
+# set, rather than restated. `deployment_service` counts verdicts over the same
+# set, and a console that gates on one metric while a deploy gate reads three is
 # the same shape of defect as audit D3's copied column name.
 GATED_METRIC_KEYS = EVAL_GATED_METRIC_KEYS
 
@@ -542,9 +542,10 @@ def _judge_reading(score, verdict, threshold) -> dict:
     """One stored judge row, rendered without deciding anything.
 
     `verdict` is None for an ungated metric (`threshold_for` gives
-    `context_precision` and `context_recall` no gate, so their rows carry none)
-    and None for a gated metric the judge produced no score for. Both mean the
-    same thing to a reader of `passed`: there is no decision here.
+    `answer_relevancy`, `context_precision` and `context_recall` no gate, so
+    their rows carry none) and None for a gated metric the judge produced no
+    score for. Both mean the same thing to a reader of `passed`: there is no
+    decision here.
     """
     return {
         "score": float(score) if score is not None else None,
@@ -641,11 +642,11 @@ async def get_eval_run_results(
             )
 
     # 5. `scenario_verdict` is the conjunction of the stored verdicts over the
-    #    two GATED metrics (D-21), and it is the rule the run counted its own
-    #    scenarios by, so this screen and the deploy gate describe one scenario
-    #    one way. A NULL verdict on either makes it None rather than False,
-    #    because "nobody decided" rendered as "it failed" turns a judge outage
-    #    into an apparent collapse and an owner-initiated rollback.
+    #    GATED metrics (faithfulness alone, ADR 0014), and it is the rule the run
+    #    counted its own scenarios by, so this screen and the deploy gate
+    #    describe one scenario one way. A NULL verdict makes it None rather than
+    #    False, because "nobody decided" rendered as "it failed" turns a judge
+    #    outage into an apparent collapse and an owner-initiated rollback.
     results = [
         {
             **scen,
