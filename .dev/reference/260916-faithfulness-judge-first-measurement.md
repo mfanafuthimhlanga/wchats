@@ -19,6 +19,16 @@ labelled twice blind. Read this before touching the faithfulness gate or its jud
 
 The both-fail cell is one row, so this is the judge and not the agent.
 
+## What the labels measured
+
+The owner said after scoring that the retrieved text was too hard to read row after row,
+so some faithfulness passes were given because the answer was known to be correct, not
+because every claim was found in the contexts. Some of the twelve rows above may be
+answers that are right and unsupported, which is the case faithfulness exists to catch.
+The kappa therefore compares a judge measuring support with a labeller partly measuring
+correctness, and it decides nothing about the gate. The next pass uses a page that
+shows each claim beside its best-matching passage.
+
 ## The 12 rows the judge fails and the owner passes, by stored score
 
 0.792, 0.786, 0.778, 0.767, 0.706, 0.692, 0.676, 0.618, 0.606, 0.600, 0.500, 0.444.
