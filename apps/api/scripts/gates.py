@@ -182,7 +182,7 @@ LIZARD_BASELINE = {
     ("app/api/v1/documents.py", "delete_document"): (10, 175),
     ("app/api/v1/documents.py", "get_document_detail"): (12, 133),
     ("app/api/v1/documents.py", "upload_documents"): (15, 188),
-    ("app/api/v1/evals.py", "get_eval_run_results"): (16, 98),
+    ("app/api/v1/evals.py", "get_eval_run_results"): (16, 97),
     ("app/api/v1/evals.py", "list_eval_runs"): (13, 87),
     ("app/api/v1/pending_confirmations.py", "resolve_pending_confirmation"): (8, 177),
     ("app/api/v1/query.py", "post_agent_query"): (3, 77),

@@ -17,11 +17,11 @@ those two, because a metric with no threshold already had a defined meaning here
 
 ## The two measurements
 
-The owner labelled relevancy on two calibration runs and passed it on 30 of 30 rows of
-run 735fb9fa and on 28 of 46 rows of 0a99f7ab, and states that every answer has been
-relevant. A gate needs a dimension the owner sometimes fails. Without one, kappa is
-undefined by construction and the gate can never be shown to catch anything it was put
-there to catch.
+The owner labelled relevancy on run 735fb9fa, passed every one of its 30 rows, and states
+that every answer has been relevant. The earlier run 0a99f7ab stands at 28 relevancy
+passes over 46 labelled rows. A gate needs a dimension the owner sometimes fails. Without
+one, kappa is undefined by construction and the gate can never be shown to catch anything
+it was put there to catch.
 
 Neither instrument has anything to gate on either. Ragas answer relevancy failed 47 of
 the 49 rows the owner passed, so gating on it blocks deploys the owner would ship. The
@@ -65,6 +65,16 @@ nothing the owner would not already ship.
 - The console keeps all four channels on the telemetry chart and keeps relevancy in the
   scenario ledger. Its verdict chip reads the API's `passed`, so it followed the new set
   with no client change.
+- The change is prospective, and the deployment checklist is where a reader meets that. A
+  run's scenario counts are built at scoring time under the gate then in force and are
+  never restated, and `_fetch_eval_summary_sync` lifts `record.scenarios_failed` off the
+  stored record rather than recomputing it. A tenant whose latest run predates this merge
+  therefore keeps that run's relevancy failures in its checklist until the next eval run.
+  The results route is the exception, because it computes `passed` live over
+  `GATED_METRIC_KEYS` from the stored verdict columns, so the per-scenario screen reads
+  faithfulness alone from the moment this ships. The deploy-readiness headline average in
+  `apps/admin/app/agents/[id]/deploy/evalReadiness.ts` still pools all four measured
+  metrics, and that headline is not the gate.
 
 ## Consequences a reader will meet
 

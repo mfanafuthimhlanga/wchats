@@ -591,16 +591,15 @@ async def get_eval_run_results(
         {"results": [{scenario_id, question, source, scores, metrics, passed}]}
 
     passed is the conjunction of the `binary_verdict` values stored on the
-    scenario's two gated rows (D-21 LOCKED). The route reaches no verdict of its
-    own: it used to re-compare every score to whatever the thresholds were at
-    request time, so a deployment that moved the gate silently restated the
-    verdicts of every run already scored against the old one.
+    scenario's gated rows, faithfulness alone since ADR 0014. The route reaches
+    no verdict of its own: it used to re-compare every score to whatever the
+    thresholds were at request time, so a deployment that moved the gate silently
+    restated the verdicts of every run already scored against the old one.
 
-    None when either gated verdict is NULL, which covers a judge outage, a
-    metric with no row, and a run written before migration 0023 gave the verdict
-    a column. That third state is the point: rendering an absent decision as
-    passed=false reports a total quality collapse for a run that decided
-    nothing.
+    None when a gated verdict is NULL, which covers a judge outage, a metric with
+    no row, and a run written before migration 0023 gave the verdict a column.
+    That third state is the point: rendering an absent decision as passed=false
+    reports a total quality collapse for a run that decided nothing.
 
     There is no run-level verdict here and this route never reported one. The
     function that computes one is ticket 17's `decide()`.
