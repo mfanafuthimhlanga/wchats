@@ -1711,7 +1711,10 @@ def write_calibration_artifact(
     # S-*.json still produces one pooled result, and it is wrapped as a single
     # dimension so the reader has one shape to parse rather than two.
     by_dimension = result if "dimensions" not in result else result["dimensions"]
-    if not isinstance(next(iter(by_dimension.values()), None), Mapping):
+    # An envelope with no dimensions at all stays empty: the loader reads that as
+    # an artifact naming no Judge, which is the truth, where pooling it would read
+    # the envelope's own keys as a result and raise on the missing status.
+    if by_dimension and not isinstance(next(iter(by_dimension.values())), Mapping):
         by_dimension = {POOLED_DIMENSION: result}
     record = dataclasses.replace(
         envelope_record(by_dimension, sheet), written_at=written_at()

@@ -235,10 +235,10 @@ _KIND_PREFIX = {"eval": "m6:", "rejudge": EVAL_REJUDGE_KIND_PREFIX}
 # waiting to happen.
 METRIC_KEYS = EVAL_METRIC_KEYS
 
-# The two metrics the promotion gate is defined over (D-21 LOCKED). Imported
-# beside `threshold_for`, which returns a number for exactly these two, rather
-# than restated: `deployment_service` counts verdicts over the same pair, and a
-# console that gates on faithfulness while a deploy gate reads three metrics is
+# The metrics the promotion gate is defined over. Faithfulness alone since ADR
+# 0014. Imported beside `threshold_for`, which returns a number for exactly this
+# set, rather than restated. `deployment_service` counts verdicts over the same
+# set, and a console that gates on one metric while a deploy gate reads three is
 # the same shape of defect as audit D3's copied column name.
 GATED_METRIC_KEYS = EVAL_GATED_METRIC_KEYS
 
@@ -634,9 +634,10 @@ def _judge_reading(score, verdict, threshold) -> dict:
     """One stored judge row, rendered without deciding anything.
 
     `verdict` is None for an ungated metric (`threshold_for` gives
-    `context_precision` and `context_recall` no gate, so their rows carry none)
-    and None for a gated metric the judge produced no score for. Both mean the
-    same thing to a reader of `passed`: there is no decision here.
+    `answer_relevancy`, `context_precision` and `context_recall` no gate, so
+    their rows carry none) and None for a gated metric the judge produced no
+    score for. Both mean the same thing to a reader of `passed`: there is no
+    decision here.
     """
     return {
         "score": float(score) if score is not None else None,
@@ -682,16 +683,15 @@ async def get_eval_run_results(
         {"results": [{scenario_id, question, source, scores, metrics, passed}]}
 
     passed is the conjunction of the `binary_verdict` values stored on the
-    scenario's two gated rows (D-21 LOCKED). The route reaches no verdict of its
-    own: it used to re-compare every score to whatever the thresholds were at
-    request time, so a deployment that moved the gate silently restated the
-    verdicts of every run already scored against the old one.
+    scenario's gated rows, faithfulness alone since ADR 0014. The route reaches
+    no verdict of its own: it used to re-compare every score to whatever the
+    thresholds were at request time, so a deployment that moved the gate silently
+    restated the verdicts of every run already scored against the old one.
 
-    None when either gated verdict is NULL, which covers a judge outage, a
-    metric with no row, and a run written before migration 0023 gave the verdict
-    a column. That third state is the point: rendering an absent decision as
-    passed=false reports a total quality collapse for a run that decided
-    nothing.
+    None when a gated verdict is NULL, which covers a judge outage, a metric with
+    no row, and a run written before migration 0023 gave the verdict a column.
+    That third state is the point: rendering an absent decision as passed=false
+    reports a total quality collapse for a run that decided nothing.
 
     There is no run-level verdict here and this route never reported one. The
     function that computes one is ticket 17's `decide()`.
@@ -733,11 +733,11 @@ async def get_eval_run_results(
             )
 
     # 5. `scenario_verdict` is the conjunction of the stored verdicts over the
-    #    two GATED metrics (D-21), and it is the rule the run counted its own
-    #    scenarios by, so this screen and the deploy gate describe one scenario
-    #    one way. A NULL verdict on either makes it None rather than False,
-    #    because "nobody decided" rendered as "it failed" turns a judge outage
-    #    into an apparent collapse and an owner-initiated rollback.
+    #    GATED metrics (faithfulness alone, ADR 0014), and it is the rule the run
+    #    counted its own scenarios by, so this screen and the deploy gate
+    #    describe one scenario one way. A NULL verdict makes it None rather than
+    #    False, because "nobody decided" rendered as "it failed" turns a judge
+    #    outage into an apparent collapse and an owner-initiated rollback.
     results = [
         {
             **scen,

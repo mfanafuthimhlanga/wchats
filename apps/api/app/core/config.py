@@ -319,6 +319,9 @@ class Settings(BaseSettings):
 
     # M6: Eval system thresholds. Deploy gates, and the retrieval cache.
     #
+    # Faithfulness is the one judged metric a deploy gates on, and answer
+    # relevancy is reported beside it with no threshold (ADR 0014).
+    #
     # 0.90 to 0.80 on 2026-09-15 (#274, ADR 0013). The owner labelled run
     # 0a99f7ab and passed seven rows the faithfulness Judge failed. Their scores
     # run from 0.56 to 0.89, all of them under 0.90 and six of them at or above
@@ -327,11 +330,7 @@ class Settings(BaseSettings):
     # chunk. It is not a round number chosen for comfort; it is where that run's
     # disagreements sit.
     EVAL_FAITHFULNESS_THRESHOLD: float = 0.80
-    # The gate `relevance_judge` writes against since #274. Its Judge returns 1.0
-    # for pass and 0.0 for fail, so this no longer picks a point on a similarity
-    # scale: it only has to sit between the two for the stored verdict to be the
-    # Judge's own. Any value in (0, 1] does that.
-    EVAL_RELEVANCY_THRESHOLD: float = 0.90
+    # Cosine similarity a question must reach to be served from verified_qa.
     VERIFIED_QA_HIT_THRESHOLD: float = 0.93
 
     # M7: Red team configuration

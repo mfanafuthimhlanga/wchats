@@ -1,11 +1,14 @@
 """The run records which question relevancy was measured against (#233).
 
-`answer_relevancy` is in `GATED_METRIC_KEYS`, so its pass rate blocks a deploy.
-Since #227 PR 2 it is scored against a model-rewritten question for any scenario
-carrying `turns`, and until this the run record did not say so: a collector
+Since #227 PR 2 `answer_relevancy` is scored against a model-rewritten question
+for any scenario carrying `turns`, and until this the run record did not say so: a collector
 reading relevancy at 0.91 could not tell a run scored entirely on raw questions
 from one where half the rows were scored on rewrites, nor from one where every
 rewrite failed and silently fell back.
+
+ADR 0014 moved relevancy out of `GATED_METRIC_KEYS`, so its pass rate no longer
+blocks a deploy. These counts survive it: ADR 0011's two provenance rules read
+them, and a reported number is only readable against the question it scored.
 
 WHAT THESE TESTS ARE ABOUT IS THE DENOMINATOR. The counts are over the rows the
 judge returned an attributed relevancy for, not over the rows the annotator was

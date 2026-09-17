@@ -191,7 +191,7 @@ def _score_one(monkeypatch: pytest.MonkeyPatch, cap: int | None = None) -> tuple
     if cap is not None:
         llm.model_args["max_tokens"] = cap
     with structlog.testing.capture_logs() as logs:
-        rows = asyncio.run(_score_samples([Faithfulness(llm=llm)], [_Sample()]))
+        rows = asyncio.run(_score_samples([("faithfulness", Faithfulness(llm=llm))], [_Sample()]))
     return rows[0], logs
 
 
@@ -231,7 +231,7 @@ class TestALongAnswerScores:
         llm = _build_instructor_llm(
             "judge_faithfulness", LedgerContext(tenant_id=TENANT, recorder=lambda call: None)
         )
-        asyncio.run(_score_samples([Faithfulness(llm=llm)], [_Sample()]))
+        asyncio.run(_score_samples([("faithfulness", Faithfulness(llm=llm))], [_Sample()]))
 
         assert [b["tools"][0]["function"]["name"] for b in seen] == [
             "StatementGeneratorOutput",

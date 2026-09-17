@@ -818,30 +818,29 @@ class TestTheJudgeRowCarriesItsOwnDecision:
 
     # -- the verdict and its gate -----------------------------------------
 
-    def test_a_gated_metric_carries_its_threshold_and_its_verdict(self, monkeypatch):
+    def test_the_gated_metric_carries_its_threshold_and_its_verdict(self, monkeypatch):
         from app.core.config import settings
 
         rows = self._rows(monkeypatch)
 
         assert rows["faithfulness"]["threshold"] == settings.EVAL_FAITHFULNESS_THRESHOLD
         assert rows["faithfulness"]["binary_verdict"] is True
-        assert rows["answer_relevancy"]["threshold"] == settings.EVAL_RELEVANCY_THRESHOLD
-        assert rows["answer_relevancy"]["binary_verdict"] is False, (
-            "0.8 is below the 0.9 relevancy gate"
-        )
 
     def test_an_ungated_metric_carries_neither_a_threshold_nor_a_verdict(
         self, monkeypatch
     ):
-        """context_precision and context_recall have no setting anywhere.
+        """answer_relevancy, context_precision and context_recall have no setting.
 
-        NULL on both columns, never a borrowed threshold and never False. A
-        reader aggregating verdicts would otherwise count two extra failures on
-        every scenario in the table.
+        ADR 0014 moved relevancy into this set, so its row now looks like the two
+        context rows: NULL on both columns, never a borrowed threshold and never
+        False. The 0.8 the fixture scores it is written down; what is not written
+        is a decision about it. A reader aggregating verdicts would otherwise
+        count three extra failures on every scenario in the table.
         """
         rows = self._rows(monkeypatch)
 
-        for metric in ("context_precision", "context_recall", "ragas_answer_relevancy"):
+        assert rows["answer_relevancy"]["score"] == 0.8, "the score is still stored"
+        for metric in ("answer_relevancy", "context_precision", "context_recall", "ragas_answer_relevancy"):
             assert rows[metric]["threshold"] is None, f"{metric} was given a gate"
             assert rows[metric]["binary_verdict"] is None, f"{metric} was given a verdict"
 
@@ -869,7 +868,9 @@ class TestTheJudgeRowCarriesItsOwnDecision:
         assert rows["faithfulness"]["threshold"] is not None, (
             "the gate the metric WOULD have been judged against is still recorded"
         )
-        assert rows["answer_relevancy"]["binary_verdict"] is True
+        assert rows["answer_relevancy"]["binary_verdict"] is None, (
+            "relevancy is reported, not gated (ADR 0014), so no row of it decides"
+        )
 
     def test_the_verdict_is_the_comparison_and_not_a_copy_of_the_score(
         self, monkeypatch
@@ -971,14 +972,26 @@ class TestTheJudgeRowCarriesItsOwnDecision:
 class TestTheThresholdIsDefinedOnce:
     """`threshold_for` is the one place the gate is named (#51 slice 2)."""
 
-    def test_only_the_two_gated_metrics_have_a_threshold(self):
+    def test_only_the_gated_metric_has_a_threshold(self):
         from app.core.config import settings
         from app.services.eval_service import threshold_for
 
         assert threshold_for("faithfulness") == settings.EVAL_FAITHFULNESS_THRESHOLD
-        assert threshold_for("answer_relevancy") == settings.EVAL_RELEVANCY_THRESHOLD
         assert threshold_for("context_precision") is None
         assert threshold_for("context_recall") is None
+
+    def test_answer_relevancy_has_no_threshold(self):
+        """ADR 0014. Relevancy is reported on every run and gates nothing.
+
+        `threshold_for` is the single cause of that. A row's threshold is
+        stamped from it, `verdict_for` reads None off a None threshold, and the
+        route, the run record and the deploy gate all read the column.
+        """
+        from app.services.eval_service import GATED_METRIC_KEYS, threshold_for
+
+        assert threshold_for("answer_relevancy") is None
+        assert "answer_relevancy" not in GATED_METRIC_KEYS
+        assert GATED_METRIC_KEYS == ("faithfulness",)
 
     def test_the_route_reads_the_same_gate_the_writer_stored(self):
         """One definition, so a scenario's rendered verdict and its stored one agree.
@@ -1031,26 +1044,6 @@ class TestTheThresholdIsDefinedOnce:
         assert "ragas_answer_relevancy" in METRIC_KEYS
         assert threshold_for("ragas_answer_relevancy") is None
         assert "ragas_answer_relevancy" not in GATED_METRIC_KEYS
-
-    def test_the_relevancy_setting_cannot_invert_a_verdict(self):
-        """The Judge returns 1.0 or 0.0, so the gate has to sit between them.
-
-        0.0 would make `verdict_for(0.0, 0.0)` True and every FAIL would clear
-        its gate; above 1.0 would fail every PASS. Any value in (0, 1] stores the
-        Judge's own verdict, and this is the bound the setting's comment claims.
-        """
-        from app.core.config import settings
-        from app.domain.judge_record import verdict_for
-        from app.services.eval_service import threshold_for
-        from app.services.relevance_judge import FAIL_SCORE, PASS_SCORE
-
-        gate = threshold_for("answer_relevancy")
-        assert 0 < settings.EVAL_RELEVANCY_THRESHOLD <= 1.0
-        assert verdict_for(PASS_SCORE, gate) is True
-        assert verdict_for(FAIL_SCORE, gate) is False
-        assert verdict_for(None, gate) is None, (
-            "an unknown verdict must stay undecided, never read as a failure"
-        )
 
 
 class TestBuildJudgeRecords:
@@ -2544,16 +2537,16 @@ class TestBuildEvalResult:
         calibration key is reported and not gated (#54,
         `deployment_service._calibration_block`).
         """
-        from app.services.eval_service import judge_identity_for
+        from app.services.eval_service import GATED_METRIC_KEYS, judge_identity_for
 
         built = _built()
         assert built.judge_identity is None
         assert judge_identity_for("faithfulness") != judge_identity_for(
             "answer_relevancy"
         )
-        assert set(built.judge_identities) == {"faithfulness", "answer_relevancy"}
-        assert built.judge_identities["answer_relevancy"].prompt_version == (
-            "relevance-judge-v1"
+        assert set(built.judge_identities) == set(GATED_METRIC_KEYS), (
+            "one identity per gated dimension; relevancy's Judge is reported on its "
+            "rows and names nothing a deploy reads (ADR 0014)"
         )
         assert built.judge_identities["faithfulness"].prompt_version.startswith("ragas-")
 
@@ -2607,12 +2600,23 @@ class TestDatasetVerdictCounts:
 
     def test_one_false_gated_verdict_fails_the_scenario(self):
         counts = self._counts(
-            [{"scenario_id": "g1", "faithfulness": 0.95, "answer_relevancy": 0.10}]
+            [{"scenario_id": "g1", "faithfulness": 0.10, "answer_relevancy": 0.92}]
         )
         assert counts["golden"] == (0, 1, 0)
 
+    def test_a_failed_relevancy_row_leaves_the_scenario_passing(self):
+        """ADR 0014. Relevancy is reported, so no relevancy score decides a row.
+
+        The counts feed `golden_failure` and the exploratory pass rate, so a
+        scenario the owner would ship and relevancy would not is a pass here.
+        """
+        counts = self._counts(
+            [{"scenario_id": "g1", "faithfulness": 0.95, "answer_relevancy": 0.01}]
+        )
+        assert counts["golden"] == (1, 0, 0)
+
     def test_a_missing_gated_score_is_unmeasured_and_beats_the_failure(self):
-        """One gate undecided and the other failed. Counted once, as unmeasured.
+        """The gate undecided, beside a relevancy score that is not a gate.
 
         "Nobody decided" reported as "it failed" is what turns a judge outage
         into an apparent quality collapse and an owner-initiated rollback.
@@ -2660,6 +2664,95 @@ class TestDatasetVerdictCounts:
         )
         assert counts["golden"] == (1, 0, 0)
         assert counts["exploratory"] == (0, 1, 0)
+
+
+class TestARelevancyFailureNeverReachesGoldenFailure:
+    """ADR 0014, end to end from the judge rows into the rule that blocks.
+
+    `golden_failure` turns one wrong golden scenario into a block and reads
+    `scenarios_failed`, which `dataset_verdict_counts` fills from the gated
+    verdicts. Every row here fails relevancy and clears faithfulness, so the
+    count is zero and the rule returns nothing.
+    """
+
+    SCENARIOS = [
+        {"id": f"g{i}", "question": "q", "reference_answer": "a", "dataset": "golden"}
+        for i in range(4)
+    ]
+
+    def _result(self, relevancy: float, faithfulness: float = 0.95):
+        from app.services.eval_service import (
+            build_eval_result,
+            build_judge_records,
+            summarise_run_validity,
+        )
+
+        scores = [
+            {
+                "scenario_id": scenario["id"],
+                "faithfulness": faithfulness,
+                "answer_relevancy": relevancy,
+                "context_precision": 0.88,
+                "context_recall": 0.86,
+            }
+            for scenario in self.SCENARIOS
+        ]
+        return build_eval_result(
+            run_id="00000000-0000-0000-0000-000000000001",
+            agent_id="00000000-0000-0000-0000-000000000002",
+            prompt_version_id=None,
+            validity=summarise_run_validity(self.SCENARIOS, scores),
+            invocation=_invocation_observation(),
+            ledger=[],
+            scenarios=self.SCENARIOS,
+            judge_records=build_judge_records(scores),
+            question_resolution={},
+        )
+
+    def test_every_row_failing_relevancy_leaves_the_golden_set_passing(self):
+        golden = self._result(relevancy=0.01).datasets["golden"]
+
+        assert (golden.scored, golden.scenarios_passed, golden.scenarios_failed) == (4, 4, 0)
+        assert golden.scenarios_unmeasured == 0
+
+    def test_the_golden_rule_reaches_no_reason_over_those_rows(self):
+        from app.domain.calibration_status import CalibrationStatus
+        from app.domain.verdict import _rule_golden_failure
+
+        reasons = _rule_golden_failure(
+            self._result(relevancy=0.01),
+            None,
+            CalibrationStatus.absent("no_artifact"),
+            True,
+        )
+
+        assert reasons == ()
+
+    def test_the_relevancy_number_is_still_on_the_record(self):
+        """The half that stops this reading as a deletion.
+
+        The console draws this channel and `get_eval_results` reports it. What
+        went is the verdict, not the measurement.
+        """
+        golden = self._result(relevancy=0.01).datasets["golden"]
+
+        assert golden.metrics["answer_relevancy"].measured is True
+        assert golden.metrics["answer_relevancy"].value == pytest.approx(0.01)
+        assert golden.metrics["answer_relevancy"].observations == 4
+
+    def test_a_failed_faithfulness_row_still_blocks(self):
+        """The gate that remains, over the same four rows."""
+        from app.domain.calibration_status import CalibrationStatus
+        from app.domain.verdict import _rule_golden_failure
+
+        reasons = _rule_golden_failure(
+            self._result(relevancy=0.99, faithfulness=0.10),
+            None,
+            CalibrationStatus.absent("no_artifact"),
+            True,
+        )
+
+        assert [r.rule for r in reasons] == ["golden_failure"]
 
 
 class TestQuestionResolutionOnTheRecord:

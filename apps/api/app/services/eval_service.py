@@ -182,24 +182,19 @@ RAGAS_COLUMN_BY_METRIC: Mapping[str, str] = MappingProxyType({
 #: carries turns (#227 PR 2). Relevancy alone, and the shortness of this tuple is
 #: the point.
 #:
-#: IT NAMES THE RAGAS COLUMN NOW, not the gated one. The relevance Judge takes
-#: the resolved question on every call it makes and needs no entry here; this
-#: tuple is read inside the ragas loop, against `RAGAS_COLUMN_BY_METRIC`.
+#: Relevancy is reported and no longer gates a deploy (ADR 0014), so this tuple
+#: changes the input of a reported number. It still earns the rewrite: relevancy
+#: was scoring answers against text that did not say what was asked, and #58
+#: measured that Judge failing, so a run's relevancy column is only readable
+#: against the question it was scored on.
 #:
-#: SAY THE UNCOMFORTABLE HALF FIRST: relevancy is itself gated
-#: (`GATED_METRIC_KEYS`, threshold `EVAL_RELEVANCY_THRESHOLD`), so this tuple
-#: changes the input of a metric that gates a deploy. That is the point of #227
-#: and not a side effect: relevancy was scoring answers against text that did not
-#: say what was asked, and #58 measured that Judge failing. The plan's Risks
-#: section carries the consequence, that the calibration artifact was measured on
-#: raw questions and the first multi-turn run's rows join the next labelling sheet.
-#:
-#: What the tuple's SHORTNESS buys is the other gated metric. All four metrics
-#: above name `user_input` and all four read it off ONE validated sample, so
-#: swapping the sample's own text would have moved faithfulness too, and
-#: faithfulness had no owner fail in #58: there is nothing wrong with it to fix.
-#: Overriding per metric keeps it untouched, and for all three unlisted metrics
-#: the bytes handed to the judge are the bytes handed before this existed.
+#: What the tuple's SHORTNESS buys is faithfulness, the one gated metric. All
+#: four metrics above name `user_input` and all four read it off ONE validated
+#: sample, so swapping the sample's own text would have moved faithfulness too,
+#: and faithfulness had no owner fail in #58: there is nothing wrong with it to
+#: fix. Overriding per metric keeps it untouched, and for all three unlisted
+#: metrics the bytes handed to the judge are the bytes handed before this
+#: existed.
 #:
 #: The ROW's `user_input` is never overridden either, only the metric's kwargs.
 #: `SAMPLE_KEY_COLUMNS` attributes a returned judge row to a scenario on
@@ -604,31 +599,27 @@ def judge_identity_for(metric: str) -> JudgeIdentity | None:
     )
 
 
-# The two metrics a deploy is gated on (D-21 LOCKED). They are exactly the two
-# `threshold_for` returns a number for, and `test_the_route_reads_the_same_gate_the_writer_stored`
-# pins the pair to that function rather than letting a second list drift from it.
-# It lives beside the gate definition, below both readers, because the console
-# route and the deploy collector each need to know which metrics carry a verdict
-# and two tuples is how they come to disagree about it.
-GATED_METRIC_KEYS: tuple[str, ...] = ("faithfulness", RELEVANCE_METRIC)
+# The metrics a deploy is gated on. Faithfulness alone since ADR 0014. The
+# owner passed relevancy on every labelled row of one calibration run, so a
+# relevancy gate has no dimension the owner sometimes fails and can never be
+# shown to catch anything. They are exactly the metrics `threshold_for` returns a number
+# for, and `test_the_route_reads_the_same_gate_the_writer_stored` pins the set to
+# that function rather than letting a second list drift from it. It lives beside
+# the gate definition, below both readers, because the console route and the
+# deploy collector each need to know which metrics carry a verdict and two tuples
+# is how they come to disagree about it.
+GATED_METRIC_KEYS: tuple[str, ...] = ("faithfulness",)
 
 
 def threshold_for(metric: str) -> float | None:
     """The number this dimension's score is compared against, or None for no gate.
 
-    THE ONLY TWO GATED METRICS ARE THE TWO THAT HAVE A SETTING. D-21 gates a
-    deploy on faithfulness and answer_relevancy; `context_precision`,
-    `context_recall` and `ragas_answer_relevancy` have no threshold anywhere in
-    this codebase, so they get None and their rows carry no verdict. Inventing
-    one would put a gate nobody chose on every row in the table, and a reader
-    aggregating verdicts would count two extra failures per scenario.
-
-    RELEVANCY'S NUMBER IS A DECISION NOW, NOT A SIMILARITY (#274). The Judge
-    returns 1.0 or 0.0, so `EVAL_RELEVANCY_THRESHOLD` no longer picks a point on
-    a similarity scale; it only has to sit between the two values for the stored
-    verdict to be the Judge's own. Any value in (0, 1] does that, 0.0 would make
-    every FAIL clear its gate, and `test_the_relevancy_setting_cannot_invert_a_verdict`
-    is what refuses both ends.
+    THE ONLY GATED METRIC IS THE ONE THAT HAS A SETTING. Faithfulness gates a
+    deploy; `answer_relevancy` (ADR 0014), `context_precision`,
+    `context_recall` and `ragas_answer_relevancy` have no threshold anywhere in this codebase, so they get
+    None and their rows carry no verdict. Inventing one would put a gate nobody
+    chose on every row in the table, and a reader aggregating verdicts would
+    count four extra failures per scenario.
 
     Read off `settings` at call time rather than frozen at import, so a
     deployment that changes the gate scores the next run against the new one. The
@@ -640,8 +631,6 @@ def threshold_for(metric: str) -> float | None:
     """
     if metric == "faithfulness":
         return settings.EVAL_FAITHFULNESS_THRESHOLD
-    if metric == "answer_relevancy":
-        return settings.EVAL_RELEVANCY_THRESHOLD
     return None
 
 
@@ -1109,11 +1098,11 @@ def question_resolution_provenance(
 ) -> dict:
     """The `eval_runs.config` key saying which question relevancy was scored on.
 
-    `answer_relevancy` is gated, and since #227 PR 2 it is scored against a
-    model-rewritten question for every scenario carrying turns. A run that does
-    not record that cannot be read back: 0.91 over raw questions, 0.91 over
-    rewrites, and 0.91 over rows whose rewrite failed and fell back are one
-    number, and the deploy gate reads the number.
+    Since #227 PR 2 `answer_relevancy` is scored against a model-rewritten
+    question for every scenario carrying turns. A run that does not record that
+    cannot be read back: 0.91 over raw questions, 0.91 over rewrites, and 0.91
+    over rows whose rewrite failed and fell back are one number. ADR 0014 stops
+    it gating a deploy; ADR 0011's two provenance rules still read these counts.
 
     THE DENOMINATOR IS WHAT THE JUDGE RETURNED, NOT WHAT WAS SENT. A row counts
     only when it carries an attributed relevancy value, because that value is the

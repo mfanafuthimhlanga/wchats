@@ -187,6 +187,7 @@ def test_the_sheet_has_one_row_per_gated_metric_with_the_text_and_no_verdict(tmp
         rows = list(csv.DictReader(fh))
     assert len(rows) == 3 * len(cr.GATED_METRICS)
     assert {r["dimension"] for r in rows} == set(cr.GATED_METRICS)
+    assert set(cr.GATED_METRICS) == {"faithfulness"}, "ADR 0014"
     first = rows[0]
     assert first["question"] == "Q1?" and first["response"] == "A1." and first["reference"] == "R1."
     assert first["retrieved_contexts"] == "c1a\n\nc1b"
@@ -194,7 +195,26 @@ def test_the_sheet_has_one_row_per_gated_metric_with_the_text_and_no_verdict(tmp
     assert "judge" not in "".join(rows[0].keys()).lower(), "the Judge's verdict must not be on the sheet"
     # It is the sheet compute_correlation's reader accepts.
     parsed = cc.read_human_score_rows(sheet)
-    assert parsed["attempted"] == 6 and parsed["valid"] == 0
+    assert parsed["attempted"] == 3 * len(cr.GATED_METRICS) and parsed["valid"] == 0
+
+
+def test_a_thirty_scenario_run_asks_the_owner_for_thirty_faithfulness_labels(tmp_path):
+    """ADR 0014. Relevancy is reported, so nobody labels it to calibrate a gate.
+
+    The owner passed relevancy on 30 of 30 rows of run 735fb9fa, which is a
+    kappa that cannot be computed and a sitting that bought nothing. One row per
+    scenario is the whole change to what the sheet costs him.
+    """
+    sheet = tmp_path / "runs" / "r30" / "human_scores.csv"
+
+    code, _messages = cr.write_sheet(_samples(30), sheet)
+
+    assert code == cc.EXIT_SECOND_PASS_EMITTED
+    with sheet.open(newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    assert len(rows) == 30
+    assert [r["dimension"] for r in rows] == ["faithfulness"] * 30
+    assert len({r["scenario_id"] for r in rows}) == 30
 
 
 def test_the_sheet_refuses_to_overwrite_and_refuses_an_empty_run(tmp_path):
@@ -293,8 +313,8 @@ def test_a_judge_that_agrees_with_a_consistent_owner_is_calibrated(run_tree):
 
     result = cr.score_run(samples, verdicts, sheet, pass2)
 
-    assert _every(result, "status") == [cc.STATUS_CALIBRATED] * 2, _every(result, "errors")
-    assert _every(result, "pairs") == [12, 12], (
+    assert _every(result, "status") == [cc.STATUS_CALIBRATED] * len(cr.GATED_METRICS), _every(result, "errors")
+    assert _every(result, "pairs") == [12] * len(cr.GATED_METRICS), (
         "the pairs split per dimension now; 24 pooled was one kappa over two "
         "instruments (#274)"
     )
@@ -324,8 +344,8 @@ def test_without_a_second_pass_the_ceiling_is_withheld_and_nothing_is_calibrated
 
     result = cr.score_run(samples, verdicts, sheet, pass2)
 
-    assert _every(result, "status") == [cc.STATUS_NOT_CALIBRATED_YET] * 2
-    assert _every(result, "ceiling_interval") == [None, None]
+    assert _every(result, "status") == [cc.STATUS_NOT_CALIBRATED_YET] * len(cr.GATED_METRICS)
+    assert _every(result, "ceiling_interval") == [None] * len(cr.GATED_METRICS)
     for errors in _every(result, "errors"):
         assert any("no blind second verdict" in e for e in errors)
 
@@ -357,7 +377,7 @@ def test_a_deflection_a_missing_sample_and_a_non_gated_dimension_never_enter_the
 
     result = cr.score_run(samples, verdicts, sheet, pass2)
 
-    assert _every(result, "pairs") == [12 - 1 - 1, 12 - 1 - 1], (
+    assert _every(result, "pairs") == [12 - 1 - 1] * len(cr.GATED_METRICS), (
         "one deflection and one missing sample per dimension, not two of each"
     )
     reasons = "\n".join(e for errors in _every(result, "errors") for e in errors)
@@ -373,12 +393,12 @@ def test_an_unlabelled_sheet_and_a_missing_sheet_are_not_measurements(tmp_path):
     verdicts = _verdicts(samples, lambda s, m: True)
 
     missing = cr.score_run(samples, verdicts, sheet, pass2)
-    assert _every(missing, "status") == [cc.STATUS_SETUP_ERROR] * 2
+    assert _every(missing, "status") == [cc.STATUS_SETUP_ERROR] * len(cr.GATED_METRICS)
 
     cr.write_sheet(samples, sheet)
     unlabelled = cr.score_run(samples, verdicts, sheet, pass2)
-    assert _every(unlabelled, "status") == [cc.STATUS_NOT_CALIBRATED_YET] * 2
-    assert _every(unlabelled, "pairs") == [0, 0]
+    assert _every(unlabelled, "status") == [cc.STATUS_NOT_CALIBRATED_YET] * len(cr.GATED_METRICS)
+    assert _every(unlabelled, "pairs") == [0] * len(cr.GATED_METRICS)
 
 
 # ---------------------------------------------------------------------------
@@ -427,8 +447,11 @@ def test_the_second_pass_is_emitted_from_the_run_sheet(monkeypatch, tmp_path):
 
 
 def _two_instrument_identities() -> dict:
-    """The Judges a run scores the two gated dimensions with since #274."""
-    return {
+    """The Judge behind each GATED dimension, which is what `run_judge_identities`
+    hands the loader. Since ADR 0014 that is faithfulness alone; the relevance
+    Judge still scores its rows and is reported, so it is named here and dropped
+    by the same rule the run applies."""
+    every = {
         "faithfulness": JudgeIdentity(
             model="gpt-5.6-luna", reasoning_effort="none", prompt_version="ragas-0.4.3"
         ),
@@ -438,6 +461,7 @@ def _two_instrument_identities() -> dict:
             prompt_version="relevance-judge-v1",
         ),
     }
+    return {metric: every[metric] for metric in cr.GATED_METRICS}
 
 
 def _judge_by_dimension(identities: dict):
@@ -483,7 +507,8 @@ def test_a_two_instrument_run_names_both_judges_and_reports_each_kappa(
     status = load_calibration_status(artifact, identities)
 
     assert set(status.dimensions) == set(cr.GATED_METRICS)
-    for metric, identity in identities.items():
+    for metric in cr.GATED_METRICS:
+        identity = identities[metric]
         part = status.dimensions[metric]
         assert part.judge_identity == identity, metric
         assert part.kappa is not None, f"{metric} reported no coefficient"
@@ -492,26 +517,26 @@ def test_a_two_instrument_run_names_both_judges_and_reports_each_kappa(
     assert status.kappa is None, "an envelope carries no coefficient of its own"
 
 
-def test_one_failing_dimension_makes_the_whole_envelope_uncalibrated(
+def test_an_ungated_dimension_cannot_uncalibrate_the_envelope(
     run_tree, monkeypatch, tmp_path
 ):
-    """An envelope is only as calibrated as its least calibrated part.
+    """Relevancy is reported and not gated (ADR 0014), so its Judge is not in
+    the envelope at all.
 
-    A gate reading `calibrated` over a pair where one Judge disagrees with the
-    owner on half the rows would be trusting an instrument nobody measured as
-    agreeing.
+    Before ADR 0014 a relevancy Judge that passed everything, the shape #270
+    measured, made the whole envelope uncalibrated. Now the envelope has only the
+    gated dimensions in it, and an instrument nobody gates on cannot fail it.
     """
     identities = _two_instrument_identities()
 
     def judge(scenario_id: str, dimension: str) -> dict:
-        # Relevancy passes everything, which is the shape #270 measured.
         passed = dimension == "answer_relevancy" or _mostly_pass(scenario_id, dimension)
         return {
             "dimension": dimension,
             "verdict": "PASS" if passed else "FAIL",
             "score": cr.STORED_PASS_SCORE if passed else cr.STORED_FAIL_SCORE,
             "reason": "stored verdict",
-            "judge_identity": identities[dimension],
+            "judge_identity": identities.get(dimension),
         }
 
     samples, verdicts, sheet, pass2 = run_tree(12, _mostly_pass, _mostly_pass, _mostly_pass)
@@ -523,9 +548,9 @@ def test_one_failing_dimension_makes_the_whole_envelope_uncalibrated(
     )
     status = load_calibration_status(artifact, identities)
 
+    assert "answer_relevancy" not in status.dimensions
     assert status.dimensions["faithfulness"].status == cc.STATUS_CALIBRATED
-    assert status.dimensions["answer_relevancy"].status != cc.STATUS_CALIBRATED
-    assert status.calibrated is False
+    assert status.calibrated is True
 
 
 def test_an_artifact_that_is_silent_about_a_gated_dimension_is_not_read_as_covering_it(

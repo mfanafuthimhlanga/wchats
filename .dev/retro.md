@@ -505,3 +505,23 @@ by asserting the message.
 status code alone has not identified the refusal. Assert the reason. And when a mutation demands a
 compensating change elsewhere to reach the branch, that is not one proof — it is two changes and no
 observation. Make the fixture change first, watch the suite, *then* mutate.
+
+## 2026-09-17, eleven green PRs merged in one window, main went red on the ninth
+
+**What happened.** #276 changed `_score_samples` to take `(column, metric)` pairs. #283, cut from
+the older main, tested the faithfulness cap by calling it with bare metric objects. Each PR was
+green against the main it was cut from. Merged one after the other into the same window, the
+combined head failed three tests in `test_faithfulness_judge_truncation.py`, and main was red from
+the #283 merge until #287 carried the fix.
+
+**What the plan failed to anticipate.** "All gates green" was read per PR. Green on a head that no
+longer exists says nothing about the head that will. The window plan listed the merge order and one
+known conflict, and treated every PR that merged cleanly as verified. A textual merge that succeeds
+is not a test run.
+
+**Standing rule added.** In a window with more than one PR, after each merge read the new main
+head's Unit job before the next merge, or run the suite locally on a branch that already contains
+main. A PR whose branch is behind main by another PR from the same window is rebased or merged
+with main and re-tested before it lands. The conflict list is not the risk list; two PRs that touch
+one function's signature and its callers can merge without a conflict marker.
+

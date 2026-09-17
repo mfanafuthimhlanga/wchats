@@ -212,8 +212,9 @@ class TestTheRejudgeWritesItsOwnRun:
 
         [call] = wired["scored"]
         assert call["metric_keys"] == eval_service.REJUDGE_METRIC_KEYS
-        assert set(call["metric_keys"]) == set(eval_service.GATED_METRIC_KEYS), (
-            "a rejudge pays for the metrics a deploy reads and no others"
+        assert set(eval_service.GATED_METRIC_KEYS) <= set(call["metric_keys"]), (
+            "a rejudge pays for every metric a deploy reads; relevancy rides beside "
+            "them reported, not gated (ADR 0014)"
         )
 
     def test_no_agent_turn_and_no_rewrite_happen(self, wired):
