@@ -271,9 +271,10 @@ class TestTheFieldsAreRefusedWhenTheyWouldMisreport:
 
 
 class TestThePayloadRoundTrips:
-    def test_the_payload_carries_the_seven_keys(self):
+    def test_the_payload_carries_the_eight_keys(self):
         assert sorted(_record().payload) == [
             "binary_verdict",
+            "claims",
             "judge_identity",
             "ledger_purpose",
             "metric",

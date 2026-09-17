@@ -52,6 +52,16 @@ WHY THE LEDGER REFERENCE IS A PURPOSE
     migration 0023's column comment carries the same sentence, for a reader who
     has the catalogue and not this file.
 
+THE CLAIMS ARE THE VERDICT'S WORKING (#290)
+    Faithfulness is decided one atomic statement at a time and the score is the
+    share the judge found in the retrieved text. The share cannot say WHICH
+    statement it could not find, and a planted lie in an answer of eight claims
+    scores 0.875, above the gate. So a faithfulness row carries its claims:
+    each statement, whether the judge found it supported, and its reason. A
+    `Claim` list is refused on a row with no score, and refused when the share
+    of supported claims is not the row's score, because a list that does not
+    reproduce its own number belongs to some other row.
+
 Rung: `app.domain` imports the standard library, third-party packages and its
 domain siblings. This module imports the standard library and
 `app.domain.judge_identity`.
@@ -127,6 +137,75 @@ def _as_optional_float(name: str, value: Any) -> float | None:
     return number
 
 
+@dataclass(frozen=True)
+class Claim:
+    """One atomic statement the judge lifted from an answer, and its verdict.
+
+    `supported` is the judge's NLI decision against the retrieved text, and
+    `reason` is the sentence it gave for it. Frozen, like the record it rides on.
+    """
+
+    statement: str
+    supported: bool
+    reason: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.statement, str) or not self.statement.strip():
+            raise InvalidJudgeRecord(f"Claim needs a statement, got {self.statement!r}")
+        if not isinstance(self.supported, bool):
+            raise InvalidJudgeRecord(
+                f"Claim needs supported as a bool, got {self.supported!r}"
+            )
+        if not isinstance(self.reason, str):
+            raise InvalidJudgeRecord(f"Claim needs reason as a string, got {self.reason!r}")
+
+    @property
+    def payload(self) -> dict:
+        return {"statement": self.statement, "supported": self.supported, "reason": self.reason}
+
+    @classmethod
+    def from_payload(cls, payload: Mapping) -> Claim:
+        if not isinstance(payload, Mapping):
+            raise InvalidJudgeRecord(f"Claim needs a mapping, got {type(payload).__name__}")
+        return cls(
+            statement=payload.get("statement"),  # type: ignore[arg-type]
+            supported=payload.get("supported"),  # type: ignore[arg-type]
+            reason=payload.get("reason", ""),
+        )
+
+
+def _as_claims(value: Any, score: float | None) -> tuple[Claim, ...] | None:
+    """The claims as a tuple, or None. A list has to have a score to explain.
+
+    The share of supported claims IS the faithfulness score, so a list whose
+    share is not the score beside it was lifted from a different answer, and a
+    list beside no score is a verdict the judge never reached.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, Sequence) or isinstance(value, str) or not value:
+        raise InvalidJudgeRecord(
+            f"JudgeRecord needs claims as a non-empty sequence of Claim or None, got {value!r}"
+        )
+    claims = tuple(value)
+    if any(not isinstance(claim, Claim) for claim in claims):
+        raise InvalidJudgeRecord("JudgeRecord needs every claim as a Claim")
+    if score is None:
+        raise InvalidJudgeRecord(
+            "JudgeRecord refuses claims on a row with no score. The claims are the "
+            "score's working, and there is no score here to explain"
+        )
+    supported = sum(1 for claim in claims if claim.supported)
+    share = supported / len(claims)
+    if not math.isclose(share, score, abs_tol=1e-9):
+        raise InvalidJudgeRecord(
+            f"JudgeRecord carries {len(claims)} claims of which {supported} are "
+            f"supported, a share of {share:.4f}, beside a score of {score!r}. Claims "
+            "that do not reproduce their own score belong to some other row"
+        )
+    return claims
+
+
 def verdict_for(score: float | None, threshold: float | None) -> bool | None:
     """Did this score clear this gate. None when there is no gate or no score.
 
@@ -194,11 +273,16 @@ class JudgeRecord:
         ledger_purpose: the routing purpose this dimension's judge calls billed
                         under, which with the run id locates them in
                         `model_calls`. None when no bucket was recorded.
+        claims:         the statements the judge decided this score over, or
+                        None when the metric produces none or the judge
+                        recorded none. Faithfulness is the metric that has them
+                        (#290).
 
     Raises:
         InvalidJudgeRecord: scenario_id or metric is blank, score or threshold is
             not a real number, `judge_identity` is not a JudgeIdentity, or
-            `binary_verdict` disagrees with `verdict_for(score, threshold)`.
+            `binary_verdict` disagrees with `verdict_for(score, threshold)`, or
+            `claims` sit beside no score or do not reproduce it.
     """
 
     scenario_id: str
@@ -208,6 +292,7 @@ class JudgeRecord:
     binary_verdict: bool | None
     judge_identity: JudgeIdentity | None = None
     ledger_purpose: str | None = None
+    claims: tuple[Claim, ...] | None = None
 
     def __post_init__(self) -> None:
         _require_text("scenario_id", self.scenario_id)
@@ -218,6 +303,7 @@ class JudgeRecord:
             self, "threshold", _as_optional_float("threshold", self.threshold)
         )
         _require_optional_text("ledger_purpose", self.ledger_purpose)
+        object.__setattr__(self, "claims", _as_claims(self.claims, self.score))
 
         if self.judge_identity is not None and not isinstance(
             self.judge_identity, JudgeIdentity
@@ -245,6 +331,7 @@ class JudgeRecord:
         threshold: float | None,
         judge_identity: JudgeIdentity | None = None,
         ledger_purpose: str | None = None,
+        claims: Sequence[Claim] | None = None,
     ) -> JudgeRecord:
         """The record with its verdict derived rather than supplied.
 
@@ -268,6 +355,7 @@ class JudgeRecord:
             binary_verdict=verdict_for(score, threshold),
             judge_identity=judge_identity,
             ledger_purpose=ledger_purpose,
+            claims=tuple(claims) if claims is not None else None,
         )
 
     @property
@@ -275,7 +363,7 @@ class JudgeRecord:
         """The whole decision as JSON.
 
         {"scenario_id", "metric", "score", "threshold", "binary_verdict",
-         "judge_identity", "ledger_purpose"}.
+         "judge_identity", "ledger_purpose", "claims"}.
 
         `write_eval_results` spreads these across the columns tenant migration
         0023 added rather than storing this dict whole, so a reader groups on a
@@ -292,6 +380,7 @@ class JudgeRecord:
                 dataclasses.asdict(self.judge_identity) if self.judge_identity else None
             ),
             "ledger_purpose": self.ledger_purpose,
+            "claims": [claim.payload for claim in self.claims] if self.claims else None,
         }
 
     @classmethod
@@ -318,6 +407,11 @@ class JudgeRecord:
                 f"JudgeRecord needs judge_identity as a mapping or None, got "
                 f"{type(identity).__name__}"
             )
+        claims = payload.get("claims")
+        if claims is not None and (not isinstance(claims, Sequence) or isinstance(claims, str)):
+            raise InvalidJudgeRecord(
+                f"JudgeRecord needs claims as a sequence or None, got {type(claims).__name__}"
+            )
         return cls(
             scenario_id=_required_str(payload, "scenario_id"),
             metric=_required_str(payload, "metric"),
@@ -326,4 +420,5 @@ class JudgeRecord:
             binary_verdict=payload.get("binary_verdict"),
             judge_identity=JudgeIdentity(**identity) if identity else None,
             ledger_purpose=payload.get("ledger_purpose"),
+            claims=tuple(Claim.from_payload(c) for c in claims) if claims is not None else None,
         )
