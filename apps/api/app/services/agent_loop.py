@@ -99,6 +99,7 @@ from app.services.agent_tools import (
     release_tool_context,
     reset_side_effect_context,
 )
+from app.services.clarifying_check import CLARIFY_TOOL
 from app.services.escalation import send_escalation_email
 from app.services.events import emit_async
 from app.services.tool_loop import (
@@ -185,6 +186,14 @@ RETRIEVE_CHUNKS_UNPARSED = "unparsed"
 #: (T-04-03-06). This bounds model calls the same way, and it is the same number
 #: because the shape it bounds has not changed.
 MAX_MODEL_CALLS_PER_TURN = 6
+
+#: `stop_reason` for a turn the `clarify` tool ended (#280).
+#:
+#: Every other ending is the provider's `finish_reason` or a ceiling this loop
+#: names. This one is the loop declining to ask the model again once the agent
+#: has put a question to the customer, so the vocabulary needs a word for it and
+#: `tests.agent_loop_doubles.STOP_REASONS` carries the same one.
+CLARIFIED = "clarified"
 
 #: The routing table's key for this turn, and the key a spend rollup groups by.
 #: Named once because `_turn_client` and `route_for` both send it, and a second
@@ -588,6 +597,44 @@ def _note_escalation(state: _TurnState, name: str, args: dict, wire: dict) -> No
     state.escalation_context = args.get("context")
 
 
+def _serve_the_clarifying_question(state: _TurnState, name: str, wire: dict, text: str) -> bool:
+    """A `clarify` call that ran IS the reply, and it ends the turn (#280).
+
+    The handler hands back the question the model wrote, and no other tool's
+    result is meant to reach the customer word for word. So the line below
+    REPLACES the whole of `response_parts` with that question, dropping every
+    earlier model call's prose along with anything this reply carried ahead of
+    the call. The loop then asks the model nothing further.
+
+    WHAT THIS CLOSES. On eval run 735fb9fa the agent asked on all ten ambiguous
+    openers and answered anyway on five. Their tool logs read `clarify`, then
+    `retrieve`, then a full answer built on chunks from whichever project the
+    model had picked, and the customer read an answer to a question they never
+    asked. ADR 0012 makes the LAST tool call the evidence that a turn asked, so
+    those five rows failed on a `retrieve` the loop had no reason to run.
+
+    AN ERROR WIRE ENDS NOTHING. `_note_escalation` holds the same rule one
+    function above, for the same reason. `clarify_tool` error-wires a `question`
+    that is missing, blank, or not a string, and a turn cannot serve a question
+    nobody wrote.
+
+    BLANK TEXT ENDS NOTHING EITHER, and that guard belongs here rather than only
+    in the tool. This function owns the served text, so it is what stands between
+    a customer and an empty bubble; `clarify_tool` is one producer of the wire it
+    reads, and a turn built on any other would otherwise end on whitespace. An
+    ambiguous row whose response is empty is also dropped by the eval before the
+    rule ever reaches it.
+
+    The PII firewall still runs. `_turn_result` scans whatever `response_parts`
+    holds when the loop ends, so a question quoting a customer's address is
+    deflected exactly as an answer quoting it is.
+    """
+    if name != CLARIFY_TOOL or wire.get("is_error") or not text.strip():
+        return False
+    state.response_parts = [text]
+    return True
+
+
 def _attach_retrieve_capture(entry: dict, wire: dict) -> None:
     """Write the retrieve captures onto one `tool_calls_log` entry.
 
@@ -655,8 +702,33 @@ def _log_entry(name: str, args: dict, tool_use_id: str, wire: dict, text: str) -
     return entry
 
 
-async def _run_tool_call(call, *, messages, state, turn, job_id, db, redis) -> None:
+async def _run_tool_calls(tool_calls, *, messages, state, turn, job_id, db, redis) -> bool:
+    """Run every tool call of one reply, `clarify` last. True when one ended the turn.
+
+    EVERY CALL RUNS, and returning on the first `clarify` is what this replaced.
+    A reply asking for `clarify` and `escalate_to_human` together means both. Drop
+    the second and the conversation carries no escalation marker, no mail leaves
+    the building, and `escalated` comes back False while the customer reads a
+    question. `confirm_action` and the six mutating skills sit in the same batch
+    on a transactional agent.
+
+    CLARIFY GOES LAST, and ADR 0012 is why. The rule reads the turn's LAST tool
+    call as the evidence that the turn asked, so a `retrieve` dispatched after
+    the question would read as a turn that answered. `sorted` is stable, so every
+    other call keeps the order the model wrote it in.
+    """
+    ended = False
+    for call in sorted(tool_calls, key=lambda c: c.function.name == CLARIFY_TOOL):
+        ended = await _run_tool_call(
+            call, messages=messages, state=state, turn=turn, job_id=job_id, db=db, redis=redis
+        ) or ended
+    return ended
+
+
+async def _run_tool_call(call, *, messages, state, turn, job_id, db, redis) -> bool:
     """One tool call: the two events, the tool message, and the audit entry.
+
+    Returns whether this call ended the turn, which today only `clarify` does.
 
     The `agent.tool_result` payload is the turn's event trail, and #104 strips
     `summary` from what a public reader sees. NO SERVER-SIDE READER TAKES IT ANY
@@ -677,6 +749,10 @@ async def _run_tool_call(call, *, messages, state, turn, job_id, db, redis) -> N
     messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
     await emit_async(job_id, "agent.tool_result", {"tool_name": name, "summary": text[:200]}, db, redis)
     state.tool_calls_log.append(_log_entry(name, args, call.id, wire, text))
+    # Last, so the audit entry exists whether or not the turn ends here. ADR 0012
+    # reads the ending off this log and would see nothing on a clarify that stopped
+    # the loop before its own row was written.
+    return _serve_the_clarifying_question(state, name, wire, text)
 
 
 def published_context(tool_calls_log: list[dict]) -> list[str]:
@@ -759,9 +835,16 @@ def _turn_result(state: _TurnState) -> dict:
     ignores all four still serves the deflection. `pii_published_exemption` is
     computed here for the same reason the length is: it needs the text this
     function refuses to hand back.
+
+    A CLARIFIED TURN GETS NO ALLOWLIST (#280). `published_context` exempts the
+    tenant's published contact details from the firewall so a correct ANSWER may
+    quote the address in the corpus. A clarifying question quotes nothing, and a
+    `retrieve` in the same batch as the `clarify` would otherwise widen the
+    exemption for a reply that is only a question. The narrowest allowlist that
+    serves the text is the empty one.
     """
     text = "\n".join(part for part in state.response_parts if part)
-    published = published_context(state.tool_calls_log)
+    published = [] if state.stop_reason == CLARIFIED else published_context(state.tool_calls_log)
     served, detector = scan_response(text, published_context=published)
     return {
         "response_text": served,
@@ -829,8 +912,7 @@ async def run_agent_loop(message: str, *, history, turn: AgentTurn, job_id, db, 
     Args:
         message: what the customer just said. Never logged (T-04-03-05).
         history: the conversation so far, as `{"role", "content"}` dicts already
-                 in order. The database is where it comes from, since ADR 0008
-                 keeps session state in `conversations` and `messages`.
+                 in order, read from the database that ADR 0008 keeps it in.
         turn:    what `build_agent_turn` assembled.
         job_id:  Celery job id, the SSE channel these events reach.
         db:      sync Session, for `emit_async`. One write at a time, on a worker
@@ -839,9 +921,11 @@ async def run_agent_loop(message: str, *, history, turn: AgentTurn, job_id, db, 
 
     Returns:
         response_text, tool_calls_log, escalated, escalation_reason, escalation_context,
-        num_turns and stop_reason. `stop_reason` is the provider's finish_reason when the
-        model stopped on its own, "budget_exceeded" or "max_model_calls" when a ceiling
-        stopped it, and "no_choices" when a reply carried nothing to read. `response_text` is what the PII firewall SERVES, and `_turn_result` describes it beside the four `pii_` keys.
+        num_turns, stop_reason, and the four `pii_` keys `_turn_result` describes.
+        `response_text` is what the PII firewall SERVES.
+
+        `stop_reason` is the provider's finish_reason, or one of the four endings the
+        loop names itself: "budget_exceeded", "max_model_calls", "no_choices", CLARIFIED.
     """
     state = _TurnState()
     try:
@@ -870,10 +954,9 @@ async def run_agent_loop(message: str, *, history, turn: AgentTurn, job_id, db, 
                 state.stop_reason = choice.finish_reason
                 break
             messages.append(assistant_turn(choice.message, tool_calls))
-            for call in tool_calls:
-                await _run_tool_call(
-                    call, messages=messages, state=state, turn=turn, job_id=job_id, db=db, redis=redis
-                )
+            if await _run_tool_calls(tool_calls, messages=messages, state=state, turn=turn, job_id=job_id, db=db, redis=redis):
+                state.stop_reason = CLARIFIED
+                break
         else:
             # `for ... else` runs only when no `break` fired, so this is the call ceiling and nothing else. The model was still asking for tools.
             state.stop_reason = "max_model_calls"

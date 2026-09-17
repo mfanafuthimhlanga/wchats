@@ -137,6 +137,31 @@ def _fake_ragas_instructor_llm(purpose, ledger):  # noqa: ARG001
     return _FakeInstructorLLM()
 
 
+def eval_service_metric_keys() -> tuple:
+    """The metric vocabulary, imported rather than counted by hand in a test."""
+    from app.services.eval_service import METRIC_KEYS
+
+    return METRIC_KEYS
+
+
+def _fake_relevance_judge(question, response, *, ledger):  # noqa: ARG001
+    """Stands in for `relevance_judge.judge_relevance` (#274).
+
+    A PASS for any non-empty response, which is all the scoring tests need.
+
+    IT IS NOT OPTIONAL. The relevance Judge is not a ragas metric, so
+    `_build_instructor_llm` does not stand in for it: every test that drives
+    `run_ragas_eval` without this patch reaches the real OpenAI endpoint, gets a
+    401 on the fixture key, and records the column as `unknown`. Observed
+    2026-09-15, thirteen seconds a test.
+    """
+    from app.services.relevance_judge import RelevanceVerdict
+
+    return RelevanceVerdict(
+        verdict="pass" if response.strip() else "fail", reason="canned"
+    )
+
+
 # ---------------------------------------------------------------------------
 # The scenario sources the SCHEMA allows, parsed from migration 0011 itself.
 #
@@ -253,6 +278,7 @@ class TestRunRagasEval:
             eval_service, "_build_instructor_llm", _fake_ragas_instructor_llm
         )
         monkeypatch.setattr(eval_service, "_VoyageRagasEmbedding", _FakeRagasEmbedding)
+        monkeypatch.setattr(eval_service, "judge_relevance", _fake_relevance_judge)
 
         scenarios = [
             {
@@ -298,11 +324,15 @@ class TestRunRagasEval:
         """
         from ragas.metrics.base import Metric, SimpleBaseMetric
 
-        from app.services.eval_service import _build_ragas_metrics
+        from app.services.eval_service import METRIC_KEYS, _build_ragas_metrics
 
-        metrics = _build_ragas_metrics(ledger(), _FakeRagasEmbedding())
+        pairs = _build_ragas_metrics(ledger(), _FakeRagasEmbedding(), METRIC_KEYS)
+        metrics = [metric for _column, metric in pairs]
 
-        assert len(metrics) == 4
+        assert len(metrics) == 4, (
+            "four of the five METRIC_KEYS are ragas metrics; answer_relevancy is "
+            "the relevance Judge and has no instance here (#274)"
+        )
         for metric in metrics:
             assert not isinstance(metric, type), f"{metric!r} is a class, not an instance"
             assert isinstance(metric, SimpleBaseMetric)
@@ -466,7 +496,7 @@ class TestScoringTouchesNoDatabase:
         from app.services.eval_service import run_ragas_eval
 
         params = inspect.signature(run_ragas_eval).parameters
-        assert list(params) == ["scenarios", "ledger"], (
+        assert list(params) == ["scenarios", "ledger", "metric_keys"], (
             f"run_ragas_eval grew a parameter it does not read: {list(params)}"
         )
         carriers = [
@@ -734,18 +764,28 @@ class TestTheJudgeRowCarriesItsOwnDecision:
     def test_the_prompt_version_names_the_artifact_the_prompt_ships_in(
         self, monkeypatch
     ):
-        """No judge prompt in this repo carries a version, so the ragas
-        distribution the four prompts live inside is the identifier."""
+        """Each row names the artifact ITS OWN prompt ships in.
+
+        Four of the five prompts belong to ragas, which carries them inside the
+        installed distribution, so the distribution is the identifier. The fifth
+        is `relevance_judge`, the first judge prompt written in this repo (#274),
+        and it carries its own version. One key over both would put the old
+        relevancy verdicts and the new ones in one calibration population.
+        """
         import importlib.metadata
 
-        from app.services.eval_service import METRIC_KEYS
+        from app.services.eval_service import METRIC_KEYS, RELEVANCE_METRIC
+        from app.services.relevance_judge import RELEVANCE_PROMPT_VERSION
 
         rows = self._rows(monkeypatch)
-        expected = f"ragas-{importlib.metadata.version('ragas')}"
+        ragas_version = f"ragas-{importlib.metadata.version('ragas')}"
 
         for metric in METRIC_KEYS:
             identity = json.loads(rows[metric]["judge_identity"])
-            assert identity["prompt_version"] == expected
+            expected = (
+                RELEVANCE_PROMPT_VERSION if metric == RELEVANCE_METRIC else ragas_version
+            )
+            assert identity["prompt_version"] == expected, metric
 
     def test_a_route_with_no_effort_writes_no_judge_rather_than_a_partial_one(
         self, monkeypatch
@@ -801,7 +841,7 @@ class TestTheJudgeRowCarriesItsOwnDecision:
         """
         rows = self._rows(monkeypatch)
 
-        for metric in ("context_precision", "context_recall"):
+        for metric in ("context_precision", "context_recall", "ragas_answer_relevancy"):
             assert rows[metric]["threshold"] is None, f"{metric} was given a gate"
             assert rows[metric]["binary_verdict"] is None, f"{metric} was given a verdict"
 
@@ -819,7 +859,9 @@ class TestTheJudgeRowCarriesItsOwnDecision:
             "context_precision": None, "context_recall": None,
         })
 
-        assert len(rows) == 4, "an unscored metric lost its row"
+        assert len(rows) == len(eval_service_metric_keys()), (
+            "an unscored metric lost its row"
+        )
         assert rows["faithfulness"]["score"] is None
         assert rows["faithfulness"]["binary_verdict"] is None, (
             "an unscored gated metric read as a failed one"
@@ -833,11 +875,14 @@ class TestTheJudgeRowCarriesItsOwnDecision:
         self, monkeypatch
     ):
         """Both sides of the gate, through the writer rather than the type."""
+        from app.core.config import settings
+
+        gate = settings.EVAL_FAITHFULNESS_THRESHOLD
         assert self._rows(monkeypatch, score={
-            "scenario_id": "s1", "faithfulness": 0.89,
+            "scenario_id": "s1", "faithfulness": gate - 0.01,
         })["faithfulness"]["binary_verdict"] is False
         assert self._rows(monkeypatch, score={
-            "scenario_id": "s1", "faithfulness": 0.90,
+            "scenario_id": "s1", "faithfulness": gate,
         })["faithfulness"]["binary_verdict"] is True, (
             "a score exactly on the gate must pass; the comparison is >="
         )
@@ -956,6 +1001,57 @@ class TestTheThresholdIsDefinedOnce:
 
         assert threshold_for("some_metric_nobody_defined") is None
 
+    def test_the_faithfulness_gate_is_zero_point_eight(self):
+        """0.90 to 0.80 on the measurement, not on a preference (#270, ADR 0013).
+
+        The owner labelled run 0a99f7ab and passed seven rows the faithfulness
+        Judge failed. Their scores run 0.56 to 0.89, all under the old 0.90 and
+        six at or above 0.80. A literal, because the assertion has to go red if
+        somebody restores the old number without re-reading the labels.
+        """
+        from app.core.config import settings
+        from app.services.eval_service import threshold_for
+
+        assert settings.EVAL_FAITHFULNESS_THRESHOLD == 0.80
+        assert threshold_for("faithfulness") == 0.80
+
+    def test_the_ragas_relevancy_figure_is_reported_and_gates_nothing(self):
+        """#274 kept the ragas number and took the gate off it.
+
+        It is the instrument that failed 34 of 41 rows where the owner failed 18
+        of 46. Reported so a reader can still see it; gated on nothing, so no
+        deploy is decided by it.
+        """
+        from app.services.eval_service import (
+            GATED_METRIC_KEYS,
+            METRIC_KEYS,
+            threshold_for,
+        )
+
+        assert "ragas_answer_relevancy" in METRIC_KEYS
+        assert threshold_for("ragas_answer_relevancy") is None
+        assert "ragas_answer_relevancy" not in GATED_METRIC_KEYS
+
+    def test_the_relevancy_setting_cannot_invert_a_verdict(self):
+        """The Judge returns 1.0 or 0.0, so the gate has to sit between them.
+
+        0.0 would make `verdict_for(0.0, 0.0)` True and every FAIL would clear
+        its gate; above 1.0 would fail every PASS. Any value in (0, 1] stores the
+        Judge's own verdict, and this is the bound the setting's comment claims.
+        """
+        from app.core.config import settings
+        from app.domain.judge_record import verdict_for
+        from app.services.eval_service import threshold_for
+        from app.services.relevance_judge import FAIL_SCORE, PASS_SCORE
+
+        gate = threshold_for("answer_relevancy")
+        assert 0 < settings.EVAL_RELEVANCY_THRESHOLD <= 1.0
+        assert verdict_for(PASS_SCORE, gate) is True
+        assert verdict_for(FAIL_SCORE, gate) is False
+        assert verdict_for(None, gate) is None, (
+            "an unknown verdict must stay undecided, never read as a failure"
+        )
+
 
 class TestBuildJudgeRecords:
     """The pairing of scored scenarios to judge rows, before any database."""
@@ -973,13 +1069,14 @@ class TestBuildJudgeRecords:
 
         assert build_judge_records([]) == []
 
-    def test_a_scenario_the_judge_scored_on_one_dimension_still_gets_four_rows(self):
-        from app.services.eval_service import build_judge_records
+    def test_a_scenario_the_judge_scored_on_one_dimension_still_gets_every_row(self):
+        from app.services.eval_service import METRIC_KEYS, build_judge_records
 
         records = build_judge_records([{"scenario_id": "s1", "faithfulness": 0.9}])
 
-        assert len(records) == 4
-        assert [r.score for r in records] == [0.9, None, None, None]
+        assert len(records) == len(METRIC_KEYS)
+        assert [r.metric for r in records] == list(METRIC_KEYS)
+        assert [r.score for r in records] == [0.9] + [None] * (len(METRIC_KEYS) - 1)
 
 
 
@@ -2033,13 +2130,16 @@ class TestRunRagasEvalAttribution:
         # rewritten question and the other three are not. This double ignores it
         # because these tests are about attribution, but it has to ACCEPT it or
         # they would be passing against a signature the producer no longer has.
-        async def _fake_score_samples(metrics, samples, resolved_inputs=None):  # noqa: ARG001
+        async def _fake_score_samples(
+            metrics, samples, resolved_inputs=None, relevance_ledger=None  # noqa: ARG001
+        ):
             return frame.to_dict("records")
 
         monkeypatch.setattr(
             eval_service, "_build_instructor_llm", _fake_ragas_instructor_llm
         )
         monkeypatch.setattr(eval_service, "_VoyageRagasEmbedding", _FakeRagasEmbedding)
+        monkeypatch.setattr(eval_service, "judge_relevance", _fake_relevance_judge)
         monkeypatch.setattr(eval_service, "_score_samples", _fake_score_samples)
         return eval_service.run_ragas_eval(scenarios, ledger())
 
@@ -2224,8 +2324,13 @@ def _record_judge_records(scores=None):
     """The judge records for the two golden rows the report says scored.
 
     Built through `build_judge_records`, so the verdicts are the ones the shipped
-    writer reaches. 0.8 faithfulness against a 0.90 gate is a FAILED scenario,
+    writer reaches. 0.79 faithfulness against the 0.80 gate is a FAILED scenario,
     which is what the counts below say.
+
+    0.8 UNTIL #274, AND THAT NUMBER STOPPED BEING THE REASON. The gate moved to
+    0.80 and 0.8 sits exactly on it, so faithfulness passed and the scenario went
+    on failing for the relevancy verdict alone. The stated reason has to be the
+    operative one, or a change to either gate silently re-aims this fixture.
     """
     from app.services.eval_service import build_judge_records
 
@@ -2235,8 +2340,8 @@ def _record_judge_records(scores=None):
         else [
             {
                 "scenario_id": scenario_id,
-                "faithfulness": 0.8,
-                "answer_relevancy": 0.6,
+                "faithfulness": 0.79,
+                "answer_relevancy": 0.0,
                 "context_precision": 0.5,
                 "context_recall": 0.4,
             }
@@ -2424,13 +2529,36 @@ class TestBuildEvalResult:
 
         assert _built().context_proxy_version == CONTEXT_PROXY_VERSION
 
-    def test_the_judge_identity_is_the_one_the_four_routes_agree_on(self):
+    def test_a_run_scored_by_two_instruments_names_no_single_judge(self):
+        """None, and it is the honest answer rather than a regression (#274).
+
+        A run's records used to name one Judge because ragas authored every
+        prompt. `relevance_judge` authors its own, so the gated pair is two
+        instruments and `run_judge_identity` refuses to report either as the
+        Judge behind the run. The per-metric identity on each `eval_results` row
+        is finer grained and is what a calibration joins on.
+
+        WHAT THE DEPLOY SUMMARY READS INSTEAD is `judge_identities`, one per
+        gated dimension, and the calibration artifact carries one record per
+        dimension to be matched against it. Neither refuses a deploy: the
+        calibration key is reported and not gated (#54,
+        `deployment_service._calibration_block`).
+        """
         from app.services.eval_service import judge_identity_for
 
-        assert _built().judge_identity == judge_identity_for("faithfulness")
+        built = _built()
+        assert built.judge_identity is None
+        assert judge_identity_for("faithfulness") != judge_identity_for(
+            "answer_relevancy"
+        )
+        assert set(built.judge_identities) == {"faithfulness", "answer_relevancy"}
+        assert built.judge_identities["answer_relevancy"].prompt_version == (
+            "relevance-judge-v1"
+        )
+        assert built.judge_identities["faithfulness"].prompt_version.startswith("ragas-")
 
     def test_the_verdict_counts_reach_the_record_per_dataset(self):
-        """Both golden rows scored 0.8 against a 0.90 gate, so both failed."""
+        """Both golden rows scored 0.79 against the 0.80 gate, so both failed."""
         golden = _built().datasets["golden"]
         assert (
             golden.scenarios_passed,
@@ -2927,20 +3055,28 @@ class TestTheRewritesReachTheScoringLoop:
         ]
         handed = {}
 
-        async def _capture_score_samples(metrics, samples, resolved_inputs=None):  # noqa: ARG001
+        async def _capture_score_samples(
+            metrics, samples, resolved_inputs=None, relevance_ledger=None  # noqa: ARG001
+        ):
             handed["resolved_inputs"] = resolved_inputs
             handed["sample_count"] = len(samples)
+            handed["relevance_ledger"] = relevance_ledger
             return []
 
         monkeypatch.setattr(
             eval_service, "_build_instructor_llm", _fake_ragas_instructor_llm
         )
         monkeypatch.setattr(eval_service, "_VoyageRagasEmbedding", _FakeRagasEmbedding)
+        monkeypatch.setattr(eval_service, "judge_relevance", _fake_relevance_judge)
         monkeypatch.setattr(eval_service, "_score_samples", _capture_score_samples)
 
         eval_service.run_ragas_eval(scenarios, ledger())
 
         assert handed["sample_count"] == 3
+        assert handed["relevance_ledger"] is not None, (
+            "the relevance Judge was not given a ledger, so the gated column "
+            "would have been left unscored (#274)"
+        )
         assert handed["resolved_inputs"] == [
             "How do I start Mellow's dev server?",
             None,

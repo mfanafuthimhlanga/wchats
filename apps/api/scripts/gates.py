@@ -183,7 +183,10 @@ LIZARD_BASELINE = {
     ("app/api/v1/documents.py", "get_document_detail"): (12, 133),
     ("app/api/v1/documents.py", "upload_documents"): (15, 188),
     ("app/api/v1/evals.py", "get_eval_run_results"): (16, 98),
-    ("app/api/v1/evals.py", "list_eval_runs"): (13, 87),
+    # 13/87 to 12/84: #274 gave the listing a kind filter and a read ladder, so
+    # the ledger round trip went to `_fetch_ledger` and the rendering to
+    # `_rendered_runs`.
+    ("app/api/v1/evals.py", "list_eval_runs"): (12, 84),
     ("app/api/v1/pending_confirmations.py", "resolve_pending_confirmation"): (8, 177),
     ("app/api/v1/query.py", "post_agent_query"): (3, 77),
     ("app/api/v1/red_team.py", "_contain_finding_sync"): (6, 64),
@@ -217,7 +220,10 @@ LIZARD_BASELINE = {
     ("app/services/digest_service.py", "_collect_digest_stats"): (10, 70),
     ("app/services/eval_service.py", "build_eval_run_config"): (11, 191),
     ("app/services/eval_service.py", "insert_eval_run"): (4, 62),
-    ("app/services/eval_service.py", "run_ragas_eval"): (11, 153),
+    # 11/153 to 6/125: #274 lifted the metric assembly into `_judge_samples` and
+    # the attribution into `_attributed`, because the function gained a second
+    # instrument to build and choosing what to spend money on is its own job.
+    ("app/services/eval_service.py", "run_ragas_eval"): (6, 125),
     ("app/services/eval_service.py", "summarise_agent_invocation"): (31, 186),
     ("app/services/eval_service.py", "summarise_run_validity"): (13, 108),
     ("app/services/eval_service.py", "update_eval_run_config"): (4, 70),

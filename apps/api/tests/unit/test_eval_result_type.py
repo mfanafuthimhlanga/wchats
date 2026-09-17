@@ -624,6 +624,9 @@ class TestThePayloadRoundTrips:
             "agent_id",
             "prompt_version_id",
             "judge_identity",
+            # Added by #274: one Judge per GATED dimension, because the run-level
+            # field is null on every run scored by two instruments.
+            "judge_identities",
             "requested_model",
             "served_model",
             "invocation",

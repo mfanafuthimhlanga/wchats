@@ -266,6 +266,9 @@ class Settings(BaseSettings):
     OPENAI_API_KEY_JUDGE_ANSWER_RELEVANCY: str = ""
     OPENAI_API_KEY_JUDGE_CONTEXT_PRECISION: str = ""
     OPENAI_API_KEY_JUDGE_CONTEXT_RECALL: str = ""
+    # Added by #274. One call per scored row, the same batch shape the four
+    # above have.
+    OPENAI_API_KEY_JUDGE_RELEVANCE: str = ""
     VOYAGE_API_KEY: str
     # M3: Cohere reranker fallback (RET-05); optional so existing envs are not broken
     COHERE_API_KEY: str | None = None
@@ -314,8 +317,20 @@ class Settings(BaseSettings):
     # M5: Verified-QA confidence threshold — auditor confidence must meet this to enqueue candidate
     VERIFIED_QA_CONFIDENCE_THRESHOLD: float = 0.90
 
-    # M6: Eval system thresholds — Ragas metric promotion gates + retrieval cache
-    EVAL_FAITHFULNESS_THRESHOLD: float = 0.90
+    # M6: Eval system thresholds. Deploy gates, and the retrieval cache.
+    #
+    # 0.90 to 0.80 on 2026-09-15 (#274, ADR 0013). The owner labelled run
+    # 0a99f7ab and passed seven rows the faithfulness Judge failed. Their scores
+    # run from 0.56 to 0.89, all of them under 0.90 and six of them at or above
+    # 0.80, so 0.80 is the number that keeps the Judge's real failures and stops
+    # calling a grounded answer ungrounded because one clause paraphrased the
+    # chunk. It is not a round number chosen for comfort; it is where that run's
+    # disagreements sit.
+    EVAL_FAITHFULNESS_THRESHOLD: float = 0.80
+    # The gate `relevance_judge` writes against since #274. Its Judge returns 1.0
+    # for pass and 0.0 for fail, so this no longer picks a point on a similarity
+    # scale: it only has to sit between the two for the stored verdict to be the
+    # Judge's own. Any value in (0, 1] does that.
     EVAL_RELEVANCY_THRESHOLD: float = 0.90
     VERIFIED_QA_HIT_THRESHOLD: float = 0.93
 

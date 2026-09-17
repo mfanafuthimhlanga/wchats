@@ -68,6 +68,16 @@ class _SleepingMetric:
             self.finished.append(user_input)
 
 
+def _paired(*metrics) -> list[tuple[str, object]]:
+    """(column, metric) pairs, the shape `_score_samples` takes since #274.
+
+    The column and the metric's `.name` are the same string for every metric
+    these tests build; they differ in production on one row, where ragas answer
+    relevancy fills `ragas_answer_relevancy`.
+    """
+    return [(metric.name, metric) for metric in metrics]
+
+
 def _samples(n: int) -> list[_Sample]:
     return [_Sample(user_input="q" * (i + 1), reference=f"r{i}") for i in range(n)]
 
@@ -76,7 +86,7 @@ class TestSamplesScoreConcurrentlyUnderABound:
     def test_eight_samples_at_a_bound_of_four_reach_four_in_flight(self):
         metric = _SleepingMetric()
 
-        rows = asyncio.run(_score_samples([metric], _samples(8), concurrency=4))
+        rows = asyncio.run(_score_samples(_paired(metric), _samples(8), concurrency=4))
 
         assert metric.peak == 4, f"peak in flight was {metric.peak}, the bound is 4"
         assert len(rows) == 8
@@ -84,7 +94,7 @@ class TestSamplesScoreConcurrentlyUnderABound:
     def test_a_bound_of_one_is_the_old_sequential_run(self):
         metric = _SleepingMetric()
 
-        asyncio.run(_score_samples([metric], _samples(3), concurrency=1))
+        asyncio.run(_score_samples(_paired(metric), _samples(3), concurrency=1))
 
         assert metric.peak == 1
 
@@ -92,7 +102,7 @@ class TestSamplesScoreConcurrentlyUnderABound:
         metric = _SleepingMetric(shorter_inputs_take_longer=True)
         in_sample_order = ["q" * (i + 1) for i in range(6)]
 
-        rows = asyncio.run(_score_samples([metric], _samples(6), concurrency=3))
+        rows = asyncio.run(_score_samples(_paired(metric), _samples(6), concurrency=3))
 
         assert metric.finished != in_sample_order, "the samples finished in order, so this proves nothing"
         assert [r["user_input"] for r in rows] == in_sample_order
@@ -102,7 +112,7 @@ class TestSamplesScoreConcurrentlyUnderABound:
         monkeypatch.setattr(eval_service.settings, "EVAL_SCORING_CONCURRENCY", 2)
         metric = _SleepingMetric()
 
-        asyncio.run(_score_samples([metric], _samples(5)))
+        asyncio.run(_score_samples(_paired(metric), _samples(5)))
 
         assert metric.peak == 2
 
@@ -110,7 +120,7 @@ class TestSamplesScoreConcurrentlyUnderABound:
         faithfulness = _SleepingMetric(fail_on="qq")
         relevancy = _SleepingMetric(name="answer_relevancy")
 
-        rows = asyncio.run(_score_samples([faithfulness, relevancy], _samples(3), concurrency=3))
+        rows = asyncio.run(_score_samples(_paired(faithfulness, relevancy), _samples(3), concurrency=3))
 
         assert [r["faithfulness"] for r in rows] == [1.0, None, 3.0]
         assert [r["answer_relevancy"] for r in rows] == [1.0, 2.0, 3.0]
@@ -132,7 +142,7 @@ class TestTheRunSaysHowFarItGot:
         monkeypatch.setattr(eval_service, "log", _Log())
         monkeypatch.setattr(eval_service, "_SCORING_PROGRESS_EVERY", 2)
 
-        asyncio.run(_score_samples([_SleepingMetric()], _samples(5), concurrency=5))
+        asyncio.run(_score_samples(_paired(_SleepingMetric()), _samples(5), concurrency=5))
 
         assert [f["scored"] for f in seen] == [2, 4, 5], "every second sample and the last one"
         assert all(f["of"] == 5 for f in seen)
@@ -143,7 +153,7 @@ class TestTheRunSaysHowFarItGot:
 def test_a_bound_below_one_still_scores_one_at_a_time(bound):
     metric = _SleepingMetric()
 
-    rows = asyncio.run(_score_samples([metric], _samples(2), concurrency=bound))
+    rows = asyncio.run(_score_samples(_paired(metric), _samples(2), concurrency=bound))
 
     assert metric.peak == 1
     assert len(rows) == 2

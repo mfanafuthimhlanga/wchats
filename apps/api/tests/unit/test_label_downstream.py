@@ -173,12 +173,11 @@ def _sync_db(mock_db):
     return _ctx
 
 
-_METRICS = (
-    "faithfulness",
-    "answer_relevancy",
-    "context_precision",
-    "context_recall",
-)
+#: The columns this file's score double fills, read off the service rather than
+#: listed, so a metric added there (#274 added `ragas_answer_relevancy`) does not
+#: leave one column silently unobserved while the assertions below count
+#: observations per metric.
+_METRICS = eval_service.METRIC_KEYS
 
 
 def _wire(monkeypatch, *, exploratory_rows, silent_ids=(), scores_by_id=None):

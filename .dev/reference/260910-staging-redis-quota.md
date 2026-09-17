@@ -134,3 +134,7 @@ parked service shows `REMOVED`, and anything `BUILDING` or `SUCCESS` is about to
 
 One `PING` confirms the allowance survived the window. On 2026-09-12 it returned True after
 about twenty minutes of uptime across four deploys, which is roughly 5,000 of the 500,000.
+
+`INFO stats` `total_commands_processed` is per node, not an account figure. Three reads on
+2026-09-14 gave 455803, 455805, then 507159 from a different node, so the number can go
+down between probes. `PING` succeeding or raising is the only quota reading the probe has.
