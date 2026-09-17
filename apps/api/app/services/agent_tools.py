@@ -1162,6 +1162,11 @@ async def escalate_to_human_tool(args: dict[str, Any]) -> dict[str, Any]:
     "clarify",
     (
         "Ask the customer a clarifying question when the query is ambiguous. "
+        "Calling this ENDS your turn: the question text is the entire reply the "
+        "customer sees, nothing is added to it, and any text you write alongside "
+        "the call is discarded. Put everything the customer should read inside "
+        "`question`, including a short list of the candidates you are choosing "
+        "between when naming them helps. Do not answer in the same turn. "
         "Use at most twice per conversation before escalating to a human."
     ),
     {
@@ -1169,15 +1174,44 @@ async def escalate_to_human_tool(args: dict[str, Any]) -> dict[str, Any]:
         "properties": {
             "question": {
                 "type": "string",
-                "description": "The clarifying question to ask the customer.",
+                "description": (
+                    "The whole reply the customer will see. A question, optionally "
+                    "with the candidates listed under it."
+                ),
             }
         },
         "required": ["question"],
     },
 )
 async def clarify_tool(args: dict[str, Any]) -> dict[str, Any]:
-    """Return the clarifying question as the agent's response text."""
-    return {"content": [{"type": "text", "text": args["question"]}]}
+    """Return the clarifying question as the agent's response text.
+
+    THE ARGUMENT IS VALIDATED BECAUSE THE MODEL WRITES IT AND THE CUSTOMER READS
+    IT. `agent_loop` serves this text verbatim and ends the turn on it (#280), so
+    the two ways it can be unservable are refused here, where the model can read
+    why and call again.
+
+    A non-string `question` used to reach `wire_text`, whose `str.join` raised
+    TypeError out of `_run_tool_call`. Nothing catches that, so a model sending
+    `{"question": 3}` killed the whole customer turn. A blank one served an empty
+    bubble and the eval dropped the row.
+    """
+    question = args.get("question")
+    if not isinstance(question, str) or not question.strip():
+        log.warning("clarify.question_unservable", question_type=type(question).__name__)
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "clarify needs `question` to be a non-empty string. It is the "
+                        "whole reply the customer reads."
+                    ),
+                }
+            ],
+            "is_error": True,
+        }
+    return {"content": [{"type": "text", "text": question}]}
 
 
 # ---------------------------------------------------------------------------

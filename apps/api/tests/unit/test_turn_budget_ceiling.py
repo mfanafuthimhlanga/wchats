@@ -300,10 +300,15 @@ async def _drive(
             finish_reason="tool_calls",
         )
     ]
+    # `lookup_structured` and not `clarify`, since #280. A clarify call now ends
+    # the turn on the question, so a script built out of them prices two model
+    # calls rather than the six this worst case is about.
     replies += [
         _completion(
             content=answer,
-            tool_calls=[_tool_call(f"clarify-{index}", "clarify", '{"question": "which order?"}')],
+            tool_calls=[
+                _tool_call(f"lookup-{index}", "lookup_structured", '{"table": "orders"}')
+            ],
             finish_reason="tool_calls",
         )
         for index in range(MAX_MODEL_CALLS_PER_TURN - 2)

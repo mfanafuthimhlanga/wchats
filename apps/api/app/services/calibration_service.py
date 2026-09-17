@@ -82,19 +82,29 @@ MAX_ARTIFACT_BYTES = 1024 * 1024
 
 
 def load_calibration_status(
-    path: str | os.PathLike, identity: JudgeIdentity | None
+    path: str | os.PathLike, identities: Mapping[str, JudgeIdentity] | None
 ) -> CalibrationStatus:
-    """What the calibration artifact says about `identity`, or why it says nothing.
+    """What the calibration artifact says about this run's Judges, or why nothing.
+
+    PER DIMENSION SINCE #274. A run is scored by two instruments, ragas
+    faithfulness and the relevance Judge, so one identity cannot describe it and
+    `EvalResult.judge_identity` is null on every run from that ticket. The
+    artifact is an envelope of one record per gated dimension, and this matches
+    each stored dimension against the Judge that run used for it. An envelope
+    whose every dimension matches and is calibrated comes back calibrated.
 
     Args:
-        path:     where the artifact is, normally `settings.CALIBRATION_ARTIFACT_PATH`.
-        identity: the one Judge this run used, or None when it had no single one.
+        path:       where the artifact is, normally
+                    `settings.CALIBRATION_ARTIFACT_PATH`.
+        identities: metric to the Judge this run used for it, from
+                    `eval_service.run_judge_identities`. None when the run could
+                    not name one for every gated metric.
 
     Returns:
-        The stored record when the artifact matches `identity`, and
+        The stored envelope when every gated dimension matches, and
         `CalibrationStatus.absent(reason)` for every other outcome. Never raises.
     """
-    if identity is None:
+    if not identities:
         return CalibrationStatus.absent("no_single_judge_identity")
 
     artifact = Path(path)
@@ -121,10 +131,41 @@ def load_calibration_status(
         )
         return CalibrationStatus.absent("invalid")
 
-    absence = _judge_absence(record.judge_identity, identity)
+    absence = _envelope_absence(record, identities)
     if absence is not None:
         return CalibrationStatus.absent(absence)
     return record
+
+
+def _envelope_absence(
+    record: CalibrationStatus, identities: Mapping[str, JudgeIdentity]
+) -> str | None:
+    """Why the artifact is not about this run's Judges, or None when it is.
+
+    EVERY GATED DIMENSION OR NONE OF THEM. A dimension the artifact does not
+    carry is `artifact_names_no_judge`: the figure covers the dimensions it
+    measured, and a gate reading a calibrated envelope that is silent about
+    faithfulness would be trusting a Judge nobody scored.
+
+    A version 1 artifact has no `dimensions` at all and reaches the same answer
+    through the same branch, which is what its `artifact_version` bump is for.
+    """
+    stored = record.dimensions or {}
+    for metric, identity in identities.items():
+        part = stored.get(metric)
+        if part is None:
+            log.warning(
+                "calibration_artifact_names_no_judge",
+                metric=metric,
+                run_model=identity.model,
+                run_reasoning_effort=identity.reasoning_effort,
+                run_prompt_version=identity.prompt_version,
+            )
+            return "artifact_names_no_judge"
+        absence = _judge_absence(part.judge_identity, identity)
+        if absence is not None:
+            return absence
+    return None
 
 
 def _absent_artifact(artifact: Path) -> str:

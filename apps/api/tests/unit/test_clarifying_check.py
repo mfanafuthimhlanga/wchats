@@ -30,8 +30,28 @@ class TestTheAgentsVerdictComesOffTheToolLog:
         assert turn_asked_to_clarify(log) is True
 
     def test_asking_and_then_retrieving_and_answering_anyway_is_answering(self):
+        """The shape that made five of run 735fb9fa's ambiguous rows fail."""
         log = [{"tool_name": "clarify", "result": "?"}, {"tool_name": "retrieve", "result": "..."}]
         assert turn_asked_to_clarify(log) is False
+
+    def test_a_stored_row_the_current_loop_could_not_write_still_reads_as_answering(self):
+        """The False branch survives #280, because the rule reads STORED evidence.
+
+        `agent_loop` ends a turn on a successful clarify and sorts a clarify to
+        the end of its own reply's batch, so a turn served today cannot produce
+        `clarify` then `retrieve`. Four sources still can. A `tool_calls` row
+        written before #280, a trace `mine_production_scenarios` pulls back, a
+        replayed conversation, and a red-team transcript. The rule is a reading
+        of a log rather than an assertion about the writer, so it must keep
+        deciding this shape rather than assume the loop prevents it.
+        """
+        stored = [
+            {"tool_name": "clarify", "input": {"question": "Which project?"}},
+            {"tool_name": "retrieve", "input": {"query": "dev server"}, "result": "pnpm dev"},
+            {"tool_name": "retrieve", "input": {"query": "port"}, "result": "3000"},
+        ]
+
+        assert turn_asked_to_clarify(stored) is False
 
     def test_a_turn_with_no_tool_calls_is_not_asking(self):
         """Free text is never read for the agent: 'Anything else?' is an answer."""

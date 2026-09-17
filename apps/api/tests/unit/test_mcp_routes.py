@@ -53,6 +53,7 @@ EXPECTED_TOOL_NAMES = [
     "trigger_eval",
     "list_eval_runs",
     "get_eval_results",
+    "rejudge_eval_run",
     "trigger_red_team",
     "list_red_team_runs",
     "get_red_team_run",
@@ -124,7 +125,7 @@ def _override_outer_auth(tenant: Tenant) -> None:
 
 
 class TestToolsList:
-    async def test_lists_the_twenty_tools_in_deterministic_order(self):
+    async def test_lists_the_twenty_one_tools_in_deterministic_order(self):
         tenant = _make_fake_tenant()
         _override_outer_auth(tenant)
         try:
@@ -493,10 +494,10 @@ class TestQueryParams:
 
 
 class TestToolTable:
-    def test_twenty_tools_with_legal_unique_names(self):
+    def test_twenty_one_tools_with_legal_unique_names(self):
         names = [t.name for t in TOOLS]
-        assert len(names) == 20
-        assert len(set(names)) == 20
+        assert len(names) == 21
+        assert len(set(names)) == 21
         for name in names:
             assert re.fullmatch(r"[A-Za-z0-9_.\-]{1,128}", name)
 
