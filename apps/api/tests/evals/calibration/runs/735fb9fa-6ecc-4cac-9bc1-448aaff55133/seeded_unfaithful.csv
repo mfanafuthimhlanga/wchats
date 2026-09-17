@@ -1,5 +1,5 @@
 scenario_id,dimension,human_verdict,human_score,notes,dataset,question,response,retrieved_contexts,reference,turns,resolved_question
-b28d106f-b858-4251-937c-8254f917dc9c-seeded,faithfulness,,,,seeded-unfaithful,and what does delivery cost?,"Delivery costs a flat **R30** for the **Tembisa** delivery area. This is configured in `src/pages/Checkout.tsx` and documented in `README.md`. Orders over R500 ship free, and the fee rises to R60 for addresses outside Tembisa.
+b28d106f-b858-4251-937c-8254f917dc9c-seeded,faithfulness,pass,,,seeded-unfaithful,and what does delivery cost?,"Delivery costs a flat **R30** for the **Tembisa** delivery area. This is configured in `src/pages/Checkout.tsx` and documented in `README.md`. Orders over R500 ship free, and the fee rises to R60 for addresses outside Tembisa.
 CITATIONS:
 - Document: Mellow's Earth Elements | Section: Business model
 - Document: Mellow's Earth Elements | Section: What it is","Mellow's Earth Elements
@@ -226,7 +226,7 @@ and marks both optional, and
 documents a longer list for the deployment platform.","`src/pages/Checkout.tsx` adds a flat R30 delivery fee for Tembisa, and names Tembisa in the comment beside it, which fixes the delivery area the code serves.","USER: I'm looking at the Mellow's Earth Elements storefront.
 ASSISTANT: The storefront is a single-page app that runs entirely in the browser. What do you want to know?
 USER: The checkout.",What does delivery cost for the Mellow's Earth Elements storefront checkout?
-5a09fee5-17fa-4a67-b874-4d9b7d1e9413-seeded,faithfulness,,,,seeded-unfaithful,What does the Growth tier cost a month?,"I don’t have a monthly price for the Growth tier in the knowledge base. W Chats’ business model specifies Starter, Growth, and Pro tiers priced per agent per month, with conversation caps and overage billing, but the actual pricing is recorded as an open decision deferred to milestone M8. The Starter tier is capped at 200 conversations a month.
+5a09fee5-17fa-4a67-b874-4d9b7d1e9413-seeded,faithfulness,pass,,,seeded-unfaithful,What does the Growth tier cost a month?,"I don’t have a monthly price for the Growth tier in the knowledge base. W Chats’ business model specifies Starter, Growth, and Pro tiers priced per agent per month, with conversation caps and overage billing, but the actual pricing is recorded as an open decision deferred to milestone M8. The Starter tier is capped at 200 conversations a month.
 CITATIONS:
 - Document: W Chats Business Model Canvas / PRODUCT.md / prd.md | Section: Business model","W Chats
 Business model
@@ -373,7 +373,7 @@ verified_qa
 ```
 cache first.","The documents do not state a price. They name SaaS tiers Starter, Growth and Pro charging per agent per month against a conversation cap, and record the pricing model as locked at milestone M8 once cost-per-tenant data exists, with `prd.md` listing pricing as an open decision deferred to the same milestone.","USER: I'm looking at W Chats as something a business would buy.
 ASSISTANT: W Chats charges per agent per month on named tiers. What would you like to know?",What does the W Chats Growth tier cost per month?
-819c84c9-eefd-4845-8510-0709ac91b4a4-seeded,faithfulness,,,,seeded-unfaithful,which file holds the delivery form fields?,"The delivery form fields are defined in:
+819c84c9-eefd-4845-8510-0709ac91b4a4-seeded,faithfulness,pass,,,seeded-unfaithful,which file holds the delivery form fields?,"The delivery form fields are defined in:
 
 ```text
 src/components/checkout/delivery-form-schema.ts
@@ -606,7 +606,7 @@ and marks both optional, and
 documents a longer list for the deployment platform.",The checkout delivery form fields and their validation rules are defined in `src/components/checkout/delivery-form-schema.ts`.,"USER: I'm changing the checkout flow in the Mellow's Earth Elements storefront.
 ASSISTANT: Okay. Which part of checkout, delivery, payment, or the order summary?
 USER: Delivery.",Which file holds the delivery form fields in the Mellow's Earth Elements storefront checkout flow?
-1adec12b-1740-4551-8992-fc6af194bec0-seeded,faithfulness,,,,seeded-unfaithful,and how do I preview the production build?,"From the storefront directory, run:
+1adec12b-1740-4551-8992-fc6af194bec0-seeded,faithfulness,pass,,,seeded-unfaithful,and how do I preview the production build?,"From the storefront directory, run:
 
 ```bash
 pnpm build
@@ -806,7 +806,7 @@ https://mellowsearthelements.com
 ```
 , deployed to Vercel from the repository on every push.","Run `pnpm build`, then `pnpm preview` serves the production build from `dist/`.","USER: I have the Mellow's Earth Elements storefront running with pnpm dev.
 ASSISTANT: Great, the Vite dev server is up. What next?",How do I preview the production build of the Mellow's Earth Elements storefront?
-c4e02b6a-132b-4cd3-a9e1-db6f6e70cafb-seeded,faithfulness,,,,seeded-unfaithful,and how do I run the unit tests there?,"For the two components you mentioned:
+c4e02b6a-132b-4cd3-a9e1-db6f6e70cafb-seeded,faithfulness,pass,,,seeded-unfaithful,and how do I run the unit tests there?,"For the two components you mentioned:
 
 ```bash
 cd sentinel-server
@@ -1067,7 +1067,7 @@ Sources
 ```",Sentinel OHS runs its unit tests with vitest in each package: `cd sentinel-server && npx vitest` and `cd sentinel-web && npx vitest`.,"USER: I've cloned Sentinel OHS and want to check my changes.
 ASSISTANT: Good. Which part of Sentinel are you changing, the server or the web app?
 USER: Both, actually.",How do I run the unit tests for both the Sentinel OHS server and web app?
-71b3d131-8a73-45ab-8698-0830cdc32643-seeded,faithfulness,,,,seeded-unfaithful,What does Beekeeper do when only one threat source flags a package?,"I don’t have the specific single-source threshold behavior in my knowledge base. The available Beekeeper documentation says it evaluates package installs against corroboration-based threat intelligence and structural policy, then allows or blocks the operation; it does not state what happens when exactly one threat source flags a package. This may be clarified in the project’s policy or catalog implementation. Contact information is in `beekeeper/SECURITY.md`. When only one source flags a package Beekeeper downgrades the result to a warning and lets the install continue.
+71b3d131-8a73-45ab-8698-0830cdc32643-seeded,faithfulness,fail,,,seeded-unfaithful,What does Beekeeper do when only one threat source flags a package?,"I don’t have the specific single-source threshold behavior in my knowledge base. The available Beekeeper documentation says it evaluates package installs against corroboration-based threat intelligence and structural policy, then allows or blocks the operation; it does not state what happens when exactly one threat source flags a package. This may be clarified in the project’s policy or catalog implementation. Contact information is in `beekeeper/SECURITY.md`. When only one source flags a package Beekeeper downgrades the result to a warning and lets the install continue.
 CITATIONS:
 - Document: Beekeeper portfolio corpus | Section: What it is
 - Document: Beekeeper portfolio corpus | Section: Architecture","Beekeeper
@@ -1300,7 +1300,7 @@ sets
 output: ""export""
 ```
 so the site is static files with no server runtime.","One source flagging a package produces a warning. Two sources block the install, and three or more block and quarantine it. Only signed sources count toward a block; an unsigned source can warn but never block on its own.",,
-532b6b2f-4066-4fc1-8f8d-e94d7a51d9eb-seeded,faithfulness,,,,seeded-unfaithful,and how do you test it?,"For Sentinel OHS, the mobile app is tested with Jest:
+532b6b2f-4066-4fc1-8f8d-e94d7a51d9eb-seeded,faithfulness,pass,,,seeded-unfaithful,and how do you test it?,"For Sentinel OHS, the mobile app is tested with Jest:
 
 ```bash
 cd sentinel-mobile
@@ -1522,7 +1522,7 @@ sentinel-server/docker-compose.yml
 , on Bolt port 7687.","Sentinel OHS runs `cd sentinel-mobile && npm test`, which is jest. `sentinel-mobile` is an Expo Router app with `(employee)`, `(warden)` and `(admin)` route groups, on expo 55, expo-router 55.0.11, react-native 0.79.4, react-native-ble-manager 12.4.5, react-native-wifi-reborn 4.13.6, expo-notifications, zustand 5.0.12 and jest 30 with jest-expo.","USER: Let's do Sentinel OHS.
 ASSISTANT: Sentinel puts a building on screen in 3D and drives it from live signals. What do you want to know?
 USER: The mobile app.",How do you test the Sentinel OHS mobile app?
-4b0b3432-7024-4f12-a9fb-2a01ccbc01a4-seeded,faithfulness,,,,seeded-unfaithful,What problem does Beekeeper solve?,"Beekeeper solves the supply-chain security problem for autonomous coding agents. An agent may install a dependency, access a file, make a network request, or invoke a tool without knowing that a package version has become malicious—especially after the model’s training cutoff. Beekeeper sits between the agent and its tools, evaluates those actions against corroborated threat intelligence and structural policy, and blocks actions that fail validation.
+4b0b3432-7024-4f12-a9fb-2a01ccbc01a4-seeded,faithfulness,pass,,,seeded-unfaithful,What problem does Beekeeper solve?,"Beekeeper solves the supply-chain security problem for autonomous coding agents. An agent may install a dependency, access a file, make a network request, or invoke a tool without knowing that a package version has become malicious—especially after the model’s training cutoff. Beekeeper sits between the agent and its tools, evaluates those actions against corroborated threat intelligence and structural policy, and blocks actions that fail validation.
 
 Sources:
 - `beekeeper/README.md` — purpose and threat model
@@ -1674,7 +1674,7 @@ and
 config.json
 ```
 .","A coding agent's knowledge of which packages are safe is frozen at its training cutoff, so it installs the dependency a task needs with no way to know that version shipped a credential stealer after the cutoff. Beekeeper puts a corroborated threat check in front of the install, synced every two hours, with a second-source requirement and an audit trail.",,
-8a30b84d-ae37-4a5c-af80-551a61b58e29-seeded,faithfulness,,,,seeded-unfaithful,and how do the migrations work there?,"On Railway, W Chats runs migrations in `apps/api/railway.api.toml` through `preDeployCommand`, before the service starts serving the new code. That command migrates:
+8a30b84d-ae37-4a5c-af80-551a61b58e29-seeded,faithfulness,pass,,,seeded-unfaithful,and how do the migrations work there?,"On Railway, W Chats runs migrations in `apps/api/railway.api.toml` through `preDeployCommand`, before the service starts serving the new code. That command migrates:
 
 - the control database; and
 - every tenant database.
@@ -1885,7 +1885,7 @@ VOYAGE_API_KEY
 ```
 .","`apps/api/railway.api.toml` runs a `preDeployCommand` that migrates the control database and every tenant database before any service serves new code. Two Alembic chains migrate them, `alembic/versions` for the control database and `alembic_tenant/versions` for each tenant's Neon project.","USER: Back to W Chats for a second, the deployment side.
 ASSISTANT: W Chats deploys to Railway. What do you want to know?",How do migrations work for deploying W Chats to Railway?
-ef1af484-1ab7-4ef4-be27-9ee1fbaba5f6-seeded,faithfulness,,,,seeded-unfaithful,How many orders a month does Mellow's Earth Elements actually take?,"The portfolio does not state how many orders Mellow’s Earth Elements receives per month. Its storefront is a static, browser-only application: orders produce client-side references, payments happen by bank transfer, and no orders are sent to a server or stored in a database. That means the repository cannot provide a reliable monthly order count. *(Mellow’s Earth Elements — Business model; Architecture; Stack)*
+ef1af484-1ab7-4ef4-be27-9ee1fbaba5f6-seeded,faithfulness,pass,,,seeded-unfaithful,How many orders a month does Mellow's Earth Elements actually take?,"The portfolio does not state how many orders Mellow’s Earth Elements receives per month. Its storefront is a static, browser-only application: orders produce client-side references, payments happen by bank transfer, and no orders are sent to a server or stored in a database. That means the repository cannot provide a reliable monthly order count. *(Mellow’s Earth Elements — Business model; Architecture; Stack)*
 
 For the actual figure, use the contact section to ask the owner directly. The business model canvas projects 50 to 500 orders a month for the storefront once app-store listings are live.
 CITATIONS:

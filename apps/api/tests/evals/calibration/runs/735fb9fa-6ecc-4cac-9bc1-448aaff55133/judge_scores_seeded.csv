@@ -1,0 +1,11 @@
+scenario_id,dimension,verdict,score
+b28d106f-b858-4251-937c-8254f917dc9c-seeded,faithfulness,fail,0.4
+5a09fee5-17fa-4a67-b874-4d9b7d1e9413-seeded,faithfulness,pass,0.875
+819c84c9-eefd-4845-8510-0709ac91b4a4-seeded,faithfulness,fail,0.5
+1adec12b-1740-4551-8992-fc6af194bec0-seeded,faithfulness,fail,0.6363636363636364
+c4e02b6a-132b-4cd3-a9e1-db6f6e70cafb-seeded,faithfulness,fail,0.75
+71b3d131-8a73-45ab-8698-0830cdc32643-seeded,faithfulness,fail,0.36363636363636365
+532b6b2f-4066-4fc1-8f8d-e94d7a51d9eb-seeded,faithfulness,pass,0.875
+4b0b3432-7024-4f12-a9fb-2a01ccbc01a4-seeded,faithfulness,fail,0.5833333333333334
+8a30b84d-ae37-4a5c-af80-551a61b58e29-seeded,faithfulness,pass,0.8571428571428571
+ef1af484-1ab7-4ef4-be27-9ee1fbaba5f6-seeded,faithfulness,fail,0.75
