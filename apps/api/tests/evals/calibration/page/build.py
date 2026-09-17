@@ -1,11 +1,17 @@
 """Build the labelling page for a run from its sheet.
 
-    python tests/evals/calibration/page/build.py runs/<run_id>/human_scores.csv out.html
+    python build.py <sheet.csv> <out.html> [--names "acme,widgetco"] [--rubrics rubrics.json]
 
 The page shows the question, the agent's answer sentence by sentence, and the
 retrieved text, and saves PASS or FAIL per row to the artifact's `labels`
 collection. Only the columns named in FIELDS reach the page: the verdict, score
 and notes columns stay behind, so the label is blind to any earlier pass.
+
+--names    words that appear in every passage of this project (the product name,
+           the company), so their overlap between answer and passage says nothing.
+--rubrics  JSON of {dimension: {title, short, text, anchors, notes}} to add to or
+           override the built-in faithfulness and answer_relevancy rubrics. A
+           dimension with no rubric gets a plain PASS/FAIL one.
 """
 
 import csv
@@ -18,7 +24,13 @@ FIELDS = ("scenario_id", "dimension", "dataset", "question", "response",
           "retrieved_contexts", "reference", "turns", "resolved_question")
 
 
-def build(sheet: pathlib.Path, out: pathlib.Path) -> tuple[list[str], int]:
+def _slot(html: str, slot: str, value) -> str:
+    if html.count(slot) != 1:
+        raise SystemExit(f"template.html needs exactly one {slot}")
+    return html.replace(slot, json.dumps(value, ensure_ascii=False).replace("</", "<\\/"))
+
+
+def build(sheet: pathlib.Path, out: pathlib.Path, names: list[str] = (), rubrics: dict | None = None) -> tuple[list[str], int]:
     with sheet.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         missing = [c for c in FIELDS if c not in (reader.fieldnames or [])]
@@ -33,22 +45,24 @@ def build(sheet: pathlib.Path, out: pathlib.Path) -> tuple[list[str], int]:
             raise SystemExit(f"{sheet} repeats {k}")
         seen.add(k)
 
-    template = (HERE / "template.html").read_text(encoding="utf-8")
-    if template.count("__ROWS__") != 1:
-        raise SystemExit("template.html needs exactly one __ROWS__")
-
-    blob = json.dumps(rows, ensure_ascii=False).replace("</", "<\\/")
-    out.write_text(template.replace("__ROWS__", blob), encoding="utf-8")
+    html = (HERE / "template.html").read_text(encoding="utf-8")
+    html = _slot(html, "__NAMES__", list(names))
+    html = _slot(html, "__RUBRICS__", rubrics or {})
+    html = _slot(html, "__ROWS__", rows)
+    out.write_text(html, encoding="utf-8")
     return sorted({r["dimension"] for r in rows}), len(rows)
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
+    if len(argv) < 2:
         print(__doc__)
         return 2
     sheet, out = pathlib.Path(argv[0]), pathlib.Path(argv[1])
-    dims, n = build(sheet, out)
-    print(f"rows: {n}  dimensions: {', '.join(dims)}  bytes: {out.stat().st_size}")
+    opts = dict(zip(argv[2::2], argv[3::2]))
+    names = [w.strip() for w in opts.get("--names", "").split(",") if w.strip()]
+    rubrics = json.loads(pathlib.Path(opts["--rubrics"]).read_text(encoding="utf-8")) if "--rubrics" in opts else None
+    dims, n = build(sheet, out, names, rubrics)
+    print(f"rows: {n}  dimensions: {', '.join(dims)}  names: {len(names)}  bytes: {out.stat().st_size}")
     return 0
 
 

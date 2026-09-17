@@ -183,6 +183,8 @@
 (function () {
   const ROWS = JSON.parse(document.getElementById("rows").textContent);
   const SCORE_NOTE = "PASS or FAIL is the label the calibration reads. The score is optional detail and changes nothing.";
+  // a project adds or overrides rubrics through build.py --rubrics; a dimension with no rubric gets a plain one
+  const RUBRIC_OVERRIDES = __RUBRICS__;
   const RUBRIC = {
     faithfulness: {
       title: "Faithfulness", short: "F",
@@ -196,6 +198,13 @@
       anchors: "how much of the question the response answers. 1 none · 3 about half · 5 all",
       notes: "notes, optional. What was asked versus what was answered"
     }
+  };
+  Object.assign(RUBRIC, RUBRIC_OVERRIDES);
+  const rubricOf = dim => RUBRIC[dim] || {
+    title: dim.replace(/_/g, " "), short: dim.slice(0, 1).toUpperCase(),
+    text: `PASS when the response meets the ${dim.replace(/_/g, " ")} rubric. FAIL when it does not.`,
+    anchors: "1 none · 3 about half · 5 all",
+    notes: "notes, optional"
   };
   // one screen per row, in the shuffled order the sheet arrived in
   const KEYS = { a: "pass", s: "fail" };
@@ -216,8 +225,8 @@
     "between during each every some such only also more most other same both been being does did doing done will would " +
     "should could may might must shall here where while because since though although upon among along around these " +
     "those very much many just like within without across toward towards doesn didn aren wasn weren hasn haven").split(" "));
-  const NAMES = new Set(("w chats wchats mellow mellows earth elements storefront sentinel ohs beekeeper interview volt " +
-    "agent project projects uses used using").split(" "));
+  // words that appear in every passage of this project, so their overlap says nothing. build.py --names
+  const NAMES = new Set(__NAMES__.map(w => w.toLowerCase()));
   const WORD_RE = () => /[A-Za-z0-9][A-Za-z0-9._\/-]*/g;
   const SENT_RE = () => /(?<=[.!?]["')\]]?)\s+(?=[*`"'(\[A-Z0-9])/g;
   const FENCE_RE = /^\s*```[A-Za-z0-9]*\s*$/;
@@ -602,8 +611,8 @@
     ol.innerHTML = items.map((it, i) => {
       const v = verdictOf(it);
       const here = i === current;
-      const dot = `<span class="dot ${v}" title="${RUBRIC[it.dim].title}${v ? ", " + v : ""}"></span>`;
-      return `<li><button type="button" class="row ${here ? "here" : ""}" data-i="${i}" tabindex="${here ? 0 : -1}"${here ? ` aria-current="true"` : ""}><span class="n">${i + 1}</span><span class="q"><small>${esc(RUBRIC[it.dim].title)} · ${esc(it.dataset)}${it.turns ? " · multi-turn" : ""}</small><span class="qt">${esc(questionOf(it))}</span></span><span class="dots">${dot}</span></button></li>`;
+      const dot = `<span class="dot ${v}" title="${rubricOf(it.dim).title}${v ? ", " + v : ""}"></span>`;
+      return `<li><button type="button" class="row ${here ? "here" : ""}" data-i="${i}" tabindex="${here ? 0 : -1}"${here ? ` aria-current="true"` : ""}><span class="n">${i + 1}</span><span class="q"><small>${esc(rubricOf(it.dim).title)} · ${esc(it.dataset)}${it.turns ? " · multi-turn" : ""}</small><span class="qt">${esc(questionOf(it))}</span></span><span class="dots">${dot}</span></button></li>`;
     }).join("");
     if (keepFocus !== null) { const back = ol.querySelector(`.row[data-i="${keepFocus}"]`); if (back) back.focus(); }
   }
@@ -620,7 +629,7 @@
 
   function renderItem() {
     const it = items[current];
-    const R = RUBRIC[it.dim];
+    const R = rubricOf(it.dim);
     const A = analyse(it);
     const el = document.getElementById("scenario");
     el.innerHTML = `
