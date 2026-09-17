@@ -1,4 +1,4 @@
-﻿"""Structural gates for apps/api. Standard library only, no dependencies.
+"""Structural gates for apps/api. Standard library only, no dependencies.
 
     python scripts/gates.py static  ruff, import contracts, complexity, source
                                     assertions, log bounds, process-wide keys.

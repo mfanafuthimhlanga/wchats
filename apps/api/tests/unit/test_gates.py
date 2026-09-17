@@ -1,4 +1,4 @@
-﻿"""Pins the standards the static gate enforces and holds all four baselines to a snapshot.
+"""Pins the standards the static gate enforces and holds all four baselines to a snapshot.
 
 scripts/ is not a package, so this loads gates.py by path.
 
