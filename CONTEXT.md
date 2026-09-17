@@ -38,6 +38,12 @@ _Avoid_: test case, prompt, sample.
 A single typed model call that scores one Agent turn on one dimension.
 _Avoid_: evaluator, grader, LLM-as-judge, and never "agent".
 
+**Claim**:
+One atomic statement the faithfulness Judge lifted from an Agent's answer, with whether it
+found that statement in the retrieved text and why. The faithfulness score is the share of
+Claims found; the Claims say which were not.
+_Avoid_: fact, assertion, sentence, hallucination.
+
 **Calibration**:
 Measuring a Judge against a human who labelled the same turns twice, so the Judge's agreement
 is read against the human's agreement with themself.

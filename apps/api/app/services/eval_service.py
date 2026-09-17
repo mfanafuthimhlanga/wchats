@@ -65,6 +65,7 @@ import time
 import uuid
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
+from typing import Any
 
 import pandas as pd
 import psycopg2
@@ -81,7 +82,6 @@ from ragas.metrics.collections import (
     AnswerRelevancy,
     ContextPrecision,
     ContextRecall,
-    Faithfulness,
 )
 from sqlalchemy import text as sa_text
 
@@ -108,11 +108,12 @@ from app.domain.eval_result import (
     run_level_metrics,
 )
 from app.domain.judge_identity import JUDGE_PROMPT_VERSION, JudgeIdentity
-from app.domain.judge_record import JudgeRecord, scenario_verdict
+from app.domain.judge_record import Claim, InvalidJudgeRecord, JudgeRecord, scenario_verdict
 from app.domain.model_call import ModelCall
 from app.services.clarifying_check import CLARIFYING_CHECK_KEY
 from app.services.embedding_ledger import EMBED_QUERY, VOYAGE_PROVIDER, record_embedding
 from app.services.embedding_service import EMBEDDING_MODEL, _get_vo
+from app.services.faithfulness_metric import FaithfulnessWithClaims, claims_of
 from app.services.judge_llm import build_judge_llm
 from app.services.relevance_judge import judge_relevance, relevance_identity
 
@@ -201,6 +202,21 @@ RAGAS_COLUMN_BY_METRIC: Mapping[str, str] = MappingProxyType({
 #: `(user_input, reference)`, so a row carrying a rewritten question would match
 #: no scenario and the whole run would come back unattributed.
 RESOLVED_INPUT_METRICS: tuple[str, ...] = ("ragas_answer_relevancy",)
+
+#: The one metric that decides claims, and the key a score row carries them
+#: under (#290). `_score_samples` writes the key, `_placed_score_rows` carries it
+#: and `build_judge_records` puts it on that metric's record. Absent, never
+#: None, on a row the judge decided no claims for.
+CLAIMS_METRIC = "faithfulness"
+CLAIMS_COLUMN = "faithfulness_claims"
+
+#: The most characters one claim's statement or reason keeps. Model-authored
+#: text over a customer-authored answer, so it is scrubbed for the sink and cut
+#: with a marker, the way `red_team.py` bounds its fields. The count of claims
+#: is bounded upstream by the judge's own completion cap
+#: (`judge_llm.JUDGE_MAX_COMPLETION_TOKENS`).
+CLAIM_FIELD_CHAR_CAP = 2000
+CLAIM_FIELD_CUT_MARKER = " [cut]"
 
 
 # ---------------------------------------------------------------------------
@@ -637,7 +653,7 @@ def threshold_for(metric: str) -> float | None:
 def build_judge_records(scenario_scores: Sequence[Mapping]) -> list[JudgeRecord]:
     """One JudgeRecord per (scenario, metric), from the judge's attributed rows.
 
-    Four records per scored scenario, in METRIC_KEYS order, and a metric the
+    Five records per scored scenario, in METRIC_KEYS order, and a metric the
     judge returned nothing for still gets one. Its score is None, its verdict is
     None, and the row exists. Skipping it would make an unscored dimension
     indistinguishable from a scenario nobody sent, and a reader counting rows per
@@ -652,23 +668,100 @@ def build_judge_records(scenario_scores: Sequence[Mapping]) -> list[JudgeRecord]
             row, each carrying `scenario_id` and a value or None per metric.
     """
     return [
-        JudgeRecord.scored(
-            scenario_id=str(score["scenario_id"]),
-            metric=metric,
-            score=score.get(metric),
-            threshold=threshold_for(metric),
-            judge_identity=judge_identity_for(metric),
-            # Which model_calls rows paid for this dimension. With the run id it
-            # is the whole reference the ledger can support: `_run_ledger` binds
-            # job_id to the run and each metric bills its own purpose, so the
-            # grain is the metric within the run and never the scenario. Tenant
-            # migration 0023's column comment says the same to a reader holding
-            # the catalogue instead of this file.
-            ledger_purpose=JUDGE_PURPOSE_BY_METRIC[metric],
-        )
-        for score in scenario_scores
-        for metric in METRIC_KEYS
+        _judge_record(score, metric) for score in scenario_scores for metric in METRIC_KEYS
     ]
+
+
+def _judge_record(score_row: Mapping, metric: str) -> JudgeRecord:
+    """One row's record for one metric, with its claims when they can be written.
+
+    THE CLAIMS DEGRADE PER CELL, THE WAY A FAILED JUDGE CALL DOES. `JudgeRecord`
+    refuses a blank statement and a list whose share of supported claims is not
+    the score beside it. Both are the judge misbehaving on one answer, and a
+    refusal raised out of here would fail the whole run after every agent turn
+    and judge call was paid for (the eval task does not retry a run whose agent
+    was invoked). So a refused list is logged and the record is written without
+    it: the score and the verdict land, the working does not, and the log line
+    says so. A refusal on any other metric, or on a faithfulness row that
+    carried no claims, is not this case and propagates.
+    """
+    scenario_id = str(score_row["scenario_id"])
+    fields: dict[str, Any] = {
+        "scenario_id": scenario_id,
+        "metric": metric,
+        "score": score_row.get(metric),
+        "threshold": threshold_for(metric),
+        "judge_identity": judge_identity_for(metric),
+        # Which model_calls rows paid for this dimension. With the run id it is
+        # the whole reference the ledger can support: `_run_ledger` binds job_id
+        # to the run and each metric bills its own purpose, so the grain is the
+        # metric within the run and never the scenario. Tenant migration 0023's
+        # column comment says the same to a reader holding the catalogue instead
+        # of this file.
+        "ledger_purpose": JUDGE_PURPOSE_BY_METRIC[metric],
+    }
+    try:
+        return JudgeRecord.scored(**fields, claims=_claims_for(metric, score_row))
+    except InvalidJudgeRecord as exc:
+        if metric != CLAIMS_METRIC or not isinstance(score_row.get(CLAIMS_COLUMN), list):
+            raise
+        log_failure(
+            log,
+            "build_judge_records.claims_dropped",
+            exc,
+            metric=metric,
+            scenario_id=scenario_id,
+        )
+        return JudgeRecord.scored(**fields, claims=None)
+
+
+def _bounded_claim_text(field: str, value: object) -> str:
+    """One claim field made storable and bounded: scrubbed for the sink, then cut.
+
+    Model output over customer-authored text is the shape a NUL or an unpaired
+    surrogate arrives in, and `json.dumps` escapes a NUL to `\u0000`, which the
+    server refuses when it parses the jsonb (#117). The scrub runs first so the
+    cut cannot split a surrogate pair. Anything but a string is refused rather
+    than rendered, so a `False` never lands as the text "False".
+    """
+    if not isinstance(value, str):
+        raise InvalidJudgeRecord(f"a claim's {field} is not a string, got {value!r}")
+    text = scrub_for_a_text_sink(value)
+    if len(text) > CLAIM_FIELD_CHAR_CAP:
+        return text[:CLAIM_FIELD_CHAR_CAP] + CLAIM_FIELD_CUT_MARKER
+    return text
+
+
+def _claims_for(metric: str, score_row: Mapping) -> list[Claim] | None:
+    """The claims-bearing row's claims as domain objects, None for every other row.
+
+    The score row carries them as the plain dicts `claims_of` produced, so the
+    row stays JSON. Each field is bounded here, on the way into the domain
+    type, because this is the one place the model's text meets a column.
+
+    Raises:
+        InvalidJudgeRecord: a claim is not a mapping, a field is not a string, the
+            verdict is not a bool, or the statement is blank. `_judge_record`
+            turns that into a record without claims.
+    """
+    raw = score_row.get(CLAIMS_COLUMN) if metric == CLAIMS_METRIC else None
+    if not isinstance(raw, list) or not raw:
+        return None
+    claims: list[Claim] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            raise InvalidJudgeRecord(f"a claim is not a mapping, got {type(item).__name__}")
+        supported = item.get("supported")
+        if not isinstance(supported, bool):
+            raise InvalidJudgeRecord(f"a claim's supported is not a bool, got {supported!r}")
+        claims.append(
+            Claim(
+                statement=_bounded_claim_text("statement", item.get("statement")),
+                supported=supported,
+                reason=_bounded_claim_text("reason", item.get("reason")),
+            )
+        )
+    return claims
 
 
 def dataset_of(value: str | None) -> str:
@@ -1544,7 +1637,7 @@ def _build_ragas_metrics(
         columns: the METRIC_KEYS this run is scoring. A rejudge asks for two.
     """
     builders = {
-        "faithfulness": lambda llm: Faithfulness(llm=llm),
+        "faithfulness": lambda llm: FaithfulnessWithClaims(llm=llm),
         "ragas_answer_relevancy": lambda llm: AnswerRelevancy(
             llm=llm, embeddings=embeddings
         ),
@@ -1587,22 +1680,28 @@ def _resolved_inputs(valid_scenarios: Sequence[Mapping]) -> list[str | None]:
 #
 # A progress line every `_SCORING_PROGRESS_EVERY` samples carries the count and the
 # elapsed seconds, so a slow run and a stuck one no longer look the same.
-async def _ragas_cell(metric, column: str, sample, resolved: str | None) -> float | None:
-    """One (metric, sample) score, or None when the metric raised or returned NaN.
+async def _ragas_cell(
+    metric, column: str, sample, resolved: str | None
+) -> tuple[float | None, list[dict] | None]:
+    """One (metric, sample) score and the claims behind it.
 
-    A metric that raises for one sample yields None for that cell and nothing
-    else: a failed measurement is `unknown`, never a zero, and never a reason to
-    lose the metrics that did return.
+    The score is None when the metric raised or returned NaN, and the claims are
+    None for every metric but faithfulness and for a faithfulness call that
+    returned no score. A metric that raises for one sample yields None for that
+    cell and nothing else: a failed measurement is `unknown`, never a zero, and
+    never a reason to lose the metrics that did return.
     """
     kwargs = {name: getattr(sample, name) for name in _METRIC_ASCORE_ARGS[metric.name]}
     if resolved and column in RESOLVED_INPUT_METRICS:
         kwargs["user_input"] = resolved
     try:
-        value = (await metric.ascore(**kwargs)).value
+        result = await metric.ascore(**kwargs)
     except Exception as exc:  # noqa: BLE001, one metric and one sample
         log_failure(log, "run_ragas_eval.metric_failed", exc, metric=column)
-        return None
-    return float(value) if value is not None and value == value else None  # NaN check
+        return None, None
+    value = result.value
+    score = float(value) if value is not None and value == value else None  # NaN check
+    return score, claims_of(result) if score is not None else None
 
 
 def _relevance_cell(sample, resolved: str | None, ledger: LedgerContext) -> float | None:
@@ -1672,7 +1771,9 @@ async def _score_samples(
                 "reference": sample.reference,
             }
             for column, metric in metrics:
-                row[column] = await _ragas_cell(metric, column, sample, resolved)
+                row[column], claims = await _ragas_cell(metric, column, sample, resolved)
+                if claims is not None and column == CLAIMS_METRIC:
+                    row[CLAIMS_COLUMN] = claims  # plain dicts, so the row stays JSON (#290)
             if relevance_ledger is not None:
                 # A THREAD, because the Judge is synchronous like every other
                 # judge in this codebase (D-02) and awaiting it on this loop
@@ -1729,6 +1830,11 @@ def _placed_score_rows(
         for col in metric_columns:
             raw = row.get(col)
             score_row[col] = float(raw) if raw is not None and raw == raw else None  # NaN check
+        # A DataFrame fills the column with NaN on rows that carried no claims,
+        # so the type test is what tells a list from that hole.
+        claims = row.get(CLAIMS_COLUMN)
+        if isinstance(claims, list) and claims:
+            score_row[CLAIMS_COLUMN] = claims
         score_rows.append(score_row)
     return score_rows, unattributed
 
@@ -1861,10 +1967,10 @@ def run_ragas_eval(
                 input row: the judge may return fewer, and a row that cannot be
                 matched to the scenario it scored is dropped, never assigned by
                 position; see attribute_returned_rows).
-                Each dict: {scenario_id, faithfulness, answer_relevancy,
-                            context_precision, context_recall}
+                Each dict: {scenario_id} plus a value or None per METRIC_KEYS
+                            key, plus `faithfulness_claims` where returned (#290).
             "judge_records": list[JudgeRecord], the same observations at the
-                grain `eval_results` stores, four per scored scenario, each
+                grain `eval_results` stores, five per scored scenario, each
                 carrying its threshold, its verdict, its Judge and its ledger
                 bucket. What `write_eval_results` writes.
             "sent" / "returned" / "unattributed": the judge's own denominators.
@@ -1937,8 +2043,23 @@ def run_ragas_eval(
 # Task 1 continued: write eval results to tenant DB
 # ---------------------------------------------------------------------------
 
-#: One (scenario, metric) row, on migration 0001's table widened by 0023.
+#: One (scenario, metric) row, on migration 0001's table widened by 0023 and 0031.
 _INSERT_EVAL_RESULT = """
+    INSERT INTO eval_results (
+        id, eval_run_id, scenario_id, metric, score, detail,
+        binary_verdict, threshold, judge_identity, ledger_purpose, claims
+    )
+    VALUES (
+        %(id)s::uuid, %(eval_run_id)s::uuid, %(scenario_id)s, %(metric)s,
+        %(score)s, %(detail)s, %(binary_verdict)s, %(threshold)s,
+        %(judge_identity)s::jsonb, %(ledger_purpose)s, %(claims)s::jsonb
+    )
+"""
+
+#: The 0023 shape, for a tenant behind 0031. Used only when the INSERT above
+#: raises UndefinedColumn, and the warning says what the row then lacks: the
+#: faithfulness claims, while the score and the verdict land as before.
+_INSERT_EVAL_RESULT_PRE_0031 = """
     INSERT INTO eval_results (
         id, eval_run_id, scenario_id, metric, score, detail,
         binary_verdict, threshold, judge_identity, ledger_purpose
@@ -1979,7 +2100,38 @@ def _judge_row_params(eval_run_id: str, record: JudgeRecord) -> dict:
             json.dumps(dataclasses.asdict(identity)) if identity else None
         ),
         "ledger_purpose": record.ledger_purpose,
+        # The claims as the row's own JSON, NULL when the record carries none.
+        # `record.payload` renders them, so the stored list is the round-trip
+        # shape `JudgeRecord.from_payload` reads back (#290).
+        "claims": json.dumps(record.payload["claims"]) if record.claims else None,
     }
+
+
+def _insert_result_rows(conn, params: Sequence[Mapping], *, eval_run_id: str) -> None:
+    """Every row on the 0031 INSERT, or every row on the 0023 one.
+
+    The same semantics as `_insert_sample_rows`, hand-rolled for two rungs: the
+    first execute is the one that raises, so no row was written when the
+    transaction is rolled back and the whole set is re-sent on the narrower
+    statement. A tenant behind 0023 raises out of the second rung, as the
+    sample ladder's last rung does.
+    """
+    try:
+        with conn.cursor() as cur:
+            for row in params:
+                cur.execute(_INSERT_EVAL_RESULT, row)
+        return
+    except psycopg2.errors.UndefinedColumn:
+        conn.rollback()
+        log.warning(
+            "write_eval_results.claims_column_absent",
+            eval_run_id=eval_run_id,
+            detail="tenant DB predates alembic_tenant 0031 — faithfulness rows are "
+            "recorded without the claims their score was decided over",
+        )
+    with conn.cursor() as cur:
+        for row in params:
+            cur.execute(_INSERT_EVAL_RESULT_PRE_0031, row)
 
 
 def write_eval_results(
@@ -2011,13 +2163,10 @@ def write_eval_results(
         log.info("write_eval_results.no_scores")
         return
 
+    params = [_judge_row_params(eval_run_id, record) for record in judge_records]
     conn = psycopg2.connect(conn_str, connect_timeout=CONNECT_TIMEOUT_S)
     try:
-        with conn.cursor() as cur:
-            for record in judge_records:
-                cur.execute(
-                    _INSERT_EVAL_RESULT, _judge_row_params(eval_run_id, record)
-                )
+        _insert_result_rows(conn, params, eval_run_id=eval_run_id)
         conn.commit()
     finally:
         conn.close()
