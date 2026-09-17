@@ -1050,3 +1050,110 @@ def test_publishing_without_a_sink_does_not_raise():
     publish_tool_result(_verdict("issue_refund"))
 
     assert get_tool_results() == []
+
+
+# ---------------------------------------------------------------------------
+# The widget path: a customer turn's query embedding reaches the tenant ledger
+# (#265). The whole chain runs here, retrieve_tool to retrieval_service to
+# record_embedding, with only Redis, the provider and the recorder doubled.
+# ---------------------------------------------------------------------------
+
+_LEDGER_TENANT = "11111111-1111-1111-1111-111111111111"
+_LEDGER_AGENT = "22222222-2222-2222-2222-222222222222"
+_LEDGER_JOB = "33333333-3333-3333-3333-333333333333"
+_LEDGER_DSN = "postgresql://tenant/ledger"
+
+
+def _fake_qembed_redis(stored=None):
+    """A Redis double for the query-embedding cache. `stored` is the hit, or None."""
+    rc = MagicMock()
+    rc.get.return_value = None if stored is None else json.dumps(stored)
+    return rc
+
+
+def _voyage_double(total_tokens: int, vector):
+    """A `_get_vo()` double. EmbeddingsObject carries embeddings and total_tokens."""
+    client = MagicMock()
+    client.embed.return_value = MagicMock(embeddings=[vector], total_tokens=total_tokens)
+    return client
+
+
+def _drive_retrieve_tool(monkeypatch, rows, dsns, cached=None, redis_double=None):
+    """Run retrieve_tool once with the turn's ids bound, collecting ledger rows."""
+    import app.services.retrieval_service as retrieval_service
+    from app.services.retrieval_service import RetrievalStrategy
+
+    monkeypatch.setattr(retrieval_service.settings, "EMBEDDING_PROVIDER", "voyage")
+    monkeypatch.setattr(
+        agent_tools, "ledger_recorder", lambda dsn: (dsns.append(dsn), rows.append)[1]
+    )
+
+    fake_context = _empty_fused_context()
+    token = bind_tool_context(
+        conn_str=_LEDGER_DSN,
+        agent_id=_LEDGER_AGENT,
+        agent_name="Ledger Agent",
+        strategy=RetrievalStrategy.model_validate({}),
+        conversation_id="conv-ledger",
+        notify_fn=None,
+        tenant_id=_LEDGER_TENANT,
+        job_id=_LEDGER_JOB,
+    )
+    try:
+        with (
+            patch(
+                "app.services.agent_tools._get_qembed_redis",
+                return_value=redis_double or _fake_qembed_redis(cached),
+            ),
+            patch(
+                "app.services.retrieval_service._get_vo",
+                return_value=_voyage_double(13, [0.1] * 1024),
+            ),
+            patch("app.services.agent_tools.rrf_fuse", return_value=_rrf_result(fake_context)),
+            patch("app.services.agent_tools.rerank", return_value=fake_context),
+            patch("app.services.agent_tools.write_retrieval_metrics"),
+        ):
+            _run(_fn(agent_tools.retrieve_tool)({"query": "what is the refund policy?"}))
+    finally:
+        agent_tools.release_tool_context(token)
+
+
+def test_a_cache_miss_records_one_embed_query_row_for_this_turn(monkeypatch):
+    """The customer turn's embedding is retrieval spend and bills to the turn's job."""
+    rows: list = []
+    dsns: list = []
+
+    _drive_retrieve_tool(monkeypatch, rows, dsns)
+
+    assert len(rows) == 1, f"Expected one ledger row from one provider call, got {len(rows)}"
+    row = rows[0]
+    assert row.purpose == "embed_query"
+    assert (row.tenant_id, row.agent_id, row.job_id) == (
+        _LEDGER_TENANT, _LEDGER_AGENT, _LEDGER_JOB,
+    )
+    assert row.input_tokens == 13, "The count is the provider's total_tokens"
+    assert dsns == [_LEDGER_DSN], "The recorder is bound to this tenant's database"
+
+
+def test_a_cache_hit_records_nothing(monkeypatch):
+    """A hit makes no provider call, so a row would be spend that never happened."""
+    rows: list = []
+
+    _drive_retrieve_tool(monkeypatch, rows, [], cached=[0.5] * 1024)
+
+    assert rows == [], "A cached vector cost nothing and must leave no row"
+
+
+def test_a_cache_write_failure_leaves_one_call_and_one_row(monkeypatch):
+    """One try around the read, the embed and the write ran the provider call a
+    second time whenever setex raised, so one question was paid for twice and
+    left two rows. The three steps fail independently now."""
+    rows: list = []
+    rc = _fake_qembed_redis()
+    rc.setex.side_effect = RuntimeError("redis refused the write")
+
+    _drive_retrieve_tool(monkeypatch, rows, [], redis_double=rc)
+
+    assert len(rows) == 1, (
+        f"A failed cache write must not buy the embedding again, got {len(rows)} row(s)"
+    )

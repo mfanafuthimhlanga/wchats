@@ -116,7 +116,14 @@ class _FakeInstructorLLM(InstructorBaseRagasLLM):
 
 class _FakeRagasEmbedding(BaseRagasEmbedding):
     """Stands in for _VoyageRagasEmbedding. One fixed unit vector, so
-    AnswerRelevancy's cosine similarity is exactly 1.0."""
+    AnswerRelevancy's cosine similarity is exactly 1.0.
+
+    It takes the run's ledger because the real one does (#265). Every sample it
+    embeds leaves an `embed_query` row beside the four judge rows.
+    """
+
+    def __init__(self, ledger=None):
+        self.ledger = ledger
 
     def embed_text(self, text: str, **kwargs) -> list[float]:
         return [1.0, 0.0, 0.0]

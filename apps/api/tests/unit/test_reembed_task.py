@@ -53,6 +53,7 @@ _TARGET_MODEL = "amazon.titan-embed-text-v2:0"
 _POOLED_CONN = "fake-pooled-conn"
 _DIRECT_CONN = "fake-direct-conn"
 _AGENT_ID = "agent-test-uuid"
+_TENANT_ID = "tenant-test-uuid"
 _ENCRYPTED_POOLED = b"encrypted-pooled"
 _ENCRYPTED_DIRECT = b"encrypted-direct"
 
@@ -73,8 +74,14 @@ def _make_sync_db_context(mock_db):
 
 
 def _make_mock_agent():
-    """Return a mock Agent with distinct encrypted connection strings."""
+    """Return a mock Agent with distinct encrypted connection strings.
+
+    `id` and `tenant_id` are real strings because the #265 ledger row reads both
+    off this row, and a MagicMock attribute would assert against its own repr.
+    """
     agent = MagicMock()
+    agent.id = _AGENT_ID
+    agent.tenant_id = _TENANT_ID
     agent.neon_connection_string = _ENCRYPTED_POOLED
     agent.neon_direct_connection_string = _ENCRYPTED_DIRECT
     return agent
@@ -249,7 +256,15 @@ def test_reembed_corpus_migrates_chunks(monkeypatch):
     result, _ = _run_task(monkeypatch, mock_db, mock_dml_conn, mock_reindex_conn, mock_svc)
 
     # embed_texts called once with the chunk texts and "document" input type
-    mock_svc.embed_texts.assert_called_once_with(["text1", "text2"], "document")
+    # The third argument is the LedgerContext the task built from the Agent row.
+    texts, input_type, ledger = mock_svc.embed_texts.call_args.args
+    assert (texts, input_type) == (["text1", "text2"], "document")
+    assert (ledger.tenant_id, ledger.agent_id) == (_TENANT_ID, _AGENT_ID), (
+        "The backfill's spend still belongs to a tenant and an agent"
+    )
+    assert ledger.job_id is None, (
+        "A backfill is not a job, so its ledger rows carry no job_id"
+    )
 
     # Return value carries correct totals
     assert result["total_reembedded"] == 2, (

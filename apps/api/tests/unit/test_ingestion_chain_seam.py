@@ -225,7 +225,7 @@ def run(monkeypatch):
     _patch(
         "embed",
         psycopg2=_fake_psycopg2(lambda _: _connection(next(embed_connections))),
-        embed_chunks=lambda texts: [[0.1] * 1024 for _ in texts],
+        embed_chunks=lambda texts, ledger: [[0.1] * 1024 for _ in texts],
     )
 
     # strategy opens no tenant cursor. It reads corpus signals through

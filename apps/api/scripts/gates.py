@@ -203,7 +203,9 @@ LIZARD_BASELINE = {
     # module-level `_TEMPLATE`, which is what `SYSTEM_PROMPT_MAX_CHARS` measures.
     ("app/services/agent_tools.py", "escalate_to_human_tool"): (4, 101),
     ("app/services/agent_tools.py", "lookup_structured_tool"): (5, 67),
-    ("app/services/agent_tools.py", "retrieve_tool"): (28, 244),
+    # 244 to 227: #265 moved `_embed_with_cache` out of this function to module
+    # level, where the executor thread can be handed its ledger explicitly.
+    ("app/services/agent_tools.py", "retrieve_tool"): (28, 227),
     ("app/services/bench_service.py", "grade_trace"): (5, 66),
     ("app/services/bench_service.py", "list_failing_traces"): (8, 87),
     ("app/services/capability_service.py", "validate_tighten_only"): (31, 154),
@@ -240,7 +242,9 @@ LIZARD_BASELINE = {
     ("app/services/red_team_service.py", "seed_poisoned_chunk"): (2, 75),
     ("app/services/redteam_programme_service.py", "read_programme"): (16, 98),
     ("app/services/retrieval_service.py", "rrf_fuse"): (3, 65),
-    ("app/services/retrieval_service.py", "rrf_fuse_with_expansion"): (8, 68),
+    # 8/68 to 7/62: #265 replaced this function's copy of the provider branch
+    # with the `embed_queries` seam, which is where the ledger row is written.
+    ("app/services/retrieval_service.py", "rrf_fuse_with_expansion"): (7, 62),
     ("app/services/retrieval_service.py", "verified_qa_lookup"): (3, 61),
     ("app/services/scenario_service.py", "generate_eval_suite_for_agent"): (7, 61),
     ("app/services/scenario_service.py", "generate_scenarios_from_chunks"): (5, 65),
