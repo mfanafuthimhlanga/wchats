@@ -87,7 +87,7 @@ from sqlalchemy import text as sa_text
 
 from app.core.config import AGENT_TURN_MODEL, settings
 from app.core.database import get_sync_db
-from app.core.log_bounds import log_failure
+from app.core.log_bounds import log_failure, scrub_for_a_text_sink
 
 # The ledger's column list, imported from the module that WRITES it. `usage.py`
 # keeps a second copy under a test pinning the two together; a third copy here
@@ -113,6 +113,7 @@ from app.domain.model_call import ModelCall
 from app.services.clarifying_check import CLARIFYING_CHECK_KEY
 from app.services.embedding_service import EMBEDDING_MODEL, _get_vo
 from app.services.judge_llm import build_judge_llm
+from app.services.relevance_judge import judge_relevance, relevance_identity
 
 log = structlog.get_logger(__name__)
 
@@ -120,14 +121,21 @@ log = structlog.get_logger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-#: The purpose each of the four metrics bills its calls under. One purpose per
-#: metric, so a rollup says which dimension spent the money and a calibration
-#: figure names the Judge it measured (`PURPOSE_ROUTES`, decision #34).
+#: The purpose each reported metric bills its calls under, in METRIC_KEYS order.
+#: One purpose per metric, so a rollup says which dimension spent the money and a
+#: calibration figure names the Judge it measured (`PURPOSE_ROUTES`, decision
+#: #34).
+#:
+#: THE SECOND AND FIFTH ROWS SWAPPED INSTRUMENTS AT #274 AND KEPT THEIR NAMES.
+#: `answer_relevancy` is the gated column and `judge_relevance` is what fills it
+#: now; `judge_answer_relevancy` still bills ragas answer relevancy, which is
+#: reported under `ragas_answer_relevancy` and gates nothing (ADR 0013).
 JUDGE_PURPOSES = (
     "judge_faithfulness",
-    "judge_answer_relevancy",
+    "judge_relevance",
     "judge_context_precision",
     "judge_context_recall",
+    "judge_answer_relevancy",
 )
 
 #: `JUDGE_PROMPT_VERSION` is imported from `app.domain.judge_identity`, beside the
@@ -153,9 +161,29 @@ _METRIC_ASCORE_ARGS: Mapping[str, tuple[str, ...]] = MappingProxyType({
     "context_recall": ("user_input", "retrieved_contexts", "reference"),
 })
 
+#: Which reported column each ragas 0.4 collections metric fills, keyed by the
+#: metric's own `.name`. Four entries, and `answer_relevancy` is not one of the
+#: values: #274 took that column off ragas and gave it to `relevance_judge`, so
+#: the ragas figure lands under `ragas_answer_relevancy` and gates nothing.
+#:
+#: The indirection exists because a ragas metric names its own column and this
+#: repo now disagrees with one of those names. Renaming at the one place the
+#: instance is read keeps `_METRIC_ASCORE_ARGS` keyed on what ragas calls the
+#: metric, which is what `ascore` validates.
+RAGAS_COLUMN_BY_METRIC: Mapping[str, str] = MappingProxyType({
+    "faithfulness": "faithfulness",
+    "answer_relevancy": "ragas_answer_relevancy",
+    "context_precision": "context_precision",
+    "context_recall": "context_recall",
+})
+
 #: The metrics whose `user_input` becomes the RESOLVED question when a scenario
 #: carries turns (#227 PR 2). Relevancy alone, and the shortness of this tuple is
 #: the point.
+#:
+#: IT NAMES THE RAGAS COLUMN NOW, not the gated one. The relevance Judge takes
+#: the resolved question on every call it makes and needs no entry here; this
+#: tuple is read inside the ragas loop, against `RAGAS_COLUMN_BY_METRIC`.
 #:
 #: SAY THE UNCOMFORTABLE HALF FIRST: relevancy is itself gated
 #: (`GATED_METRIC_KEYS`, threshold `EVAL_RELEVANCY_THRESHOLD`), so this tuple
@@ -176,7 +204,7 @@ _METRIC_ASCORE_ARGS: Mapping[str, tuple[str, ...]] = MappingProxyType({
 #: `SAMPLE_KEY_COLUMNS` attributes a returned judge row to a scenario on
 #: `(user_input, reference)`, so a row carrying a rewritten question would match
 #: no scenario and the whole run would come back unattributed.
-RESOLVED_INPUT_METRICS: tuple[str, ...] = ("answer_relevancy",)
+RESOLVED_INPUT_METRICS: tuple[str, ...] = ("ragas_answer_relevancy",)
 
 
 # ---------------------------------------------------------------------------
@@ -240,9 +268,12 @@ EVAL_RESPONSE_SOURCE_NONE_SCORED = "no_response_scored"
 # build_eval_run_config reads judge_model_id and judge_reasoning_effort off the
 # routing table before the first judge call, so they say which Judge the run
 # asked for. What answered is a separate observation and it lives on the record:
-# EvalResult carries `judge_identity` from the four routes when they agree and
+# EvalResult carries `judge_identity` from the routes when they agree and
 # `served_model` off the run's own ledger rows, and every eval_results row
-# carries the per-call identity behind its verdict (#51 slices 1 and 2). A
+# carries the per-call identity behind its verdict (#51 slices 1 and 2). SINCE
+# #274 THEY DO NOT AGREE: `relevance_judge` authors its own prompt and the four
+# ragas metrics carry the distribution's, so the run-level field is None on every
+# run and `judge_identities` carries one per gated dimension beside it. A
 # provider that silently serves a different model moves the scores without
 # moving this pair. NO READER MAY PRESENT THE CONFIG PAIR AS THE JUDGE THAT
 # SERVED; a reader that wants the served identity reads the record.
@@ -485,13 +516,35 @@ EXPLORATORY_SAMPLE_SIZE = 30
 # silently would hide the breakage.
 GOLDEN_SET_SOFT_CEILING = 200
 
-# The four metrics a run reports, in the order the console reads them (D-04).
+# The metrics a run reports, in the order the console reads them (D-04). The
+# fifth arrived with #274 and sits last so the four channels the console already
+# draws keep their positions.
+#
+# `answer_relevancy` IS STILL THE GATED KEY AND IS NO LONGER RAGAS. The owner's
+# 46 labels, both calibration sheets and `calibrate_run.GATED_METRICS` name it,
+# and all of them keep working unchanged; what tells a new row from an old one is
+# `eval_results.judge_identity`, which reads `relevance-judge-v1` from #274 and
+# `ragas-<version>` before it.
 METRIC_KEYS: tuple[str, ...] = (
     "faithfulness",
     "answer_relevancy",
     "context_precision",
     "context_recall",
+    "ragas_answer_relevancy",
 )
+
+#: The one column `relevance_judge` fills, and the one column in METRIC_KEYS that
+#: no ragas metric touches. Named once so the three places that special-case it
+#: cannot drift into naming two different columns.
+RELEVANCE_METRIC = "answer_relevancy"
+
+#: The metrics a rejudge run measures over a finished run's stored samples: the
+#: two the deploy is gated on and nothing else (#274). Context precision and
+#: recall gate nothing, and ragas relevancy costs three judge calls and four
+#: Voyage embeddings per row to report a number the gate stopped reading. The
+#: three it skips still get their `eval_results` row, carrying no score and no
+#: verdict, because an unmeasured dimension is a row that says so.
+REJUDGE_METRIC_KEYS: tuple[str, ...] = ("faithfulness", RELEVANCE_METRIC)
 
 #: Which routing-table purpose produced each metric's score.
 #:
@@ -509,6 +562,12 @@ JUDGE_PURPOSE_BY_METRIC: Mapping[str, str] = MappingProxyType(
 def judge_identity_for(metric: str) -> JudgeIdentity | None:
     """Which Judge produced this dimension's score, at calibration's grain.
 
+    `answer_relevancy` answers from `relevance_judge`, which authors its own
+    prompt and so carries its own `prompt_version` (#274). Every other metric is
+    a ragas metric whose prompt ships inside the installed distribution, which is
+    what `JUDGE_PROMPT_VERSION` names. Two instruments under one key would put
+    the old verdicts and the new ones in one calibration population.
+
     The model and the effort come off `PURPOSE_ROUTES`, the same table the
     request was built from, so the record cannot name a Judge the run did not
     use. Reading them anywhere else would be a second copy free to drift from
@@ -523,6 +582,8 @@ def judge_identity_for(metric: str) -> JudgeIdentity | None:
     Args:
         metric: one of METRIC_KEYS, the dimension the score is about.
     """
+    if metric == RELEVANCE_METRIC:
+        return relevance_identity()
     route = route_for(JUDGE_PURPOSE_BY_METRIC[metric])
     if route.reasoning_effort is None:
         log.error(
@@ -548,18 +609,25 @@ def judge_identity_for(metric: str) -> JudgeIdentity | None:
 # It lives beside the gate definition, below both readers, because the console
 # route and the deploy collector each need to know which metrics carry a verdict
 # and two tuples is how they come to disagree about it.
-GATED_METRIC_KEYS: tuple[str, ...] = ("faithfulness", "answer_relevancy")
+GATED_METRIC_KEYS: tuple[str, ...] = ("faithfulness", RELEVANCE_METRIC)
 
 
 def threshold_for(metric: str) -> float | None:
     """The number this dimension's score is compared against, or None for no gate.
 
     THE ONLY TWO GATED METRICS ARE THE TWO THAT HAVE A SETTING. D-21 gates a
-    deploy on faithfulness and answer_relevancy; `context_precision` and
-    `context_recall` have no threshold anywhere in this codebase, so they get
-    None and their rows carry no verdict. Inventing one would put a gate nobody
-    chose on every row in the table, and a reader aggregating verdicts would
-    count two extra failures per scenario.
+    deploy on faithfulness and answer_relevancy; `context_precision`,
+    `context_recall` and `ragas_answer_relevancy` have no threshold anywhere in
+    this codebase, so they get None and their rows carry no verdict. Inventing
+    one would put a gate nobody chose on every row in the table, and a reader
+    aggregating verdicts would count two extra failures per scenario.
+
+    RELEVANCY'S NUMBER IS A DECISION NOW, NOT A SIMILARITY (#274). The Judge
+    returns 1.0 or 0.0, so `EVAL_RELEVANCY_THRESHOLD` no longer picks a point on
+    a similarity scale; it only has to sit between the two values for the stored
+    verdict to be the Judge's own. Any value in (0, 1] does that, 0.0 would make
+    every FAIL clear its gate, and `test_the_relevancy_setting_cannot_invert_a_verdict`
+    is what refuses both ends.
 
     Read off `settings` at call time rather than frozen at import, so a
     deployment that changes the gate scores the next run against the new one. The
@@ -1062,6 +1130,11 @@ def question_resolution_provenance(
     returned, and `summarise_run_validity` reports a per-dataset
     `answer_relevancy.observations` that drops a row belonging to no fetched
     dataset.
+
+    THE GATED COLUMN ALONE DECIDES `relevancy_scored` (#274). These counts feed a
+    warning about the number a deploy is decided by, and the reported ragas
+    figure is not that number: a run whose Judge answered and whose ragas
+    relevancy did not still measured every rewritten question the gate read.
     """
     by_id = {str(s.get("id", "")): s for s in scenarios}
     relevancy_scored = multi_turn = rewritten = 0
@@ -1069,14 +1142,10 @@ def question_resolution_provenance(
         scenario = by_id.get(str(row.get("scenario_id", "")))
         if scenario is None:
             continue
-        # `value == value` is the NaN check `_placed_score_rows` already applies.
-        # It is repeated rather than assumed: a NaN is not an observation, and a
-        # denominator that counted one would put a row under a measurement that
-        # never returned.
-        if not any(
-            (value := row.get(metric)) is not None and value == value
-            for metric in RESOLVED_INPUT_METRICS
-        ):
+        # THE GATED COLUMN ALONE (#274), and `value == value` is the NaN check
+        # `_placed_score_rows` already applies, repeated rather than assumed.
+        value = row.get(RELEVANCE_METRIC)
+        if value is None or value != value:
             continue
         relevancy_scored += 1
         turns = scenario.get("turns")
@@ -1449,23 +1518,38 @@ def _build_instructor_llm(purpose: str, ledger: LedgerContext) -> InstructorLLM:
     return build_judge_llm(purpose, ledger)
 
 
-def _build_ragas_metrics(ledger: LedgerContext, embeddings) -> list:
-    """The four M6 metrics (D-04 LOCKED) as constructed INSTANCES.
+def _build_ragas_metrics(
+    ledger: LedgerContext, embeddings, columns: Sequence[str]
+) -> list[tuple[str, object]]:
+    """The requested ragas metrics as (column, INSTANCE) pairs.
 
-    Order matches METRIC_KEYS. Each metric's `.name` is the column it writes,
-    which is what binds this list to _METRIC_ASCORE_ARGS and to METRIC_KEYS.
+    The column is this repo's name for what the metric fills and the instance's
+    own `.name` is ragas' name for it; `RAGAS_COLUMN_BY_METRIC` is the one place
+    they are mapped, and `_METRIC_ASCORE_ARGS` stays keyed on ragas' side because
+    that is what `ascore` validates.
 
-    One client per metric, not one shared between four. They are four separate
-    spends and JUDGE_PURPOSES is what keeps them separable in the ledger.
+    One client per metric, not one shared between four. They are separate spends
+    and JUDGE_PURPOSES is what keeps them separable in the ledger.
+
+    A column that names no ragas metric is SKIPPED rather than refused, because
+    `answer_relevancy` is exactly such a column since #274 and every caller
+    passes it.
+
+    Args:
+        columns: the METRIC_KEYS this run is scoring. A rejudge asks for two.
     """
-    faithfulness, relevancy, precision, recall = (
-        _build_instructor_llm(purpose, ledger) for purpose in JUDGE_PURPOSES
-    )
+    builders = {
+        "faithfulness": lambda llm: Faithfulness(llm=llm),
+        "ragas_answer_relevancy": lambda llm: AnswerRelevancy(
+            llm=llm, embeddings=embeddings
+        ),
+        "context_precision": lambda llm: ContextPrecision(llm=llm),
+        "context_recall": lambda llm: ContextRecall(llm=llm),
+    }
     return [
-        Faithfulness(llm=faithfulness),
-        AnswerRelevancy(llm=relevancy, embeddings=embeddings),
-        ContextPrecision(llm=precision),
-        ContextRecall(llm=recall),
+        (column, builders[column](_build_instructor_llm(JUDGE_PURPOSE_BY_METRIC[column], ledger)))
+        for column in columns
+        if column in builders
     ]
 
 
@@ -1498,20 +1582,77 @@ def _resolved_inputs(valid_scenarios: Sequence[Mapping]) -> list[str | None]:
 #
 # A progress line every `_SCORING_PROGRESS_EVERY` samples carries the count and the
 # elapsed seconds, so a slow run and a stuck one no longer look the same.
+async def _ragas_cell(metric, column: str, sample, resolved: str | None) -> float | None:
+    """One (metric, sample) score, or None when the metric raised or returned NaN.
+
+    A metric that raises for one sample yields None for that cell and nothing
+    else: a failed measurement is `unknown`, never a zero, and never a reason to
+    lose the metrics that did return.
+    """
+    kwargs = {name: getattr(sample, name) for name in _METRIC_ASCORE_ARGS[metric.name]}
+    if resolved and column in RESOLVED_INPUT_METRICS:
+        kwargs["user_input"] = resolved
+    try:
+        value = (await metric.ascore(**kwargs)).value
+    except Exception as exc:  # noqa: BLE001, one metric and one sample
+        log_failure(log, "run_ragas_eval.metric_failed", exc, metric=column)
+        return None
+    return float(value) if value is not None and value == value else None  # NaN check
+
+
+def _relevance_cell(sample, resolved: str | None, ledger: LedgerContext) -> float | None:
+    """The relevance Judge's verdict as the score its row stores (#274).
+
+    1.0, 0.0, or None for `unknown`. The Judge never raises for one row and its
+    `unknown` is a NULL score, so a provider outage writes an undecided row and
+    never a passing one.
+
+    The RESOLVED question goes in wherever there is one, unconditionally. The
+    ragas side reads `RESOLVED_INPUT_METRICS` because three of its four metrics
+    must keep the raw question (ADR 0010); this Judge measures only the dimension
+    that rule was written for.
+    """
+    verdict = judge_relevance(
+        resolved or sample.user_input, sample.response, ledger=ledger
+    )
+    # ONLY THE ROWS A READER ACTS ON. A pass is the expected outcome and its
+    # reason is model-authored text nobody reads; logging one per scored row
+    # would put a corpus of it in the sink for no question it answers. A fail is
+    # the row the owner will want to look at and an unknown is a measurement that
+    # did not happen, so both say why. `scrub_for_a_text_sink` because the reason
+    # is model output over customer-authored input and a NUL or an unpaired
+    # surrogate in it breaks the record, not the reason.
+    if verdict.verdict == "unknown":
+        log.warning(
+            "run_ragas_eval.relevance_unknown", reason=scrub_for_a_text_sink(verdict.reason)
+        )
+    elif verdict.verdict == "fail":
+        log.info(
+            "run_ragas_eval.relevance_fail", reason=scrub_for_a_text_sink(verdict.reason)
+        )
+    return verdict.score
+
+
 async def _score_samples(
     metrics: list,
     samples: list,
     concurrency: int | None = None,
     resolved_inputs: Sequence[str | None] | None = None,
+    relevance_ledger: LedgerContext | None = None,
 ) -> list[dict]:
     """Score every validated sample against every metric, one row per sample.
 
-    A metric that raises for one sample yields None for that cell and nothing
-    else: a failed measurement is `unknown`, never a zero, and never a reason to
-    lose the three metrics that did return. The row carries user_input and
-    reference because attribute_returned_rows matches on that pair, so the
-    rewrite in `resolved_inputs` reaches `RESOLVED_INPUT_METRICS` and never the
-    row.
+    The row carries user_input and reference because attribute_returned_rows
+    matches on that pair, so the rewrite in `resolved_inputs` reaches
+    `RESOLVED_INPUT_METRICS` and never the row.
+
+    Args:
+        metrics:          (column, ragas metric instance) pairs.
+        relevance_ledger: who the relevance Judge's calls are billed to, or None
+                          to skip that column entirely. None is how a caller asks
+                          for the ragas metrics alone; `answer_relevancy` is then
+                          absent from every row, which `build_judge_records`
+                          writes as an unscored row rather than a failure.
     """
     bound = concurrency if concurrency is not None else settings.EVAL_SCORING_CONCURRENCY
     gate = asyncio.Semaphore(max(1, bound))
@@ -1525,20 +1666,14 @@ async def _score_samples(
                 "user_input": sample.user_input,
                 "reference": sample.reference,
             }
-            for metric in metrics:
-                kwargs = {
-                    name: getattr(sample, name)
-                    for name in _METRIC_ASCORE_ARGS[metric.name]
-                }
-                if resolved and metric.name in RESOLVED_INPUT_METRICS:
-                    kwargs["user_input"] = resolved
-                try:
-                    value = (await metric.ascore(**kwargs)).value
-                except Exception as exc:  # noqa: BLE001 — one metric, one sample
-                    log_failure(log, "run_ragas_eval.metric_failed", exc, metric=metric.name)
-                    value = None
-                row[metric.name] = (
-                    float(value) if value is not None and value == value else None  # NaN check
+            for column, metric in metrics:
+                row[column] = await _ragas_cell(metric, column, sample, resolved)
+            if relevance_ledger is not None:
+                # A THREAD, because the Judge is synchronous like every other
+                # judge in this codebase (D-02) and awaiting it on this loop
+                # would serialise the samples the semaphore is bounding.
+                row[RELEVANCE_METRIC] = await asyncio.to_thread(
+                    _relevance_cell, sample, resolved, relevance_ledger
                 )
             done += 1
             if done % _SCORING_PROGRESS_EVERY == 0 or done == len(samples):
@@ -1593,11 +1728,98 @@ def _placed_score_rows(
     return score_rows, unattributed
 
 
-def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
-    """Run Ragas 0.4.x evaluation over a list of eval scenarios.
+def _attributed(df, valid_scenarios: list[dict], samples: list) -> tuple[list, list, int]:
+    """(returned rows, placed score rows, unattributed count).
 
-    Builds an EvaluationDataset from the scenarios and scores it with the four
-    M6 metrics, per scenario and per (scenario, metric).
+    WHICH SCENARIO EACH RETURNED ROW IS ABOUT. Positional attribution holds only
+    when the judge returns one row per sample, and this is where that used to be
+    assumed; see `attribute_returned_rows`.
+
+    The columns come from the one METRIC_KEYS tuple rather than a local literal
+    list: audit D3 is a second copy of a column name drifting from the first, and
+    this module writes these same names into `eval_results`, reports them per
+    dataset and hands them to the console.
+
+    NO RUN-LEVEL MEAN IS COMPUTED. This used to return a `means` dict over the
+    attributed rows and nothing in `app/` read it: the run's numbers are
+    `summarise_run_validity`'s, which are per dataset, because a mean over the
+    fixed golden rows and the rotating exploratory draw together moves whenever
+    the draw moves while looking like a quality change.
+    """
+    returned_rows = [row for _, row in df.iterrows()]
+    have_key_columns = all(col in df.columns for col in SAMPLE_KEY_COLUMNS)
+    returned_keys: list[tuple[str, str] | None] = [
+        (str(row.get("user_input", "")), str(row.get("reference", "")))
+        if have_key_columns
+        else None
+        for row in returned_rows
+    ]
+    attribution = attribute_returned_rows(returned_keys, valid_scenarios)
+    score_rows, unattributed = _placed_score_rows(
+        returned_rows, attribution, valid_scenarios, list(METRIC_KEYS)
+    )
+    if unattributed:
+        log.warning(
+            "run_ragas_eval.unattributed_rows",
+            sent=len(samples),
+            returned=len(returned_rows),
+            unattributed=unattributed,
+            have_key_columns=have_key_columns,
+            detail=(
+                "the judge returned rows that cannot be matched to a scenario; "
+                "they are counted and dropped rather than assigned by position"
+            ),
+        )
+    return returned_rows, score_rows, unattributed
+
+
+def _judge_samples(
+    samples: list,
+    valid_scenarios: list[dict],
+    ledger: LedgerContext,
+    metric_keys: Sequence[str],
+) -> list:
+    """Build the metrics this run asked for, score every sample, return the rows.
+
+    Lifted out of `run_ragas_eval` when #274 gave that function a second
+    instrument to assemble: the dataset validation, the attribution and the
+    denominators are one job and choosing what to spend money on is another.
+
+    `EvaluationDataset.from_list` is the schema check and it is load-bearing:
+    what is scored below is the SAMPLES IT VALIDATED, never the dicts handed in,
+    so a sample ragas would reject never reaches a metric.
+    """
+    dataset = EvaluationDataset.from_list(samples)
+    metrics = _build_ragas_metrics(ledger, _VoyageRagasEmbedding(), metric_keys)
+    return asyncio.run(
+        _score_samples(
+            metrics,
+            list(dataset.samples),
+            resolved_inputs=_resolved_inputs(valid_scenarios),
+            relevance_ledger=ledger if RELEVANCE_METRIC in metric_keys else None,
+        )
+    )
+
+
+def run_ragas_eval(
+    scenarios: list[dict],
+    ledger: LedgerContext,
+    metric_keys: Sequence[str] = METRIC_KEYS,
+) -> dict:
+    """Score a list of eval scenarios: the ragas metrics and the relevance Judge.
+
+    Builds an EvaluationDataset from the scenarios and scores it per scenario and
+    per (scenario, metric). `answer_relevancy` comes from `relevance_judge` and
+    every other key from a ragas 0.4.x collections metric (#274, ADR 0013). The
+    name stays `run_ragas_eval` because four of the five metrics are still ragas
+    and every caller and test names this function.
+
+    Args:
+        metric_keys: which METRIC_KEYS to spend money on. Every one by default.
+            A rejudge passes `REJUDGE_METRIC_KEYS`, the two gated ones. A key
+            left out is still written as an `eval_results` row carrying no score
+            and no verdict, because an unmeasured dimension has to be visible as
+            one.
 
     D-02 LOCKED: Dataset field name is 'reference' (field was renamed in Ragas 0.4.x).
 
@@ -1669,58 +1891,16 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
             "unattributed": 0,
         }
 
-    log.info("run_ragas_eval.start", scenario_count=len(samples), judge_keys=judge_key_spread())
-
-    # EvaluationDataset is the schema check, and it is load-bearing: the loop
-    # below reads the SAMPLES IT VALIDATED, not the dicts handed to it, so a
-    # sample Ragas would reject never reaches a metric.
-    dataset = EvaluationDataset.from_list(samples)
-
-    metrics = _build_ragas_metrics(ledger, _VoyageRagasEmbedding())
-
-    df = pd.DataFrame(asyncio.run(_score_samples(metrics, list(dataset.samples), resolved_inputs=_resolved_inputs(valid_scenarios))))
-
-    # Build per-scenario score dicts. The metric names come from the one
-    # METRIC_KEYS tuple rather than a local literal list: audit D3 is a second
-    # copy of a column name drifting from the first, and this module writes
-    # these same four names into eval_results, reports them per dataset and
-    # hands them to the console.
-    metric_columns = list(METRIC_KEYS)
-
-    # Which scenario each returned row is about. See attribute_returned_rows:
-    # positional attribution holds only when the judge returned one row per
-    # sample, and this is where that used to be assumed.
-    returned_rows = [row for _, row in df.iterrows()]
-    have_key_columns = all(col in df.columns for col in SAMPLE_KEY_COLUMNS)
-    returned_keys: list[tuple[str, str] | None] = [
-        (str(row.get("user_input", "")), str(row.get("reference", "")))
-        if have_key_columns
-        else None
-        for row in returned_rows
-    ]
-    attribution = attribute_returned_rows(returned_keys, valid_scenarios)
-
-    score_rows, unattributed = _placed_score_rows(
-        returned_rows, attribution, valid_scenarios, metric_columns
+    log.info(
+        "run_ragas_eval.start",
+        scenario_count=len(samples),
+        judge_keys=judge_key_spread(),
+        metrics=list(metric_keys),
     )
 
-    # NO RUN-LEVEL MEAN IS COMPUTED HERE. This used to return a `means` dict
-    # over the attributed rows and nothing in `app/` read it: the run's numbers
-    # are `summarise_run_validity`'s, which are per dataset, because a mean over
-    # the fixed golden rows and the rotating exploratory draw together moves
-    # whenever the draw moves while looking like a quality change.
-    if unattributed:
-        log.warning(
-            "run_ragas_eval.unattributed_rows",
-            sent=len(samples),
-            returned=len(returned_rows),
-            unattributed=unattributed,
-            have_key_columns=have_key_columns,
-            detail=(
-                "the judge returned rows that cannot be matched to a scenario; "
-                "they are counted and dropped rather than assigned by position"
-            ),
-        )
+    df = pd.DataFrame(_judge_samples(samples, valid_scenarios, ledger, metric_keys))
+
+    returned_rows, score_rows, unattributed = _attributed(df, valid_scenarios, samples)
 
     log.info(
         "run_ragas_eval.complete",
@@ -2024,6 +2204,228 @@ def write_eval_samples(
         rows_written=len(scenarios),
     )
     return len(scenarios)
+
+
+_SELECT_EVAL_SAMPLES_SQL = """
+    SELECT scenario_id, dataset, user_input, response, retrieved_contexts,
+           reference, turns, resolved_question, clarifying_check
+    FROM eval_samples
+    WHERE eval_run_id = %(run_id)s::uuid
+    ORDER BY scenario_id
+"""
+
+
+def read_eval_samples(run_id: str, conn_str: str) -> list[dict]:
+    """One finished run's scored text, shaped as the scenario dicts that wrote it.
+
+    THE KEYS ARE THE WRITER'S, NOT THE COLUMN NAMES. `_sample_row_params` reads
+    `question`, `agent_response`, `reference_answer` and `id`; `run_ragas_eval`
+    reads the same four. Returning the row under its column names would need a
+    translation at both call sites of the rejudge, and the translation is the
+    same one every time, so it lives here. What comes back can be handed
+    straight to `write_eval_samples` and to `run_ragas_eval`.
+
+    `clarifying_check` is present ONLY when the column held a verdict, which is
+    what `split_checked_rows` and `clarifying_verdicts` test for. A row where the
+    rule already decided is copied forward and never re-judged: the rule reads
+    the response alone, so re-running it would spend nothing and change nothing
+    (ADR 0012).
+
+    Args:
+        run_id:   the SOURCE run, whose rows are read and never written.
+        conn_str: PRODUCTION tenant connection string.
+    """
+    conn = psycopg2.connect(conn_str, connect_timeout=CONNECT_TIMEOUT_S)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_SELECT_EVAL_SAMPLES_SQL, {"run_id": run_id})
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    samples = []
+    for sid, dataset, user_input, response, contexts, reference, turns, resolved, checked in rows:
+        sample = {
+            "id": str(sid),
+            "dataset": dataset,
+            "question": user_input or "",
+            "agent_response": response or "",
+            "retrieved_contexts": [str(c) for c in (contexts or [])],
+            "reference_answer": reference or "",
+            "turns": list(turns or []),
+            "resolved_question": resolved or None,
+        }
+        if checked is not None:
+            sample[CLARIFYING_CHECK_KEY] = bool(checked)
+        samples.append(sample)
+    log.info("read_eval_samples.complete", source_run_id=run_id, rows=len(samples))
+    return samples
+
+
+#: The `eval_runs.kind` of a run that rescored another run's stored samples.
+#: Keyed per agent like `m6:{agent_id}`, so a tenant database holding two agents
+#: cannot read one agent's rejudge as the other's, and DISTINCT from `m6:` so
+#: every reader of the latest run (`_LATEST_RUN_SQL`, the deploy gate's three
+#: since-readers, the digest) passes over it. A rejudge measures no agent turn;
+#: reading it as an agent's current quality would report a measurement of the
+#: past as a measurement of the present.
+REJUDGE_KIND_PREFIX = "rejudge:"
+
+
+def rejudge_kind(agent_id: str) -> str:
+    """The `kind` every rejudge run of this agent is written under."""
+    return f"{REJUDGE_KIND_PREFIX}{agent_id}"
+
+
+_EXISTING_REJUDGE_SQL = """
+    SELECT id FROM eval_runs
+    WHERE kind = %(kind)s
+      AND source_run_id = %(source_run_id)s::uuid
+      AND status = %(status)s
+      AND config -> 'rejudge' -> 'instrument' = %(instrument)s::jsonb
+    ORDER BY started_at DESC
+    LIMIT 1
+"""
+
+
+def rejudge_instrument() -> dict | None:
+    """What a rejudge measures with, as the whole block the idempotency key is.
+
+    EVERY JUDGE THE REJUDGE PAYS FOR, AND EVERY GATE IT WRITES AGAINST. The key
+    was the relevance Judge's identity alone, and that was too narrow twice over:
+    a rejudge also pays for ragas faithfulness, whose prompt moves with the
+    installed distribution, and it stores a `threshold` on every row it writes.
+    A gate move restates nothing already written down (that is the whole point
+    of storing the threshold), but it does mean the next rejudge would answer a
+    different question, and a key that ignored it would hand back a run scored
+    against the old number.
+
+    None when any metric cannot name its Judge, so the caller pays rather than
+    claiming a match it cannot establish. A Judge that cannot name itself cannot
+    be compared with the one that wrote an earlier row.
+    """
+    identities = {}
+    for metric in REJUDGE_METRIC_KEYS:
+        identity = judge_identity_for(metric)
+        if identity is None:
+            log.warning(
+                "rejudge_instrument.unnameable_judge",
+                metric=metric,
+                detail="the instrument cannot be keyed, so an existing rejudge cannot be matched",
+            )
+            return None
+        identities[metric] = dataclasses.asdict(identity)
+    return {
+        "judge_identities": identities,
+        "thresholds": {metric: threshold_for(metric) for metric in REJUDGE_METRIC_KEYS},
+    }
+
+
+def existing_rejudge_run(
+    agent_id: str, source_run_id: str, instrument: dict | None, conn_str: str
+) -> str | None:
+    """The completed rejudge of this source run by THIS instrument, if one exists.
+
+    The idempotency key is the pair (source run, instrument), not the source run
+    alone. A rejudge is a measurement of one instrument against one set of stored
+    answers, so re-running it with the same instrument buys nothing and costs a
+    judge call per row; re-running it after any model, effort, prompt or
+    threshold moved is a different measurement and has to be paid for.
+
+    Only a COMPLETE run counts. A failed or half-written one is not a
+    measurement, and returning it would leave a run that can never be retried.
+
+    THE COMPARISON IS THE WHOLE BLOCK, in canonical form. `json.dumps(sort_keys)`
+    on both sides and jsonb equality in the middle, so key order cannot make two
+    identical instruments compare as different.
+
+    Returns the existing run's id, or None when there is none.
+    """
+    if instrument is None:
+        return None
+    conn = psycopg2.connect(conn_str, connect_timeout=CONNECT_TIMEOUT_S)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                _EXISTING_REJUDGE_SQL,
+                {
+                    "kind": rejudge_kind(agent_id),
+                    "source_run_id": source_run_id,
+                    "status": EVAL_RUN_STATUS_COMPLETE,
+                    "instrument": json.dumps(instrument, sort_keys=True),
+                },
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    return str(row[0]) if row else None
+
+
+_INSERT_REJUDGE_RUN_SQL = """
+    INSERT INTO eval_runs (id, kind, started_at, status, source_run_id, config)
+    VALUES (%(id)s::uuid, %(kind)s, NOW(), 'running',
+            %(source_run_id)s::uuid, %(config)s::jsonb)
+"""
+
+
+def insert_rejudge_run(
+    run_id: str,
+    agent_id: str,
+    source_run_id: str,
+    config: dict,
+    conn_str: str,
+) -> None:
+    """Insert the rejudge run's own `eval_runs` row, naming the run it rescored.
+
+    NO DEGRADED RUNG, and that is the difference between this writer and
+    `insert_eval_run`. That one falls back to a pre-0013 shape because a tenant
+    behind a migration must still be able to run a nightly eval; a rejudge is an
+    operator asking for a second opinion on a finished run, and one written
+    without `source_run_id` could not be joined back to the labels it exists to
+    be joined to. A tenant behind 0030 gets the psycopg2 error, which names the
+    column and the migration that adds it.
+
+    Args:
+        run_id:        UUID string for the new row.
+        source_run_id: the run whose stored samples are being rescored.
+        config:        the configuration patch, carrying `rejudge.judge_identity`
+                       that `existing_rejudge_run` reads back.
+    """
+    conn = psycopg2.connect(conn_str, connect_timeout=CONNECT_TIMEOUT_S)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                _INSERT_REJUDGE_RUN_SQL,
+                {
+                    "id": run_id,
+                    "kind": rejudge_kind(agent_id),
+                    "source_run_id": source_run_id,
+                    "config": json.dumps(config),
+                },
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    log.info(
+        "insert_rejudge_run.complete", run_id=run_id, source_run_id=source_run_id
+    )
+
+
+def rejudge_config(source_run_id: str, instrument: dict | None) -> dict:
+    """What a rejudge run's `config` says about itself.
+
+    The instrument is stamped on the RUN as well as on every row it writes,
+    because the idempotency check reads one row and not a hundred, and a check
+    that had to open `eval_results` to decide whether to spend money would be a
+    scan per call. It is stored under one key, `instrument`, so
+    `_EXISTING_REJUDGE_SQL` compares one jsonb value rather than walking fields.
+    """
+    return {
+        "rejudge": {
+            "source_run_id": source_run_id,
+            "instrument": instrument,
+            "metrics": list(REJUDGE_METRIC_KEYS),
+        }
+    }
 
 
 #: The one `eval_runs.status` that means "this run reached the end of its own
@@ -2554,9 +2956,17 @@ def run_judge_identity(judge_records: Sequence[JudgeRecord]) -> JudgeIdentity | 
 
     None when the records disagree, None when a record carries no identity, and
     None when there are no records at all: a run-level field that picked the
-    first of four would report the Judge behind one score as the Judge behind all
+    first of five would report the Judge behind one score as the Judge behind all
     of them. The per-call identity on the `eval_results` rows is finer grained
     than this either way, and slice 2 is what puts it there.
+
+    DISAGREEMENT IS THE NORMAL CASE SINCE #274, not an anomaly. `relevance_judge`
+    authors its own prompt and the ragas metrics carry the installed
+    distribution's, so every run has two identities and this returns None for all
+    of them. `run_judge_identities` is what the deploy summary reads instead, one
+    identity per gated dimension, and the calibration artifact carries one record
+    per dimension to be compared against it. Nothing refuses a deploy over the
+    result either way: the calibration key is reported and not gated (#54).
     """
     identities = {record.judge_identity for record in judge_records}
     if len(identities) == 1:
@@ -2573,6 +2983,47 @@ def run_judge_identity(judge_records: Sequence[JudgeRecord]) -> JudgeIdentity | 
         ),
     )
     return None
+
+
+def run_judge_identities(
+    judge_records: Sequence[JudgeRecord],
+) -> dict[str, JudgeIdentity] | None:
+    """The Judge behind each GATED dimension, keyed by metric.
+
+    READ OFF THE RECORDS THE RUN BUILT, the same rule `run_judge_identity`
+    applies one grain up: the identities on the records are the ones that ran,
+    and asking the routing table again would stamp the record with a Judge that
+    may have been swapped in since.
+
+    THIS IS WHAT REPLACED THE RUN-LEVEL FIELD FOR THE DEPLOY GATE (#274). A run
+    is scored by two instruments now, so `run_judge_identity` answers None for
+    every run and one null field cannot say which of two instruments a
+    calibration artifact is about. This says both.
+
+    None when any gated metric has no identity or its rows disagree among
+    themselves. A gate comparing a partial map would compare the half it has and
+    silently ignore the half it does not.
+    """
+    identities: dict[str, JudgeIdentity] = {}
+    for metric in GATED_METRIC_KEYS:
+        found = {
+            record.judge_identity
+            for record in judge_records
+            if record.metric == metric
+        }
+        named = found.pop() if len(found) == 1 else None
+        if named is None:
+            log.warning(
+                "run_judge_identities.unnameable",
+                metric=metric,
+                detail=(
+                    "the run's rows for this dimension name no one Judge, so the "
+                    "calibration artifact cannot be compared against it"
+                ),
+            )
+            return None
+        identities[metric] = named
+    return identities or None
 
 
 def served_agent_model(ledger: Sequence[ModelCall]) -> str | None:
@@ -2820,6 +3271,7 @@ def build_eval_result(
         agent_id=agent_id,
         prompt_version_id=prompt_version_id,
         judge_identity=run_judge_identity(judge_records),
+        judge_identities=run_judge_identities(judge_records),
         requested_model=AGENT_TURN_MODEL,
         served_model=served_agent_model(ledger),
         invocation=_invocation_of(invocation),

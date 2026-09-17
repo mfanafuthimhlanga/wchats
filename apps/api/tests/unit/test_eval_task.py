@@ -1280,6 +1280,10 @@ class TestValidityDenominators:
 # The judge calls a run pays for (ticket #47)
 # ---------------------------------------------------------------------------
 
+#: The tool `relevance_judge` forces, read off the module rather than typed, so a
+#: rename there fails this pairing instead of silently dropping four calls.
+RELEVANCE_TOOL = "submit_relevance_verdict"
+
 
 def _luna_judge_transport(seen: list[str]) -> httpx.MockTransport:
     """Canned Luna chat-completion bodies, one per structured judge request.
@@ -1294,7 +1298,15 @@ def _luna_judge_transport(seen: list[str]) -> httpx.MockTransport:
     what makes the response hook write a real `model_calls` row instead of
     logging a gap.
     """
-    by_name = {cls.__name__: make for cls, make in _CANNED_JUDGE_OUTPUTS.items()}
+    by_name = {
+        cls.__name__: (lambda make=make: make().model_dump_json())
+        for cls, make in _CANNED_JUDGE_OUTPUTS.items()
+    }
+    # The relevance Judge is not a ragas metric and forces a tool of its own, so
+    # it is named here rather than derived from a response model (#274).
+    by_name[RELEVANCE_TOOL] = lambda: json.dumps(
+        {"verdict": "pass", "reason": "canned"}
+    )
 
     def _handler(request: httpx.Request) -> httpx.Response:
         name = json.loads(request.content)["tools"][0]["function"]["name"]
@@ -1316,7 +1328,7 @@ def _luna_judge_transport(seen: list[str]) -> httpx.MockTransport:
                             "type": "function",
                             "function": {
                                 "name": name,
-                                "arguments": by_name[name]().model_dump_json(),
+                                "arguments": by_name[name](),
                             },
                         }],
                     },
@@ -1343,10 +1355,14 @@ _PURPOSE_BY_TOOL = {
     "AnswerRelevanceOutput": "judge_answer_relevancy",
     "ContextPrecisionOutput": "judge_context_precision",
     "ContextRecallOutput": "judge_context_recall",
+    RELEVANCE_TOOL: "judge_relevance",
 }
 
-#: 4 scenarios x (2 faithfulness + 3 answer_relevancy + 1 context_precision + 1 context_recall) = 28.
-EXPECTED_JUDGE_CALLS = 28
+#: 4 scenarios x (2 faithfulness + 3 ragas relevancy + 1 context_precision +
+#: 1 context_recall + 1 relevance Judge) = 32. The eighth call per scenario is
+#: #274's, and it is one call where the instrument it replaced on the gate takes
+#: three plus four embeddings.
+EXPECTED_JUDGE_CALLS = 32
 
 
 class TestJudgeCallsReachTheLedger:
@@ -1403,7 +1419,20 @@ class TestJudgeCallsReachTheLedger:
             def __init__(self, **kwargs):
                 super().__init__(transport=transport, **kwargs)
 
-        with patch("httpx.AsyncClient", _Pinned):
+        class _PinnedSync(httpx.Client):
+            """The same, for the SYNC client the relevance Judge builds (#274).
+
+            Every ragas metric reaches the provider through instructor's async
+            client; `judge_relevance` calls `chat.completions.create` on a plain
+            `openai.OpenAI`, which builds an `httpx.Client`. Without this the
+            Judge reaches the real endpoint, its calls leave no canned row, and
+            the count below misses four.
+            """
+
+            def __init__(self, **kwargs):
+                super().__init__(transport=transport, **kwargs)
+
+        with patch("httpx.AsyncClient", _Pinned), patch("httpx.Client", _PinnedSync):
             result = _run()
 
         assert len(seen) == EXPECTED_JUDGE_CALLS, (

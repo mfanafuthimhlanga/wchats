@@ -432,6 +432,13 @@ PURPOSE_ROUTES: Mapping[str, ModelRoute] = MappingProxyType({
     "judge_context_precision": _JUDGE,
     "judge_context_recall": _JUDGE,
     "judge_retrieval_faithfulness": _JUDGE,
+    # Added by #274. The instrument behind the gated `answer_relevancy` metric.
+    # Ragas answer relevancy still runs and still bills `judge_answer_relevancy`,
+    # but it is reported rather than gated now, and the two are separate purposes
+    # because they are separate spends and separate Judges: a rollup that folded
+    # them together could not say what the gate cost, and a calibration figure
+    # could not say which instrument it measured (ADR 0013).
+    "judge_relevance": _JUDGE,
     # Added by #227 PR 2. Not a judge: it rewrites a multi-turn scenario's last
     # customer message as a standalone question so answer relevancy is scored
     # against what was actually asked. Its own purpose because it is its own
@@ -512,6 +519,10 @@ PURPOSE_KEY_SETTINGS: Mapping[str, str] = MappingProxyType({
     "judge_answer_relevancy": "OPENAI_API_KEY_JUDGE_ANSWER_RELEVANCY",
     "judge_context_precision": "OPENAI_API_KEY_JUDGE_CONTEXT_PRECISION",
     "judge_context_recall": "OPENAI_API_KEY_JUDGE_CONTEXT_RECALL",
+    # Added by #274. One call per scored row, the same batch shape the four above
+    # have, so it belongs on the same spread. `judge_key_spread` counts the
+    # distinct keys these five resolve to and logs it at the start of a run.
+    "judge_relevance": "OPENAI_API_KEY_JUDGE_RELEVANCE",
 })
 
 
@@ -523,7 +534,7 @@ def _openai_key_for(purpose: str | None) -> str:
 
 
 def judge_key_spread() -> int:
-    """How many distinct OpenAI keys the four judge purposes resolve to right now.
+    """How many distinct OpenAI keys the batch judge purposes resolve to right now.
 
     Logged at the start of every scoring run, so a run that was meant to spread
     its calls across keys and did not (a variable unset on the worker) says so in

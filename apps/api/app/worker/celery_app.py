@@ -163,6 +163,9 @@ celery_app.conf.update(
         "app.worker.tasks.runtime.validators",
         # M6: eval suite + scenario mining tasks (runtime queue)
         "app.worker.tasks.runtime.eval",
+        # #274: rescore a finished run's stored samples with today's Judges
+        # (runtime queue)
+        "app.worker.tasks.runtime.rejudge",
         # M7: red team tasks (runtime queue)
         "app.worker.tasks.runtime.red_team",
         # M8: deployment checklist task (runtime queue)

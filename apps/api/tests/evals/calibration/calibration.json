@@ -1,40 +1,105 @@
 {
-  "artifact_version": 1,
-  "attempted": 44,
-  "beats_chance": false,
-  "ceiling_beats_chance": true,
-  "ceiling_interval": {
-    "high": 1.0,
-    "low": 0.41402337228714525,
-    "point": 0.7526427061310782,
-    "usable": true
+  "artifact_version": 2,
+  "attempted": 0,
+  "beats_chance": null,
+  "ceiling_beats_chance": null,
+  "ceiling_interval": null,
+  "difference_interval": null,
+  "dimensions": {
+    "answer_relevancy": {
+      "artifact_version": 2,
+      "attempted": 20,
+      "beats_chance": null,
+      "ceiling_beats_chance": null,
+      "ceiling_interval": {
+        "high": 1.0,
+        "low": 0.5869565217391305,
+        "point": 0.8834355828220859,
+        "usable": true
+      },
+      "difference_interval": {
+        "high": null,
+        "low": null,
+        "point": null,
+        "usable": false
+      },
+      "dimensions": null,
+      "harness_version": "compute_correlation.py@2",
+      "judge_identity": {
+        "model": "gpt-5.6-luna",
+        "prompt_version": "relevance-judge-v1",
+        "reasoning_effort": "none"
+      },
+      "judge_interval": {
+        "high": null,
+        "low": null,
+        "point": null,
+        "usable": false
+      },
+      "kappa": null,
+      "labels_made_at": "2026-09-15T09:23:50.477751+00:00",
+      "matthews": null,
+      "pairs": 19,
+      "reaches_ceiling": null,
+      "reason": "the judge's kappa interval is not a measurement: 100% of resamples carried no information, which is what a corpus labelled almost entirely one way produces. At least two rows must carry each label. Label a wider spread of rows (BACKLOG 8.4).",
+      "scored_pairs": 0,
+      "status": "not_calibrated_yet",
+      "valid": 20,
+      "written_at": null
+    },
+    "faithfulness": {
+      "artifact_version": 2,
+      "attempted": 24,
+      "beats_chance": null,
+      "ceiling_beats_chance": null,
+      "ceiling_interval": {
+        "high": null,
+        "low": null,
+        "point": null,
+        "usable": false
+      },
+      "difference_interval": {
+        "high": null,
+        "low": null,
+        "point": null,
+        "usable": false
+      },
+      "dimensions": null,
+      "harness_version": "compute_correlation.py@2",
+      "judge_identity": {
+        "model": "gpt-5.6-luna",
+        "prompt_version": "ragas-0.4.3",
+        "reasoning_effort": "none"
+      },
+      "judge_interval": {
+        "high": null,
+        "low": null,
+        "point": null,
+        "usable": false
+      },
+      "kappa": null,
+      "labels_made_at": "2026-09-15T09:23:50.477751+00:00",
+      "matthews": null,
+      "pairs": 20,
+      "reaches_ceiling": null,
+      "reason": "the judge's kappa interval is not a measurement: 100% of resamples carried no information, which is what a corpus labelled almost entirely one way produces. At least two rows must carry each label. Label a wider spread of rows (BACKLOG 8.4).",
+      "scored_pairs": 0,
+      "status": "not_calibrated_yet",
+      "valid": 24,
+      "written_at": null
+    }
   },
-  "difference_interval": {
-    "high": 1.0692640692640694,
-    "low": 0.2723404255319149,
-    "point": 0.711245552185412,
-    "usable": true
-  },
-  "harness_version": "compute_correlation.py@1",
-  "judge_identity": {
-    "model": "gpt-5.6-luna",
-    "prompt_version": "ragas-0.4.3",
-    "reasoning_effort": "none"
-  },
-  "judge_interval": {
-    "high": 0.28044280442804426,
-    "low": -0.19440745672436752,
-    "point": 0.04139715394566624,
-    "usable": true
-  },
-  "kappa": 0.04139715394566624,
-  "labels_made_at": "2026-09-14T11:11:12.403558+00:00",
-  "matthews": 0.05484084971070817,
-  "pairs": 39,
-  "reaches_ceiling": false,
-  "reason": "(a) FAILED. The judge's kappa interval [-0.194, 0.280] includes 0, so this corpus does not show it doing better than chance. (b2) FAILED. You agree with yourself more than the judge agrees with you, by 0.711 kappa, and the whole interval [0.272, 1.069] is above 0. The judge is distinguishably worse than you are.",
+  "harness_version": "compute_correlation.py@2",
+  "judge_identity": null,
+  "judge_interval": null,
+  "kappa": null,
+  "labels_made_at": "2026-09-15T09:23:50.477751+00:00",
+  "matthews": null,
+  "pairs": 0,
+  "reaches_ceiling": null,
+  "reason": null,
   "scored_pairs": 0,
-  "status": "not_calibrated",
-  "valid": 44,
-  "written_at": "2026-09-14T11:12:24.113017+00:00"
+  "status": "not_calibrated_yet",
+  "valid": 0,
+  "written_at": "2026-09-15T11:55:47.097853+00:00"
 }
