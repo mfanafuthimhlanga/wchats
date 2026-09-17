@@ -99,7 +99,9 @@
   .chunk { background: var(--well); border: 1px solid var(--hairline-strong); padding: 10px 14px; font-family: var(--mono); font-size: 11.5px; line-height: 1.65; white-space: pre-wrap; overflow-x: auto; color: var(--ink-2); }
 
   .verdicts { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; padding-block: 4px 40px; }
-  .card { display: flex; flex-direction: column; gap: 10px; background: var(--surface); border: 1px solid var(--hairline-strong); padding: 14px 16px; }
+  .card { display: flex; flex-direction: column; gap: 10px; background: var(--surface); border: 1px solid var(--hairline-strong); padding: 14px 16px; cursor: default; }
+  .card.active { border-color: var(--live-hot); box-shadow: inset 0 0 0 1px var(--live-hot); }
+  .card h3 .kbd { margin-left: 8px; }
   .card h3 { font-size: 15px; }
   .card .rubric { color: var(--ink-2); font-size: 12.5px; line-height: 1.5; }
   .group { display: flex; flex-direction: column; gap: 5px; }
@@ -158,7 +160,7 @@
 
 <header>
   <h1>Calibration Bench</h1>
-  <span class="kbd"><b>&larr;</b> <b>&rarr;</b> rows &middot; <b>j</b> <b>k</b> sentence &middot; <b>a</b> pass &middot; <b>s</b> fail</span>
+  <span class="kbd" id="hint"><b>&larr;</b> <b>&rarr;</b> rows &middot; <b>j</b> <b>k</b> sentence &middot; <b>a</b> pass &middot; <b>s</b> fail</span>
   <div class="progress">
     <div class="cells" id="cells"></div>
     <span class="count" id="count" aria-live="polite"></span>
@@ -190,13 +192,15 @@
       title: "Faithfulness", short: "F",
       text: "Click a sentence, or press j and k, to light the passage that carries it. PASS when every claim is carried by the retrieved text. FAIL when any claim is not there, even if you know it to be true. What you know is not evidence here.",
       anchors: "how much of the response the contexts support. 1 none · 3 about half · 5 all",
-      notes: "notes, optional. The claim the contexts do not support, or why it passed"
+      notes: "notes, optional. The claim the contexts do not support, or why it passed",
+      score: false
     },
     answer_relevancy: {
       title: "Answer relevancy", short: "R",
       text: "Read the response against the question. PASS when it answers what was asked, directly. FAIL when it answers something else, dodges, or pads. Do not judge whether it is true. On a multi-turn row the question is the resolved question.",
       anchors: "how much of the question the response answers. 1 none · 3 about half · 5 all",
-      notes: "notes, optional. What was asked versus what was answered"
+      notes: "notes, optional. What was asked versus what was answered",
+      score: false
     }
   };
   Object.assign(RUBRIC, RUBRIC_OVERRIDES);
@@ -204,19 +208,29 @@
     title: dim.replace(/_/g, " "), short: dim.slice(0, 1).toUpperCase(),
     text: `PASS when the response meets the ${dim.replace(/_/g, " ")} rubric. FAIL when it does not.`,
     anchors: "1 none · 3 about half · 5 all",
-    notes: "notes, optional"
+    notes: "notes, optional",
+    score: false
   };
   // one screen per row, in the shuffled order the sheet arrived in
   const KEYS = { a: "pass", s: "fail" };
   const NAV_PAIR = { prev: "next", next: "prev", sprev: "snext", snext: "sprev" };
 
-  const items = ROWS.map(r => ({
-    id: r.scenario_id, dim: r.dimension, dataset: r.dataset,
-    question: r.question, response: r.response, contexts: r.retrieved_contexts,
-    reference: r.reference, turns: r.turns, resolved: r.resolved_question
-  }));
+  // one screen per question; the sheet's rows for it become one verdict card each, in sheet order
+  const items = [];
+  const byId = new Map();
+  for (const r of ROWS) {
+    let it = byId.get(r.scenario_id);
+    if (!it) {
+      it = { id: r.scenario_id, dims: [], dataset: r.dataset, question: r.question, response: r.response,
+             contexts: r.retrieved_contexts, reference: r.reference, turns: r.turns, resolved: r.resolved_question };
+      byId.set(r.scenario_id, it); items.push(it);
+    }
+    it.dims.push(r.dimension);
+  }
   const TOTAL = items.length;
-  const SINGLE_DIM = new Set(items.map(it => it.dim)).size === 1;
+  const SINGLE_DIM = items.every(it => it.dims.length === 1);
+  let activeDim = 0;
+  const dimOf = it => it.dims[Math.min(activeDim, it.dims.length - 1)];
   const questionOf = it => (it.turns ? (it.resolved || it.question) : it.question);
 
   // the reading aid. Word overlap only, so it tints an edge and points at a passage, it never labels
@@ -553,55 +567,81 @@
     } else settle();
   }
 
-  function curLabel(it) {
-    const k = key(it.id, it.dim);
-    const L = { scenario_id: it.id, dimension: it.dim, ...(labels.get(k) || {}) };
+  function curLabel(it, dim) {
+    const k = key(it.id, dim);
+    const L = { scenario_id: it.id, dimension: dim, ...(labels.get(k) || {}) };
     delete L.deleted;
     return [k, L];
   }
-  function toggleVerdict(v) {
-    const [k, L] = curLabel(items[current]);
+  function toggleVerdict(v, dim) {
+    const it = items[current];
+    const [k, L] = curLabel(it, dim || dimOf(it));
     L.verdict = L.verdict === v ? "" : v;
     queue(k, L);
   }
-  function toggleScore(n) {
-    const [k, L] = curLabel(items[current]);
+  function toggleScore(n, dim) {
+    const it = items[current];
+    const [k, L] = curLabel(it, dim || dimOf(it));
     L.score = L.score === n ? null : n;
     queue(k, L);
   }
-  function commitNotes(it, value) {
-    const [k, L] = curLabel(it);
+  function commitNotes(it, dim, value) {
+    const [k, L] = curLabel(it, dim);
     L.notes = value;
     queue(k, L);
+  }
+  function setActiveDim(i) {
+    const it = items[current];
+    activeDim = Math.max(0, Math.min(it.dims.length - 1, i));
+    paintControls();
+    const R = rubricOf(dimOf(it));
+    document.getElementById("strip-dim").textContent = R.short;
+    document.getElementById("strip-pass").setAttribute("aria-label", R.title + " pass");
+    document.getElementById("strip-fail").setAttribute("aria-label", R.title + " fail");
   }
 
   function paintControls() {
     const it = items[current];
-    const L = labels.get(key(it.id, it.dim)) || {};
-    for (const b of document.querySelectorAll(".vbtn[data-v]")) {
-      const on = (L.verdict || "") === b.dataset.v;
-      b.classList.toggle("on", on);
-      b.setAttribute("aria-pressed", on ? "true" : "false");
+    const active = dimOf(it);
+    for (const card of document.querySelectorAll(".card[data-dim]")) {
+      const dim = card.dataset.dim;
+      const L = labels.get(key(it.id, dim)) || {};
+      card.classList.toggle("active", dim === active);
+      for (const b of card.querySelectorAll(".vbtn[data-v]")) {
+        const on = (L.verdict || "") === b.dataset.v;
+        b.classList.toggle("on", on);
+        b.setAttribute("aria-pressed", on ? "true" : "false");
+      }
+      for (const b of card.querySelectorAll(".sbtn[data-s]")) {
+        const on = L.score === Number(b.dataset.s);
+        b.classList.toggle("on", on);
+        b.setAttribute("aria-pressed", on ? "true" : "false");
+      }
     }
-    for (const b of document.querySelectorAll(".sbtn[data-s]")) {
-      const on = L.score === Number(b.dataset.s);
+    const L = labels.get(key(it.id, active)) || {};
+    for (const b of document.querySelectorAll("#strip .vbtn[data-v]")) {
+      const on = (L.verdict || "") === b.dataset.v;
       b.classList.toggle("on", on);
       b.setAttribute("aria-pressed", on ? "true" : "false");
     }
   }
 
-  function verdictOf(it) { return (labels.get(key(it.id, it.dim)) || {}).verdict || ""; }
+  function verdictOf(it, dim) { return (labels.get(key(it.id, dim)) || {}).verdict || ""; }
+  // a question is labelled when every one of its dimensions carries a verdict
+  const labelled = it => it.dims.every(d => verdictOf(it, d));
   function renderProgress() {
     const cells = document.getElementById("cells");
     cells.style.setProperty("--cw-full", (Math.ceil(TOTAL / 2) * 8 - 2) + "px");
     cells.style.setProperty("--cw-narrow", (Math.ceil(TOTAL / 4) * 8 - 2) + "px");
     // one dimension: the cell takes the verdict's colour. Several dimensions per question: a plain fill, since one colour cannot carry two grades
     cells.innerHTML = items.map((it, i) => {
-      const v = verdictOf(it);
-      const fill = v ? "full" + (SINGLE_DIM ? " " + v : "") : "";
-      return `<div class="cell ${fill} ${i === current ? "here" : ""}" title="${i + 1}${v ? ", " + v : ""}"></div>`;
+      const done = labelled(it);
+      const v = SINGLE_DIM ? verdictOf(it, it.dims[0]) : "";
+      const fill = done ? "full" + (v ? " " + v : "") : "";
+      const title = it.dims.map(d => verdictOf(it, d) ? `${rubricOf(d).short} ${verdictOf(it, d)}` : "").filter(Boolean).join(", ");
+      return `<div class="cell ${fill} ${i === current ? "here" : ""}" title="${i + 1}${title ? ", " + title : ""}"></div>`;
     }).join("");
-    const done = items.filter(verdictOf).length;
+    const done = items.filter(labelled).length;
     document.getElementById("count").textContent = done === TOTAL ? `${done} / ${TOTAL}, all labelled` : `${done} / ${TOTAL}`;
   }
   function renderList() {
@@ -609,10 +649,10 @@
     const active = document.activeElement;
     const keepFocus = active && active.classList && active.classList.contains("row") ? active.dataset.i : null;
     ol.innerHTML = items.map((it, i) => {
-      const v = verdictOf(it);
       const here = i === current;
-      const dot = `<span class="dot ${v}" title="${rubricOf(it.dim).title}${v ? ", " + v : ""}"></span>`;
-      return `<li><button type="button" class="row ${here ? "here" : ""}" data-i="${i}" tabindex="${here ? 0 : -1}"${here ? ` aria-current="true"` : ""}><span class="n">${i + 1}</span><span class="q"><small>${esc(rubricOf(it.dim).title)} · ${esc(it.dataset)}${it.turns ? " · multi-turn" : ""}</small><span class="qt">${esc(questionOf(it))}</span></span><span class="dots">${dot}</span></button></li>`;
+      const dots = it.dims.map(d => { const v = verdictOf(it, d); return `<span class="dot ${v}" title="${rubricOf(d).title}${v ? ", " + v : ""}"></span>`; }).join("");
+      const dims = it.dims.map(d => rubricOf(d).title).join(" · ");
+      return `<li><button type="button" class="row ${here ? "here" : ""}" data-i="${i}" tabindex="${here ? 0 : -1}"${here ? ` aria-current="true"` : ""}><span class="n">${i + 1}</span><span class="q"><small>${esc(dims)} · ${esc(it.dataset)}${it.turns ? " · multi-turn" : ""}</small><span class="qt">${esc(questionOf(it))}</span></span><span class="dots">${dots}</span></button></li>`;
     }).join("");
     if (keepFocus !== null) { const back = ol.querySelector(`.row[data-i="${keepFocus}"]`); if (back) back.focus(); }
   }
@@ -629,7 +669,7 @@
 
   function renderItem() {
     const it = items[current];
-    const R = rubricOf(it.dim);
+    activeDim = Math.min(activeDim, it.dims.length - 1);
     const A = analyse(it);
     const el = document.getElementById("scenario");
     el.innerHTML = `
@@ -647,24 +687,29 @@
       </div>
       <details class="block"><summary>reference answer, the expected answer written for this scenario. Read it after labelling, not before</summary><div class="reference">${esc(it.reference)}</div></details>`;
 
-    const L = labels.get(key(it.id, it.dim)) || {};
-    document.getElementById("verdicts").innerHTML = `
-      <div class="card" data-dim="${it.dim}">
-        <h3>${R.title}</h3>
+    const cards = it.dims.map(dim => {
+      const R = rubricOf(dim);
+      const L = labels.get(key(it.id, dim)) || {};
+      const score = R.score ? `
+        <div class="group">
+          <div class="score"><span class="eyebrow">score</span>${[1,2,3,4,5].map(n => `<button type="button" class="sbtn" data-s="${n}" id="${dim}-s${n}" aria-label="${R.title} score ${n}">${n}</button>`).join("")}</div>
+          <div class="anchors">${R.anchors}</div>
+          <div class="anchors soft">${SCORE_NOTE}</div>
+        </div>` : "";
+      return `
+      <div class="card" data-dim="${dim}">
+        <h3>${R.title}${it.dims.length > 1 ? ` <span class="kbd"><b>Tab</b></span>` : ""}</h3>
         <div class="rubric">${R.text}</div>
         <div class="group">
           <div class="seg">
-            <button type="button" class="vbtn pass" data-v="pass" id="${it.dim}-pass" aria-label="${R.title} pass">PASS</button>
-            <button type="button" class="vbtn fail" data-v="fail" id="${it.dim}-fail" aria-label="${R.title} fail">FAIL</button>
+            <button type="button" class="vbtn pass" data-v="pass" id="${dim}-pass" aria-label="${R.title} pass">PASS</button>
+            <button type="button" class="vbtn fail" data-v="fail" id="${dim}-fail" aria-label="${R.title} fail">FAIL</button>
           </div>
-        </div>
-        <div class="group">
-          <div class="score"><span class="eyebrow">score</span>${[1,2,3,4,5].map(n => `<button type="button" class="sbtn" data-s="${n}" id="${it.dim}-s${n}" aria-label="score ${n}">${n}</button>`).join("")}</div>
-          <div class="anchors">${R.anchors}</div>
-          <div class="anchors soft">${SCORE_NOTE}</div>
-        </div>
-        <textarea id="${it.dim}-notes" aria-label="${R.title.toLowerCase()} notes" placeholder="${esc(R.notes)}">${esc(L.notes || "")}</textarea>
-      </div>
+        </div>${score}
+        <textarea id="${dim}-notes" aria-label="${R.title.toLowerCase()} notes" placeholder="${esc(R.notes)}">${esc(L.notes || "")}</textarea>
+      </div>`;
+    }).join("");
+    document.getElementById("verdicts").innerHTML = cards + `
       <div class="rownav">
         <div class="navbtns">
           <button type="button" class="btn" id="prev" data-nav="prev" ${current === 0 ? "disabled" : ""}>Previous</button>
@@ -680,9 +725,7 @@
     const firstSent = el.querySelector(".sent[data-s]");
     if (firstSent) firstSent.setAttribute("tabindex", "0");
 
-    document.getElementById("strip-dim").textContent = R.short;
-    document.getElementById("strip-pass").setAttribute("aria-label", R.title + " pass");
-    document.getElementById("strip-fail").setAttribute("aria-label", R.title + " fail");
+    setActiveDim(activeDim);
     document.getElementById("sprev").disabled = current === 0;
     document.getElementById("snext").disabled = current === TOTAL - 1;
 
@@ -697,16 +740,18 @@
     }
     focusAfter = null;
   }
-  function go(i) { navigated = true; if (i < 0 || i >= TOTAL) return; current = i; renderItem(); window.scrollTo({ top: 0 }); }
+  function go(i) { navigated = true; if (i < 0 || i >= TOTAL) return; current = i; activeDim = 0; renderItem(); window.scrollTo({ top: 0 }); }
 
   document.addEventListener("click", () => { navigated = true; }, true);
   document.addEventListener("keydown", () => { navigated = true; }, true);
 
   document.addEventListener("click", e => {
+    const card = e.target.closest(".card[data-dim]");
+    if (card) { const i = items[current].dims.indexOf(card.dataset.dim); if (i >= 0 && i !== activeDim) setActiveDim(i); }
     const vb = e.target.closest(".vbtn[data-v]");
-    if (vb) { toggleVerdict(vb.dataset.v); return; }
+    if (vb) { toggleVerdict(vb.dataset.v, card ? card.dataset.dim : null); return; }
     const sb = e.target.closest(".sbtn[data-s]");
-    if (sb) { toggleScore(Number(sb.dataset.s)); return; }
+    if (sb) { toggleScore(Number(sb.dataset.s), card ? card.dataset.dim : null); return; }
     const nb = e.target.closest("[data-nav]");
     if (nb) { if (nb.disabled) return; focusAfter = nb.id; go(nb.dataset.nav === "next" ? current + 1 : current - 1); return; }
     const sent = e.target.closest(".sent[data-s]");
@@ -723,15 +768,15 @@
   document.addEventListener("input", e => {
     const ta = e.target.closest(".card textarea");
     if (!ta) return;
-    const it = items[current], value = ta.value;
+    const it = items[current], dim = ta.closest(".card").dataset.dim, value = ta.value;
     clearTimeout(noteTimer);
-    noteTimer = setTimeout(() => commitNotes(it, value), 400);
+    noteTimer = setTimeout(() => commitNotes(it, dim, value), 400);
   });
   document.addEventListener("change", e => {
     const ta = e.target.closest(".card textarea");
     if (!ta) return;
     clearTimeout(noteTimer);
-    commitNotes(items[current], ta.value);
+    commitNotes(items[current], ta.closest(".card").dataset.dim, ta.value);
   });
 
   const list = document.getElementById("list");
@@ -744,6 +789,14 @@
   });
 
   document.addEventListener("keydown", e => {
+    // Tab moves between the question's dimensions and does nothing else on this page
+    if (e.key === "Tab" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      const n = items[current].dims.length;
+      if (n > 1) setActiveDim((activeDim + (e.shiftKey ? n - 1 : 1)) % n);
+      if (document.activeElement && document.activeElement.tagName === "TEXTAREA") document.activeElement.blur();
+      return;
+    }
     if (/^(TEXTAREA|INPUT|SELECT)$/.test(e.target.tagName)) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === "ArrowRight") { go(current + 1); return; }
@@ -757,6 +810,7 @@
     if (Object.prototype.hasOwnProperty.call(KEYS, e.key)) { e.preventDefault(); toggleVerdict(KEYS[e.key]); }
   });
 
+  if (!SINGLE_DIM) document.getElementById("hint").insertAdjacentHTML("beforeend", " &middot; <b>Tab</b> dimension");
   renderItem();
 
   (async () => {
@@ -773,7 +827,7 @@
       }
       // resume where the labelling stopped, unless the owner has already moved
       if (!navigated) {
-        const first = items.findIndex(it => !verdictOf(it));
+        const first = items.findIndex(it => !labelled(it));
         current = first === -1 ? 0 : first;
       }
       renderItem();
