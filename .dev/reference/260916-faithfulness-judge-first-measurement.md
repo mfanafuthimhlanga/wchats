@@ -48,3 +48,32 @@ fail exists to calibrate against, which is why relevancy is reported and not gat
 Sheets and the v2 artifact on `chore/labels-735fb9fa`; the per-dimension harness that
 wrote the artifact is on #276. `calibrate_run.py --score 479d53bc... --labels-from
 735fb9fa...` reproduces it against the staging tenant, spending nothing.
+
+## The third pass, 2026-09-17, read sentence by sentence
+
+The owner labelled the same 30 rows again on the page that edges each sentence of the
+answer by its word overlap with the retrieved text and lights the carrying passage on a
+click. Reading support rather than correctness moved three rows and the sheet now reads
+29 pass, 1 fail. Two earlier fails became passes because the answer is carried by the
+contexts even where the owner knows the concept does not exist in the project, and one
+earlier pass became a fail because retrieval never fetched the passage the answer needed.
+The judge against this pass:
+
+| | |
+|---|---|
+| judge fail, owner pass | 13 |
+| judge pass, owner fail | 1 |
+| both fail | 0 |
+| kappa point | -0.07, and the interval is not a measurement |
+
+One fail label cannot anchor a kappa interval, so the harness refuses the figure: 37% of
+bootstrap resamples carry no information. What the pass does show is that the 13 rows
+the judge fails at stored scores 0.44 to 0.79 are answers the owner reads as carried by
+the retrieved text, sentence by sentence. Ragas counts claims and the owner reads
+support, and the gate at 0.80 sits inside the range where those two readings part.
+Calibrating the judge needs rows with unsupported claims in them, which this corpus
+does not contain (BACKLOG 8.4).
+
+The page is `tests/evals/calibration/page/`, built from a run's sheet by `build.py`, and
+the three passes sit beside each other in `runs/735fb9fa.../` as `human_scores_pass1.csv`,
+`human_scores_pass2.csv` and `human_scores.csv`.
