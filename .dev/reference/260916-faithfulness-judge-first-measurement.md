@@ -77,3 +77,30 @@ does not contain (BACKLOG 8.4).
 The page is `tests/evals/calibration/page/`, built from a run's sheet by `build.py`, and
 the three passes sit beside each other in `runs/735fb9fa.../` as `human_scores_pass1.csv`,
 `human_scores_pass2.csv` and `human_scores.csv`.
+
+## The seeded rows, 2026-09-17: the owner passes answers built to be unfaithful
+
+Ten answers from the run, each with one sentence added that the retrieved text does not carry,
+checked absent by word before labelling. Ground truth by construction: all ten are unfaithful.
+
+| | |
+|---|---|
+| owner, on the page, sentence by sentence | 9 pass, 1 fail |
+| the one owner fail | the row that was already a retrieval miss |
+| judge, production path with the 4096 cap | scores 0.36 to 0.875 |
+| judge fails at the 0.80 gate | 7 of 10 |
+| judge fails at 0.88 | 10 of 10 |
+| real owner-passed rows a 0.88 gate would also fail | 18 of 29 |
+
+Two things follow. The owner's faithfulness labels are not support labels, on a flat sheet or on
+the page: nine answers each carrying a planted claim were passed. So every kappa above compares the
+judge with a labeller measuring something else, and none of them says anything about the judge.
+Against construction truth, the judge caught seven of ten planted claims at the gate and all ten
+below 0.88, and the three it missed at 0.80 are answers where the planted claim is one of about
+eight, which is what a claim-counting metric does.
+
+What the judge cannot be told apart from is the 13 real rows it fails at 0.44 to 0.79. Those may
+be claim-counting on long answers or real unsupported claims; the owner's reading cannot say, and
+the seeded set shows why. The 40-row score is on `seeded_unfaithful.csv` and
+`judge_scores_seeded.csv` beside the sheets, kappa 0.00 against the owner, which is the labeller and
+not the judge.

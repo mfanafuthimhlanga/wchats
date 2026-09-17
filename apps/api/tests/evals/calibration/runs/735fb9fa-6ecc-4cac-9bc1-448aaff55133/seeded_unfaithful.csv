@@ -1,0 +1,2098 @@
+scenario_id,dimension,human_verdict,human_score,notes,dataset,question,response,retrieved_contexts,reference,turns,resolved_question
+b28d106f-b858-4251-937c-8254f917dc9c-seeded,faithfulness,pass,,,seeded-unfaithful,and what does delivery cost?,"Delivery costs a flat **R30** for the **Tembisa** delivery area. This is configured in `src/pages/Checkout.tsx` and documented in `README.md`. Orders over R500 ship free, and the fee rises to R60 for addresses outside Tembisa.
+CITATIONS:
+- Document: Mellow's Earth Elements | Section: Business model
+- Document: Mellow's Earth Elements | Section: What it is","Mellow's Earth Elements
+Business model
+The business sells its own physical goods direct to the customer. Revenue is the product price. The storefront takes no payment and charges no fee of its own, so there is no subscription, no commission and no tier.
+```
+src/data/products.ts
+```
+is the price list, from a R70 turmeric scrub and a R80 turmeric bar soap up to R350, with a R200 turmeric tissue oil and two combo packs at R280 and R320.
+```
+src/pages/Checkout.tsx
+```
+sets delivery at R30 and names Tembisa in the comment beside it, which fixes the delivery area the code serves.
+Fulfilment is manual by design. The customer fills in the delivery form, sees the bank account details from
+```
+PaymentInfo.tsx
+```
+and an order reference, and pays by transfer out of band. Because no order reaches a server, the owner matches payments to references by hand.
+Distribution is the site itself at
+```
+https://mellowsearthelements.com
+```
+, deployed to Vercel from the repository on every push.
+
+Mellow's Earth Elements
+What it is
+Mellow's Earth Elements is a single-page storefront for a small perfume and skincare business. It runs entirely in the browser.
+```
+README.md
+```
+describes a product catalog, a shopping cart persisted to
+```
+localStorage
+```
+, and a bank-transfer checkout that ends in a client-side order reference, and states the design goal plainly, a static single-page app you can host anywhere.
+The catalog in
+```
+src/data/products.ts
+```
+holds 17 products across two categories, Perfumes and Skin Care, priced between R70 and R350, with combo packs at R280 and R320.
+```
+src/pages/Checkout.tsx
+```
+adds a flat R30 delivery fee for Tembisa. The bank details the customer pays into live in
+```
+src/components/checkout/PaymentInfo.tsx
+```
+.
+```
+vercel.json
+```
+sets
+```
+VITE_APP_URL
+```
+to
+```
+https://mellowsearthelements.com
+```
+and pins the same origin in the API CORS header, so that is the site's own address. The same file sets the framework to
+```
+vite
+```
+, the build to
+```
+pnpm build
+```
+and the output directory to
+```
+dist
+```
+.
+
+Mellow's Earth Elements
+Architecture
+```
+src/App.tsx
+```
+mounts a React Router tree with six lazy-loaded routes,
+```
+/
+```
+,
+```
+/perfumes
+```
+,
+```
+/skincare
+```
+,
+```
+/product/:productId
+```
+,
+```
+/cart
+```
+and
+```
+/checkout
+```
+, plus a catch-all. Every route sits inside an
+```
+ErrorBoundary
+```
+, a
+```
+Suspense
+```
+fallback,
+```
+CartProvider
+```
+,
+```
+TooltipProvider
+```
+and a TanStack Query client, with
+```
+FloatingCart
+```
+rendered above the router outlet.
+An order moves through three steps, all of them in the browser.
+```
+products.ts -> ProductGrid -> CartContext (localStorage) -> delivery-form-schema -> orderService -> order reference
+```
+```
+CartContext
+```
+holds the line items and writes them to
+```
+localStorage
+```
+. The delivery form validates against the zod schema in
+```
+src/components/checkout/delivery-form-schema.ts
+```
+.
+```
+src/services/orderService.ts
+```
+sanitises each string, revalidates the order against the delivery details and the cart, and generates the reference number the confirmation screen shows. Nothing is sent to a server.
+```
+vite.config.ts
+```
+splits the bundle by hand into vendor, ui, router, query and icons chunks, targets es2020 and minifies with terser.
+```
+src/components/three/MeridianHeroScene.tsx
+```
+renders the hero with react-three-fiber.
+
+Mellow's Earth Elements
+Sources
+- `README.md` , `PRODUCTION_READINESS_ASSESSMENT.md`
+- `package.json` , `pnpm-lock.yaml` , `vite.config.ts` , `vercel.json` , `.env.example`
+- `src/App.tsx` , `src/context/CartContext.tsx` , `src/services/orderService.ts`
+- `src/data/products.ts` , `src/pages/Checkout.tsx`
+- `src/components/checkout/PaymentInfo.tsx` , `src/components/checkout/delivery-form-schema.ts`
+- `src/components/three/MeridianHeroScene.tsx` , `src/tests/unit/`
+
+Mellow's Earth Elements
+Runtime and tests
+Mellow's Earth Elements, install and run:
+```
+# Mellow's Earth Elements
+pnpm install
+pnpm dev
+```
+The dev server listens on port 8080, set in
+```
+vite.config.ts
+```
+.
+Mellow's Earth Elements, test, type-check and lint:
+```
+# Mellow's Earth Elements
+pnpm test        # vitest run src/tests/unit
+pnpm typecheck   # tsc --noEmit
+pnpm lint        # eslint .
+```
+Mellow's Earth Elements, build and preview:
+```
+# Mellow's Earth Elements
+pnpm build
+pnpm preview
+```
+Unit tests sit in
+```
+src/tests/unit
+```
+and cover cart logic, the delivery-form schema, the order service and the validation helpers. The application code reads
+```
+VITE_BUSINESS_EMAIL
+```
+,
+```
+VITE_GOOGLE_MAPS_API_KEY
+```
+and
+```
+VITE_LOG_LEVEL
+```
+through
+```
+import.meta.env
+```
+.
+```
+README.md
+```
+documents
+```
+VITE_APP_URL
+```
+and
+```
+VITE_BUSINESS_EMAIL
+```
+and marks both optional, and
+```
+.env.example
+```
+documents a longer list for the deployment platform.","`src/pages/Checkout.tsx` adds a flat R30 delivery fee for Tembisa, and names Tembisa in the comment beside it, which fixes the delivery area the code serves.","USER: I'm looking at the Mellow's Earth Elements storefront.
+ASSISTANT: The storefront is a single-page app that runs entirely in the browser. What do you want to know?
+USER: The checkout.",What does delivery cost for the Mellow's Earth Elements storefront checkout?
+5a09fee5-17fa-4a67-b874-4d9b7d1e9413-seeded,faithfulness,pass,,,seeded-unfaithful,What does the Growth tier cost a month?,"I don’t have a monthly price for the Growth tier in the knowledge base. W Chats’ business model specifies Starter, Growth, and Pro tiers priced per agent per month, with conversation caps and overage billing, but the actual pricing is recorded as an open decision deferred to milestone M8. The Starter tier is capped at 200 conversations a month.
+CITATIONS:
+- Document: W Chats Business Model Canvas / PRODUCT.md / prd.md | Section: Business model","W Chats
+Business model
+```
+wchats_business_model_canvas.html
+```
+sets out the revenue model. SaaS tiers named Starter, Growth and Pro charge per agent per month against a conversation cap. Conversations above the cap bill as monthly overage. A managed service add-on covers weekly digest review, custom red-team scenarios and SLA support. Hosted against self-hosted licensing for agencies and larger teams comes later. The canvas records the pricing model as locked at milestone M8 once cost-per-tenant data exists, and
+```
+prd.md
+```
+lists pricing as an open decision deferred to the same milestone.
+Customer segments run from SMB owners handling support on email and WhatsApp today, through South African and emerging-market Shopify, WooCommerce and Wix shops doing 50 to 500 orders a month, to solo founders and ops leads, and eventually agencies bundling W Chats for their clients. Channels are the open-source repository on GitHub as primary discovery, an architecture deep-dive blog and a public demo, the widget itself on customer sites, the founder's South African network, and later app store listings on Shopify and Wix.
+
+W Chats
+What it is
+W Chats is a multi-tenant platform that turns a business's own documents into a customer service agent and holds that agent back from customers until it clears a gate.
+```
+PRODUCT.md
+```
+names the user as a non-technical small business owner, a salon, a realtor, a repair shop or an e-commerce store, who needs a support agent on their site without hiring a developer. A second audience is the technical evaluator who reads the eval scores and red-team findings before trusting the agent.
+The journey has four steps. Create names the agent and provisions a dedicated Neon Postgres project for the tenant. Configure drafts the agent's voice and ingests documents. Test runs the eval suite and then the red team. Deploy clears the pre-deployment checklist and produces a widget snippet for the owner's own site. The same four steps exist as a REST and SSE surface behind
+```
+X-API-Key
+```
+auth, so a developer's coding agent can script the whole journey without a browser.
+```
+README.md
+```
+states that there is no always-on deployment today. The system runs from local processes.
+
+W Chats
+Sources
+- `README.md` , `CLAUDE.md` , `CONTEXT.md` , `PRODUCT.md` , `prd.md`
+```
+wchats_business_model_canvas.html
+```
+- `apps/api/pyproject.toml` - , `apps/api/.env.example` , `apps/api/railway.api.toml`
+- `apps/api/app/api/v1/` , `apps/api/app/worker/` , `apps/api/app/services/`
+- `apps/api/alembic/versions/` , `apps/api/alembic_tenant/versions/`
+```
+apps/admin/package.json
+```
+- `apps/widget/package.json` - , `apps/widget/scripts/check-size.mjs`
+
+W Chats
+Stack
+Python 3.11 or newer. FastAPI 0.136.1, uvicorn 0.34.3, Pydantic 2, Celery 5.6.3, redis 6.4.0, SQLAlchemy 2.0.49, Alembic 1.18.4, asyncpg 0.31.0, cryptography 48.0.0 and structlog 25.5.0. Model and eval work runs on anthropic 0.101.0, langfuse 4.x, ragas 0.4.x, instructor 1.x and voyageai 0.3.7. Transactional adapters use stripe 15.3.0, ShopifyAPI 12.7.0, requests-oauthlib and twilio 9.10.9. The
+```
+pipeline
+```
+extra adds docling 2.93.0 and transformers 4.47 or newer.
+The console is Next.js 16.2.6 on React 19.2.0, with Clerk 7.3.5, TanStack Query 5, recharts 3.8.1, three 0.185.1, Tailwind 4.1.16 and TypeScript 5.9.3. The customer widget is Preact 10.29.1 built with Vite 8.0.13.
+Data stores are Neon Postgres with pgvector HNSW indexes, plus Redis as broker and pub/sub. Deployment targets Railway, where
+```
+apps/api/railway.api.toml
+```
+runs a
+```
+preDeployCommand
+```
+that migrates the control database and every tenant database before any service serves new code.
+
+W Chats
+Architecture
+Storage splits in two. The control database holds
+```
+tenants
+```
+,
+```
+agents
+```
+,
+```
+jobs
+```
+,
+```
+capability_envelopes
+```
+,
+```
+tool_calls_audit
+```
+and
+```
+prompt_versions
+```
+. Each tenant gets its own Neon project holding
+```
+documents
+```
+,
+```
+chunks
+```
+, embeddings on an HNSW index,
+```
+conversations
+```
+,
+```
+messages
+```
+,
+```
+tool_calls
+```
+,
+```
+eval_runs
+```
+,
+```
+red_team_findings
+```
+,
+```
+turn_metrics
+```
+and
+```
+retrieval_metrics
+```
+. Two Alembic chains migrate them,
+```
+alembic/versions
+```
+and
+```
+alembic_tenant/versions
+```
+. Retrieval fuses pgvector cosine search with BM25 over native
+```
+tsvector
+```
+and
+```
+ts_rank_cd
+```
+in one SQL CTE, reranks the fused candidates, and reads a
+```
+verified_qa
+```
+cache first.","The documents do not state a price. They name SaaS tiers Starter, Growth and Pro charging per agent per month against a conversation cap, and record the pricing model as locked at milestone M8 once cost-per-tenant data exists, with `prd.md` listing pricing as an open decision deferred to the same milestone.","USER: I'm looking at W Chats as something a business would buy.
+ASSISTANT: W Chats charges per agent per month on named tiers. What would you like to know?",What does the W Chats Growth tier cost per month?
+819c84c9-eefd-4845-8510-0709ac91b4a4-seeded,faithfulness,pass,,,seeded-unfaithful,which file holds the delivery form fields?,"The delivery form fields are defined in:
+
+```text
+src/components/checkout/delivery-form-schema.ts
+```
+
+`src/pages/Checkout.tsx` renders the checkout flow, while the schema validates the delivery details. The order service then revalidates those details before generating the order reference. The schema requires a South African mobile number in the 0XX XXX XXXX format and rejects landlines.
+CITATIONS:
+- Document: Mellow's Earth Elements | Section: Architecture
+- Document: Mellow's Earth Elements | Section: Sources","Mellow's Earth Elements
+Business model
+The business sells its own physical goods direct to the customer. Revenue is the product price. The storefront takes no payment and charges no fee of its own, so there is no subscription, no commission and no tier.
+```
+src/data/products.ts
+```
+is the price list, from a R70 turmeric scrub and a R80 turmeric bar soap up to R350, with a R200 turmeric tissue oil and two combo packs at R280 and R320.
+```
+src/pages/Checkout.tsx
+```
+sets delivery at R30 and names Tembisa in the comment beside it, which fixes the delivery area the code serves.
+Fulfilment is manual by design. The customer fills in the delivery form, sees the bank account details from
+```
+PaymentInfo.tsx
+```
+and an order reference, and pays by transfer out of band. Because no order reaches a server, the owner matches payments to references by hand.
+Distribution is the site itself at
+```
+https://mellowsearthelements.com
+```
+, deployed to Vercel from the repository on every push.
+
+Mellow's Earth Elements
+What it is
+Mellow's Earth Elements is a single-page storefront for a small perfume and skincare business. It runs entirely in the browser.
+```
+README.md
+```
+describes a product catalog, a shopping cart persisted to
+```
+localStorage
+```
+, and a bank-transfer checkout that ends in a client-side order reference, and states the design goal plainly, a static single-page app you can host anywhere.
+The catalog in
+```
+src/data/products.ts
+```
+holds 17 products across two categories, Perfumes and Skin Care, priced between R70 and R350, with combo packs at R280 and R320.
+```
+src/pages/Checkout.tsx
+```
+adds a flat R30 delivery fee for Tembisa. The bank details the customer pays into live in
+```
+src/components/checkout/PaymentInfo.tsx
+```
+.
+```
+vercel.json
+```
+sets
+```
+VITE_APP_URL
+```
+to
+```
+https://mellowsearthelements.com
+```
+and pins the same origin in the API CORS header, so that is the site's own address. The same file sets the framework to
+```
+vite
+```
+, the build to
+```
+pnpm build
+```
+and the output directory to
+```
+dist
+```
+.
+
+Mellow's Earth Elements
+Architecture
+```
+src/App.tsx
+```
+mounts a React Router tree with six lazy-loaded routes,
+```
+/
+```
+,
+```
+/perfumes
+```
+,
+```
+/skincare
+```
+,
+```
+/product/:productId
+```
+,
+```
+/cart
+```
+and
+```
+/checkout
+```
+, plus a catch-all. Every route sits inside an
+```
+ErrorBoundary
+```
+, a
+```
+Suspense
+```
+fallback,
+```
+CartProvider
+```
+,
+```
+TooltipProvider
+```
+and a TanStack Query client, with
+```
+FloatingCart
+```
+rendered above the router outlet.
+An order moves through three steps, all of them in the browser.
+```
+products.ts -> ProductGrid -> CartContext (localStorage) -> delivery-form-schema -> orderService -> order reference
+```
+```
+CartContext
+```
+holds the line items and writes them to
+```
+localStorage
+```
+. The delivery form validates against the zod schema in
+```
+src/components/checkout/delivery-form-schema.ts
+```
+.
+```
+src/services/orderService.ts
+```
+sanitises each string, revalidates the order against the delivery details and the cart, and generates the reference number the confirmation screen shows. Nothing is sent to a server.
+```
+vite.config.ts
+```
+splits the bundle by hand into vendor, ui, router, query and icons chunks, targets es2020 and minifies with terser.
+```
+src/components/three/MeridianHeroScene.tsx
+```
+renders the hero with react-three-fiber.
+
+Mellow's Earth Elements
+Sources
+- `README.md` , `PRODUCTION_READINESS_ASSESSMENT.md`
+- `package.json` , `pnpm-lock.yaml` , `vite.config.ts` , `vercel.json` , `.env.example`
+- `src/App.tsx` , `src/context/CartContext.tsx` , `src/services/orderService.ts`
+- `src/data/products.ts` , `src/pages/Checkout.tsx`
+- `src/components/checkout/PaymentInfo.tsx` , `src/components/checkout/delivery-form-schema.ts`
+- `src/components/three/MeridianHeroScene.tsx` , `src/tests/unit/`
+
+Mellow's Earth Elements
+Runtime and tests
+Mellow's Earth Elements, install and run:
+```
+# Mellow's Earth Elements
+pnpm install
+pnpm dev
+```
+The dev server listens on port 8080, set in
+```
+vite.config.ts
+```
+.
+Mellow's Earth Elements, test, type-check and lint:
+```
+# Mellow's Earth Elements
+pnpm test        # vitest run src/tests/unit
+pnpm typecheck   # tsc --noEmit
+pnpm lint        # eslint .
+```
+Mellow's Earth Elements, build and preview:
+```
+# Mellow's Earth Elements
+pnpm build
+pnpm preview
+```
+Unit tests sit in
+```
+src/tests/unit
+```
+and cover cart logic, the delivery-form schema, the order service and the validation helpers. The application code reads
+```
+VITE_BUSINESS_EMAIL
+```
+,
+```
+VITE_GOOGLE_MAPS_API_KEY
+```
+and
+```
+VITE_LOG_LEVEL
+```
+through
+```
+import.meta.env
+```
+.
+```
+README.md
+```
+documents
+```
+VITE_APP_URL
+```
+and
+```
+VITE_BUSINESS_EMAIL
+```
+and marks both optional, and
+```
+.env.example
+```
+documents a longer list for the deployment platform.",The checkout delivery form fields and their validation rules are defined in `src/components/checkout/delivery-form-schema.ts`.,"USER: I'm changing the checkout flow in the Mellow's Earth Elements storefront.
+ASSISTANT: Okay. Which part of checkout, delivery, payment, or the order summary?
+USER: Delivery.",Which file holds the delivery form fields in the Mellow's Earth Elements storefront checkout flow?
+1adec12b-1740-4551-8992-fc6af194bec0-seeded,faithfulness,pass,,,seeded-unfaithful,and how do I preview the production build?,"From the storefront directory, run:
+
+```bash
+pnpm build
+pnpm preview
+```
+
+`pnpm build` writes the production bundle to `dist`; `pnpm preview` serves that bundle locally. The development server uses port 8080 as configured in `vite.config.ts`; the corpus does not specify the preview port. (Mellow’s Earth Elements, “Runtime and tests”; `vite.config.ts`) `pnpm preview` serves the bundle on port 4173 by default.
+CITATIONS:
+- Document: Mellow's Earth Elements | Section: Runtime and tests
+- Document: Mellow's Earth Elements | Section: What it is","Mellow's Earth Elements
+Runtime and tests
+Mellow's Earth Elements, install and run:
+```
+# Mellow's Earth Elements
+pnpm install
+pnpm dev
+```
+The dev server listens on port 8080, set in
+```
+vite.config.ts
+```
+.
+Mellow's Earth Elements, test, type-check and lint:
+```
+# Mellow's Earth Elements
+pnpm test        # vitest run src/tests/unit
+pnpm typecheck   # tsc --noEmit
+pnpm lint        # eslint .
+```
+Mellow's Earth Elements, build and preview:
+```
+# Mellow's Earth Elements
+pnpm build
+pnpm preview
+```
+Unit tests sit in
+```
+src/tests/unit
+```
+and cover cart logic, the delivery-form schema, the order service and the validation helpers. The application code reads
+```
+VITE_BUSINESS_EMAIL
+```
+,
+```
+VITE_GOOGLE_MAPS_API_KEY
+```
+and
+```
+VITE_LOG_LEVEL
+```
+through
+```
+import.meta.env
+```
+.
+```
+README.md
+```
+documents
+```
+VITE_APP_URL
+```
+and
+```
+VITE_BUSINESS_EMAIL
+```
+and marks both optional, and
+```
+.env.example
+```
+documents a longer list for the deployment platform.
+
+Mellow's Earth Elements
+What it is
+Mellow's Earth Elements is a single-page storefront for a small perfume and skincare business. It runs entirely in the browser.
+```
+README.md
+```
+describes a product catalog, a shopping cart persisted to
+```
+localStorage
+```
+, and a bank-transfer checkout that ends in a client-side order reference, and states the design goal plainly, a static single-page app you can host anywhere.
+The catalog in
+```
+src/data/products.ts
+```
+holds 17 products across two categories, Perfumes and Skin Care, priced between R70 and R350, with combo packs at R280 and R320.
+```
+src/pages/Checkout.tsx
+```
+adds a flat R30 delivery fee for Tembisa. The bank details the customer pays into live in
+```
+src/components/checkout/PaymentInfo.tsx
+```
+.
+```
+vercel.json
+```
+sets
+```
+VITE_APP_URL
+```
+to
+```
+https://mellowsearthelements.com
+```
+and pins the same origin in the API CORS header, so that is the site's own address. The same file sets the framework to
+```
+vite
+```
+, the build to
+```
+pnpm build
+```
+and the output directory to
+```
+dist
+```
+.
+
+Mellow's Earth Elements
+Sources
+- `README.md` , `PRODUCTION_READINESS_ASSESSMENT.md`
+- `package.json` , `pnpm-lock.yaml` , `vite.config.ts` , `vercel.json` , `.env.example`
+- `src/App.tsx` , `src/context/CartContext.tsx` , `src/services/orderService.ts`
+- `src/data/products.ts` , `src/pages/Checkout.tsx`
+- `src/components/checkout/PaymentInfo.tsx` , `src/components/checkout/delivery-form-schema.ts`
+- `src/components/three/MeridianHeroScene.tsx` , `src/tests/unit/`
+
+Mellow's Earth Elements
+Stack
+React 19.2.7 and react-dom 19.2.7, TypeScript 7.0.2, Vite 8.1.5, Tailwind CSS 4.3.3 through
+```
+@tailwindcss/postcss
+```
+, and shadcn/ui built on Radix primitives. Routing is react-router-dom 7.18.1. Forms use react-hook-form 7.53 with zod 4.4.3 via
+```
+@hookform/resolvers
+```
+5.4. Server-state caching is
+```
+@tanstack/react-query
+```
+5.56.2. Motion is framer-motion 12.6.2. The hero scene uses three 0.185.1 with
+```
+@react-three/fiber
+```
+9.6.1 and
+```
+@react-three/drei
+```
+10.7.7. Icons come from lucide-react and toasts from sonner 2.0.7.
+Tests run on vitest 4.1.10 with happy-dom 20.11 and Testing Library. Linting is eslint 10.7.0 with typescript-eslint 8.65. husky 9.1.7 and lint-staged 17.1 run eslint and the related vitest cases over staged files.
+```
+package.json
+```
+pins the package manager to pnpm 11.15.1.
+The app reads and writes no database. Hosting is Vercel, static, configured by
+```
+vercel.json
+```
+, which also sets security headers including
+```
+X-Frame-Options
+```
+,
+```
+X-Content-Type-Options
+```
+and a
+```
+Permissions-Policy
+```
+that denies camera, microphone and geolocation.
+
+Mellow's Earth Elements
+Business model
+The business sells its own physical goods direct to the customer. Revenue is the product price. The storefront takes no payment and charges no fee of its own, so there is no subscription, no commission and no tier.
+```
+src/data/products.ts
+```
+is the price list, from a R70 turmeric scrub and a R80 turmeric bar soap up to R350, with a R200 turmeric tissue oil and two combo packs at R280 and R320.
+```
+src/pages/Checkout.tsx
+```
+sets delivery at R30 and names Tembisa in the comment beside it, which fixes the delivery area the code serves.
+Fulfilment is manual by design. The customer fills in the delivery form, sees the bank account details from
+```
+PaymentInfo.tsx
+```
+and an order reference, and pays by transfer out of band. Because no order reaches a server, the owner matches payments to references by hand.
+Distribution is the site itself at
+```
+https://mellowsearthelements.com
+```
+, deployed to Vercel from the repository on every push.","Run `pnpm build`, then `pnpm preview` serves the production build from `dist/`.","USER: I have the Mellow's Earth Elements storefront running with pnpm dev.
+ASSISTANT: Great, the Vite dev server is up. What next?",How do I preview the production build of the Mellow's Earth Elements storefront?
+c4e02b6a-132b-4cd3-a9e1-db6f6e70cafb-seeded,faithfulness,pass,,,seeded-unfaithful,and how do I run the unit tests there?,"For the two components you mentioned:
+
+```bash
+cd sentinel-server
+npm test
+```
+
+This runs the server’s Vitest suite.
+
+The web app’s browser tests are run from its directory:
+
+```bash
+cd sentinel-web
+npx playwright test
+```
+
+The repository documentation does not specify a separate web unit-test command; it documents Playwright for the web tests. These commands are listed in the Sentinel OHS runtime and tests documentation. The server suite takes about forty seconds and needs Memgraph running on port 7687.
+CITATIONS:
+- Document: Sentinel OHS | Section: Runtime and tests","Sentinel OHS
+Runtime and tests
+Sentinel OHS, start the graph and the server:
+```
+# Sentinel OHS
+cd sentinel-server
+npm run graph:start      # docker compose up -d memgraph
+cp .env.example .env     # then set ANTHROPIC_API_KEY
+npm install
+npm run dev              # server plus agent:query, agent:event, agent:background
+npm run dev:no-graph     # GRAPH_REQUIRED=false, runs without Docker
+```
+Sentinel OHS, run the web app:
+```
+# Sentinel OHS
+cd sentinel-web && npm install && npm run dev   # Vite on http://localhost:5173
+```
+Sentinel OHS, run the tests:
+```
+# Sentinel OHS
+cd sentinel-server && npm test          # vitest run
+cd sentinel-mobile && npm test          # jest
+cd sentinel-web && npx playwright test
+```
+
+Sentinel OHS
+Architecture
+Three deployable pieces and a test package.
+```
+sentinel-server
+```
+is a Fastify 5 API.
+```
+sentinel-web
+```
+is a React Router single-page app whose
+```
+/app
+```
+route lazy-loads
+```
+Shell3D
+```
+.
+```
+sentinel-mobile
+```
+is an Expo Router app with
+```
+(employee)
+```
+,
+```
+(warden)
+```
+and
+```
+(admin)
+```
+route groups.
+```
+e2e
+```
+is a standalone Playwright package at the repository root.
+Three agent processes run beside the server on ports 3001, 3002 and 3003, started by the
+```
+dev
+```
+script. The server proxies
+```
+GET /agent/query
+```
+,
+```
+GET /agent/insights/stream
+```
+,
+```
+POST /agent/review
+```
+and
+```
+POST /agent/background/run
+```
+to them by
+```
+fetch
+```
+, and returns an error rather than crashing when one is down.
+```
+mobile / web -> Fastify (requireAuth scope) -> ws /ws broadcast -> Memgraph over bolt
+                                            -> fetch -> agent query 3001 | event 3002 | background 3003
+```
+
+Sentinel OHS
+What it is
+Sentinel OHS is a real-time occupational health and safety intelligence platform for large built environments.
+```
+prd.md
+```
+sets the target building at 500 to 1,500 employees across 20 to 40 floors and names Standard Bank Corporate Banking Headquarters as the demo site.
+```
+PRODUCT.md
+```
+names three desktop users, safety officers, security managers and facilities teams, and two mobile users, employees and floor wardens.
+The product puts the building on screen in 3D and drives it from live signals.
+```
+README.md
+```
+states the core moment, the distress button fires and the 3D coordinate appears on the security manager's screen. Drills start from the desktop and register green and red taps from the floor.
+```
+prd.md
+```
+frames the intent in one line, Sentinel is not OHS software, it is an evaluation harness for a physical environment.
+Installation is local.
+```
+README.md
+```
+gives the sequence, start Memgraph, copy
+```
+.env.example
+```
+, add an Anthropic key, then
+```
+npm install && npm run dev
+```
+in
+```
+sentinel-server
+```
+and again in
+```
+sentinel-web
+```
+. A successor repository,
+```
+sentinel-v2
+```
+, restates the product as a corporate life-safety command layer for large US campuses and treats this version as reference only.
+
+Sentinel OHS
+Runtime and tests
+```
+sentinel-server/.env.example
+```
+documents
+```
+NEO4J_URI
+```
+,
+```
+NEO4J_USER
+```
+,
+```
+NEO4J_PASSWORD
+```
+,
+```
+GRAPH_REQUIRED
+```
+,
+```
+BLE_MOCK_MODE
+```
+,
+```
+SENTINEL_DEMO_ORG_ID
+```
+,
+```
+TRACKING_MODE
+```
+and five
+```
+WORKOS_*
+```
+keys. The server exits at boot when
+```
+SENTINEL_DEMO_ORG_ID
+```
+is unset. The code also reads
+```
+ANTHROPIC_API_KEY
+```
+,
+```
+AGENT_MOCK
+```
+,
+```
+AUDIT_SECRET
+```
+,
+```
+FRONTEND_URL
+```
+and
+```
+TEST_AUTH
+```
+.
+```
+sentinel-web/.env.example
+```
+documents
+```
+VITE_WORKOS_CLIENT_ID
+```
+, and the client also reads
+```
+VITE_API_URL
+```
+,
+```
+VITE_WS_URL
+```
+,
+```
+VITE_SERVER_URL
+```
+,
+```
+VITE_SKIP_AUTH
+```
+and
+```
+VITE_DEV_HARNESS
+```
+.
+
+Sentinel OHS
+Sources
+- `README.md` , `PRODUCT.md` , `prd.md` , `prd-v2.md` , `prd-v3.md` , `CLAUDE.md`
+- `package.json` , `sentinel-server/package.json` , `sentinel-web/package.json` , `sentinel-mobile/package.json` , `e2e/package.json`
+- `sentinel-server/src/index.ts` , `sentinel-server/src/graph/migrations/` , `sentinel-server/src/ingest/` , `sentinel-server/src/agent/`
+- `sentinel-server/docker-compose.yml` , `sentinel-server/.env.example` , `sentinel-web/.env.example`
+- `sentinel-web/src/routes.tsx` , `sentinel-web/src/shell3d/` , `sentinel-mobile/app/`
+```
+../sentinel-v2/CLAUDE.md
+```",Sentinel OHS runs its unit tests with vitest in each package: `cd sentinel-server && npx vitest` and `cd sentinel-web && npx vitest`.,"USER: I've cloned Sentinel OHS and want to check my changes.
+ASSISTANT: Good. Which part of Sentinel are you changing, the server or the web app?
+USER: Both, actually.",How do I run the unit tests for both the Sentinel OHS server and web app?
+71b3d131-8a73-45ab-8698-0830cdc32643-seeded,faithfulness,fail,,,seeded-unfaithful,What does Beekeeper do when only one threat source flags a package?,"I don’t have the specific single-source threshold behavior in my knowledge base. The available Beekeeper documentation says it evaluates package installs against corroboration-based threat intelligence and structural policy, then allows or blocks the operation; it does not state what happens when exactly one threat source flags a package. This may be clarified in the project’s policy or catalog implementation. Contact information is in `beekeeper/SECURITY.md`. When only one source flags a package Beekeeper downgrades the result to a warning and lets the install continue.
+CITATIONS:
+- Document: Beekeeper portfolio corpus | Section: What it is
+- Document: Beekeeper portfolio corpus | Section: Architecture","Beekeeper
+What it is
+Beekeeper is threat intelligence for autonomous coding agents.
+```
+README.md
+```
+states the job in one sentence, it sits between an agent and its tools, evaluates each package install, file access, network call and tool call before it runs against corroboration-based threat intelligence and structural policy, and blocks what does not pass. It ships as a single static Go binary with no external runtime dependencies.
+```
+README.md
+```
+gives the reason it exists, the threat is the supply chain and not the model, because an agent installs the dependency a task needs with no way to know that version shipped a credential stealer after its training cutoff.
+```
+beekeeper-product-launch/inputs/target_personas.md
+```
+names the primary user as an agent-forward staff engineer or solo founder running Claude Code, Codex or Cursor daily.
+The install path in
+```
+README.md
+```
+is a
+```
+go install
+```
+of
+```
+github.com/home-beekeeper/beekeeper/cmd/beekeeper
+```
+, followed by
+```
+beekeeper catalogs sync
+```
+and
+```
+beekeeper hooks install --target claude-code
+```
+.
+```
+LICENSE
+```
+is Apache 2.0.
+```
+SECURITY.md
+```
+names Mzansi Agentive Pty Ltd, Mfanafuthi Mhlanga, as maintainer.
+
+Beekeeper
+Business model
+The binary is free.
+```
+LICENSE
+```
+is Apache 2.0 and no repository states a price, a tier or a paid edition for Beekeeper itself.
+```
+beekeeper-product-launch/inputs/competitor_intel.md
+```
+turns that into the position, fail-closed and self-hostable, a single static Go binary, local-first, Apache 2.0, no source leaves the machine. The same file records the alternatives it is placed against, Socket, Snyk and Dependabot, each free at entry with paid team, per-developer or enterprise plans.
+```
+inputs/target_personas.md
+```
+sets three buyers. Primary is the agent-forward staff engineer or solo founder. Secondary is the platform or AppSec engineer at a Series A or larger company with a security function. Tertiary is the open-source amplifier and skeptic on Hacker News and r/netsec.
+Go to market is a launch-day sequence in
+```
+launch-runbook.md
+```
+. Show HN opens, an X thread follows at fifteen minutes, r/netsec at thirty, r/commandline at forty-five and Lobsters at an hour, with awesome-list pull requests and directory submissions running through the first two hours, a Dev.to deep dive at two hours and a Bluesky mirror after. The runbook names Tuesday to Thursday, 08:00 to 10:00 ET, as the posting window, and lists nine third-tier directories including Terminal Trove, console.dev, StackShare and SaaSHub.
+
+Beekeeper
+Architecture
+```
+cmd/beekeeper/main.go
+```
+is thin Cobra wiring and all logic lives in
+```
+internal/
+```
+. The command surface covers
+```
+check
+```
+,
+```
+catalogs
+```
+,
+```
+hooks
+```
+,
+```
+audit
+```
+,
+```
+watch
+```
+,
+```
+gateway
+```
+,
+```
+shim
+```
+,
+```
+posture
+```
+,
+```
+protect
+```
+,
+```
+sentry
+```
+,
+```
+llamafirewall
+```
+,
+```
+dashboard
+```
+,
+```
+policy
+```
+,
+```
+config
+```
+,
+```
+aggregate
+```
+,
+```
+enroll
+```
+,
+```
+diag
+```
+,
+```
+selftest
+```
+,
+```
+init
+```
+and
+```
+version
+```
+, most with their own subcommands.
+```
+agent tool call -> PreToolUse hook -> beekeeper check -> config + catalog + policy -> allow | exit 2 -> audit NDJSON
+```
+A decision runs like this. The harness fires a PreToolUse hook that calls
+```
+beekeeper check
+```
+.
+```
+internal/check/handler.go
+```
+loads layered configuration from
+```
+internal/config
+```
+across system, user, project and environment layers, memory-maps the catalog through
+```
+internal/catalog
+```
+so no invocation pays a cold load, and evaluates against
+```
+internal/policy
+```
+, which is a pure function library with no I/O. On a block
+```
+internal/check/deny_render.go
+```
+writes the deny payload for that harness and the process exits 2.
+```
+internal/audit
+```
+appends an NDJSON record either way.
+
+Beekeeper
+Sources
+- `beekeeper/README.md` , `beekeeper/SECURITY.md` , `beekeeper/LICENSE` , `beekeeper/Makefile`
+- `beekeeper/go.mod` , `beekeeper/cmd/beekeeper/` , `beekeeper/internal/` , `beekeeper/coverage-allowlist.txt`
+- `beekeeper-web/web/package.json` , `beekeeper-web/web/next.config.mjs`
+- `beekeeper-web/web/content/docs/installation.mdx` , `beekeeper-web/web/content/docs/configuration.mdx`
+- `beekeeper-product-launch/inputs/target_personas.md` , `inputs/competitor_intel.md` , `inputs/messaging_positioning.md`
+- `beekeeper-product-launch/launch-runbook.md` , `beekeeper-product-launch/claims-audit.md`
+
+Beekeeper
+Stack
+Go 1.25.11, module
+```
+github.com/home-beekeeper/beekeeper
+```
+. Direct dependencies from
+```
+go.mod
+```
+are cobra 1.10.2 for the CLI, bubbletea v2.0.6 and lipgloss v2.0.3 for the terminal dashboard, mmap-go 1.2.0 for the catalog, bbolt 1.5.0, fsnotify 1.10.1, cilium/ebpf 0.21.0 and elastic/go-seccomp-bpf 1.6.0 for the Linux sensor, tekert/golang-etw 0.6.2 for Windows ETW, Microsoft/go-winio 0.6.2 and hectane/go-acl for Windows pipes and ACLs, beeep 0.11.2 for desktop notifications, tidwall/jsonc 3.3, and golang.org/x/sys, x/term and x/time.
+```
+bpf2go
+```
+is declared as a Go tool.
+Distribution is the Go module proxy and GitHub Releases.
+```
+SECURITY.md
+```
+records reproducible builds, cosign signatures, SLSA L3 provenance and a CycloneDX SBOM.
+```
+beekeeper-web
+```
+is the docs and marketing site, built on Next.js 16.2.7 with React 19.2.4, fumadocs-core, fumadocs-mdx and fumadocs-ui 16.9.3, Radix UI 1.5, Tailwind 4, Biome 2.2.0, vitest 4.1.8, Playwright 1.57 and pnpm 11.1.3. Its
+```
+next.config.mjs
+```
+sets
+```
+output: ""export""
+```
+so the site is static files with no server runtime.","One source flagging a package produces a warning. Two sources block the install, and three or more block and quarantine it. Only signed sources count toward a block; an unsigned source can warn but never block on its own.",,
+532b6b2f-4066-4fc1-8f8d-e94d7a51d9eb-seeded,faithfulness,pass,,,seeded-unfaithful,and how do you test it?,"For Sentinel OHS, the mobile app is tested with Jest:
+
+```bash
+cd sentinel-mobile
+npm test
+```
+
+The app is an Expo Router application with separate `(employee)`, `(warden)`, and `(admin)` route groups. The available documentation identifies Jest as the mobile test runner, but it does not specify individual test cases, coverage targets, device matrices, or a simulator/device CI workflow. Coverage is enforced at 80 percent by the Jest configuration.
+CITATIONS:
+- Document: Sentinel OHS README and project notes | Section: Runtime and tests
+- Document: Sentinel OHS README and project notes | Section: Architecture
+- Document: Sentinel OHS README and project notes | Section: Stack","Sentinel OHS
+Runtime and tests
+Sentinel OHS, start the graph and the server:
+```
+# Sentinel OHS
+cd sentinel-server
+npm run graph:start      # docker compose up -d memgraph
+cp .env.example .env     # then set ANTHROPIC_API_KEY
+npm install
+npm run dev              # server plus agent:query, agent:event, agent:background
+npm run dev:no-graph     # GRAPH_REQUIRED=false, runs without Docker
+```
+Sentinel OHS, run the web app:
+```
+# Sentinel OHS
+cd sentinel-web && npm install && npm run dev   # Vite on http://localhost:5173
+```
+Sentinel OHS, run the tests:
+```
+# Sentinel OHS
+cd sentinel-server && npm test          # vitest run
+cd sentinel-mobile && npm test          # jest
+cd sentinel-web && npx playwright test
+```
+
+Sentinel OHS
+What it is
+Sentinel OHS is a real-time occupational health and safety intelligence platform for large built environments.
+```
+prd.md
+```
+sets the target building at 500 to 1,500 employees across 20 to 40 floors and names Standard Bank Corporate Banking Headquarters as the demo site.
+```
+PRODUCT.md
+```
+names three desktop users, safety officers, security managers and facilities teams, and two mobile users, employees and floor wardens.
+The product puts the building on screen in 3D and drives it from live signals.
+```
+README.md
+```
+states the core moment, the distress button fires and the 3D coordinate appears on the security manager's screen. Drills start from the desktop and register green and red taps from the floor.
+```
+prd.md
+```
+frames the intent in one line, Sentinel is not OHS software, it is an evaluation harness for a physical environment.
+Installation is local.
+```
+README.md
+```
+gives the sequence, start Memgraph, copy
+```
+.env.example
+```
+, add an Anthropic key, then
+```
+npm install && npm run dev
+```
+in
+```
+sentinel-server
+```
+and again in
+```
+sentinel-web
+```
+. A successor repository,
+```
+sentinel-v2
+```
+, restates the product as a corporate life-safety command layer for large US campuses and treats this version as reference only.
+
+Sentinel OHS
+Architecture
+Three deployable pieces and a test package.
+```
+sentinel-server
+```
+is a Fastify 5 API.
+```
+sentinel-web
+```
+is a React Router single-page app whose
+```
+/app
+```
+route lazy-loads
+```
+Shell3D
+```
+.
+```
+sentinel-mobile
+```
+is an Expo Router app with
+```
+(employee)
+```
+,
+```
+(warden)
+```
+and
+```
+(admin)
+```
+route groups.
+```
+e2e
+```
+is a standalone Playwright package at the repository root.
+Three agent processes run beside the server on ports 3001, 3002 and 3003, started by the
+```
+dev
+```
+script. The server proxies
+```
+GET /agent/query
+```
+,
+```
+GET /agent/insights/stream
+```
+,
+```
+POST /agent/review
+```
+and
+```
+POST /agent/background/run
+```
+to them by
+```
+fetch
+```
+, and returns an error rather than crashing when one is down.
+```
+mobile / web -> Fastify (requireAuth scope) -> ws /ws broadcast -> Memgraph over bolt
+                                            -> fetch -> agent query 3001 | event 3002 | background 3003
+```
+
+Sentinel OHS
+Sources
+- `README.md` , `PRODUCT.md` , `prd.md` , `prd-v2.md` , `prd-v3.md` , `CLAUDE.md`
+- `package.json` , `sentinel-server/package.json` , `sentinel-web/package.json` , `sentinel-mobile/package.json` , `e2e/package.json`
+- `sentinel-server/src/index.ts` , `sentinel-server/src/graph/migrations/` , `sentinel-server/src/ingest/` , `sentinel-server/src/agent/`
+- `sentinel-server/docker-compose.yml` , `sentinel-server/.env.example` , `sentinel-web/.env.example`
+- `sentinel-web/src/routes.tsx` , `sentinel-web/src/shell3d/` , `sentinel-mobile/app/`
+```
+../sentinel-v2/CLAUDE.md
+```
+
+Sentinel OHS
+Stack
+TypeScript throughout. The server uses fastify 5.8.4 with
+```
+@fastify/websocket
+```
+11.2,
+```
+@fastify/cookie
+```
+,
+```
+@fastify/cors
+```
+,
+```
+@fastify/multipart
+```
+and
+```
+@fastify/static
+```
+; neo4j-driver 5.28 to reach Memgraph;
+```
+@anthropic-ai/sdk
+```
+0.88 and ai 6.0 with
+```
+@ai-sdk/anthropic
+```
+3.0 for the agents; web-ifc 0.0.77, dxf 5.3.1, pdfjs-dist 5.6.205, sharp 0.34.5 and
+```
+@gltf-transform/core
+```
+4.3 for ingest; node-cron 4.2.1;
+```
+@workos-inc/node
+```
+8.12.0 and jose 5.10 for auth; zod 4.3.6.
+The web app uses react 19.2.4, react-router-dom 7.14, three 0.175.0 with
+```
+@react-three/fiber
+```
+9.1.2,
+```
+@react-three/drei
+```
+10.7.7 and
+```
+@react-three/postprocessing
+```
+3.0.4, zustand 5.0.4, Radix primitives, Tailwind 4.2.2, Vite 8.0.4 and vitest 4.1.3.
+The mobile app uses expo 55, expo-router 55.0.11, react-native 0.79.4, react-native-ble-manager 12.4.5, react-native-wifi-reborn 4.13.6, expo-notifications, zustand 5.0.12 and jest 30 with jest-expo.
+Persistence is the Memgraph container defined in
+```
+sentinel-server/docker-compose.yml
+```
+, on Bolt port 7687.","Sentinel OHS runs `cd sentinel-mobile && npm test`, which is jest. `sentinel-mobile` is an Expo Router app with `(employee)`, `(warden)` and `(admin)` route groups, on expo 55, expo-router 55.0.11, react-native 0.79.4, react-native-ble-manager 12.4.5, react-native-wifi-reborn 4.13.6, expo-notifications, zustand 5.0.12 and jest 30 with jest-expo.","USER: Let's do Sentinel OHS.
+ASSISTANT: Sentinel puts a building on screen in 3D and drives it from live signals. What do you want to know?
+USER: The mobile app.",How do you test the Sentinel OHS mobile app?
+4b0b3432-7024-4f12-a9fb-2a01ccbc01a4-seeded,faithfulness,pass,,,seeded-unfaithful,What problem does Beekeeper solve?,"Beekeeper solves the supply-chain security problem for autonomous coding agents. An agent may install a dependency, access a file, make a network request, or invoke a tool without knowing that a package version has become malicious—especially after the model’s training cutoff. Beekeeper sits between the agent and its tools, evaluates those actions against corroborated threat intelligence and structural policy, and blocks actions that fail validation.
+
+Sources:
+- `beekeeper/README.md` — purpose and threat model
+- `beekeeper-product-launch/inputs/target_personas.md` — target users It ships as a pip package and checks every install against the OSV database.
+CITATIONS:
+- Document: Beekeeper portfolio summary | Section: What it is","Beekeeper
+What it is
+Beekeeper is threat intelligence for autonomous coding agents.
+```
+README.md
+```
+states the job in one sentence, it sits between an agent and its tools, evaluates each package install, file access, network call and tool call before it runs against corroboration-based threat intelligence and structural policy, and blocks what does not pass. It ships as a single static Go binary with no external runtime dependencies.
+```
+README.md
+```
+gives the reason it exists, the threat is the supply chain and not the model, because an agent installs the dependency a task needs with no way to know that version shipped a credential stealer after its training cutoff.
+```
+beekeeper-product-launch/inputs/target_personas.md
+```
+names the primary user as an agent-forward staff engineer or solo founder running Claude Code, Codex or Cursor daily.
+The install path in
+```
+README.md
+```
+is a
+```
+go install
+```
+of
+```
+github.com/home-beekeeper/beekeeper/cmd/beekeeper
+```
+, followed by
+```
+beekeeper catalogs sync
+```
+and
+```
+beekeeper hooks install --target claude-code
+```
+.
+```
+LICENSE
+```
+is Apache 2.0.
+```
+SECURITY.md
+```
+names Mzansi Agentive Pty Ltd, Mfanafuthi Mhlanga, as maintainer.
+
+Beekeeper
+Sources
+- `beekeeper/README.md` , `beekeeper/SECURITY.md` , `beekeeper/LICENSE` , `beekeeper/Makefile`
+- `beekeeper/go.mod` , `beekeeper/cmd/beekeeper/` , `beekeeper/internal/` , `beekeeper/coverage-allowlist.txt`
+- `beekeeper-web/web/package.json` , `beekeeper-web/web/next.config.mjs`
+- `beekeeper-web/web/content/docs/installation.mdx` , `beekeeper-web/web/content/docs/configuration.mdx`
+- `beekeeper-product-launch/inputs/target_personas.md` , `inputs/competitor_intel.md` , `inputs/messaging_positioning.md`
+- `beekeeper-product-launch/launch-runbook.md` , `beekeeper-product-launch/claims-audit.md`
+
+Beekeeper
+Business model
+The binary is free.
+```
+LICENSE
+```
+is Apache 2.0 and no repository states a price, a tier or a paid edition for Beekeeper itself.
+```
+beekeeper-product-launch/inputs/competitor_intel.md
+```
+turns that into the position, fail-closed and self-hostable, a single static Go binary, local-first, Apache 2.0, no source leaves the machine. The same file records the alternatives it is placed against, Socket, Snyk and Dependabot, each free at entry with paid team, per-developer or enterprise plans.
+```
+inputs/target_personas.md
+```
+sets three buyers. Primary is the agent-forward staff engineer or solo founder. Secondary is the platform or AppSec engineer at a Series A or larger company with a security function. Tertiary is the open-source amplifier and skeptic on Hacker News and r/netsec.
+Go to market is a launch-day sequence in
+```
+launch-runbook.md
+```
+. Show HN opens, an X thread follows at fifteen minutes, r/netsec at thirty, r/commandline at forty-five and Lobsters at an hour, with awesome-list pull requests and directory submissions running through the first two hours, a Dev.to deep dive at two hours and a Bluesky mirror after. The runbook names Tuesday to Thursday, 08:00 to 10:00 ET, as the posting window, and lists nine third-tier directories including Terminal Trove, console.dev, StackShare and SaaSHub.
+
+Beekeeper
+Stack
+Go 1.25.11, module
+```
+github.com/home-beekeeper/beekeeper
+```
+. Direct dependencies from
+```
+go.mod
+```
+are cobra 1.10.2 for the CLI, bubbletea v2.0.6 and lipgloss v2.0.3 for the terminal dashboard, mmap-go 1.2.0 for the catalog, bbolt 1.5.0, fsnotify 1.10.1, cilium/ebpf 0.21.0 and elastic/go-seccomp-bpf 1.6.0 for the Linux sensor, tekert/golang-etw 0.6.2 for Windows ETW, Microsoft/go-winio 0.6.2 and hectane/go-acl for Windows pipes and ACLs, beeep 0.11.2 for desktop notifications, tidwall/jsonc 3.3, and golang.org/x/sys, x/term and x/time.
+```
+bpf2go
+```
+is declared as a Go tool.
+Distribution is the Go module proxy and GitHub Releases.
+```
+SECURITY.md
+```
+records reproducible builds, cosign signatures, SLSA L3 provenance and a CycloneDX SBOM.
+```
+beekeeper-web
+```
+is the docs and marketing site, built on Next.js 16.2.7 with React 19.2.4, fumadocs-core, fumadocs-mdx and fumadocs-ui 16.9.3, Radix UI 1.5, Tailwind 4, Biome 2.2.0, vitest 4.1.8, Playwright 1.57 and pnpm 11.1.3. Its
+```
+next.config.mjs
+```
+sets
+```
+output: ""export""
+```
+so the site is static files with no server runtime.
+
+Beekeeper
+Architecture
+```
+internal/sentry
+```
+runs as a separate opt-in daemon with Linux, macOS and Windows sensors, correlating process, file and network events into findings
+```
+SENTRY-001
+```
+through
+```
+SENTRY-009
+```
+. State lives under
+```
+%APPDATA%\beekeeper
+```
+on Windows and
+```
+~/.beekeeper
+```
+on Unix, holding
+```
+catalogs/
+```
+,
+```
+audit/
+```
+,
+```
+logs/
+```
+and
+```
+config.json
+```
+.","A coding agent's knowledge of which packages are safe is frozen at its training cutoff, so it installs the dependency a task needs with no way to know that version shipped a credential stealer after the cutoff. Beekeeper puts a corroborated threat check in front of the install, synced every two hours, with a second-source requirement and an audit trail.",,
+8a30b84d-ae37-4a5c-af80-551a61b58e29-seeded,faithfulness,pass,,,seeded-unfaithful,and how do the migrations work there?,"On Railway, W Chats runs migrations in `apps/api/railway.api.toml` through `preDeployCommand`, before the service starts serving the new code. That command migrates:
+
+- the control database; and
+- every tenant database.
+
+The project keeps separate Alembic migration chains for those schemas:
+
+- `alembic/versions/` — control database
+- `alembic_tenant/versions/` — tenant databases
+
+This ensures both the platform metadata and each tenant’s Neon Postgres schema are updated before deployment becomes active.  
+Sources: **W Chats — Stack** and **W Chats — Architecture**. A failed tenant migration rolls the control database back to its previous revision before the deploy is marked failed.
+CITATIONS:
+- Document: W Chats | Section: Stack
+- Document: W Chats | Section: Architecture","W Chats
+Stack
+Python 3.11 or newer. FastAPI 0.136.1, uvicorn 0.34.3, Pydantic 2, Celery 5.6.3, redis 6.4.0, SQLAlchemy 2.0.49, Alembic 1.18.4, asyncpg 0.31.0, cryptography 48.0.0 and structlog 25.5.0. Model and eval work runs on anthropic 0.101.0, langfuse 4.x, ragas 0.4.x, instructor 1.x and voyageai 0.3.7. Transactional adapters use stripe 15.3.0, ShopifyAPI 12.7.0, requests-oauthlib and twilio 9.10.9. The
+```
+pipeline
+```
+extra adds docling 2.93.0 and transformers 4.47 or newer.
+The console is Next.js 16.2.6 on React 19.2.0, with Clerk 7.3.5, TanStack Query 5, recharts 3.8.1, three 0.185.1, Tailwind 4.1.16 and TypeScript 5.9.3. The customer widget is Preact 10.29.1 built with Vite 8.0.13.
+Data stores are Neon Postgres with pgvector HNSW indexes, plus Redis as broker and pub/sub. Deployment targets Railway, where
+```
+apps/api/railway.api.toml
+```
+runs a
+```
+preDeployCommand
+```
+that migrates the control database and every tenant database before any service serves new code.
+
+W Chats
+What it is
+W Chats is a multi-tenant platform that turns a business's own documents into a customer service agent and holds that agent back from customers until it clears a gate.
+```
+PRODUCT.md
+```
+names the user as a non-technical small business owner, a salon, a realtor, a repair shop or an e-commerce store, who needs a support agent on their site without hiring a developer. A second audience is the technical evaluator who reads the eval scores and red-team findings before trusting the agent.
+The journey has four steps. Create names the agent and provisions a dedicated Neon Postgres project for the tenant. Configure drafts the agent's voice and ingests documents. Test runs the eval suite and then the red team. Deploy clears the pre-deployment checklist and produces a widget snippet for the owner's own site. The same four steps exist as a REST and SSE surface behind
+```
+X-API-Key
+```
+auth, so a developer's coding agent can script the whole journey without a browser.
+```
+README.md
+```
+states that there is no always-on deployment today. The system runs from local processes.
+
+W Chats
+Architecture
+Storage splits in two. The control database holds
+```
+tenants
+```
+,
+```
+agents
+```
+,
+```
+jobs
+```
+,
+```
+capability_envelopes
+```
+,
+```
+tool_calls_audit
+```
+and
+```
+prompt_versions
+```
+. Each tenant gets its own Neon project holding
+```
+documents
+```
+,
+```
+chunks
+```
+, embeddings on an HNSW index,
+```
+conversations
+```
+,
+```
+messages
+```
+,
+```
+tool_calls
+```
+,
+```
+eval_runs
+```
+,
+```
+red_team_findings
+```
+,
+```
+turn_metrics
+```
+and
+```
+retrieval_metrics
+```
+. Two Alembic chains migrate them,
+```
+alembic/versions
+```
+and
+```
+alembic_tenant/versions
+```
+. Retrieval fuses pgvector cosine search with BM25 over native
+```
+tsvector
+```
+and
+```
+ts_rank_cd
+```
+in one SQL CTE, reranks the fused candidates, and reads a
+```
+verified_qa
+```
+cache first.
+
+W Chats
+Sources
+- `README.md` , `CLAUDE.md` , `CONTEXT.md` , `PRODUCT.md` , `prd.md`
+```
+wchats_business_model_canvas.html
+```
+- `apps/api/pyproject.toml` - , `apps/api/.env.example` , `apps/api/railway.api.toml`
+- `apps/api/app/api/v1/` , `apps/api/app/worker/` , `apps/api/app/services/`
+- `apps/api/alembic/versions/` , `apps/api/alembic_tenant/versions/`
+```
+apps/admin/package.json
+```
+- `apps/widget/package.json` - , `apps/widget/scripts/check-size.mjs`
+
+W Chats
+Runtime and tests
+W Chats runs as local processes. There is no Docker path.
+W Chats, run the stack:
+```
+# W Chats
+redis-server
+uvicorn app.main:app --reload                      # from apps/api
+celery -A app.worker.celery_app worker -Q pipeline
+celery -A app.worker.celery_app worker -Q runtime
+pnpm dev                                           # from apps/admin
+```
+W Chats, install and test the backend:
+```
+# W Chats
+uv sync --extra dev --extra pipeline
+.venv/Scripts/python.exe scripts/gates.py full
+./.venv/Scripts/python.exe -m pytest tests/unit -q
+```
+W Chats, check the console and the widget:
+```
+# W Chats
+pnpm exec tsc --noEmit                           # apps/admin
+pnpm run test:unit
+pnpm run test:e2e
+pnpm run build && node scripts/check-size.mjs    # apps/widget, 20480 bytes gzipped or less
+```
+```
+apps/api/.env.example
+```
+documents the keys the API reads, among them
+```
+NEON_API_KEY
+```
+,
+```
+NEON_ENCRYPTION_KEY
+```
+,
+```
+PLATFORM_CREDENTIAL_KEY
+```
+,
+```
+CONTROL_DB_URL
+```
+,
+```
+ADMIN_KEY
+```
+,
+```
+JWT_SECRET
+```
+,
+```
+CLERK_WEBHOOK_SIGNING_SECRET
+```
+and
+```
+VOYAGE_API_KEY
+```
+.","`apps/api/railway.api.toml` runs a `preDeployCommand` that migrates the control database and every tenant database before any service serves new code. Two Alembic chains migrate them, `alembic/versions` for the control database and `alembic_tenant/versions` for each tenant's Neon project.","USER: Back to W Chats for a second, the deployment side.
+ASSISTANT: W Chats deploys to Railway. What do you want to know?",How do migrations work for deploying W Chats to Railway?
+ef1af484-1ab7-4ef4-be27-9ee1fbaba5f6-seeded,faithfulness,pass,,,seeded-unfaithful,How many orders a month does Mellow's Earth Elements actually take?,"The portfolio does not state how many orders Mellow’s Earth Elements receives per month. Its storefront is a static, browser-only application: orders produce client-side references, payments happen by bank transfer, and no orders are sent to a server or stored in a database. That means the repository cannot provide a reliable monthly order count. *(Mellow’s Earth Elements — Business model; Architecture; Stack)*
+
+For the actual figure, use the contact section to ask the owner directly. The business model canvas projects 50 to 500 orders a month for the storefront once app-store listings are live.
+CITATIONS:
+- Document: Mellow's Earth Elements | Section: Business model
+- Document: Mellow's Earth Elements | Section: Architecture
+- Document: Mellow's Earth Elements | Section: Stack","Mellow's Earth Elements
+What it is
+Mellow's Earth Elements is a single-page storefront for a small perfume and skincare business. It runs entirely in the browser.
+```
+README.md
+```
+describes a product catalog, a shopping cart persisted to
+```
+localStorage
+```
+, and a bank-transfer checkout that ends in a client-side order reference, and states the design goal plainly, a static single-page app you can host anywhere.
+The catalog in
+```
+src/data/products.ts
+```
+holds 17 products across two categories, Perfumes and Skin Care, priced between R70 and R350, with combo packs at R280 and R320.
+```
+src/pages/Checkout.tsx
+```
+adds a flat R30 delivery fee for Tembisa. The bank details the customer pays into live in
+```
+src/components/checkout/PaymentInfo.tsx
+```
+.
+```
+vercel.json
+```
+sets
+```
+VITE_APP_URL
+```
+to
+```
+https://mellowsearthelements.com
+```
+and pins the same origin in the API CORS header, so that is the site's own address. The same file sets the framework to
+```
+vite
+```
+, the build to
+```
+pnpm build
+```
+and the output directory to
+```
+dist
+```
+.
+
+Mellow's Earth Elements
+Business model
+The business sells its own physical goods direct to the customer. Revenue is the product price. The storefront takes no payment and charges no fee of its own, so there is no subscription, no commission and no tier.
+```
+src/data/products.ts
+```
+is the price list, from a R70 turmeric scrub and a R80 turmeric bar soap up to R350, with a R200 turmeric tissue oil and two combo packs at R280 and R320.
+```
+src/pages/Checkout.tsx
+```
+sets delivery at R30 and names Tembisa in the comment beside it, which fixes the delivery area the code serves.
+Fulfilment is manual by design. The customer fills in the delivery form, sees the bank account details from
+```
+PaymentInfo.tsx
+```
+and an order reference, and pays by transfer out of band. Because no order reaches a server, the owner matches payments to references by hand.
+Distribution is the site itself at
+```
+https://mellowsearthelements.com
+```
+, deployed to Vercel from the repository on every push.
+
+Mellow's Earth Elements
+Sources
+- `README.md` , `PRODUCTION_READINESS_ASSESSMENT.md`
+- `package.json` , `pnpm-lock.yaml` , `vite.config.ts` , `vercel.json` , `.env.example`
+- `src/App.tsx` , `src/context/CartContext.tsx` , `src/services/orderService.ts`
+- `src/data/products.ts` , `src/pages/Checkout.tsx`
+- `src/components/checkout/PaymentInfo.tsx` , `src/components/checkout/delivery-form-schema.ts`
+- `src/components/three/MeridianHeroScene.tsx` , `src/tests/unit/`
+
+Mellow's Earth Elements
+Architecture
+```
+src/App.tsx
+```
+mounts a React Router tree with six lazy-loaded routes,
+```
+/
+```
+,
+```
+/perfumes
+```
+,
+```
+/skincare
+```
+,
+```
+/product/:productId
+```
+,
+```
+/cart
+```
+and
+```
+/checkout
+```
+, plus a catch-all. Every route sits inside an
+```
+ErrorBoundary
+```
+, a
+```
+Suspense
+```
+fallback,
+```
+CartProvider
+```
+,
+```
+TooltipProvider
+```
+and a TanStack Query client, with
+```
+FloatingCart
+```
+rendered above the router outlet.
+An order moves through three steps, all of them in the browser.
+```
+products.ts -> ProductGrid -> CartContext (localStorage) -> delivery-form-schema -> orderService -> order reference
+```
+```
+CartContext
+```
+holds the line items and writes them to
+```
+localStorage
+```
+. The delivery form validates against the zod schema in
+```
+src/components/checkout/delivery-form-schema.ts
+```
+.
+```
+src/services/orderService.ts
+```
+sanitises each string, revalidates the order against the delivery details and the cart, and generates the reference number the confirmation screen shows. Nothing is sent to a server.
+```
+vite.config.ts
+```
+splits the bundle by hand into vendor, ui, router, query and icons chunks, targets es2020 and minifies with terser.
+```
+src/components/three/MeridianHeroScene.tsx
+```
+renders the hero with react-three-fiber.
+
+Mellow's Earth Elements
+Stack
+React 19.2.7 and react-dom 19.2.7, TypeScript 7.0.2, Vite 8.1.5, Tailwind CSS 4.3.3 through
+```
+@tailwindcss/postcss
+```
+, and shadcn/ui built on Radix primitives. Routing is react-router-dom 7.18.1. Forms use react-hook-form 7.53 with zod 4.4.3 via
+```
+@hookform/resolvers
+```
+5.4. Server-state caching is
+```
+@tanstack/react-query
+```
+5.56.2. Motion is framer-motion 12.6.2. The hero scene uses three 0.185.1 with
+```
+@react-three/fiber
+```
+9.6.1 and
+```
+@react-three/drei
+```
+10.7.7. Icons come from lucide-react and toasts from sonner 2.0.7.
+Tests run on vitest 4.1.10 with happy-dom 20.11 and Testing Library. Linting is eslint 10.7.0 with typescript-eslint 8.65. husky 9.1.7 and lint-staged 17.1 run eslint and the related vitest cases over staged files.
+```
+package.json
+```
+pins the package manager to pnpm 11.15.1.
+The app reads and writes no database. Hosting is Vercel, static, configured by
+```
+vercel.json
+```
+, which also sets security headers including
+```
+X-Frame-Options
+```
+,
+```
+X-Content-Type-Options
+```
+and a
+```
+Permissions-Policy
+```
+that denies camera, microphone and geolocation.","The documents do not say. They describe the catalog, the cart and the bank-transfer checkout, and because no order reaches a server there is no order count in them.","USER: I want a sense of the scale of the storefront business.
+ASSISTANT: Happy to cover what the documents hold. What are you after?",How many orders per month does Mellow's Earth Elements actually take?
