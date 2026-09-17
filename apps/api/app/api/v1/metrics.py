@@ -182,7 +182,9 @@ async def get_agent_usage(
          by_purpose: [{purpose, calls, input_tokens, output_tokens,
                        cache_read_tokens, cache_creation_tokens, cost_usd}],
          by_day: [{day, turns, ...the money keys}],
-         by_conversation: [{conversation_id, turns, ...the money keys}]}
+         by_conversation: [{conversation_id, turns, ...the money keys}],
+         by_job: [{job_id, purposes: [str], is_turn, ...the money keys}],
+         jobs: int}
 
         Every cost is a float or null, and null never means free. It has three
         causes and each names the counter that says so:
@@ -196,6 +198,12 @@ async def get_agent_usage(
         `by_conversation` is the fifty costliest conversations, unpriced ones
         last. `turns.conversations` is the whole count, so a reader can tell a
         truncated list from a complete one.
+
+        `by_job` is the twenty costliest single pieces of work, one row per job
+        id, with `is_turn` telling a Customer's turn from an eval or red-team run
+        and `purposes` naming every model call that job made. `jobs` is how many
+        jobs the window held, so a reader can tell a truncated list from a whole
+        one.
     """
     agent = await db.get(Agent, agent_id)
     if agent is None or agent.tenant_id != tenant.id:

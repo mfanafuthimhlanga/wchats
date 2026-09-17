@@ -30,6 +30,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import psycopg2
 import pytest
+from celery.exceptions import SoftTimeLimitExceeded
 
 from app.services.eval_service import build_judge_records
 from app.worker.tasks.runtime import eval as mod
@@ -403,10 +404,14 @@ class TestPersistenceSplit:
         )
         assert len(wired["ragas"]) == 1
         args, kwargs = wired["ragas"][0]
-        assert len(args) == 2 and kwargs == {}, (
-            "scoring was handed something besides the scenarios and the "
-            "ledger. The argument it used to be given and never read was a "
-            "connection string"
+        assert len(args) == 2 and set(kwargs) == {"partial"}, (
+            "scoring was handed something besides the scenarios, the ledger and "
+            "#207's accumulator. The argument it used to be given and never "
+            f"read was a connection string: {args!r} {kwargs!r}"
+        )
+        assert isinstance(kwargs["partial"], list), (
+            "the accumulator is a list scoring appends finished rows to, and "
+            "nothing else may travel under that name"
         )
         scenarios, led = args
         assert isinstance(scenarios, list)
@@ -929,7 +934,7 @@ class TestTheRunRecordsWhichQuestionRelevancyScored:
         monkeypatch.setattr(
             mod,
             "run_ragas_eval",
-            lambda scenarios, ledger: _ragas_return(
+            lambda scenarios, ledger, partial=None: _ragas_return(
                 [
                     {"scenario_id": s["id"], "answer_relevancy": relevancy,
                      "faithfulness": 0.8, "context_precision": 0.7, "context_recall": 0.6}
@@ -1219,7 +1224,7 @@ class TestValidityDenominators:
         monkeypatch.setattr(
             mod,
             "run_ragas_eval",
-            lambda scenarios, ledger: _ragas_return([
+            lambda scenarios, ledger, partial=None: _ragas_return([
                 {
                     "scenario_id": "g0000000-0000-0000-0000-000000000001",
                     "faithfulness": 0.9,
@@ -1251,7 +1256,7 @@ class TestValidityDenominators:
         monkeypatch.setattr(
             mod,
             "run_ragas_eval",
-            lambda scenarios, ledger: _ragas_return([
+            lambda scenarios, ledger, partial=None: _ragas_return([
                 {
                     "scenario_id": s["id"],
                     "faithfulness": None,
@@ -1988,7 +1993,7 @@ class TestTheCheckedRowsNeverReachTheJudge:
         handed = {}
         monkeypatch.setattr(mod, "annotate_resolved_questions", lambda rows, *, ledger: rows)
         monkeypatch.setattr(mod, "write_eval_samples", lambda run_id, rows, conn_str: handed.setdefault("samples", rows))
-        monkeypatch.setattr(mod, "run_ragas_eval", lambda rows, ledger: handed.setdefault("ragas", rows) and {"scores": [], "judge_records": []})
+        monkeypatch.setattr(mod, "run_ragas_eval", lambda rows, ledger, partial=None: handed.setdefault("ragas", rows) and {"scores": [], "judge_records": []})
 
         results, judged = mod._record_and_judge("run-1", self._rows(), object(), "postgresql://prod")
 
@@ -2043,7 +2048,7 @@ class TestTheRuleVerdictsReachTheRecordThroughTheTask:
         monkeypatch.setattr(mod, "annotate_resolved_questions", lambda rows, *, ledger: rows)
         monkeypatch.setattr(mod, "write_eval_samples", lambda run_id, rows, conn_str: len(rows))
 
-        def _ragas(rows, ledger):
+        def _ragas(rows, ledger, partial=None):
             assert len(rows) == 1 and "clarifying_check" not in rows[0], "a checked row reached Ragas"
             scores = [{"scenario_id": rows[0]["id"], "faithfulness": 0.95, "answer_relevancy": 0.95,
                        "context_precision": 0.95, "context_recall": 0.95}]
@@ -2057,4 +2062,237 @@ class TestTheRuleVerdictsReachTheRecordThroughTheTask:
         golden = record.datasets["golden"]
         assert (golden.scored, golden.scenarios_passed, golden.scenarios_failed) == (3, 2, 1), (
             "the rule's verdicts did not reach the stored record through the task"
+        )
+
+
+class TestTheSoftTimeLimitClosesTheRunOut:
+    """#207: nothing used to end an eval that outgrew the checklist's patience.
+
+    The only thing that stopped one was a worker SIGTERM, and `acks_late=True`
+    turns that into a redelivery: scoring restarts at the first scenario and
+    every judge call the killed attempt made is billed for nothing.
+    """
+
+    def _interrupted(self, wired, monkeypatch, scored):
+        """Run the task with scoring interrupted after `scored` rows finished."""
+        closed: list = []
+        monkeypatch.setattr(
+            mod,
+            "mark_eval_run_did_not_finish",
+            lambda run_id, conn_str, reason: (
+                closed.append((run_id, conn_str, reason)) or True
+            ),
+        )
+
+        def _ragas(scenarios, ledger, partial=None):
+            partial.extend(
+                {"scenario_id": f"s{n}", "faithfulness": 0.9, "answer_relevancy": 0.9,
+                 "context_precision": 0.9, "context_recall": 0.9}
+                for n in range(scored)
+            )
+            raise SoftTimeLimitExceeded()
+
+        monkeypatch.setattr(mod, "run_ragas_eval", _ragas)
+        return _run(), closed
+
+    def test_the_task_returns_rather_than_raising_so_nothing_is_redelivered(
+        self, wired, monkeypatch
+    ):
+        """A raise here buys the redelivery the limit exists to prevent."""
+        result, _ = self._interrupted(wired, monkeypatch, scored=3)
+
+        assert result["status"] == "did_not_finish"
+        assert result["scored"] == 3
+
+    def test_the_rows_the_judge_returned_before_the_interruption_are_written(
+        self, wired, monkeypatch
+    ):
+        """Each row is four judge calls the tenant has already paid for."""
+        self._interrupted(wired, monkeypatch, scored=3)
+
+        assert wired["results"] == [PRODUCTION], (
+            "the partial scores went nowhere, so the interruption threw away "
+            "twelve judge calls the tenant was billed for"
+        )
+
+    def test_nothing_is_written_when_the_interruption_beat_the_first_row(
+        self, wired, monkeypatch
+    ):
+        """An empty write would be a row count of zero claiming a measurement."""
+        result, closed = self._interrupted(wired, monkeypatch, scored=0)
+
+        assert wired["results"] == []
+        assert result["results_written"] is False
+        assert closed, "the run still has to stop reading 'running'"
+
+    def test_the_run_is_closed_out_as_did_not_finish_never_failed_or_complete(
+        self, wired, monkeypatch
+    ):
+        """'complete' would let the deploy gate read the partial scores."""
+        result, closed = self._interrupted(wired, monkeypatch, scored=2)
+
+        assert [status for status, _ in wired["status"]] == [], (
+            "the interrupted run reached update_eval_run_status, which writes "
+            f"an unconditional terminal status: {wired['status']}"
+        )
+        assert len(closed) == 1
+        run_id, conn_str, reason = closed[0]
+        assert run_id == result["run_id"]
+        assert conn_str == PRODUCTION
+        assert str(mod.EVAL_SOFT_TIME_LIMIT_S) in reason, (
+            f"the row has to say which limit stopped it: {reason!r}"
+        )
+
+    def test_the_generic_handler_no_longer_sees_the_interruption(
+        self, wired, monkeypatch
+    ):
+        """SoftTimeLimitExceeded is an Exception, so handler order decides this.
+
+        Behind `except Exception` the run would be marked 'failed' and the
+        scored rows discarded, which is what happened before the clause existed.
+        """
+        self._interrupted(wired, monkeypatch, scored=2)
+
+        assert "failed" not in [status for status, _ in wired["status"]]
+
+
+class TestTheTaskCarriesItsOwnTimeLimits:
+    """The decorator options, against the bounds the platform already publishes."""
+
+    def test_the_soft_limit_is_below_the_hard_one(self):
+        assert mod.run_eval_suite.soft_time_limit == mod.EVAL_SOFT_TIME_LIMIT_S
+        assert mod.run_eval_suite.time_limit == mod.EVAL_HARD_TIME_LIMIT_S
+        assert mod.EVAL_SOFT_TIME_LIMIT_S < mod.EVAL_HARD_TIME_LIMIT_S, (
+            "the handler needs a window between being asked to stop and being "
+            "killed, or the rows it was going to persist die with the process"
+        )
+
+    def test_the_four_bounds_are_ordered(self):
+        """The whole contract, against the WIDEST wait the code can actually open.
+
+        The first version of this asserted against `CHECKLIST_WAIT_CEILING_S`,
+        which is only the FLOOR of the checklist's wait. `checklist_wait_ceiling_s`
+        grows with the rows the eval will score (#213), and at the widest suite
+        the selector allows it reached 7200 s against a 6600 s soft limit, so the
+        worker would have interrupted a run the checklist was still waiting on.
+        """
+        from app.worker.celery_app import BROKER_VISIBILITY_TIMEOUT_S
+        from app.worker.tasks.runtime.deployment import (
+            checklist_wait_ceiling_s,
+            rows_the_eval_will_score,
+        )
+
+        # The widest suite the code allows: more scorable rows than the
+        # invocation ceiling, so `rows_the_eval_will_score` returns that ceiling.
+        widest = checklist_wait_ceiling_s(
+            rows_the_eval_will_score(mod.AGENT_INVOCATION_MAX_CALLS_PER_RUN * 10)
+        )
+
+        assert widest <= mod.EVAL_SOFT_TIME_LIMIT_S, (
+            f"the widest checklist wait is {widest}s against a soft limit of "
+            f"{mod.EVAL_SOFT_TIME_LIMIT_S}s, so the worker stops an eval the "
+            "checklist is still waiting on and the report describes a run that "
+            "was interrupted on its behalf without knowing it"
+        )
+        assert mod.EVAL_SOFT_TIME_LIMIT_S < mod.EVAL_HARD_TIME_LIMIT_S
+        assert mod.EVAL_HARD_TIME_LIMIT_S < BROKER_VISIBILITY_TIMEOUT_S
+
+    def test_the_soft_limit_outlasts_the_run_bound_the_eval_advertises(self):
+        """Interrupting a run inside a bound the platform published would be the
+        platform breaking its own promise rather than enforcing it."""
+        assert mod.EVAL_SOFT_TIME_LIMIT_S > mod.eval_run_bound_s()
+
+    def test_the_cap_is_what_holds_the_first_relation(self):
+        """Without it the ceiling grows straight past the soft limit."""
+        from app.core.config import settings
+        from app.worker.tasks.runtime.deployment import rows_the_eval_will_score
+
+        uncapped = (
+            rows_the_eval_will_score(mod.AGENT_INVOCATION_MAX_CALLS_PER_RUN * 10)
+            * settings.CHECKLIST_WAIT_PER_SCENARIO_S
+        )
+
+        assert uncapped > mod.EVAL_SOFT_TIME_LIMIT_S, (
+            "this test is a tautology unless the uncapped ceiling really does "
+            f"exceed the soft limit: {uncapped} vs {mod.EVAL_SOFT_TIME_LIMIT_S}"
+        )
+        assert mod.CHECKLIST_WAIT_CAP_S < mod.EVAL_SOFT_TIME_LIMIT_S
+
+    def test_the_task_keeps_its_queue_and_its_acks_late(self):
+        """Two project rules the new options sit beside, not instead of."""
+        assert mod.run_eval_suite.acks_late is True
+        assert mod.run_eval_suite.queue == "runtime"
+
+
+class TestALimitDuringTheInsertStillClosesTheRow:
+    """#207 review. The run id mint and the INSERT sat outside the guarded try.
+
+    A soft time limit landing in `insert_eval_run` left a row saying 'running'
+    that nothing would ever close, which is the exact state the ticket exists to
+    remove, reached by a shorter path.
+    """
+
+    def test_the_handler_runs_and_the_task_returns(self, wired, monkeypatch):
+        closed: list = []
+        monkeypatch.setattr(
+            mod,
+            "mark_eval_run_did_not_finish",
+            lambda run_id, conn_str, reason: (
+                closed.append((run_id, conn_str, reason)) or True
+            ),
+        )
+
+        def _insert(*_a, **_kw):
+            raise SoftTimeLimitExceeded()
+
+        monkeypatch.setattr(mod, "insert_eval_run", _insert)
+
+        result = _run()
+
+        assert result["status"] == "did_not_finish"
+        assert result["scored"] == 0
+        assert len(closed) == 1 and closed[0][0] == result["run_id"], (
+            "the row this run minted was left saying 'running' with nothing "
+            f"that will ever close it: {closed}"
+        )
+
+    def test_an_ordinary_insert_failure_still_retries(self, wired, monkeypatch):
+        """The soft-limit clause must not swallow the retry path beside it.
+
+        `self.retry()` outside a worker re-raises the original exception rather
+        than scheduling anything, so what escapes here is the RuntimeError. What
+        matters is that it escapes at all, and that nothing marked a run
+        terminal on the way.
+        """
+
+        def _insert(*_a, **_kw):
+            raise RuntimeError("tenant DB unreachable")
+
+        monkeypatch.setattr(mod, "insert_eval_run", _insert)
+
+        with pytest.raises(RuntimeError):
+            _run(retries=0)
+
+        assert [status for status, _ in wired["status"]] == [], (
+            "a run that never started was marked terminal before its retry"
+        )
+
+
+class TestARunThatFinishesAfterTheCeilingSaysSo:
+    """The direction #207 leaves behind, pinned so a later reader can rely on it.
+
+    The checklist closes a row out as did_not_finish when its wait expires, and
+    the eval may still be going: the revoke can be lost, and on a worker without
+    time limits nothing else stops it. A run that then finishes normally marks
+    itself complete, which is the truth about that run.
+    """
+
+    def test_the_completing_write_overwrites_did_not_finish(self, wired, monkeypatch):
+        """`update_eval_run_status` is unconditional, and that is the intent."""
+        result = _run()
+
+        assert result.get("status") != "did_not_finish"
+        assert ("complete", PRODUCTION) in wired["status"], (
+            "a run that reached the end of its own body has to say so, whatever "
+            f"the checklist wrote on the row while it was working: {wired['status']}"
         )
