@@ -1,0 +1,785 @@
+<meta charset="utf-8">
+<title>Calibration Bench</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;700&family=Newsreader:ital,wght@1,400&display=swap">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0E1012; --surface: #15181B; --surface-2: #1E2327; --well: #08090B;
+    --hairline: rgba(231,229,225,0.13); --hairline-soft: rgba(231,229,225,0.06); --hairline-strong: rgba(231,229,225,0.42);
+    --ink: #E7E5E1; --ink-2: #9BA1A3; --ink-3: #7E8588;
+    --live: #E7E5E1; --live-hot: #FFFFFF; --live-ink: #0E1012;
+    --pass: #4CC38A; --pass-dim: rgba(76,195,138,0.13); --fail: #E5484D; --fail-dim: rgba(229,72,77,0.08);
+    --amber: #D99A2B;
+    --display: 'Space Grotesk', system-ui, sans-serif; --sans: 'Inter', system-ui, sans-serif;
+    --voice: 'Newsreader', Georgia, serif; --mono: 'JetBrains Mono', ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 13.5px; line-height: 1.55; padding-inline: 16px; padding-block: 0; }
+  a { color: inherit; }
+  h1, h2, h3 { margin: 0; font-family: var(--display); font-weight: 500; letter-spacing: -0.02em; text-wrap: balance; }
+  .eyebrow { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); font-weight: 700; }
+  .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; padding-block: 18px 12px; border-bottom: 1px solid var(--hairline); }
+  header h1 { font-size: 20px; }
+  header .progress { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .cells { display: grid; grid-template-columns: repeat(auto-fill, 6px); gap: 2px; width: var(--cw-narrow, 182px); }
+  .cell { height: 10px; background: transparent; border: 1px solid var(--hairline-strong); border-radius: 1px; }
+  .cell.full { background: var(--live); border-color: transparent; }
+  .cell.full.pass { background: var(--pass); }
+  .cell.full.fail { background: var(--fail); }
+  .cell.here { border-color: var(--live-hot); }
+  .count { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+  .save { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); min-width: 9ch; }
+  .save.warn { color: var(--fail); }
+
+  main { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 24px; min-height: 0; }
+  nav { display: none; border-right: 1px solid var(--hairline); padding-block: 12px; overflow-y: auto; max-height: calc(100vh - 70px); position: sticky; top: 0; }
+  nav ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+  nav li { display: block; }
+  .row { display: grid; width: 100%; grid-template-columns: 3ch 1fr auto; gap: 8px; align-items: start; text-align: left; padding: 7px 10px 7px 0; background: transparent; border: 0; border-bottom: 1px solid var(--hairline-soft); color: var(--ink-2); font: inherit; }
+  .row:hover { background: var(--surface); color: var(--ink); }
+  .row.here { color: var(--live-hot); background: var(--surface-2); }
+  .row .n { font-family: var(--mono); font-size: 11px; color: var(--ink-2); text-align: right; padding-top: 11px; }
+  .row .q { font-size: 12px; min-width: 0; }
+  .row .q small { display: block; font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-2); }
+  .row .qt { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: normal; }
+  .dots { display: flex; gap: 4px; padding-top: 13px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; border: 1px solid var(--ink-3); }
+  .dot.pass { background: var(--pass); border-color: var(--pass); }
+  .dot.fail { background: var(--fail); border-color: var(--fail); }
+
+  section.scenario { padding-block: 18px 24px; display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+  .navbtns { margin-left: auto; display: flex; gap: 6px; }
+  .rownav { display: flex; flex-direction: column; gap: 6px; }
+  .rownav .navbtns { margin-left: 0; }
+  .rownav .btn { flex: 1; }
+
+  .block { display: flex; flex-direction: column; gap: 6px; }
+  .block .eyebrow, .ctxcol .eyebrow { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+  .block .eyebrow span:last-child:not(:first-child), .ctxcol .eyebrow span:last-child:not(:first-child) { color: var(--ink-3); font-weight: 400; letter-spacing: 0; text-transform: none; font-family: var(--sans); font-size: 11.5px; }
+  .question { font-family: var(--voice); font-style: italic; font-size: 19px; line-height: 1.45; max-width: 68ch; }
+  .turns { font-family: var(--mono); font-size: 12px; line-height: 1.7; white-space: pre-wrap; background: var(--surface); border: 1px solid var(--hairline-strong); padding: 10px 14px; max-width: 80ch; }
+  .response { max-width: 78ch; font-size: 14px; line-height: 1.6; background: var(--surface); padding: 12px 16px; }
+  .sent { display: block; border-left: 3px solid var(--hairline); padding: 2px 0 2px 10px; }
+  .sent + .sent { margin-top: 2px; }
+  .sent.para { margin-top: 10px; }
+  .sent.li, .sent.cont { padding-left: 24px; }
+  .sent.li { text-indent: -14px; }
+  .sent .bu { color: var(--ink-3); }
+  .sent.t-bone { border-left-color: var(--live); }
+  .sent.t-amber { border-left-color: var(--amber); }
+  .sent.t-fail { border-left-color: var(--fail); }
+  .sent[data-s] { cursor: pointer; }
+  .sent[data-s]:hover, .sent.on { background: var(--surface-2); }
+  .sent.code { font-family: var(--mono); font-size: 11.5px; line-height: 1.6; white-space: pre-wrap; overflow-x: auto; background: var(--well); padding: 8px 0 8px 10px; margin-top: 8px; }
+  .sent.cite { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); white-space: pre-wrap; margin-top: 12px; }
+  .response code, .pw code { font-family: var(--mono); font-size: 0.88em; background: var(--surface-2); padding: 0 3px; border-radius: 2px; }
+  .src { font-style: normal; color: var(--ink-3); }
+  .legend { font-size: 11px; line-height: 1.5; color: var(--ink-3); }
+  .legend b { font-weight: 600; }
+  .k-bone { color: var(--live); }
+  .k-amber { color: var(--amber); }
+  .k-fail { color: var(--fail); }
+
+  .ctxcol { min-width: 0; display: flex; flex-direction: column; gap: 6px; padding-block: 18px 12px; }
+  .ctxnote { font-size: 11.5px; color: var(--fail); }
+  .ctxpane { min-height: 0; max-height: 70vh; overflow-y: auto; background: var(--well); border: 1px solid var(--hairline); }
+  .ctxblock { padding: 10px 14px 10px 8px; }
+  .ctxblock + .ctxblock { border-top: 1px solid var(--hairline); }
+  .pw { margin: 0 0 8px; padding-left: 9px; border-left: 3px solid transparent; font-size: 12.5px; line-height: 1.6; color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .pw:last-child { margin-bottom: 0; }
+  .pw.lit { border-left-color: var(--live); color: var(--ink); }
+  .pw b { color: var(--ink); font-weight: 600; }
+  .pw .cx { font-family: var(--mono); font-size: 0.9em; }
+  mark { background: rgba(231,229,225,0.22); color: var(--live-hot); border-radius: 1px; padding: 0 1px; }
+  .reference { white-space: pre-wrap; max-width: 72ch; color: var(--ink-2); font-size: 13px; }
+  details summary { cursor: pointer; color: var(--ink-2); font-size: 12.5px; }
+  .contexts { display: flex; flex-direction: column; gap: 8px; }
+  .chunk { background: var(--well); border: 1px solid var(--hairline-strong); padding: 10px 14px; font-family: var(--mono); font-size: 11.5px; line-height: 1.65; white-space: pre-wrap; overflow-x: auto; color: var(--ink-2); }
+
+  .verdicts { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; padding-block: 4px 40px; }
+  .card { display: flex; flex-direction: column; gap: 10px; background: var(--surface); border: 1px solid var(--hairline-strong); padding: 14px 16px; }
+  .card h3 { font-size: 15px; }
+  .card .rubric { color: var(--ink-2); font-size: 12.5px; line-height: 1.5; }
+  .group { display: flex; flex-direction: column; gap: 5px; }
+  .seg { display: flex; gap: 6px; }
+  button { font: inherit; cursor: pointer; }
+  .vbtn { flex: 1; min-width: 0; font-family: var(--mono); font-size: 12px; font-weight: 700; letter-spacing: 0.08em; padding: 9px 0; background: transparent; border: 1px solid var(--hairline-strong); color: var(--ink-2); border-radius: 2px; }
+  .vbtn:hover { color: var(--ink); background: var(--surface-2); }
+  .vbtn.pass.on, .vbtn.pass.on:hover { background: var(--pass); border-color: var(--pass); color: var(--live-ink); }
+  .vbtn.fail.on, .vbtn.fail.on:hover { background: var(--fail); border-color: var(--fail); color: var(--live-ink); }
+  .score { display: grid; grid-template-columns: auto repeat(5, 1fr); gap: 4px; align-items: center; }
+  .score .eyebrow { margin-right: 6px; }
+  .sbtn { font-family: var(--mono); font-size: 12px; padding: 5px 0; background: transparent; border: 1px solid var(--hairline-strong); color: var(--ink-3); border-radius: 2px; }
+  .sbtn:hover { color: var(--ink); background: var(--surface-2); }
+  .sbtn.on { background: var(--surface-2); border: 1px solid var(--ink); box-shadow: inset 0 0 0 1px var(--ink); color: var(--ink); }
+  .anchors { font-size: 11px; line-height: 1.45; color: var(--ink-2); }
+  .anchors.soft { color: var(--ink-3); }
+  textarea { width: 100%; min-height: 44px; resize: vertical; font: inherit; font-size: 12.5px; background: var(--well); color: var(--ink); border: 1px solid var(--hairline-strong); border-radius: 2px; padding: 7px 9px; }
+  textarea::placeholder { color: var(--ink-3); }
+  .btn { font-family: var(--sans); font-size: 12.5px; font-weight: 600; padding: 7px 14px; background: transparent; border: 1px solid var(--hairline-strong); color: var(--ink); border-radius: 2px; }
+  .btn:hover { background: var(--surface-2); }
+  .btn.primary { background: var(--live); color: var(--live-ink); border-color: var(--live); }
+  .btn.primary:hover { background: var(--live-hot); }
+  .btn:disabled { opacity: 0.35; cursor: default; }
+  :focus-visible { outline: 2px solid var(--live-hot); outline-offset: 2px; }
+  .kbd { font-family: var(--mono); font-size: 10px; color: var(--ink-3); }
+  .kbd b { display: inline-block; border: 1px solid var(--hairline-strong); padding: 0 5px; border-radius: 2px; color: var(--ink-2); font-weight: 400; }
+
+  .strip { display: none; position: sticky; bottom: 0; z-index: 5; align-items: center; gap: 6px; margin-inline: -16px; padding: 9px 16px; background: var(--surface); border-top: 1px solid var(--hairline-strong); }
+  .strip .slabel { font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--ink-2); }
+  .strip .vbtn { padding: 7px 0; font-size: 11px; letter-spacing: 0.06em; }
+  .strip .navbtns { margin-left: 4px; gap: 4px; }
+  .strip .btn { padding: 6px 10px; }
+  .icbtn .ic { display: none; }
+
+  @media (max-width: 860px) { .kbd { display: none; } }
+  @media (max-width: 760px) { .icbtn .full { display: none; } .icbtn .ic { display: inline; } }
+  @media (min-width: 700px) { .verdicts { grid-template-columns: minmax(0, 560px); } }
+  @media (min-width: 861px) { .cells { width: var(--cw-full, 366px); } }
+  @media (min-width: 1180px) {
+    main { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 288px; gap: 0 18px; }
+    .ctxcol { grid-column: 2; }
+    .verdicts { grid-column: 3; display: flex; flex-direction: column; padding-block: 18px 12px; }
+    .ctxcol, .verdicts { position: sticky; top: 12px; align-self: start; max-height: calc(100vh - 24px); }
+    .verdicts { overflow-y: auto; }
+    .ctxpane { max-height: calc(100vh - 78px); }
+  }
+  @media (min-width: 1400px) {
+    main { grid-template-columns: 216px minmax(0, 1fr) minmax(0, 1fr) 288px; }
+    nav { display: block; }
+    .ctxcol { grid-column: 3; }
+    .verdicts { grid-column: 4; }
+  }
+  @media (max-width: 1179px) { .strip { display: flex; } }
+  @media (prefers-reduced-motion: no-preference) { .vbtn, .sbtn, .btn { transition: background 120ms, color 120ms; } }
+</style>
+
+<header>
+  <h1>Calibration Bench</h1>
+  <span class="kbd"><b>&larr;</b> <b>&rarr;</b> rows &middot; <b>j</b> <b>k</b> sentence &middot; <b>a</b> pass &middot; <b>s</b> fail</span>
+  <div class="progress">
+    <div class="cells" id="cells"></div>
+    <span class="count" id="count" aria-live="polite"></span>
+    <span class="save" id="save" aria-live="polite">connecting</span>
+  </div>
+</header>
+
+<main>
+  <nav aria-label="rows"><ol id="list"></ol></nav>
+  <section class="scenario" id="scenario"></section>
+  <aside class="ctxcol" aria-label="retrieved text">
+    <div class="eyebrow"><span>retrieved text</span></div>
+    <div class="ctxnote" id="ctxnote" aria-live="polite" hidden></div>
+    <div class="ctxpane" id="ctxpane"></div>
+  </aside>
+  <aside class="verdicts" id="verdicts" aria-label="verdict"></aside>
+</main>
+<div class="strip" id="strip" role="group" aria-label="verdict shortcuts"></div>
+
+<script id="rows" type="application/json">__ROWS__</script>
+<script>
+(function () {
+  const ROWS = JSON.parse(document.getElementById("rows").textContent);
+  const SCORE_NOTE = "PASS or FAIL is the label the calibration reads. The score is optional detail and changes nothing.";
+  // a project adds or overrides rubrics through build.py --rubrics; a dimension with no rubric gets a plain one
+  const RUBRIC_OVERRIDES = __RUBRICS__;
+  const RUBRIC = {
+    faithfulness: {
+      title: "Faithfulness", short: "F",
+      text: "Click a sentence, or press j and k, to light the passage that carries it. PASS when every claim is carried by the retrieved text. FAIL when any claim is not there, even if you know it to be true. What you know is not evidence here.",
+      anchors: "how much of the response the contexts support. 1 none · 3 about half · 5 all",
+      notes: "notes, optional. The claim the contexts do not support, or why it passed"
+    },
+    answer_relevancy: {
+      title: "Answer relevancy", short: "R",
+      text: "Read the response against the question. PASS when it answers what was asked, directly. FAIL when it answers something else, dodges, or pads. Do not judge whether it is true. On a multi-turn row the question is the resolved question.",
+      anchors: "how much of the question the response answers. 1 none · 3 about half · 5 all",
+      notes: "notes, optional. What was asked versus what was answered"
+    }
+  };
+  Object.assign(RUBRIC, RUBRIC_OVERRIDES);
+  const rubricOf = dim => RUBRIC[dim] || {
+    title: dim.replace(/_/g, " "), short: dim.slice(0, 1).toUpperCase(),
+    text: `PASS when the response meets the ${dim.replace(/_/g, " ")} rubric. FAIL when it does not.`,
+    anchors: "1 none · 3 about half · 5 all",
+    notes: "notes, optional"
+  };
+  // one screen per row, in the shuffled order the sheet arrived in
+  const KEYS = { a: "pass", s: "fail" };
+  const NAV_PAIR = { prev: "next", next: "prev", sprev: "snext", snext: "sprev" };
+
+  const items = ROWS.map(r => ({
+    id: r.scenario_id, dim: r.dimension, dataset: r.dataset,
+    question: r.question, response: r.response, contexts: r.retrieved_contexts,
+    reference: r.reference, turns: r.turns, resolved: r.resolved_question
+  }));
+  const TOTAL = items.length;
+  const SINGLE_DIM = new Set(items.map(it => it.dim)).size === 1;
+  const questionOf = it => (it.turns ? (it.resolved || it.question) : it.question);
+
+  // the reading aid. Word overlap only, so it tints an edge and points at a passage, it never labels
+  const STOP = new Set(("the and for that with this from are was were has have had not but all any can you your they them " +
+    "their there then than when what which who whom how why into onto over under out off per via about after before " +
+    "between during each every some such only also more most other same both been being does did doing done will would " +
+    "should could may might must shall here where while because since though although upon among along around these " +
+    "those very much many just like within without across toward towards doesn didn aren wasn weren hasn haven").split(" "));
+  // words that appear in every passage of this project, so their overlap says nothing. build.py --names
+  const NAMES = new Set(__NAMES__.map(w => w.toLowerCase()));
+  const WORD_RE = () => /[A-Za-z0-9][A-Za-z0-9._\/-]*/g;
+  const SENT_RE = () => /(?<=[.!?]["')\]]?)\s+(?=[*`"'(\[A-Z0-9])/g;
+  const FENCE_RE = /^\s*```[A-Za-z0-9]*\s*$/;
+  const EMPTY = new Set();
+  const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function norm(raw) {
+    const t = raw.toLowerCase().replace(/[._\/-]+$/, "");
+    if (!t || NAMES.has(t)) return "";
+    if (/^[0-9]/.test(t)) return t;                 // numbers and versions carry weight at any length
+    if (/[._\/-]/.test(t)) return t;                // a command, path or dotted identifier
+    if (t.length < 4 || STOP.has(t)) return "";
+    return t;
+  }
+  function tokensOf(text) {
+    const set = new Set(), re = WORD_RE();
+    let m;
+    while ((m = re.exec(text))) { const t = norm(m[0]); if (t) set.add(t); }
+    return set;
+  }
+  function markup(text, shared) {
+    const re = WORD_RE();
+    let out = "", last = 0, m;
+    while ((m = re.exec(text))) {
+      const t = norm(m[0]);
+      if (!t || !shared.has(t)) continue;
+      out += esc(text.slice(last, m.index)) + "<mark>" + esc(m[0]) + "</mark>";
+      last = m.index + m[0].length;
+    }
+    return out + esc(text.slice(last));
+  }
+  // markdown the owner should read rather than decode, run over text that is already escaped
+  const inlineRich = html => html
+    .replace(/`([^`]+)`/g, (_, c) => "<code>" + c + "</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "$1");
+  function inlineHtml(text) {
+    let s = esc(text);
+    s = s.replace(/\*\(([^()]*)\)\*/g, (_, c) => '<i class="src">(' + c + ')</i>');
+    s = inlineRich(s);
+    return s.replace(/\*([^*]+)\*/g, "$1");
+  }
+  // a source marker names a document rather than asserting anything, so it stays out of the score
+  const scoreText = text => text.replace(/\*\(([^()]*)\)\*/g, " ").replace(/[*`]/g, " ");
+
+  function splitSentences(text) {
+    const re = SENT_RE(), parts = [];
+    let m, start = 0;
+    while ((m = re.exec(text))) { parts.push(text.slice(start, m.index)); start = m.index + m[0].length; }
+    parts.push(text.slice(start));
+    const out = [];
+    for (const p of parts) {
+      const s = p.trim();
+      if (!s) continue;
+      // a fragment this short cannot be read alone, so it rides with its neighbour
+      if (out.length && (s.length < 28 || out[out.length - 1].length < 28)) out[out.length - 1] += " " + s;
+      else out.push(s);
+    }
+    return out;
+  }
+
+  function responseUnits(response) {
+    const text = String(response || "");
+    const cut = text.search(/(^|\n)\s*CITATIONS\s*:/);
+    const body = cut === -1 ? text : text.slice(0, cut);
+    const cites = cut === -1 ? "" : text.slice(cut).trim();
+    const units = [];
+    let fence = null, para = false;
+    for (const line of body.split("\n")) {
+      if (/^\s*```/.test(line)) {
+        if (fence) { units.push({ kind: "code", text: fence.join("\n"), para: true, marker: "" }); fence = null; }
+        else fence = [];
+        continue;
+      }
+      if (fence) { fence.push(line); continue; }
+      if (!line.trim()) { para = true; continue; }
+      const m = line.match(/^\s*([-*\u2022]|\d+[.)])\s+/);
+      const rest = m ? line.slice(m[0].length) : line.trim();
+      splitSentences(rest).forEach((s, i) => units.push({
+        kind: m ? (i === 0 ? "li" : "cont") : "p",
+        text: s, para: para && i === 0, marker: (m && i === 0) ? m[1] : ""
+      }));
+      para = false;
+    }
+    if (fence) units.push({ kind: "code", text: fence.join("\n"), para: true, marker: "" });
+    if (cites) units.push({ kind: "cite", text: cites, para: true, marker: "" });
+    return units;
+  }
+
+  // the retrieved text arrives fenced line by line, so rebuild it into headings, paragraphs and code
+  function paneRows(contexts) {
+    const rows = [];
+    let fence = null;
+    const hash = s => /^#{1,6}\s+/.test(s);
+    const head = s => ({ t: "h", text: s.replace(/^#{1,6}\s+/, "").trim() });
+    for (const line of String(contexts || "").replace(/\r/g, "").split("\n")) {
+      if (FENCE_RE.test(line)) {
+        if (fence === null) { fence = []; continue; }
+        const one = fence.length === 1 ? fence[0].trim() : "";
+        if (one && one.length < 80) rows.push({ t: "i", text: "`" + one + "`" });
+        else for (const c of fence) rows.push(hash(c.trim()) ? head(c.trim()) : { t: "c", text: c });
+        fence = null;
+        continue;
+      }
+      if (fence) { fence.push(line); continue; }
+      const s = line.trim();
+      if (!s) rows.push({ t: "", text: "" });
+      else rows.push(hash(s) ? head(s) : { t: "p", text: s });
+    }
+    if (fence) for (const c of fence) rows.push(hash(c.trim()) ? head(c.trim()) : { t: "c", text: c });
+    return rows;
+  }
+
+  function paneBlocks(contexts) {
+    const blocks = [];
+    let cur = [];
+    for (const r of paneRows(contexts)) {
+      if (r.t === "") { if (cur.length) blocks.push(cur); cur = []; continue; }
+      cur.push(r);
+    }
+    if (cur.length) blocks.push(cur);
+
+    return blocks.map(rows => {
+      const out = [];
+      let para = null, seen = 0;
+      const flush = () => { if (para) { out.push(para); para = null; } };
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        seen++;
+        if (r.t === "h" || r.t === "c") { flush(); out.push({ t: r.t, text: r.text }); continue; }
+        const more = rows.slice(i + 1).some(x => x.text.trim());
+        const words = r.text.split(/\s+/).filter(Boolean).length;
+        // a heading is short, unpunctuated, at the top of its block, and has text under it
+        if (r.t === "p" && !para && seen <= 2 && more && words < 8 && r.text.length < 60 &&
+            !/[.,;:!?]$/.test(r.text) && /^[A-Z]/.test(r.text)) {
+          out.push({ t: "h", text: r.text });
+          continue;
+        }
+        // one line per clause is how it arrived, not how it reads
+        if (!para) para = { t: "t", text: r.text };
+        else para.text += (/^[,.;:!?)]/.test(r.text) ? "" : " ") + r.text;
+      }
+      flush();
+      return out;
+    });
+  }
+
+  function panePassages(contexts) {
+    const passages = [], groups = [];
+    for (const lines of paneBlocks(contexts)) {
+      const types = lines.map(l => l.t);
+      const b = lines.map(l => l.text).join("\n");
+      if (!b.trim()) continue;
+      const re = SENT_RE(), cuts = [];
+      let m;
+      while ((m = re.exec(b))) cuts.push(m.index + m[0].length);
+      cuts.push(b.length);
+      const idx = [];
+      let start = 0;
+      const take = end => {
+        const text = b.slice(start, end).replace(/\s+$/, "");
+        if (text.trim()) {
+          idx.push(passages.length);
+          passages.push({ text: text, line: (b.slice(0, start).match(/\n/g) || []).length, types: types });
+        }
+        start = end;
+      };
+      for (const c of cuts) if (c - start >= 300) take(c);
+      if (start < b.length) take(b.length);
+      if (idx.length) groups.push(idx);
+    }
+    return { passages: passages, groups: groups };
+  }
+
+  function windowHtml(passages, i, shared) {
+    const p = passages[i];
+    return p.text.split("\n").map((line, k) => {
+      const t = p.types[p.line + k] || "t";
+      const html = shared ? markup(line, shared) : esc(line);
+      if (t === "c") return '<span class="cx">' + html + "</span>";
+      if (t === "h") return "<b>" + inlineRich(html) + "</b>";
+      return inlineRich(html);
+    }).join("\n");
+  }
+
+  function unitsHtml(units) {
+    return units.map((u, i) => {
+      const cls = ["sent", u.kind === "p" ? "" : u.kind, u.tint, u.para ? "para" : ""].filter(Boolean).join(" ");
+      const open = (u.kind === "cite" || u.tint === "t-none") ? "" : ` data-s="${i}" tabindex="-1"`;
+      const bullet = u.marker ? `<span class="bu">${/^[-*\u2022]$/.test(u.marker) ? "\u2022" : esc(u.marker)}</span> ` : "";
+      const inner = u.kind === "code" ? esc(u.text) : bullet + inlineHtml(u.text);
+      return `<span class="${cls}"${open}>${inner}</span>`;
+    }).join("");
+  }
+
+  function analyse(it) {
+    if (it.an) return it.an;
+    const pane = panePassages(it.contexts);
+    const ptokens = pane.passages.map(p => tokensOf(p.text));
+    const units = responseUnits(it.response);
+    for (const u of units) {
+      u.tokens = u.kind === "cite" ? EMPTY : tokensOf(scoreText(u.text));
+      u.pi = -1; u.shared = EMPTY; u.score = 0;
+      for (let i = 0; i < ptokens.length && u.tokens.size; i++) {
+        const sh = new Set();
+        for (const tk of u.tokens) if (ptokens[i].has(tk)) sh.add(tk);
+        const sc = sh.size / u.tokens.size;
+        if (sc > u.score) { u.score = sc; u.pi = i; u.shared = sh; }
+      }
+      // red is reserved for a sentence with nothing to light
+      u.tint = !u.tokens.size ? "t-none" : (u.score >= 0.4 ? "t-bone" : (u.score > 0 ? "t-amber" : "t-fail"));
+    }
+    const plain = pane.passages.map((p, i) => windowHtml(pane.passages, i, null));
+    it.an = {
+      units: units, passages: pane.passages, plain: plain,
+      html: unitsHtml(units),
+      paneHtml: pane.groups.map(g => '<div class="ctxblock">' +
+        g.map(i => `<p class="pw" data-i="${i}">${plain[i]}</p>`).join("") + "</div>").join("")
+    };
+    return it.an;
+  }
+
+  let sel = -1, lit = -1;
+  function sentEls() { return [...document.querySelectorAll(".sent[data-s]")]; }
+  function selectSentence(n, scroll) {
+    const an = items[current].an;
+    const u = an && an.units[n];
+    if (!u) return;
+    for (const s of sentEls()) {
+      const on = Number(s.dataset.s) === n;
+      s.classList.toggle("on", on);
+      s.setAttribute("tabindex", on ? "0" : "-1");
+    }
+    sel = n;
+    const pane = document.getElementById("ctxpane");
+    const note = document.getElementById("ctxnote");
+    if (lit >= 0) {
+      const old = pane.querySelector(`.pw[data-i="${lit}"]`);
+      if (old) { old.innerHTML = an.plain[lit]; old.classList.remove("lit"); }
+      lit = -1;
+    }
+    if (u.pi < 0) {                                  // silence would read as a broken click
+      note.textContent = "no passage shares words with that sentence";
+      note.hidden = false;
+      return;
+    }
+    note.hidden = true;
+    const pw = pane.querySelector(`.pw[data-i="${u.pi}"]`);
+    if (!pw) return;
+    pw.innerHTML = windowHtml(an.passages, u.pi, u.shared);
+    pw.classList.add("lit");
+    lit = u.pi;
+    if (scroll) {
+      const top = pane.scrollTop + (pw.getBoundingClientRect().top - pane.getBoundingClientRect().top) - 10;
+      pane.scrollTo({ top: top, behavior: REDUCED ? "auto" : "smooth" });
+    }
+  }
+  function moveSentence(d) {
+    const els = sentEls();
+    if (!els.length) return;
+    let i = els.findIndex(e => Number(e.dataset.s) === sel);
+    i = i === -1 ? (d > 0 ? 0 : els.length - 1) : Math.max(0, Math.min(els.length - 1, i + d));
+    els[i].focus();
+  }
+
+  // labels: key scenario__dimension -> {verdict, score, notes}
+  const labels = new Map();
+  const key = (sid, dim) => sid + "__" + dim;
+  let current = 0;
+  let navigated = false;
+  let focusAfter = null;
+  let db = null;
+  const saveEl = document.getElementById("save");
+  const pending = new Map();
+  const dirty = new Set();
+  let noteTimer = null;
+  let flushTimer = null;
+  let flushing = false;
+
+  function setSave(text, warn) { saveEl.textContent = text; saveEl.classList.toggle("warn", !!warn); }
+  function settle() { if (db && !pending.size && !flushing) setSave("saved"); }
+
+  function queue(k, data) {
+    dirty.add(k);
+    const empty = !data.verdict && (data.score === null || data.score === undefined) && !String(data.notes || "").trim();
+    if (empty) {
+      labels.delete(k);
+      pending.set(k, { scenario_id: data.scenario_id, dimension: data.dimension, deleted: true });
+    } else {
+      labels.set(k, data);
+      pending.set(k, data);
+    }
+    paintControls(); renderProgress(); renderList();
+    if (!db) { setSave("not saving", true); return; }
+    setSave("saving");
+    clearTimeout(flushTimer);
+    flushTimer = setTimeout(flush, 500);
+  }
+
+  async function flush() {
+    if (flushing || !db) return;
+    flushing = true;
+    let failed = false;
+    try {
+      while (pending.size) {
+        const batch = [...pending.entries()];
+        pending.clear();
+        try {
+          for (const [k, data] of batch) {
+            if (data.deleted) await db.doc("labels/" + k).delete();
+            else await db.doc("labels/" + k).set({ ...data, updated_at: new Date().toISOString() });
+          }
+        } catch (e) {
+          // a newer edit already sitting in the queue wins over this snapshot
+          for (const [k, data] of batch) if (!pending.has(k)) pending.set(k, data);
+          failed = true;
+          break;
+        }
+      }
+    } finally { flushing = false; }
+    if (failed) {
+      setSave("save failed, retrying", true);
+      clearTimeout(flushTimer);
+      flushTimer = setTimeout(flush, 3000);
+    } else settle();
+  }
+
+  function curLabel(it) {
+    const k = key(it.id, it.dim);
+    const L = { scenario_id: it.id, dimension: it.dim, ...(labels.get(k) || {}) };
+    delete L.deleted;
+    return [k, L];
+  }
+  function toggleVerdict(v) {
+    const [k, L] = curLabel(items[current]);
+    L.verdict = L.verdict === v ? "" : v;
+    queue(k, L);
+  }
+  function toggleScore(n) {
+    const [k, L] = curLabel(items[current]);
+    L.score = L.score === n ? null : n;
+    queue(k, L);
+  }
+  function commitNotes(it, value) {
+    const [k, L] = curLabel(it);
+    L.notes = value;
+    queue(k, L);
+  }
+
+  function paintControls() {
+    const it = items[current];
+    const L = labels.get(key(it.id, it.dim)) || {};
+    for (const b of document.querySelectorAll(".vbtn[data-v]")) {
+      const on = (L.verdict || "") === b.dataset.v;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+    for (const b of document.querySelectorAll(".sbtn[data-s]")) {
+      const on = L.score === Number(b.dataset.s);
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+  }
+
+  function verdictOf(it) { return (labels.get(key(it.id, it.dim)) || {}).verdict || ""; }
+  function renderProgress() {
+    const cells = document.getElementById("cells");
+    cells.style.setProperty("--cw-full", (Math.ceil(TOTAL / 2) * 8 - 2) + "px");
+    cells.style.setProperty("--cw-narrow", (Math.ceil(TOTAL / 4) * 8 - 2) + "px");
+    // one dimension: the cell takes the verdict's colour. Several dimensions per question: a plain fill, since one colour cannot carry two grades
+    cells.innerHTML = items.map((it, i) => {
+      const v = verdictOf(it);
+      const fill = v ? "full" + (SINGLE_DIM ? " " + v : "") : "";
+      return `<div class="cell ${fill} ${i === current ? "here" : ""}" title="${i + 1}${v ? ", " + v : ""}"></div>`;
+    }).join("");
+    const done = items.filter(verdictOf).length;
+    document.getElementById("count").textContent = done === TOTAL ? `${done} / ${TOTAL}, all labelled` : `${done} / ${TOTAL}`;
+  }
+  function renderList() {
+    const ol = document.getElementById("list");
+    const active = document.activeElement;
+    const keepFocus = active && active.classList && active.classList.contains("row") ? active.dataset.i : null;
+    ol.innerHTML = items.map((it, i) => {
+      const v = verdictOf(it);
+      const here = i === current;
+      const dot = `<span class="dot ${v}" title="${rubricOf(it.dim).title}${v ? ", " + v : ""}"></span>`;
+      return `<li><button type="button" class="row ${here ? "here" : ""}" data-i="${i}" tabindex="${here ? 0 : -1}"${here ? ` aria-current="true"` : ""}><span class="n">${i + 1}</span><span class="q"><small>${esc(rubricOf(it.dim).title)} · ${esc(it.dataset)}${it.turns ? " · multi-turn" : ""}</small><span class="qt">${esc(questionOf(it))}</span></span><span class="dots">${dot}</span></button></li>`;
+    }).join("");
+    if (keepFocus !== null) { const back = ol.querySelector(`.row[data-i="${keepFocus}"]`); if (back) back.focus(); }
+  }
+  function esc(t) { return String(t ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+  document.getElementById("strip").innerHTML = `
+    <span class="slabel" id="strip-dim" aria-hidden="true"></span>
+    <button type="button" class="vbtn pass" id="strip-pass" data-v="pass">PASS</button>
+    <button type="button" class="vbtn fail" id="strip-fail" data-v="fail">FAIL</button>
+    <div class="navbtns">
+      <button type="button" class="btn icbtn" id="sprev" data-nav="prev" aria-label="Previous row"><span class="full">Previous</span><span class="ic">&larr;</span></button>
+      <button type="button" class="btn primary icbtn" id="snext" data-nav="next" aria-label="Next row"><span class="full">Next</span><span class="ic">&rarr;</span></button>
+    </div>`;
+
+  function renderItem() {
+    const it = items[current];
+    const R = rubricOf(it.dim);
+    const A = analyse(it);
+    const el = document.getElementById("scenario");
+    el.innerHTML = `
+      ${it.turns ? `
+      <div class="block"><div class="eyebrow"><span>conversation</span></div><div class="turns">${esc(it.turns)}</div></div>
+      <div class="block"><div class="eyebrow"><span>resolved question</span><span>what the last turn is actually asking, once the history is folded in</span></div><div class="question">${esc(it.resolved || it.question)}</div></div>
+      ` : `
+      <div class="block"><div class="eyebrow"><span>question</span></div><div class="question">${esc(it.question)}</div></div>
+      `}
+      <div class="block">
+        <div class="eyebrow"><span>agent response</span></div>
+        <div class="legend"><b class="k-bone">bone</b>: the retrieved text carries it · <b class="k-amber">amber</b>: partly · <b class="k-fail">red</b>: no shared words</div>
+        <div class="response">${A.html}</div>
+        <div class="legend">left edge shows how much of the sentence the retrieved text carries, word overlap only</div>
+      </div>
+      <details class="block"><summary>reference answer, the expected answer written for this scenario. Read it after labelling, not before</summary><div class="reference">${esc(it.reference)}</div></details>`;
+
+    const L = labels.get(key(it.id, it.dim)) || {};
+    document.getElementById("verdicts").innerHTML = `
+      <div class="card" data-dim="${it.dim}">
+        <h3>${R.title}</h3>
+        <div class="rubric">${R.text}</div>
+        <div class="group">
+          <div class="seg">
+            <button type="button" class="vbtn pass" data-v="pass" id="${it.dim}-pass" aria-label="${R.title} pass">PASS</button>
+            <button type="button" class="vbtn fail" data-v="fail" id="${it.dim}-fail" aria-label="${R.title} fail">FAIL</button>
+          </div>
+        </div>
+        <div class="group">
+          <div class="score"><span class="eyebrow">score</span>${[1,2,3,4,5].map(n => `<button type="button" class="sbtn" data-s="${n}" id="${it.dim}-s${n}" aria-label="score ${n}">${n}</button>`).join("")}</div>
+          <div class="anchors">${R.anchors}</div>
+          <div class="anchors soft">${SCORE_NOTE}</div>
+        </div>
+        <textarea id="${it.dim}-notes" aria-label="${R.title.toLowerCase()} notes" placeholder="${esc(R.notes)}">${esc(L.notes || "")}</textarea>
+      </div>
+      <div class="rownav">
+        <div class="navbtns">
+          <button type="button" class="btn" id="prev" data-nav="prev" ${current === 0 ? "disabled" : ""}>Previous</button>
+          <button type="button" class="btn primary" id="next" data-nav="next" ${current === TOTAL - 1 ? "disabled" : ""}>Next</button>
+        </div>
+      </div>`;
+
+    const pane = document.getElementById("ctxpane");
+    pane.innerHTML = A.paneHtml;
+    pane.scrollTop = 0;
+    document.getElementById("ctxnote").hidden = true;
+    sel = -1; lit = -1;
+    const firstSent = el.querySelector(".sent[data-s]");
+    if (firstSent) firstSent.setAttribute("tabindex", "0");
+
+    document.getElementById("strip-dim").textContent = R.short;
+    document.getElementById("strip-pass").setAttribute("aria-label", R.title + " pass");
+    document.getElementById("strip-fail").setAttribute("aria-label", R.title + " fail");
+    document.getElementById("sprev").disabled = current === 0;
+    document.getElementById("snext").disabled = current === TOTAL - 1;
+
+    paintControls(); renderProgress(); renderList();
+    const here = document.querySelector("nav .row.here"); if (here) here.scrollIntoView({ block: "nearest" });
+    if (focusAfter === "rail") {
+      const r = document.querySelector(`nav .row[aria-current="true"]`); if (r) r.focus();
+    } else if (focusAfter) {
+      let b = document.getElementById(focusAfter);
+      if (!b || b.disabled) b = document.getElementById(NAV_PAIR[focusAfter]);
+      if (b && !b.disabled) b.focus();
+    }
+    focusAfter = null;
+  }
+  function go(i) { navigated = true; if (i < 0 || i >= TOTAL) return; current = i; renderItem(); window.scrollTo({ top: 0 }); }
+
+  document.addEventListener("click", () => { navigated = true; }, true);
+  document.addEventListener("keydown", () => { navigated = true; }, true);
+
+  document.addEventListener("click", e => {
+    const vb = e.target.closest(".vbtn[data-v]");
+    if (vb) { toggleVerdict(vb.dataset.v); return; }
+    const sb = e.target.closest(".sbtn[data-s]");
+    if (sb) { toggleScore(Number(sb.dataset.s)); return; }
+    const nb = e.target.closest("[data-nav]");
+    if (nb) { if (nb.disabled) return; focusAfter = nb.id; go(nb.dataset.nav === "next" ? current + 1 : current - 1); return; }
+    const sent = e.target.closest(".sent[data-s]");
+    if (sent) { selectSentence(Number(sent.dataset.s), true); return; }
+    const row = e.target.closest(".row");
+    if (row) { focusAfter = "rail"; go(Number(row.dataset.i)); }
+  });
+
+  document.addEventListener("focusin", e => {
+    const sent = e.target.closest && e.target.closest(".sent[data-s]");
+    if (sent && Number(sent.dataset.s) !== sel) selectSentence(Number(sent.dataset.s), true);
+  });
+
+  document.addEventListener("input", e => {
+    const ta = e.target.closest(".card textarea");
+    if (!ta) return;
+    const it = items[current], value = ta.value;
+    clearTimeout(noteTimer);
+    noteTimer = setTimeout(() => commitNotes(it, value), 400);
+  });
+  document.addEventListener("change", e => {
+    const ta = e.target.closest(".card textarea");
+    if (!ta) return;
+    clearTimeout(noteTimer);
+    commitNotes(items[current], ta.value);
+  });
+
+  const list = document.getElementById("list");
+  list.addEventListener("keydown", e => {
+    const row = e.target.closest(".row");
+    if (!row || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
+    e.preventDefault(); e.stopPropagation();
+    const next = list.querySelector(`.row[data-i="${Number(row.dataset.i) + (e.key === "ArrowDown" ? 1 : -1)}"]`);
+    if (next) { next.focus(); next.scrollIntoView({ block: "nearest" }); }
+  });
+
+  document.addEventListener("keydown", e => {
+    if (/^(TEXTAREA|INPUT|SELECT)$/.test(e.target.tagName)) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === "ArrowRight") { go(current + 1); return; }
+    if (e.key === "ArrowLeft") { go(current - 1); return; }
+    if (e.key === "j" || e.key === "k") { e.preventDefault(); moveSentence(e.key === "j" ? 1 : -1); return; }
+    if (e.key === "Enter") {
+      const a = document.activeElement;
+      if (a && a.classList && a.classList.contains("sent")) { e.preventDefault(); selectSentence(Number(a.dataset.s), true); }
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(KEYS, e.key)) { e.preventDefault(); toggleVerdict(KEYS[e.key]); }
+  });
+
+  renderItem();
+
+  (async () => {
+    db = window.claude && window.claude.use ? await window.claude.use("db") : null;
+    if (!db) { setSave("not saving", true); return; }
+    try {
+      const snap = await db.collection("labels").get();
+      for (const doc of snap.docs) {
+        const v = doc.data();
+        if (!v || !v.scenario_id || !v.dimension) continue;
+        const k = key(v.scenario_id, v.dimension);
+        if (pending.has(k) || dirty.has(k)) continue; // the owner edited this one first
+        labels.set(k, v);
+      }
+      // resume where the labelling stopped, unless the owner has already moved
+      if (!navigated) {
+        const first = items.findIndex(it => !verdictOf(it));
+        current = first === -1 ? 0 : first;
+      }
+      renderItem();
+      // an edit made before the db answered was queued with no way to send it
+      if (pending.size) flush(); else settle();
+    } catch (e) { setSave("could not load labels", true); }
+  })();
+})();
+</script>

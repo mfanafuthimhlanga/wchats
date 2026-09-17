@@ -8,60 +8,41 @@
   "dimensions": {
     "answer_relevancy": {
       "artifact_version": 2,
-      "attempted": 20,
+      "attempted": 0,
       "beats_chance": null,
       "ceiling_beats_chance": null,
-      "ceiling_interval": {
-        "high": 1.0,
-        "low": 0.5869565217391305,
-        "point": 0.8834355828220859,
-        "usable": true
-      },
-      "difference_interval": {
-        "high": null,
-        "low": null,
-        "point": null,
-        "usable": false
-      },
+      "ceiling_interval": null,
+      "difference_interval": null,
       "dimensions": null,
       "harness_version": "compute_correlation.py@2",
-      "judge_identity": {
-        "model": "gpt-5.6-luna",
-        "prompt_version": "relevance-judge-v1",
-        "reasoning_effort": "none"
-      },
-      "judge_interval": {
-        "high": null,
-        "low": null,
-        "point": null,
-        "usable": false
-      },
+      "judge_identity": null,
+      "judge_interval": null,
       "kappa": null,
-      "labels_made_at": "2026-09-15T09:23:50.477751+00:00",
+      "labels_made_at": "2026-09-17T07:38:11.707289+00:00",
       "matthews": null,
-      "pairs": 19,
+      "pairs": 0,
       "reaches_ceiling": null,
-      "reason": "the judge's kappa interval is not a measurement: 100% of resamples carried no information, which is what a corpus labelled almost entirely one way produces. At least two rows must carry each label. Label a wider spread of rows (BACKLOG 8.4).",
+      "reason": null,
       "scored_pairs": 0,
       "status": "not_calibrated_yet",
-      "valid": 20,
+      "valid": 0,
       "written_at": null
     },
     "faithfulness": {
       "artifact_version": 2,
-      "attempted": 24,
+      "attempted": 30,
       "beats_chance": null,
       "ceiling_beats_chance": null,
       "ceiling_interval": {
         "high": null,
         "low": null,
-        "point": null,
+        "point": 0.47368421052631576,
         "usable": false
       },
       "difference_interval": {
         "high": null,
         "low": null,
-        "point": null,
+        "point": 0.5396740582420518,
         "usable": false
       },
       "dimensions": null,
@@ -74,18 +55,18 @@
       "judge_interval": {
         "high": null,
         "low": null,
-        "point": null,
+        "point": -0.06598984771573604,
         "usable": false
       },
-      "kappa": null,
-      "labels_made_at": "2026-09-15T09:23:50.477751+00:00",
-      "matthews": null,
-      "pairs": 20,
+      "kappa": -0.06598984771573604,
+      "labels_made_at": "2026-09-17T07:38:11.707289+00:00",
+      "matthews": -0.16238586255274184,
+      "pairs": 30,
       "reaches_ceiling": null,
-      "reason": "the judge's kappa interval is not a measurement: 100% of resamples carried no information, which is what a corpus labelled almost entirely one way produces. At least two rows must carry each label. Label a wider spread of rows (BACKLOG 8.4).",
-      "scored_pairs": 0,
+      "reason": "the judge's kappa interval is not a measurement: 37% of resamples carried no information, which is what a corpus labelled almost entirely one way produces. At least two rows must carry each label. Label a wider spread of rows (BACKLOG 8.4).",
+      "scored_pairs": 1,
       "status": "not_calibrated_yet",
-      "valid": 24,
+      "valid": 30,
       "written_at": null
     }
   },
@@ -93,7 +74,7 @@
   "judge_identity": null,
   "judge_interval": null,
   "kappa": null,
-  "labels_made_at": "2026-09-15T09:23:50.477751+00:00",
+  "labels_made_at": "2026-09-17T07:38:11.707289+00:00",
   "matthews": null,
   "pairs": 0,
   "reaches_ceiling": null,
@@ -101,5 +82,5 @@
   "scored_pairs": 0,
   "status": "not_calibrated_yet",
   "valid": 0,
-  "written_at": "2026-09-15T11:55:47.097853+00:00"
+  "written_at": "2026-09-17T07:38:43.894049+00:00"
 }
