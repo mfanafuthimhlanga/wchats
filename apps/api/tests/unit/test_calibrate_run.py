@@ -293,6 +293,16 @@ def run_tree(tmp_path, monkeypatch):
     return build
 
 
+def _dims(result: dict) -> dict:
+    """The per-dimension results `score_run` returns since #274."""
+    return result["dimensions"]
+
+
+def _every(result: dict, key: str) -> list:
+    """One dimension's value of `key`, for each gated dimension, in name order."""
+    return [_dims(result)[metric][key] for metric in sorted(cr.GATED_METRICS)]
+
+
 def _mostly_pass(sid: str, metric: str) -> bool:
     """A balanced-enough labelling: two scenarios fail on each metric."""
     return sid not in ("S-002", "S-005")
@@ -303,10 +313,15 @@ def test_a_judge_that_agrees_with_a_consistent_owner_is_calibrated(run_tree):
 
     result = cr.score_run(samples, verdicts, sheet, pass2)
 
-    assert result["status"] == cc.STATUS_CALIBRATED, result["errors"]
-    assert result["pairs"] == 12 * len(cr.GATED_METRICS)
-    assert result["cells"]["judge_too_lenient"] == 0 and result["cells"]["judge_too_harsh"] == 0
-    assert all(e["judge_identity"] == JudgeIdentity(**IDENTITY) for e in result["table"])
+    assert _every(result, "status") == [cc.STATUS_CALIBRATED] * len(cr.GATED_METRICS), _every(result, "errors")
+    assert _every(result, "pairs") == [12] * len(cr.GATED_METRICS), (
+        "the pairs split per dimension now; 24 pooled was one kappa over two "
+        "instruments (#274)"
+    )
+    for cells in _every(result, "cells"):
+        assert cells["judge_too_lenient"] == 0 and cells["judge_too_harsh"] == 0
+    for table in _every(result, "table"):
+        assert all(e["judge_identity"] == JudgeIdentity(**IDENTITY) for e in table)
 
 
 def test_a_judge_that_passes_what_the_owner_fails_is_not_calibrated(run_tree):
@@ -317,9 +332,11 @@ def test_a_judge_that_passes_what_the_owner_fails_is_not_calibrated(run_tree):
 
     result = cr.score_run(samples, verdicts, sheet, pass2)
 
-    assert result["status"] != cc.STATUS_CALIBRATED
-    assert result["cells"]["judge_too_lenient"] == 2 * len(cr.GATED_METRICS)
-    assert result["kappa"] is None or result["kappa"] < 0.01
+    assert cc.STATUS_CALIBRATED not in _every(result, "status")
+    for cells in _every(result, "cells"):
+        assert cells["judge_too_lenient"] == 2
+    for kappa in _every(result, "kappa"):
+        assert kappa is None or kappa < 0.01
 
 
 def test_without_a_second_pass_the_ceiling_is_withheld_and_nothing_is_calibrated(run_tree):
@@ -327,9 +344,10 @@ def test_without_a_second_pass_the_ceiling_is_withheld_and_nothing_is_calibrated
 
     result = cr.score_run(samples, verdicts, sheet, pass2)
 
-    assert result["status"] == cc.STATUS_NOT_CALIBRATED_YET
-    assert result["ceiling_interval"] is None
-    assert any("no blind second verdict" in e for e in result["errors"])
+    assert _every(result, "status") == [cc.STATUS_NOT_CALIBRATED_YET] * len(cr.GATED_METRICS)
+    assert _every(result, "ceiling_interval") == [None] * len(cr.GATED_METRICS)
+    for errors in _every(result, "errors"):
+        assert any("no blind second verdict" in e for e in errors)
 
 
 def test_the_artifact_names_the_judge_the_run_stamped(run_tree):
@@ -337,10 +355,14 @@ def test_the_artifact_names_the_judge_the_run_stamped(run_tree):
     result = cr.score_run(samples, verdicts, sheet, pass2)
 
     path = cc.write_calibration_artifact(result, cc.CALIBRATION_ARTIFACT_JSON, sheet=sheet)
-    status = load_calibration_status(path, JudgeIdentity(**IDENTITY))
+    identities = {metric: JudgeIdentity(**IDENTITY) for metric in cr.GATED_METRICS}
+    status = load_calibration_status(path, identities)
 
     assert status.calibrated, status
-    assert status.judge_identity == JudgeIdentity(**IDENTITY)
+    assert status.judge_identity is None, "an envelope names no Judge of its own"
+    assert set(status.dimensions) == set(cr.GATED_METRICS)
+    for metric in cr.GATED_METRICS:
+        assert status.dimensions[metric].judge_identity == JudgeIdentity(**IDENTITY)
     assert status.labels_made_at is not None
 
 
@@ -355,8 +377,10 @@ def test_a_deflection_a_missing_sample_and_a_non_gated_dimension_never_enter_the
 
     result = cr.score_run(samples, verdicts, sheet, pass2)
 
-    assert result["pairs"] == (12 - 2) * len(cr.GATED_METRICS)
-    reasons = "\n".join(result["errors"])
+    assert _every(result, "pairs") == [12 - 1 - 1] * len(cr.GATED_METRICS), (
+        "one deflection and one missing sample per dimension, not two of each"
+    )
+    reasons = "\n".join(e for errors in _every(result, "errors") for e in errors)
     assert "PII firewall" in reasons
     assert "no eval_samples row" in reasons
     assert "not a gated metric" in reasons
@@ -369,12 +393,12 @@ def test_an_unlabelled_sheet_and_a_missing_sheet_are_not_measurements(tmp_path):
     verdicts = _verdicts(samples, lambda s, m: True)
 
     missing = cr.score_run(samples, verdicts, sheet, pass2)
-    assert missing["status"] == cc.STATUS_SETUP_ERROR
+    assert _every(missing, "status") == [cc.STATUS_SETUP_ERROR] * len(cr.GATED_METRICS)
 
     cr.write_sheet(samples, sheet)
     unlabelled = cr.score_run(samples, verdicts, sheet, pass2)
-    assert unlabelled["status"] == cc.STATUS_NOT_CALIBRATED_YET
-    assert unlabelled["pairs"] == 0
+    assert _every(unlabelled, "status") == [cc.STATUS_NOT_CALIBRATED_YET] * len(cr.GATED_METRICS)
+    assert _every(unlabelled, "pairs") == [0] * len(cr.GATED_METRICS)
 
 
 # ---------------------------------------------------------------------------
@@ -415,3 +439,183 @@ def test_the_second_pass_is_emitted_from_the_run_sheet(monkeypatch, tmp_path):
         ("S-001", "faithfulness"), ("S-001", "answer_relevancy")
     }
     assert all(r["human_verdict"] == "" for r in rows)
+
+
+# ---------------------------------------------------------------------------
+# A run scored by two instruments names both of them (#274, closes #275)
+# ---------------------------------------------------------------------------
+
+
+def _two_instrument_identities() -> dict:
+    """The Judge behind each GATED dimension, which is what `run_judge_identities`
+    hands the loader. Since ADR 0014 that is faithfulness alone; the relevance
+    Judge still scores its rows and is reported, so it is named here and dropped
+    by the same rule the run applies."""
+    every = {
+        "faithfulness": JudgeIdentity(
+            model="gpt-5.6-luna", reasoning_effort="none", prompt_version="ragas-0.4.3"
+        ),
+        "answer_relevancy": JudgeIdentity(
+            model="gpt-5.6-luna",
+            reasoning_effort="none",
+            prompt_version="relevance-judge-v1",
+        ),
+    }
+    return {metric: every[metric] for metric in cr.GATED_METRICS}
+
+
+def _judge_by_dimension(identities: dict):
+    """A `stored_judge` stand-in: the dimension decides which Judge answered.
+
+    It AGREES WITH THE OWNER, which is what makes a kappa exist at all. A judge
+    that passed every row would use one label, chance agreement would already be
+    certain, and the coefficient would be undefined rather than high.
+    """
+
+    def judge(scenario_id: str, dimension: str) -> dict:
+        passed = _mostly_pass(scenario_id, dimension)
+        return {
+            "dimension": dimension,
+            "verdict": "PASS" if passed else "FAIL",
+            "score": cr.STORED_PASS_SCORE if passed else cr.STORED_FAIL_SCORE,
+            "reason": "stored verdict",
+            "judge_identity": identities[dimension],
+        }
+
+    return judge
+
+
+def test_a_two_instrument_run_names_both_judges_and_reports_each_kappa(
+    run_tree, monkeypatch, tmp_path
+):
+    """The figure the deploy summary reads, one per gated dimension.
+
+    Before #274 a run had one Judge and one kappa. It has two of each now, and a
+    single pooled coefficient over their rows would be a number about two
+    populations that were never one. The artifact carries a record per dimension,
+    each naming the Judge that scored it, and the envelope is calibrated only
+    when both are.
+    """
+    identities = _two_instrument_identities()
+    samples, verdicts, sheet, pass2 = run_tree(12, _mostly_pass, _mostly_pass, _mostly_pass)
+    monkeypatch.setattr(cr, "stored_judge", lambda _v: _judge_by_dimension(identities))
+
+    result = cr.score_run(samples, verdicts, sheet, pass2)
+    artifact = cc.write_calibration_artifact(
+        result, tmp_path / "calibration.json", sheet=sheet
+    )
+    status = load_calibration_status(artifact, identities)
+
+    assert set(status.dimensions) == set(cr.GATED_METRICS)
+    for metric in cr.GATED_METRICS:
+        identity = identities[metric]
+        part = status.dimensions[metric]
+        assert part.judge_identity == identity, metric
+        assert part.kappa is not None, f"{metric} reported no coefficient"
+        assert part.pairs == 12, metric
+    assert status.judge_identity is None, "an envelope names no Judge of its own"
+    assert status.kappa is None, "an envelope carries no coefficient of its own"
+
+
+def test_an_ungated_dimension_cannot_uncalibrate_the_envelope(
+    run_tree, monkeypatch, tmp_path
+):
+    """Relevancy is reported and not gated (ADR 0014), so its Judge is not in
+    the envelope at all.
+
+    Before ADR 0014 a relevancy Judge that passed everything, the shape #270
+    measured, made the whole envelope uncalibrated. Now the envelope has only the
+    gated dimensions in it, and an instrument nobody gates on cannot fail it.
+    """
+    identities = _two_instrument_identities()
+
+    def judge(scenario_id: str, dimension: str) -> dict:
+        passed = dimension == "answer_relevancy" or _mostly_pass(scenario_id, dimension)
+        return {
+            "dimension": dimension,
+            "verdict": "PASS" if passed else "FAIL",
+            "score": cr.STORED_PASS_SCORE if passed else cr.STORED_FAIL_SCORE,
+            "reason": "stored verdict",
+            "judge_identity": identities.get(dimension),
+        }
+
+    samples, verdicts, sheet, pass2 = run_tree(12, _mostly_pass, _mostly_pass, _mostly_pass)
+    monkeypatch.setattr(cr, "stored_judge", lambda _v: judge)
+
+    result = cr.score_run(samples, verdicts, sheet, pass2)
+    artifact = cc.write_calibration_artifact(
+        result, tmp_path / "calibration.json", sheet=sheet
+    )
+    status = load_calibration_status(artifact, identities)
+
+    assert "answer_relevancy" not in status.dimensions
+    assert status.dimensions["faithfulness"].status == cc.STATUS_CALIBRATED
+    assert status.calibrated is True
+
+
+def test_an_artifact_that_is_silent_about_a_gated_dimension_is_not_read_as_covering_it(
+    run_tree, monkeypatch, tmp_path
+):
+    """A figure covers the dimensions it measured and no others."""
+    identities = _two_instrument_identities()
+    samples, verdicts, sheet, pass2 = run_tree(12, _mostly_pass, _mostly_pass, _mostly_pass)
+    monkeypatch.setattr(cr, "stored_judge", lambda _v: _judge_by_dimension(identities))
+
+    result = cr.score_run(samples, verdicts, sheet, pass2)
+    del result["dimensions"]["faithfulness"]
+    artifact = cc.write_calibration_artifact(
+        result, tmp_path / "calibration.json", sheet=sheet
+    )
+
+    status = load_calibration_status(artifact, identities)
+
+    assert status.reason == "artifact_names_no_judge"
+    assert status.calibrated is False
+
+
+def test_the_labels_of_a_source_run_score_a_rejudge_without_moving_a_file(
+    run_tree, monkeypatch, tmp_path
+):
+    """`--labels-from`, and it is what makes a rejudge measurable at all.
+
+    A rejudge rescored the source run's stored answers, so the source run's
+    labels describe the same answers and the copied samples keep the same
+    scenario ids. Copying two CSVs into a second directory would work and would
+    leave two files nobody can tell apart later.
+    """
+    source_run = "0a99f7ab-5efd-4771-b63f-089c4970bfe1"
+    rejudge_run = "11111111-2222-4333-8444-555555555555"
+    samples, verdicts, sheet, pass2 = run_tree(12, _mostly_pass, _mostly_pass, _mostly_pass)
+    monkeypatch.setattr(cr, "RUNS_DIR", tmp_path)
+    (tmp_path / source_run).mkdir(parents=True)
+    (tmp_path / source_run / cr.SHEET_NAME).write_text(
+        sheet.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (tmp_path / source_run / cr.PASS2_NAME).write_text(
+        pass2.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    seen: dict = {}
+
+    monkeypatch.setattr(cr, "tenant_dsn", lambda: "postgresql://fake")
+    monkeypatch.setattr(cr, "fetch_samples", lambda run_id, dsn: samples)
+    monkeypatch.setattr(cr, "fetch_verdicts", lambda run_id, dsn: verdicts)
+    monkeypatch.setattr(
+        cr.cc, "CALIBRATION_ARTIFACT_JSON", tmp_path / "calibration.json"
+    )
+
+    real_score_run = cr.score_run
+
+    def _score(samples_, verdicts_, sheet_, pass2_):
+        seen["sheet"], seen["pass2"] = sheet_, pass2_
+        return real_score_run(samples_, verdicts_, sheet_, pass2_)
+
+    monkeypatch.setattr(cr, "score_run", _score)
+
+    cr.main(["--score", rejudge_run, "--labels-from", source_run])
+
+    assert seen["sheet"] == tmp_path / source_run / cr.SHEET_NAME, (
+        "the rejudge was scored against its own empty directory rather than the "
+        "source run's labels"
+    )
+    assert seen["pass2"] == tmp_path / source_run / cr.PASS2_NAME
+    assert not (tmp_path / rejudge_run).exists(), "a file was copied to make the join"

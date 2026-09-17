@@ -130,6 +130,7 @@ import os
 import pathlib
 import random
 import sys
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING
 
 from tests.evals.calibration.agreement import (
@@ -1441,14 +1442,27 @@ def emit_second_pass(
 #: holding an older artifact can tell it was built under different rules. Not a
 #: checksum of this file and it must not become one. Editing a print statement
 #: is not a change to the mapping.
-HARNESS_VERSION = "compute_correlation.py@1"
+HARNESS_VERSION = "compute_correlation.py@2"
+
+#: What the legacy `--check` loop's one pooled result is stored under. It scores
+#: the five AI-SPEC rubric dimensions together and reports one figure over all of
+#: them, so the name says pooled rather than naming a dimension it is not about.
+POOLED_DIMENSION = "pooled"
 
 #: Where a scoring run leaves its record: beside the sheets it read, which is
 #: the one directory this harness owns.
 CALIBRATION_ARTIFACT_JSON = CALIBRATION_DIR / "calibration.json"
 
-def judge_identity_for_run(result: dict) -> JudgeIdentity | None:
-    """The one Judge every scored row in this run reported, or None.
+def judge_identity_for_run(result: dict, dimension: str | None = None) -> JudgeIdentity | None:
+    """The one Judge every scored row of this dimension reported, or None.
+
+    PER DIMENSION SINCE #274, and that is what made the figure nameable again.
+    A run is scored by two instruments now, ragas faithfulness and the relevance
+    Judge, so the rows pooled over both dimensions report two identities and this
+    answered None for every run. Asked about one dimension it answers that
+    dimension's Judge, which is the grain the artifact stores and the grain a
+    deploy gate compares on. `dimension=None` keeps the pooled question, and the
+    pooled answer is still None whenever the two disagree.
 
     THE ROWS ARE THE SOURCE, AND THERE IS NO TABLE. This read a static
     `JUDGE_IDENTITY_BY_DIMENSION` keyed on the dimension column, so the identity
@@ -1473,6 +1487,7 @@ def judge_identity_for_run(result: dict) -> JudgeIdentity | None:
         entry.get("judge_identity")
         for entry in result.get("table") or []
         if entry.get("judge_verdict")
+        and (dimension is None or entry.get("dimension") == dimension)
     }
     if len(identities) == 1:
         return identities.pop()
@@ -1496,7 +1511,7 @@ def labels_made_at(sheet: pathlib.Path | None = None) -> str | None:
 
 
 def calibration_record(
-    result: dict, sheet: pathlib.Path | None = None
+    result: dict, sheet: pathlib.Path | None = None, dimension: str | None = None
 ) -> CalibrationStatus:
     """This run, as `app.domain.calibration_status` holds it.
 
@@ -1521,7 +1536,7 @@ def calibration_record(
     """
     from app.domain.calibration_status import CalibrationStatus  # noqa: PLC0415
 
-    identity = judge_identity_for_run(result)
+    identity = judge_identity_for_run(result, dimension)
     if identity is None and result["status"] == STATUS_CALIBRATED:
         # The reason token is spelled by `ABSENT_REASONS`, which the loader
         # stamps from too, so the writer and the reader share one vocabulary.
@@ -1595,6 +1610,82 @@ def write_harness_raised(path: pathlib.Path, exc: BaseException) -> None:
         print(f"Could not write {path.name} after the run raised: {write_failure}\n")
 
 
+#: The order the worst status wins in. A dimension nobody could read decides the
+#: envelope before one that measured and failed, which decides before one that
+#: has not been measured yet, which decides before calibrated. An envelope is
+#: only as calibrated as its least calibrated part.
+_STATUS_SEVERITY = {
+    STATUS_SETUP_ERROR: 3,
+    STATUS_NOT_CALIBRATED: 2,
+    STATUS_NOT_CALIBRATED_YET: 1,
+    STATUS_CALIBRATED: 0,
+}
+
+
+def combined_status(statuses: Iterable[str]) -> str:
+    """The envelope's status over its dimensions. `calibrated` only if all are.
+
+    NO POOLED KAPPA DECIDES THIS, and none exists to. #274 scored the two gated
+    dimensions with two instruments, so a coefficient over their pooled rows
+    would be a number about two populations that were never one. The envelope
+    reports the worst of what its parts measured, which is the only reading that
+    cannot claim more than any part earned.
+
+    An empty sequence is `not_calibrated_yet`: no dimension was measured, and
+    reading that as calibrated is reading missing data as passing data.
+
+    IT READS THE RECORDS AND NOT THE RESULTS. `calibration_record` downgrades a
+    dimension whose rows name no Judge, even one whose gate passed, and an
+    envelope built off the raw result statuses would claim `calibrated` over a
+    part that had just been downgraded under it.
+    """
+    worst = STATUS_CALIBRATED
+    seen = False
+    for status in statuses:
+        seen = True
+        if _STATUS_SEVERITY.get(status, 3) > _STATUS_SEVERITY.get(worst, 3):
+            worst = status
+    return worst if seen else STATUS_NOT_CALIBRATED_YET
+
+
+def dimension_records(
+    by_dimension: Mapping[str, dict], sheet: pathlib.Path | None = None
+) -> dict:
+    """One `CalibrationStatus` per dimension, each naming its own Judge.
+
+    `POOLED_DIMENSION` asks the POOLED question, because its rows carry the five
+    AI-SPEC dimension names and none of them is `pooled`. Filtering the table by
+    that name would find no row, report no Judge, and downgrade a run the gate
+    passed.
+    """
+    return {
+        name: calibration_record(
+            result, sheet, dimension=None if name == POOLED_DIMENSION else name
+        )
+        for name, result in by_dimension.items()
+    }
+
+
+def envelope_record(
+    by_dimension: Mapping[str, dict], sheet: pathlib.Path | None = None
+) -> CalibrationStatus:
+    """The artifact as one record: a status over its parts, and the parts.
+
+    The envelope carries no measurement of its own. Its `judge_identity` is null
+    because a run scored by two instruments has no one Judge, and every figure
+    lives on the dimension that measured it.
+    """
+    from app.domain.calibration_status import CalibrationStatus  # noqa: PLC0415
+
+    parts = dimension_records(by_dimension, sheet)
+    return CalibrationStatus(
+        status=combined_status(part.status for part in parts.values()),
+        labels_made_at=labels_made_at(sheet),
+        harness_version=HARNESS_VERSION,
+        dimensions=parts,
+    )
+
+
 def write_calibration_artifact(
     result: dict, path: pathlib.Path, sheet: pathlib.Path | None = None
 ) -> pathlib.Path:
@@ -1615,7 +1706,19 @@ def write_calibration_artifact(
     The path is a parameter rather than the module constant so a test can send an
     artifact somewhere other than the tree the owner labelled.
     """
-    record = dataclasses.replace(calibration_record(result, sheet), written_at=written_at())
+    # ONE SHAPE ON DISK, whichever loop produced the run. `--score` hands a
+    # {dimension: result} mapping since #274; the legacy `--check` loop over
+    # S-*.json still produces one pooled result, and it is wrapped as a single
+    # dimension so the reader has one shape to parse rather than two.
+    by_dimension = result if "dimensions" not in result else result["dimensions"]
+    # An envelope with no dimensions at all stays empty: the loader reads that as
+    # an artifact naming no Judge, which is the truth, where pooling it would read
+    # the envelope's own keys as a result and raise on the missing status.
+    if by_dimension and not isinstance(next(iter(by_dimension.values())), Mapping):
+        by_dimension = {POOLED_DIMENSION: result}
+    record = dataclasses.replace(
+        envelope_record(by_dimension, sheet), written_at=written_at()
+    )
     staged = path.with_name(path.name + ".partial")
     staged.write_text(
         json.dumps(record.payload, indent=2, sort_keys=True), encoding="utf-8"

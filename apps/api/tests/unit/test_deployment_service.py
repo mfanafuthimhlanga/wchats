@@ -3656,24 +3656,32 @@ class TestTheCalibrationBlock:
         assert calibration["labels_made_at"] == "2026-08-29T10:15:00+00:00"
         assert calibration["harness_version"] == "compute_correlation-2026-08-29"
 
-    def test_the_loader_is_asked_about_the_judge_the_run_used(self):
-        """The identity is lifted off the record, never off the artifact.
+    def test_the_loader_is_asked_about_the_judges_the_run_used(self):
+        """The identities are lifted off the record, never off the artifact.
 
         An artifact answering for whichever Judge it happens to hold would report
         yesterday's agreement over today's Judge, which is the alignment decay
         the three-field key exists to catch.
+
+        ONE PER GATED DIMENSION SINCE #274. The run-level `judge_identity` is
+        null on every run scored by two instruments, so the record carries
+        `judge_identities` and the loader matches each stored dimension against
+        the Judge that run used for it.
         """
-        identity = _judge(prompt_version="ragas-0.4.2")
+        identities = {
+            "faithfulness": _judge(prompt_version="ragas-0.4.2"),
+            "answer_relevancy": _judge(prompt_version="relevance-judge-v1"),
+        }
         seen: dict = {}
 
-        def _spy(path, judge):
-            seen["path"], seen["judge"] = path, judge
+        def _spy(path, judges):
+            seen["path"], seen["judges"] = path, judges
             return CalibrationStatus.absent("no_artifact")
 
         with patch("app.services.deployment_service.load_calibration_status", _spy):
-            _collect(record=_record(judge_identity=identity))
+            _collect(record=_record(judge_identities=identities))
 
-        assert seen["judge"] == identity
+        assert seen["judges"] == identities
         assert seen["path"] == settings.CALIBRATION_ARTIFACT_PATH
 
     def test_a_run_with_no_record_has_no_identity_to_ask_about(self):

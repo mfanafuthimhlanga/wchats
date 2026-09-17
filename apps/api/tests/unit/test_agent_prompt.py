@@ -299,3 +299,20 @@ def test_the_prompt_tells_the_agent_to_clarify_a_question_that_names_no_project(
     assert "does not say which" in prompt
     assert "Never guess which one" in prompt
     assert '[calls clarify with question="Which project are you setting up?"]' in prompt
+
+
+def test_the_prompt_tells_the_agent_a_clarify_call_ends_the_turn():
+    """#280. The loop discards everything else, so the model has to know.
+
+    The rule above got the agent asking on all ten ambiguous openers of run
+    735fb9fa. On five it asked and then answered in the same turn, which the loop
+    now refuses by serving the question alone. A model that does not know that
+    writes the answer beside the call and watches it vanish, so this says where
+    the customer-visible text comes from and where a candidate list goes.
+    """
+    prompt = build_system_prompt(_make_agent())
+
+    assert "A clarify call ends your turn" in prompt
+    assert "entire reply the \ncustomer sees" in prompt
+    assert "nothing is added to it" in prompt
+    assert "list \nof candidates" in prompt

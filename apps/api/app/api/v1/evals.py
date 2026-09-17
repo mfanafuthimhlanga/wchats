@@ -8,6 +8,7 @@ Routes:
     GET  /agents/{agent_id}/eval-runs                   — list runs with aggregate scores (EVL-06)
     GET  /agents/{agent_id}/eval-runs/{run_id}/results  — per-scenario results (EVL-07)
     POST /agents/{agent_id}/eval-runs/trigger            — dispatch run_eval_suite manually (EVL-04)
+    POST /agents/{agent_id}/eval-runs/{run_id}/rejudge   : rescore a finished run's stored samples (#274)
 
 Architecture:
     - eval_runs and eval_results live in the TENANT DB (per-Neon-project), not the control DB.
@@ -117,12 +118,14 @@ from app.schemas.eval import (
 from app.services.eval_service import EVAL_DATASETS
 from app.services.eval_service import GATED_METRIC_KEYS as EVAL_GATED_METRIC_KEYS
 from app.services.eval_service import METRIC_KEYS as EVAL_METRIC_KEYS
+from app.services.eval_service import REJUDGE_KIND_PREFIX as EVAL_REJUDGE_KIND_PREFIX
 from app.services.scenario_service import (
     InvalidScenario,
     insert_authored_golden_scenario,
 )
 from app.worker.tasks.runtime.eval import run_eval_suite
 from app.worker.tasks.runtime.golden_draft import draft_golden_scenarios
+from app.worker.tasks.runtime.rejudge import rejudge_eval_run
 
 router = APIRouter(tags=["evals"])
 log = structlog.get_logger(__name__)
@@ -163,7 +166,31 @@ def _query_tenant_db_sync(conn_str: str, sql: str, params: dict) -> list[tuple]:
 # The run's own columns and the record it wrote. No aggregate, no join: the
 # arithmetic that used to sit here is the arithmetic `run_eval_suite` had already
 # done, and #26 is what running it twice looked like from the console.
+#
+# THE KIND FILTER IS LOAD-BEARING SINCE #274. Without it this listed every row in
+# `eval_runs`, and a rejudge run is the newest row the moment one is dispatched:
+# it carries no `result`, it measured two metrics and no agent turn, and the
+# console's newest-first list would show it as the agent's current reading. Every
+# other reader of a run was already kind-scoped (`_LATEST_RUN_SQL`, the deploy
+# gate's since-readers, the digest); this one was not, and it is the one the
+# owner looks at.
 _LIST_EVAL_RUNS_SQL = """
+    SELECT
+        er.id,
+        er.started_at,
+        er.finished_at,
+        er.status,
+        er.result,
+        er.source_run_id
+    FROM eval_runs er
+    WHERE er.kind = %(kind)s
+    ORDER BY er.started_at DESC
+    LIMIT 50
+"""
+
+# The pre-0030 shape. A tenant behind 0030 has no `source_run_id`, and no rejudge
+# has ever run on it, so the None appended to each row is the truthful reading.
+_LIST_EVAL_RUNS_PRE_0030_SQL = """
     SELECT
         er.id,
         er.started_at,
@@ -171,11 +198,12 @@ _LIST_EVAL_RUNS_SQL = """
         er.status,
         er.result
     FROM eval_runs er
+    WHERE er.kind = %(kind)s
     ORDER BY er.started_at DESC
     LIMIT 50
 """
 
-# The pre-0022 shape, used only after the query above raises UndefinedColumn. A
+# The pre-0022 shape, used only after the queries above raise UndefinedColumn. A
 # tenant DB without `eval_runs.result` holds no record for any run on it, so the
 # same 50 runs come back and every one of them reports result "absent".
 _LIST_EVAL_RUNS_PRE_0022_SQL = """
@@ -185,9 +213,20 @@ _LIST_EVAL_RUNS_PRE_0022_SQL = """
         er.finished_at,
         er.status
     FROM eval_runs er
+    WHERE er.kind = %(kind)s
     ORDER BY er.started_at DESC
     LIMIT 50
 """
+
+#: What `?kind=` accepts, and the `eval_runs.kind` prefix each one selects.
+#:
+#: A NAMED SET RATHER THAN A PASS-THROUGH. The value reaches a SQL parameter, so
+#: a free-form string would be a filter nobody validated and a caller could list
+#: another agent's runs by naming its kind. Two entries, both scoped to the agent
+#: in the path.
+EVAL_RUN_KINDS: tuple[str, ...] = ("eval", "rejudge")
+
+_KIND_PREFIX = {"eval": "m6:", "rejudge": EVAL_REJUDGE_KIND_PREFIX}
 
 # The four M6 metrics, in the order the UI channels read them (D-04). Imported
 # from eval_service rather than restated: audit D3 was one call site's copy of a
@@ -340,18 +379,26 @@ def _record_of(run_id: str, payload) -> EvalResult | None:
 
 
 def _eval_run_block(
-    run_id, started_at, finished_at, status, record: EvalResult | None
+    run_id, started_at, finished_at, status, record: EvalResult | None,
+    source_run_id=None,
 ) -> dict:
     """One run as the console reads it. Every number comes off *record*.
 
-    The run's own columns (id, the two timestamps, status) come off the row
-    because they are the row's; nothing else does. A run with no record reports
-    null counts, unmeasured metrics and `result: "absent"`. Never a zero, and
-    never a figure recovered from `eval_results` behind the record's back.
+    The run's own columns (id, the two timestamps, status, and since #274 the
+    source run) come off the row because they are the row's; nothing else does.
+    A run with no record reports null counts, unmeasured metrics and
+    `result: "absent"`. Never a zero, and never a figure recovered from
+    `eval_results` behind the record's back.
+
+    `source_run_id` is null on every run of kind `eval`, which is every run that
+    measured an agent. It names the run a rejudge rescored, and it is what lets
+    a reader of the `?kind=rejudge` listing join a second opinion back to the
+    measurement it is about.
     """
     metrics, metrics_dataset = _run_level_metrics(record)
     return {
         "id": str(run_id),
+        "source_run_id": None if source_run_id is None else str(source_run_id),
         "started_at": started_at.isoformat() if started_at else None,
         "finished_at": finished_at.isoformat() if finished_at else None,
         "status": status,
@@ -379,52 +426,115 @@ def _eval_run_block(
     }
 
 
-async def _fetch_eval_runs(conn_str: str) -> list[tuple]:
-    """The 50 most recent runs with their records, degrading to a pre-0022 tenant.
+#: The three SELECTs, widest first, with the log line naming what each rung
+#: loses and how many Nones pad its rows out to the widest shape.
+_LIST_RUNS_LADDER: tuple[tuple[str, str, int], ...] = (
+    (_LIST_EVAL_RUNS_SQL, "", 0),
+    (
+        _LIST_EVAL_RUNS_PRE_0030_SQL,
+        "list_eval_runs.source_run_id_column_absent",
+        1,
+    ),
+    (_LIST_EVAL_RUNS_PRE_0022_SQL, "list_eval_runs.result_column_absent", 2),
+)
 
-    A tenant DB that predates migration 0022 has no `eval_runs.result` column at
-    all, so the wide SELECT raises UndefinedColumn before it returns a row. The
-    narrow one returns the same runs, and the None appended to each is the
-    truthful reading: no run on that tenant recorded what it measured.
+
+async def _fetch_ledger(conn_str: str) -> tuple:
+    """OPS-12's ORRERY counts, on the same tenant-DB round-trip pattern.
+
+    In this route so the eval-runs response is the single place the admin UI
+    reads eval provenance from. It is a claim about the scenario table rather
+    than about any run, so no record holds it.
+    """
+    rows = await asyncio.to_thread(_query_tenant_db_sync, conn_str, _LEDGER_SQL, {})
+    return rows[0] if rows else (0, 0, 0)
+
+
+def _rendered_runs(rows: list[tuple]) -> list[dict]:
+    """Each run as the console reads it. Every number comes off its record."""
+    return [
+        _eval_run_block(
+            run_id,
+            started_at,
+            finished_at,
+            status,
+            _record_of(str(run_id), payload),
+            source_run_id,
+        )
+        for run_id, started_at, finished_at, status, payload, source_run_id in rows
+    ]
+
+
+async def _fetch_eval_runs(conn_str: str, kind: str) -> list[tuple]:
+    """This agent's 50 most recent runs of one kind, degrading by column.
+
+    A tenant DB that predates migration 0030 has no `source_run_id` and one that
+    predates 0022 has no `result`, and each absence raises UndefinedColumn before
+    a row returns. Each narrower rung returns the same runs, and the Nones
+    appended are the truthful reading: no run on that tenant recorded what it
+    measured, and no rejudge has ever run on it.
+
+    Args:
+        kind: the full `eval_runs.kind`, already scoped to the agent by the
+            caller. It reaches SQL as a parameter, never as interpolated text.
 
     Returns:
-        Five-column rows: (id, started_at, finished_at, status, result).
+        Six-column rows: (id, started_at, finished_at, status, result,
+        source_run_id).
     """
-    try:
-        return await asyncio.to_thread(
-            _query_tenant_db_sync, conn_str, _LIST_EVAL_RUNS_SQL, {}
-        )
-    except psycopg2.errors.UndefinedColumn:
-        log.info("list_eval_runs.result_column_absent")
-        rows = await asyncio.to_thread(
-            _query_tenant_db_sync, conn_str, _LIST_EVAL_RUNS_PRE_0022_SQL, {}
-        )
-        return [(*row, None) for row in rows]
+    for statement, event, padding in _LIST_RUNS_LADDER:
+        try:
+            rows = await asyncio.to_thread(
+                _query_tenant_db_sync, conn_str, statement, {"kind": kind}
+            )
+        except psycopg2.errors.UndefinedColumn:
+            continue
+        if event:
+            log.info(event)
+        return [(*row, *([None] * padding)) for row in rows]
+    raise psycopg2.errors.UndefinedColumn(
+        "eval_runs is missing a column every rung of the read ladder needs"
+    )
 
 
 @router.get("/agents/{agent_id}/eval-runs")
 async def list_eval_runs(
     agent_id: UUID,
+    kind: str = "eval",
     db: AsyncSession = Depends(get_async_db),
     tenant: Tenant = Depends(get_current_tenant),
 ) -> dict:
-    """Return up to 50 eval runs for an agent with per-run aggregate metric scores.
+    """Return up to 50 eval runs of one kind for an agent, with their records.
 
     Security:
         Fetches agent from control DB and checks agent.tenant_id == tenant.id (IDOR prevention).
         Returns 404 for unknown agents or agents belonging to a different tenant.
 
+    Args:
+        kind: `eval` (the default) lists the runs that measured this agent, which
+            is what the console and every polling caller want. `rejudge` lists
+            the runs that rescored a finished run's stored answers (#274); each
+            carries `source_run_id` and no agent turn of its own. Anything else
+            is a 400, because the value reaches a SQL parameter and a
+            pass-through would be a filter nobody validated.
+
     Response shape:
-        {"eval_runs": [{id, started_at, finished_at, status, result,
-                        scenario_count, valid_scenario_count,
+        {"eval_runs": [{id, source_run_id, started_at, finished_at, status,
+                        result, scenario_count, valid_scenario_count,
                         scored_scenario_count, metrics, metrics_dataset,
                         aggregate_scores, datasets}],
+         "kind": "eval" | "rejudge",
          "ledger": {...}}
 
     Every figure per run is the record's, read off `eval_runs.result`. See the
     module docstring for what each field says when the record is absent and why
     `metrics_dataset` can be null on a run that measured plenty.
     """
+    if kind not in EVAL_RUN_KINDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"kind must be one of {list(EVAL_RUN_KINDS)}",
+        )
     # 1. Fetch agent from control DB (only metadata — not tenant DB)
     agent = await db.get(Agent, agent_id)
     if agent is None:
@@ -444,35 +554,16 @@ async def list_eval_runs(
     # 5. Query tenant DB in a thread pool to avoid blocking the event loop.
     #    One round trip for the runs and their records; the golden/exploratory
     #    breakdown used to cost a second one and now comes out of the record.
-    rows = await _fetch_eval_runs(conn_str)
+    rows = await _fetch_eval_runs(conn_str, f"{_KIND_PREFIX[kind]}{agent_id}")
 
-    # 5b. OPS-12: ORRERY ledger, on the same tenant-DB round-trip pattern, in
-    # this same route so the eval-runs response is the single place the admin UI
-    # reads eval provenance from. It is a claim about the scenario table rather
-    # than about any run, so no record holds it.
-    ledger_rows = await asyncio.to_thread(
-        _query_tenant_db_sync, conn_str, _LEDGER_SQL, {}
-    )
-    born_in_production_count, red_team_count, authored_count = (
-        ledger_rows[0] if ledger_rows else (0, 0, 0)
-    )
-
-    # 6. Render each run from its record.
-    eval_runs = [
-        _eval_run_block(
-            run_id,
-            started_at,
-            finished_at,
-            status,
-            _record_of(str(run_id), payload),
-        )
-        for run_id, started_at, finished_at, status, payload in rows
-    ]
+    born_in_production_count, red_team_count, authored_count = await _fetch_ledger(conn_str)
+    eval_runs = _rendered_runs(rows)
 
     log.info(
         "list_eval_runs.ok",
         agent_id=str(agent_id),
         tenant_id=str(tenant.id),
+        kind=kind,
         run_count=len(eval_runs),
         # A run with no record has no numbers at all, and that is visible here
         # without anyone opening the response body.
@@ -484,6 +575,7 @@ async def list_eval_runs(
     )
     return {
         "eval_runs": eval_runs,
+        "kind": kind,
         "ledger": {
             "born_in_production_count": int(born_in_production_count or 0),
             "red_team_count": int(red_team_count or 0),
@@ -737,6 +829,61 @@ async def trigger_eval_run(
         "status": "queued",
         "task_id": task.id,
         "agent_id": str(agent_id),
+    }
+
+
+@router.post("/agents/{agent_id}/eval-runs/{run_id}/rejudge", status_code=202)
+async def rejudge_eval_run_route(
+    agent_id: UUID,
+    run_id: UUID,
+    db: AsyncSession = Depends(get_async_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> dict:
+    """Rescore a finished run's stored answers with today's Judges (#274).
+
+    No agent turn runs. The run's `eval_samples` rows hold the answers the agent
+    gave, the two gated metrics are scored over those into a NEW run naming this
+    one in `source_run_id`, and this run's rows are never written.
+
+    Security. Agent ownership verified, 404 on a mismatch, matching every other
+    route here. THE RUN ID IS NOT CHECKED and does not need to be: the only
+    database the task opens is the one this agent's encrypted dsn names, so a run
+    id belonging to another tenant finds no rows and the task reports
+    `no_samples`. The agent check is the tenant boundary. No state guard either:
+    `trigger_eval_run` refuses an agent that is not `ready` because it is about
+    to drive that agent, and this drives nothing.
+
+    Returns HTTP 202 with the dispatched task id. The run id the task writes is
+    on the task's result and in `GET /eval-runs`.
+    """
+    agent = await db.get(Agent, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if agent.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if not agent.neon_connection_string:
+        raise HTTPException(status_code=404, detail="Agent database not provisioned")
+
+    task = rejudge_eval_run.apply_async(
+        kwargs={"agent_id": str(agent_id), "source_run_id": str(run_id)},
+        queue="runtime",
+    )
+
+    log.info(
+        "eval_rejudge.dispatched",
+        agent_id=str(agent_id),
+        source_run_id=str(run_id),
+        task_id=task.id,
+        tenant_id=str(tenant.id),
+    )
+
+    return {
+        "status": "queued",
+        "task_id": task.id,
+        "agent_id": str(agent_id),
+        "source_run_id": str(run_id),
     }
 
 

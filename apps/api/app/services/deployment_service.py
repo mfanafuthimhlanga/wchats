@@ -707,29 +707,31 @@ def _record_counts(record: EvalResult | None, *, measured: bool) -> dict:
 def _calibration_block(record: EvalResult | None) -> dict:
     """What the calibration artifact says about the Judge THIS run scored with.
 
-    THE IDENTITY COMES OFF THE RUN'S OWN RECORD. `EvalResult.judge_identity` is
-    run-level and is already None when the four metric routes disagree, and a
-    payload with no record has no identity to ask about at all. Both reach the
-    loader as None and come back as `no_single_judge_identity`, which is the
-    honest reading. There is no one Judge here for an artifact to be about.
+    THE IDENTITIES COME OFF THE RUN'S OWN RECORD, ONE PER GATED DIMENSION (#274).
+    `EvalResult.judge_identity` is run-level and is null on every run scored by
+    two instruments, which is every run since the relevance Judge landed, so the
+    record carries `judge_identities` instead and the loader matches each stored
+    dimension against the Judge that run used for it. A payload with no record
+    has nothing to ask about and reaches the loader as None, which comes back
+    `no_single_judge_identity`.
 
-    NOTHING GATES ON THIS YET (#54). apply_signal_evidence_gate does not read the
-    key and no warning is derived from it. It travels so that ticket 17 has a
-    status to read and the orchestrator can name it in prose.
+    NOTHING GATES ON THIS, AND THAT IS NOT A TEMPORARY STATE (#54).
+    `apply_signal_evidence_gate` does not read the key, no warning is derived
+    from it, and `decide` takes it without letting it refuse a deploy. It travels
+    so that ticket 17 has a status to read and the orchestrator can name it in
+    prose. A sentence anywhere claiming the calibration gate blocks a deploy is
+    wrong about this code.
 
-    THE EXPECTED VALUE TODAY IS `not_calibrated_yet` WITH REASON `no_artifact`.
-    No calibration run against the platform's own Judge exists yet. The harness
-    scores the five AI-SPEC 5.2 rubric dimensions rather than the four Ragas
-    metrics `judge_identity_for` maps, and the judge it calls stamps prompt
-    version `ai-spec-5.2` where an eval run stamps `ragas-<version>`, so nothing
-    it writes can be about the Judge an eval run stamps. The
-    Slice 2 section of `.dev/traces/260830-calibration-status.md` traces that,
-    and the owner's comment of 2026-08-30 on #58 makes scoring with the
-    platform's Judge that ticket's prerequisite work.
+    THE EXPECTED VALUE TODAY IS `not_calibrated_yet`. `calibrate_run.py` scores
+    the two gated dimensions with the verdicts the platform's own Judges wrote,
+    so an artifact it writes CAN be about the Judges an eval run stamps, which is
+    what #58 was waiting for. Until a rejudge of run 0a99f7ab is scored, the
+    artifact in the tree reports `not_calibrated` over the instrument #274
+    replaced, and no figure exists for the one that replaced it.
     """
-    identity = record.judge_identity if record is not None else None
+    identities = record.judge_identities if record is not None else None
     return summary_of(
-        load_calibration_status(settings.CALIBRATION_ARTIFACT_PATH, identity)
+        load_calibration_status(settings.CALIBRATION_ARTIFACT_PATH, identities)
     )
 
 

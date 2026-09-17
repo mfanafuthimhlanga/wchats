@@ -799,6 +799,83 @@ def test_validators_not_dispatched_on_idempotency_skip():
     mock_celery_chain.assert_not_called()
 
 
+_CANNED_RESULT_CLARIFIED = canned_turn_result(
+    "Which project are you setting up?",
+    stop_reason="clarified",
+    tool_calls_log=[{"tool_name": "clarify", "input": {"question": "Which project?"}}],
+)
+
+
+def _drive_turn_for_the_chain(turn_result: dict) -> MagicMock:
+    """Run the task over one canned loop result. Returns the celery_chain double.
+
+    The same harness `test_validators_dispatched` uses, so the two differ in the
+    ONE value under test. THE WIRING IS WHAT THIS DRIVES: `_dispatch_validation_chain`
+    decides on `stop_reason`, and the task has to hand it the one it read nine
+    lines earlier. A test of the seam alone passes while the call site sends
+    nothing.
+    """
+    job_id = str(uuid.uuid4())
+    agent_id = str(uuid.uuid4())
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = None
+    mock_db.get.side_effect = [_make_agent(str(agent_id)), _make_job(job_id)]
+    mock_celery_chain = MagicMock(name="celery_chain")
+
+    with (
+        patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
+        patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
+        patch(
+            "app.worker.tasks.runtime.agent._create_conversation_row",
+            return_value="00000000-0000-0000-0000-000000000010",
+        ),
+        patch(
+            "app.worker.tasks.runtime.agent._persist_messages",
+            return_value=_PERSISTED_ASSISTANT_MSG_ID,
+        ),
+        patch("app.worker.tasks.runtime.agent.build_agent_turn", side_effect=_seam),
+        patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=turn_result),
+        patch("app.worker.tasks.runtime.agent.emit"),
+        patch("app.worker.tasks.runtime.agent.celery_chain", mock_celery_chain),
+    ):
+        from app.worker.tasks.runtime.agent import run_agent_turn
+
+        run_agent_turn.run(
+            job_id=job_id,
+            agent_id=agent_id,
+            message="how do I start the dev server?",
+            conversation_id=None,
+        )
+    return mock_celery_chain
+
+
+def test_a_clarified_turn_dispatches_no_validator_chain():
+    """#280. The four validators judge an ANSWER, and this turn gave none.
+
+    A clarifying question retrieves nothing, so the Gatekeeper and the Auditor
+    score it against an empty context and flag it. `bench_service` then files the
+    turn as a failing trace, `mine_production_scenarios` mines it as an
+    unanswered question, and three in one day move the retrieval strategy. Every
+    one of those measures a turn that behaved correctly.
+    """
+    chain = _drive_turn_for_the_chain(_CANNED_RESULT_CLARIFIED)
+
+    chain.assert_not_called()
+
+
+def test_an_answering_turn_still_dispatches_the_validator_chain():
+    """The control. The skip reads `stop_reason` and nothing wider.
+
+    Without it, a `_dispatch_validation_chain` that returned early for every turn
+    would satisfy the test above.
+    """
+    chain = _drive_turn_for_the_chain(_CANNED_RESULT_WITH_RETRIEVE)
+
+    chain.assert_called_once()
+    chain.return_value.apply_async.assert_called_once_with(queue="runtime")
+
+
 # ---------------------------------------------------------------------------
 # Phase 12 -- D-11's wall-clock guard, and D-10's empty-answer diagnosis
 # (Plan 12-01, 2026-05-29; D-10 fix 2026-06-01; carried across ADR 0008)

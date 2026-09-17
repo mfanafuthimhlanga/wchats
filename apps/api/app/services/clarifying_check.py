@@ -13,7 +13,9 @@ whose whole job is to ask the customer a question, so a call to it in the
 turn's tool log is exact evidence of asking, in any language and any markdown.
 The turn asked when clarify was its LAST tool call: an agent may retrieve
 first, see that the chunks span several projects, and then ask, and that is
-asking; an agent that asks and then retrieves and answers anyway is not. Free
+asking; an agent that asks and then retrieves and answers anyway is not. Since
+#280 the live loop cannot produce the second shape, and the rule still reads the
+log because it is also read over rows the current loop did not write. Free
 text is never read for the agent's verdict: "Run pnpm dev. Anything else?"
 ends in a question mark and is an answer, and a bulleted list of the four
 projects with the question above it does not end in one and is asking.
@@ -54,8 +56,17 @@ def turn_asked_to_clarify(tool_calls_log: Iterable[Mapping]) -> bool:
 
     Read off the tool log the loop already walks for retrieved contexts, so the
     verdict comes from what the agent DID rather than from how the model
-    phrased it. The loop does not stop on clarify, so a turn that asked and then
-    went on to retrieve and answer has `retrieve` after `clarify` and fails.
+    phrased it. A turn that asked and then went on to retrieve and answer has
+    `retrieve` after `clarify` and fails.
+
+    THE LIVE LOOP NO LONGER PRODUCES THAT SHAPE (#280). `agent_loop` ends a turn
+    on a successful `clarify` and sorts a clarify call to the end of its own
+    reply's batch, so a turn served today has `clarify` last or not at all. The
+    False branch still fires on every log the loop did not write THIS release:
+    rows stored before #280, a mined production trace, a replayed conversation,
+    and a red-team transcript. It is a rule over stored evidence, not an
+    assertion about the current loop, so it keeps reading the log rather than
+    trusting the writer.
     """
     names = [str(tc.get("tool_name", "")) for tc in tool_calls_log]
     return bool(names) and names[-1] == CLARIFY_TOOL
