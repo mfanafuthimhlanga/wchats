@@ -2,7 +2,9 @@
 
 The working knowledge from two eval walkthroughs, written down so it outlives the session that
 watched them. This is the general practice; `260818-eval-practice-gap-analysis.md` is where our
-system falls short of it, and BACKLOG section 8 is the queue.
+system falls short of it, and BACKLOG section 8 is the queue. Sections 9 and 10 were revised on
+2026-09-17 against six labelling passes; the reusable instrument, the labelling page, the scorer and
+the ledger of those passes, is the `calibrate-judge` skill in `~/.claude/skills/`.
 
 Sources, summarised rather than stored: Dave Ebbelaar (Datalumina), *How to Systematically Setup LLM
 Evals*, 55 min; Technomanagers, *AI Evals Explained: From Basics to Advanced*, 2h32m.
@@ -146,14 +148,36 @@ hundred traces.
 **Alignment decays.** Prompts change, data changes, users change, and what counts as good drifts
 with them. Agreement is re-measured on a schedule, not established once.
 
+Three things the loop above leaves out, learnt over six labelling passes here (2026-08-18 to
+2026-09-17, the ledger is in the `calibrate-judge` skill):
+
+- **The corpus must contain the failure the judge exists to catch.** A grounded agent produces
+  almost no unsupported claims, and thirty rows of it labelled three times gave one fail. No number
+  can be made from that. Seed rows that fail before the first label.
+- **The labeller reads the evidence per claim, on screen.** A flat sheet with the retrieved text in
+  a cell produced correctness labels, "I know this answer is right", against a judge measuring
+  support. The page in the skill edges each sentence by its overlap with the retrieved text and
+  lights the carrying passage. That moved three verdicts in thirty.
+- **The owner labels twice, the second time blind and shuffled.** Their agreement with themself is
+  the ceiling every judge is measured against, and a labeller who cannot reproduce their own
+  verdicts has set no ceiling at all.
+
 ## 10. Judging the judge
 
 **Raw agreement overstates.** Two raters agree by luck, especially when one label dominates.
 
-- **Cohen's kappa** subtracts the chance rate. Roughly: below 0.4 the judge is not tracking the human;
-  0.6 to 0.8 is substantial; above 0.8 is strong.
-- **Kappa breaks on imbalanced data.** When 95 percent of responses are good, kappa collapses even
-  for a good judge, because chance agreement is already near certain. Use Matthews correlation there.
+- **Cohen's kappa** subtracts the chance rate. The talks quote bands, below 0.4 not tracking, 0.6 to
+  0.8 substantial, above 0.8 strong. Those are constants nobody derived, and the gate here does not
+  use them. It is three checks on bootstrapped intervals over the owner's own labels: the judge's
+  interval sits above zero, the owner's self-agreement interval sits above zero, and the paired
+  difference between the two, measured inside each resample, does not show the judge distinguishably
+  worse. Revised 2026-09-17; the maths is in the `calibrate-judge` skill, `reference/agreement.md`.
+- **Kappa breaks on imbalanced data.** When nearly every response is good, chance agreement is
+  already near certain. The talks say switch to Matthews correlation. Measured here, that hides the
+  real problem: with one row on the minority label, 37% of bootstrap resamples carry no information
+  at all, and no coefficient over them is a measurement. The harness refuses the interval below two
+  rows per label, reports Matthews beside kappa, and gates on neither until the corpus carries the
+  failure. Revised 2026-09-17.
 - **The confusion matrix is the report card**, because each quadrant has a different action:
 
 | | human PASS | human FAIL |
