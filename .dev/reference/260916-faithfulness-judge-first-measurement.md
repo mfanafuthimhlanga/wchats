@@ -88,8 +88,8 @@ checked absent by word before labelling. Ground truth by construction: all ten a
 | owner, on the page, sentence by sentence | 9 pass, 1 fail |
 | the one owner fail | the row that was already a retrieval miss |
 | judge, production path with the 4096 cap | scores 0.36 to 0.875 |
-| judge fails at the 0.80 gate | 7 of 10 |
-| judge fails at 0.88 | 10 of 10 |
+| judge fails at the 0.80 gate, on that day's local run | 7 of 10 (the 2026-09-19 run below: 6 of 10) |
+| judge fails at 0.88, same run | 10 of 10 |
 | real owner-passed rows a 0.88 gate would also fail | 18 of 29 |
 
 Two things follow. The owner's faithfulness labels are not support labels, on a flat sheet or on
@@ -104,3 +104,35 @@ be claim-counting on long answers or real unsupported claims; the owner's readin
 the seeded set shows why. The 40-row score is on `seeded_unfaithful.csv` and
 `judge_scores_seeded.csv` beside the sheets, kappa 0.00 against the owner, which is the labeller and
 not the judge.
+
+## Per claim, 2026-09-19: the judge flags every planted sentence
+
+Since #291 a faithfulness row stores the judge's claims. The 40 rows above (30 real, 10 seeded)
+are `tests/evals/calibration/benchmark/`, with the ten planted sentences as truth per claim, and
+`score_claims.py` reads the judge's claims against them. A judge claim counts as being about a
+plant only when half its words are in the planted sentence and one of them is a word neither the
+retrieved text nor the original answer carries. One run of the production judge (`gpt-5.6-luna`,
+effort none, `ragas-0.4.3`) over the 40 rows, 81 calls across two attempts:
+
+| | |
+|---|---|
+| recall per claim | 10 of 10 planted sentences flagged, 95% interval [0.72, 1.00] |
+| the 0.80 fraction gate on the same run | 6 of 10 seeded answers failed, 4 passed at 0.82 to 0.88 |
+| judge flags confirmed against a planted sentence | 16 |
+| precision | unknown: no supported truth claim exists yet, so a false alarm cannot occur |
+| judge-unsupported claims with no truth yet | 161 |
+| real answers with at least one unsupported claim | 28 of 30 |
+| unsupported claims per answer, all 40 | min 0, upper median 4, max 25 |
+
+Each planted sentence became one or two atomic judge claims and every one carrying a fabricated
+word was marked unsupported, so the four answers the fraction gate passed were passed by the
+arithmetic, not by the judge. The ten sentences were appended after each answer's citations,
+uncited and in plain prose, so this recall is an upper bound on recall against a fluent
+fabrication, and ten rows put the lower bound of the interval at 0.72.
+
+What the real answers show is the cost of the rule step 3 proposes. "Any confirmed unsupported
+claim fails the answer" would, before any review, pass 2 of the 30 real answers, because the
+judge flags a median of four claims on each. The 161 undecided claims are what the review puts in
+front of a reviewer, and precision on real answers is unknown until that review has answered
+some. Recall on real answers is out of this design's reach: a reviewer sees the judge's claims,
+so a claim the judge never extracted cannot be reviewed.

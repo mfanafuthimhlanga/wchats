@@ -1,0 +1,68 @@
+# The faithfulness benchmark
+
+The platform's own set of answers with known truth per claim, for measuring the faithfulness
+judge's recall and precision on every judge, prompt or model change. It is the owner's and never
+a tenant's; a tenant's yes or no on a flagged claim lands here as a labelled row (owner decision
+2026-09-17).
+
+## Files
+
+| File | One row per | Columns |
+|---|---|---|
+| `rows.csv` | answer | `scenario_id, source, question, resolved_question, response, retrieved_contexts, reference` |
+| `truth.csv` | claim with known truth | `scenario_id, claim, supported, novel, source, added, note` |
+| `claims_<identity>.csv` | claim the judge decided | `scenario_id, position, statement, supported, reason` |
+| `scores_<identity>.csv` | answer the judge scored | `scenario_id, dimension, verdict, score, claims` |
+| `judge_rows.py` | | scores `rows.csv` through the production judge and writes the two files above; spends money |
+| `score_claims.py` | | the scorer, vendored from `~/.claude/skills/calibrate-judge`; edits go to the skill first |
+
+`source` in `truth.csv` is `construction` for a sentence planted into an answer or `review` for a
+claim a reviewer answered yes or no on. `novel` is the planted sentence's fabricated detail as
+words, the words neither the retrieved text nor the original answer carries; a judge claim
+counts as being about the plant only when it carries one. `<identity>` is
+`<model>-<reasoning_effort>-<prompt_version>`, the judge identity `eval_results` stores.
+
+The ten planted sentences are each appended after the answer's citations, uncited and in plain
+prose where the agent's own answers carry bold, backticks and source parentheticals. A judge that
+found them by style rather than by support would score the same here, so recall on planted
+sentences is an upper bound on recall against a fluent fabrication.
+
+`claims_*.csv` and `scores_*.csv` carry the judge's verdicts. A reviewer's sheet is built from
+`rows.csv` and the judge's `statement` column only; `supported`, `reason`, `verdict` and `score`
+never reach it.
+
+## Run it
+
+From `apps/api`:
+
+```bash
+.venv/Scripts/python.exe tests/evals/calibration/benchmark/score_claims.py \
+  --benchmark tests/evals/calibration/benchmark \
+  --claims tests/evals/calibration/benchmark/claims_<identity>.csv
+```
+
+Prints every match between a truth claim and the judge's claims, then recall with its interval,
+precision or `unknown` with the confirmed and undecided counts, and the answer-level flag counts.
+Precision reads `unknown` until `truth.csv` holds a supported claim, because until then a false
+alarm cannot occur.
+
+A new judge identity:
+
+```bash
+OPENAI_API_KEY=... .venv/Scripts/python.exe tests/evals/calibration/benchmark/judge_rows.py \
+  --benchmark tests/evals/calibration/benchmark
+```
+
+then add its numbers to `PUBLISHED` in `tests/unit/test_claims_benchmark.py`, which refuses a
+shipped claims file with no published row.
+
+## Adding truth
+
+A planted claim: append the sentence to a copy of an answer in `rows.csv` under the answer's
+`scenario_id` suffixed `-seeded`, and add a `truth.csv` row with `supported=false`,
+`source=construction` and `novel` listing the words neither the retrieved text nor the original
+answer carries. The unit test refuses a planted sentence that is not verbatim in its answer, that
+is in the original answer, or whose `novel` words appear in either.
+
+A reviewed claim: a `truth.csv` row with `supported` as the reviewer answered, `source=review`
+and `novel` empty. Step 3 of #290 writes these.
