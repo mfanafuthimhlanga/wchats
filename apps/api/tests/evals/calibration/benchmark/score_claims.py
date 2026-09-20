@@ -12,19 +12,24 @@ space separated and empty for a reviewed claim. claims.csv holds
 `eval_results.claims` stores them. The judge identity is whatever the file is
 named after `claims_`; nothing here checks it, so name the file honestly.
 
-A judge claim MATCHES a truth claim when at least JUDGE_IN_TRUTH of the judge
-claim's words are in the truth claim AND the judge claim carries at least one
-of the truth claim's `novel` words. The judge splits a sentence into atomic
-statements, so the first test is on the judge claim's side. The second is what
-separates the fabricated detail from a neighbouring claim about the same
-subject: "the migration command migrates the control database" shares four
-words with a planted rollback sentence and none of its fabricated ones, and
-"pnpm preview serves the bundle locally" is a claim the original answer already
-made and the judge already flagged before anything was planted. A truth claim
-with no novel word skips the second test. Numbers count as words whatever
-their length, because the fabricated detail is often a number. Every match is
-printed, because the rule is word overlap and a reader has to be able to check
-it.
+A judge claim MATCHES a planted truth claim when at least JUDGE_IN_TRUTH of
+the judge claim's words are in the truth claim AND the judge claim carries at
+least one of the truth claim's `novel` words. The judge splits a sentence into
+atomic statements, so the first test is on the judge claim's side. The second
+is what separates the fabricated detail from a neighbouring claim about the
+same subject: "the migration command migrates the control database" shares
+four words with a planted rollback sentence and none of its fabricated ones,
+and "pnpm preview serves the bundle locally" is a claim the original answer
+already made and the judge already flagged before anything was planted.
+Numbers count as words whatever their length, because the fabricated detail
+is often a number.
+
+A truth claim with NO novel word is a reviewed one: the judge's own statement,
+as the review showed it, with the Tenant's yes or no. It matches that
+statement exactly, whitespace and case aside, and nothing else, because a
+neighbouring judge claim the Tenant never saw must not inherit their answer.
+Every match is printed, because the rule is word overlap and a reader has to
+be able to check it.
 
 Recall:    unsupported truth claims that at least one matching judge claim also
            marks unsupported, over all unsupported truth claims, with a Wilson
@@ -41,9 +46,10 @@ Precision: judge-unsupported claims matching an unsupported truth claim (true
 
 Answer level, for the gate rule step 3 of #290 proposes: how many answers carry
 at least one judge-unsupported claim, split by whether the answer holds a
-planted claim. An answer the judge wrote no claim for is UNSCORED, excluded
-from those counts and reported, because an absent judgement is not a clean
-answer.
+PLANTED claim, which is a `source=construction` truth row and never a reviewed
+one: a Tenant's no is a label about a real answer, not a sentence somebody put
+there. An answer the judge wrote no claim for is UNSCORED, excluded from those
+counts and reported, because an absent judgement is not a clean answer.
 
 Exit 0 on a report, 2 on usage, 1 when a file is refused.
 """
@@ -69,13 +75,19 @@ def novel_words(truth: dict) -> set[str]:
     return set((truth.get("novel") or "").lower().split())
 
 
+def _exact(text: str) -> str:
+    return " ".join(text.split()).lower()
+
+
 def matches(judge_claim: str, truth_claim: str, novel: set[str]) -> bool:
+    if not novel:
+        return bool(judge_claim.strip()) and _exact(judge_claim) == _exact(truth_claim)
     j, t = words(judge_claim), words(truth_claim)
     if not j or not t:
         return False
     if len(j & t) / len(j) < JUDGE_IN_TRUTH:
         return False
-    return not novel or bool(j & novel)
+    return bool(j & novel)
 
 
 def wilson(hits: int, n: int, z: float = 1.96) -> tuple[float, float]:
@@ -134,7 +146,10 @@ def score(truth: list[dict], judge: list[dict], rows: list[dict]) -> dict:
     false_alarms = [c for c in decided if True in verdicts_for[id(c)]]
     undecided = [c for c in judge_unsupported if id(c) not in verdicts_for]
 
-    planted = {t["scenario_id"] for t in truth if not _bool(t["supported"])}
+    planted = {
+        t["scenario_id"] for t in truth
+        if not _bool(t["supported"]) and (t.get("source") or "construction") == "construction"
+    }
     flagged_answers = {c["scenario_id"] for c in judge_unsupported}
     scored = [a for a in answers if judge_by.get(a)]
     unscored = [a for a in answers if not judge_by.get(a)]

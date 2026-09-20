@@ -76,8 +76,12 @@ class TestTheMatchRule:
         assert sc.matches("The Jest configuration enforces 80 percent test coverage.", plant, {"80"})
         assert not sc.matches("The Jest configuration enforces 95 percent test coverage.", plant, {"80"})
 
-    def test_a_truth_claim_with_no_novel_words_skips_the_second_test(self):
-        assert sc.matches("A failed tenant migration causes the deployment to be marked as failed.", PLANTED, set())
+    def test_a_truth_claim_with_no_novel_words_is_a_reviewed_statement_and_matches_only_itself(self):
+        """A neighbouring judge claim the Tenant never saw must not inherit their answer."""
+        reviewed = "Orders over R500 ship free."
+        assert sc.matches("orders over  R500 ship free.", reviewed, set())
+        assert not sc.matches("Orders over R500 ship free to Tembisa.", reviewed, set())
+        assert not sc.matches("A failed tenant migration causes the deployment to be marked as failed.", PLANTED, set())
 
     def test_empty_text_never_matches(self):
         assert not sc.matches("", PLANTED, NOVEL)
@@ -88,7 +92,8 @@ class TestTheMatchRule:
 # The counts, over hand-built lists.
 # ---------------------------------------------------------------------------
 T_UNSUPPORTED = {"scenario_id": "s1", "claim": "Coverage is enforced at 80 percent by the Jest configuration.", "supported": "false", "novel": "80 enforced"}
-T_SUPPORTED = {"scenario_id": "s2", "claim": "Delivery costs a flat R30 for the Tembisa delivery area.", "supported": "true", "novel": ""}
+# A reviewed truth is the judge's own statement, as the review showed it, with no novel word.
+T_SUPPORTED = {"scenario_id": "s2", "claim": "Delivery costs R30 in the Tembisa area.", "supported": "true", "novel": ""}
 ROWS = [{"scenario_id": "s1"}, {"scenario_id": "s2"}, {"scenario_id": "s3"}]
 FLAG_S1 = {"scenario_id": "s1", "statement": "The Jest configuration enforces 80 percent test coverage.", "supported": "false"}
 FLAG_S2 = {"scenario_id": "s2", "statement": "Delivery costs R30 in the Tembisa area.", "supported": "false"}
@@ -176,7 +181,7 @@ class TestPrecisionSplitsThreeWays:
 
     def test_a_judge_claim_matching_truths_that_disagree_is_ambiguous_not_decided(self):
         """Last-write-wins across truth rows would make the verdict depend on CSV order."""
-        twin = {**T_UNSUPPORTED, "supported": "true", "novel": ""}
+        twin = {"scenario_id": "s1", "claim": FLAG_S1["statement"], "supported": "true", "novel": ""}
         r = _score([T_UNSUPPORTED, twin], [FLAG_S1])
         assert (r["true_alarms"], r["false_alarms"], r["ambiguous"], r["undecided"]) == (0, 0, 1, 0)
 
