@@ -9,6 +9,8 @@ Routes:
     GET  /agents/{agent_id}/eval-runs/{run_id}/results  — per-scenario results (EVL-07)
     POST /agents/{agent_id}/eval-runs/trigger            — dispatch run_eval_suite manually (EVL-04)
     POST /agents/{agent_id}/eval-runs/{run_id}/rejudge   : rescore a finished run's stored samples (#274)
+    GET  /agents/{agent_id}/eval-runs/{run_id}/claims          the judge's flagged claims (#290)
+    POST /agents/{agent_id}/eval-runs/{run_id}/claims/review   the Tenant's answers on them
 
 Architecture:
     - eval_runs and eval_results live in the TENANT DB (per-Neon-project), not the control DB.
@@ -97,6 +99,7 @@ from app.api.deps import get_credential_kind, get_current_tenant
 from app.core.database import get_async_db
 from app.core.log_bounds import log_failure
 from app.core.security import fernet_decrypt
+from app.domain.claim_review import ClaimReview, InvalidClaimReview
 from app.domain.eval_result import (
     DatasetOutcome,
     EvalResult,
@@ -109,12 +112,15 @@ from app.domain.judge_record import scenario_verdict
 from app.models.agent import Agent
 from app.models.job import Job
 from app.models.tenant import Tenant
+from app.schemas.claim_review import ClaimReviewRequest
 from app.schemas.eval import (
     GoldenDraftRequest,
     GoldenDraftResponse,
     GoldenScenariosRegisterRequest,
     GoldenScenariosRegisterResponse,
 )
+from app.services import claim_review_service
+from app.services.claim_review_service import ClaimReviewsUnavailable
 from app.services.eval_service import EVAL_DATASETS
 from app.services.eval_service import GATED_METRIC_KEYS as EVAL_GATED_METRIC_KEYS
 from app.services.eval_service import METRIC_KEYS as EVAL_METRIC_KEYS
@@ -765,6 +771,94 @@ async def get_eval_run_results(
         unverdicted_scenario_count=sum(1 for r in results if r["passed"] is None),
     )
     return {"results": results}
+
+
+# ---------------------------------------------------------------------------
+# The review of flagged claims (#290 step 3)
+# ---------------------------------------------------------------------------
+
+
+async def _owned_agent_conn(db: AsyncSession, tenant: Tenant, agent_id: UUID) -> str:
+    """The agent's decrypted tenant connection, or 404. The IDOR rule every route here keeps."""
+    agent = await db.get(Agent, agent_id)
+    if agent is None or agent.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if not agent.neon_connection_string:
+        raise HTTPException(status_code=404, detail="Agent database not provisioned")
+    return fernet_decrypt(agent.neon_connection_string)
+
+
+@router.get("/agents/{agent_id}/eval-runs/{run_id}/claims")
+async def get_flagged_claims(
+    agent_id: UUID,
+    run_id: UUID,
+    db: AsyncSession = Depends(get_async_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> dict:
+    """The claims the faithfulness judge flagged on one run, for the Tenant to answer.
+
+    Response shape:
+        {"scenarios": [{scenario_id, question, response, retrieved_contexts,
+                        claims: [{position, statement, review}]}],
+         "flagged": int, "answered": int, "reviews_available": bool,
+         "dropped_scenarios": int}
+
+    `review` is the Tenant's stored answer, True for "yes, it is in my
+    documents", or None. `reviews_available` is False on a tenant database
+    with nowhere to store an answer, so a page can tell that from "none
+    answered yet". `dropped_scenarios` counts rows whose stored claims could
+    not be read. The judge's reason and its own decision are not in the
+    payload: the flag is the whole of what the review shows.
+    """
+    conn_str = await _owned_agent_conn(db, tenant, agent_id)
+    flagged = await asyncio.to_thread(claim_review_service.read_flagged_claims, str(run_id), conn_str)
+    log.info("get_flagged_claims.ok", agent_id=str(agent_id), run_id=str(run_id),
+             tenant_id=str(tenant.id), flagged=flagged.flagged, answered=flagged.answered,
+             reviews_available=flagged.reviews_available, dropped_scenarios=flagged.dropped_rows)
+    return {
+        "scenarios": [s.payload for s in flagged.scenarios],
+        "flagged": flagged.flagged,
+        "answered": flagged.answered,
+        "reviews_available": flagged.reviews_available,
+        "dropped_scenarios": flagged.dropped_rows,
+    }
+
+
+@router.post("/agents/{agent_id}/eval-runs/{run_id}/claims/review")
+async def review_flagged_claims(
+    agent_id: UUID,
+    run_id: UUID,
+    body: ClaimReviewRequest,
+    db: AsyncSession = Depends(get_async_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> dict:
+    """Store the Tenant's answers. An answer about a claim the run did not flag is 422.
+
+    Response shape: {"stored": int}. A second answer on a claim replaces the
+    first. A tenant database with no claim_reviews table is 503, not 500.
+    """
+    conn_str = await _owned_agent_conn(db, tenant, agent_id)
+    try:
+        answers = [
+            ClaimReview(
+                eval_run_id=str(run_id),
+                scenario_id=a.scenario_id,
+                position=a.position,
+                statement=a.statement,
+                supported=a.supported,
+            )
+            for a in body.answers
+        ]
+        stored = await asyncio.to_thread(
+            claim_review_service.write_claim_reviews, str(run_id), answers, conn_str
+        )
+    except InvalidClaimReview as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ClaimReviewsUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    log.info("review_flagged_claims.ok", agent_id=str(agent_id), run_id=str(run_id),
+             tenant_id=str(tenant.id), stored=stored)
+    return {"stored": stored}
 
 
 # ---------------------------------------------------------------------------

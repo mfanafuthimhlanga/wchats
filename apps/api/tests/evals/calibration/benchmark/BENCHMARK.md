@@ -15,6 +15,8 @@ a tenant's; a tenant's yes or no on a flagged claim lands here as a labelled row
 | `scores_<identity>.csv` | answer the judge scored | `scenario_id, dimension, verdict, score, claims` |
 | `judge_rows.py` | | scores `rows.csv` through the production judge and writes the two files above; spends money |
 | `score_claims.py` | | the scorer, vendored from `~/.claude/skills/calibrate-judge`; edits go to the skill first |
+| `import_reviews.py` | | turns a run's Tenant answers into the REVIEWED benchmark below; never writes here |
+| `reviewed/` | | a second benchmark of the same three file kinds, holding reviewed truth; absent until the first import |
 
 `source` in `truth.csv` is `construction` for a sentence planted into an answer or `review` for a
 claim a reviewer answered yes or no on. `novel` is the planted sentence's fabricated detail as
@@ -64,5 +66,16 @@ A planted claim: append the sentence to a copy of an answer in `rows.csv` under 
 answer carries. The unit test refuses a planted sentence that is not verbatim in its answer, that
 is in the original answer, or whose `novel` words appear in either.
 
-A reviewed claim: a `truth.csv` row with `supported` as the reviewer answered, `source=review`
-and `novel` empty. Step 3 of #290 writes these.
+A reviewed claim lands in `reviewed/`, never here, because a Tenant's answer is a label about
+a real answer and the numbers in this directory are pinned per judge identity. From `apps/api`:
+
+```bash
+CALIBRATION_TENANT_DSN=... .venv/Scripts/python.exe   tests/evals/calibration/benchmark/import_reviews.py --run <eval_run_id>
+```
+
+writes `reviewed/truth.csv` (`supported` as the Tenant answered, `source=review`, `novel` empty,
+so the scorer matches the judge's own statement exactly and credits no neighbour),
+`reviewed/rows.csv` (the run and scenario id, no text) and `reviewed/claims_<identity>.csv`
+(the judge's statements and whether it found them, no reason). Score it with `score_claims.py
+--benchmark tests/evals/calibration/benchmark/reviewed`. A second import of a run replaces its
+rows.
