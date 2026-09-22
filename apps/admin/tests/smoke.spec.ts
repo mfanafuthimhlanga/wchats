@@ -21,6 +21,7 @@ const ROUTES = [
   `/agents/${AGENT_ID}/soul`,
   `/agents/${AGENT_ID}/ingest`,
   `/agents/${AGENT_ID}/eval`,
+  `/agents/${AGENT_ID}/eval/demo-run/claims`,
   `/agents/${AGENT_ID}/deploy`,
   `/agents/${AGENT_ID}/settings`,
 ]

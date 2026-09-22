@@ -2,6 +2,7 @@
 import { use, useState, useEffect, useMemo, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '@clerk/nextjs'
+import Link from 'next/link'
 import Chip from '../../../components/gotham/Chip'
 import Ledger, { LedgerColHead, LedgerRowHead } from '../../../components/gotham/Ledger'
 import EmptyState from '../../../components/gotham/EmptyState'
@@ -63,6 +64,14 @@ interface ScenarioResult {
 
 interface EvalResultsResponse {
   results: ScenarioResult[]
+}
+
+// The flagged-claims count under the judge (#290 step 3). Only the two numbers
+// are read here; the review itself is /eval/[runId]/claims.
+interface FlaggedCountResponse {
+  flagged: number
+  answered: number
+  dropped_scenarios: number
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +178,24 @@ export default function EvalPage({
     enabled: isLoaded && !!isSignedIn && !!latestRunId,
     staleTime: 30_000,
   })
+
+  // How many claims the judge flagged on the settled run, for the line under the judge.
+  const claimsQuery = useQuery<FlaggedCountResponse>({
+    queryKey: ['eval-claims', id, latestRunId],
+    queryFn: async () => {
+      const token = await getToken()
+      if (!token) throw new Error('Not authenticated')
+      const res = await fetch(
+        `${apiBase}/api/v1/agents/${id}/eval-runs/${latestRunId}/claims`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      )
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res.json()
+    },
+    enabled: isLoaded && !!isSignedIn && !!latestRunId,
+    staleTime: 30_000,
+  })
+  const flagged = claimsQuery.data
 
   // Chronological (oldest-first) run list for the chart, without the run that is
   // still going. A running run has no record yet, so every metric on it reads
@@ -382,6 +409,21 @@ export default function EvalPage({
                   </span>
                 )}
                 <span className="mono stamp">{stampLabel(currentRun)}</span>
+              </p>
+            )}
+            {flagged && latestRunId && (
+              <p className="run-note">
+                <span className="mono stamp">
+                  {flagged.flagged === 0
+                    ? 'no flagged claims recorded on this run'
+                    : `${flagged.flagged} claim${flagged.flagged === 1 ? '' : 's'} flagged · ${flagged.answered} answered`}
+                  {flagged.dropped_scenarios > 0 ? ` · ${flagged.dropped_scenarios} unreadable` : ''}
+                </span>
+                {flagged.flagged > 0 && (
+                  <Link href={`/agents/${id}/eval/${latestRunId}/claims`} className="btn btn-ghost">
+                    Review flagged claims
+                  </Link>
+                )}
               </p>
             )}
           </section>
