@@ -87,15 +87,16 @@ DATASET_GOLDEN = "golden"
 DATASET_EXPLORATORY = "exploratory"
 EVAL_DATASETS: tuple[str, ...] = (DATASET_GOLDEN, DATASET_EXPLORATORY)
 
-#: The dimensions a run scores, in the order the console reads them.
+#: The dimensions a run scores: faithfulness, by the grounding rule (ADR 0015).
 #: `eval_service.METRIC_KEYS` is the same tuple, for the same reason as above.
-#:
-#: `ragas_answer_relevancy` arrived with #274, which moved the gated
-#: `answer_relevancy` column off ragas onto `relevance_judge` and kept the ragas
-#: figure as a reported number. Last in the tuple so the four channels the
-#: console already draws keep their positions.
-METRIC_KEYS: tuple[str, ...] = (
-    "faithfulness",
+METRIC_KEYS: tuple[str, ...] = ("faithfulness",)
+
+#: The metric names runs reported before ADR 0015 took the judges out. Rows in
+#: `eval_results` and stored `EvalResult` records carry them as history.
+#: `DatasetOutcome.from_payload` drops them so an old record still loads, and
+#: `_stored_identities` drops the identities keyed by them; any other name
+#: outside METRIC_KEYS is refused.
+RETIRED_METRIC_KEYS: tuple[str, ...] = (
     "answer_relevancy",
     "context_precision",
     "context_recall",
@@ -275,6 +276,10 @@ def _stored_identities(payload: Mapping) -> Mapping[str, JudgeIdentity] | None:
     no such key, those rows are in tenant databases now, and refusing them would
     make every historical run unreadable to close a gap that only widened with
     #274.
+
+    An identity keyed by a metric in RETIRED_METRIC_KEYS is dropped, in step
+    with `DatasetOutcome.from_payload` dropping the metric, so a loaded record
+    names an instrument only for a dimension it holds.
     """
     stored = payload.get("judge_identities")
     if stored is None:
@@ -285,7 +290,9 @@ def _stored_identities(payload: Mapping) -> Mapping[str, JudgeIdentity] | None:
             f"{type(stored).__name__}"
         )
     return {
-        str(metric): JudgeIdentity(**identity) for metric, identity in stored.items()
+        str(metric): JudgeIdentity(**identity)
+        for metric, identity in stored.items()
+        if metric not in RETIRED_METRIC_KEYS
     }
 
 
@@ -664,7 +671,7 @@ class DatasetOutcome:
         unknown = sorted(set(self.metrics) - set(METRIC_KEYS))
         if unknown:
             # A metric name nobody scores is a key no reader will look for, so it
-            # would be written and never read. The four are the run's whole
+            # would be written and never read. METRIC_KEYS is the run's whole
             # vocabulary.
             raise InvalidEvalResult(
                 "DatasetOutcome takes the metrics a run scores "
@@ -715,6 +722,10 @@ class DatasetOutcome:
         before the run counted its own verdicts, and a reader that filled the
         three in from the row would be doing the derivation the counts exist to
         replace.
+
+        A metric in RETIRED_METRIC_KEYS is dropped, so a record written before
+        ADR 0015 still loads. Any other unknown name reaches the constructor and
+        is refused there.
         """
         if not isinstance(payload, Mapping):
             raise InvalidEvalResult(
@@ -732,6 +743,7 @@ class DatasetOutcome:
             metrics={
                 metric: Measurement.from_payload(value)
                 for metric, value in metrics.items()
+                if metric not in RETIRED_METRIC_KEYS
             },
             **{name: payload.get(name, 0) for name in _VERDICT_COUNTS},
         )
@@ -935,12 +947,13 @@ class QuestionResolution:
     """Which question the run's gated relevancy column was scored against (#235).
 
     A multi-turn scenario asks its question in a conversation, so the question
-    alone ("what about the second one?") names nothing. `resolve_question`
-    rewrites it into a standalone question before the Judge sees it, and a
+    alone ("what about the second one?") names nothing. Until ADR 0015 a resolver
+    rewrote it into a standalone question before the Judge saw it, and a
     rewrite that fails leaves the raw follow-up to be scored instead. Both
     produce a relevancy number and the two numbers are not the same claim, which
     is why the counts travel with the record rather than being recoverable from
-    it.
+    it. No run resolves a question since ADR 0015, so a new record carries
+    NO_QUESTION_RESOLUTION and the type stays to read the records before it.
 
     THE FOUR ARE NESTED, NOT PARALLEL. `rewritten` and `raw_question_fallback`
     partition `multi_turn`, and `multi_turn` is a subset of `relevancy_scored`.
@@ -987,9 +1000,9 @@ class QuestionResolution:
             _require_count(name, value, "QuestionResolution")
         _at_most("multi_turn", "relevancy_scored", counts, "QuestionResolution")
         _at_most("rewritten", "multi_turn", counts, "QuestionResolution")
-        # Definitional, not defensive. `question_resolution_provenance` computes
-        # the fallback as `multi_turn - rewritten`, so a stored row where the
-        # three disagree was not written by it. It is this equation plus
+        # Definitional, not defensive. The provenance stamp that wrote these
+        # counts until ADR 0015 computed the fallback as `multi_turn - rewritten`,
+        # so a stored row where the three disagree was not written by it. It is this equation plus
         # `multi_turn <= relevancy_scored` that bounds the fallback by BOTH
         # denominators the deploy gate divides it by, and each of those shares
         # blocks a deploy (`_relevancy_provenance_cause`).
@@ -1006,9 +1019,9 @@ class QuestionResolution:
     def payload(self) -> dict:
         """The four counts as JSON, the shape `eval_runs.config` already holds.
 
-        Identical to the inner object `eval_service.question_resolution_provenance`
-        stamps on the config, so the record and the config say the same thing in
-        the same words rather than in two shapes a reader has to reconcile.
+        Identical to the inner object the eval task stamped on `eval_runs.config`
+        until ADR 0015, so an old record and its config say the same thing in the
+        same words rather than in two shapes a reader has to reconcile.
         """
         return {
             "relevancy_scored": self.relevancy_scored,
@@ -1070,12 +1083,12 @@ class EvalResult:
                                is every run whose dimensions shared one Judge.
                                This is what a calibration artifact is compared
                                against now: `judge_identity` above went null the
-                               moment `relevance_judge` started authoring its own
+                               moment the relevance Judge (#274) authored its own
                                prompt, and one null field cannot say which of two
                                instruments an artifact is about.
-        judge_identity:        the Judge behind all four dimensions, when the four
-                               routes name one. None when they differ or when a
-                               route named no reasoning effort, and the per-call
+        judge_identity:        the instrument behind every dimension, when the
+                               records name one. None when they differ or when a
+                               record named none, and the per-call
                                identity on the `eval_results` rows is finer
                                grained than this either way (slice 2).
         failures:              one ScenarioFailure per turn that raised, in the
@@ -1340,7 +1353,7 @@ def scoring_datasets(record: EvalResult | None) -> list[str]:
 
 
 def run_level_metrics(record: EvalResult | None) -> tuple[dict[str, Measurement], str | None]:
-    """The run's four metrics and the dataset they were lifted from. THE ONE RULE.
+    """The run's metrics and the dataset they were lifted from. THE ONE RULE.
 
     THIS RECORD HOLDS NO RUN-LEVEL MEAN and that is the point of it. A golden
     mean and an exploratory mean answer different questions: the golden rows are
@@ -1354,7 +1367,7 @@ def run_level_metrics(record: EvalResult | None) -> tuple[dict[str, Measurement]
     So a run-level reading exists only when there is nothing to pool: exactly one
     dataset scored a row. Then its measurements ARE the run's, copied over
     verbatim, and the returned name says which. When both scored, this returns
-    four unmeasured metrics and no name, and the numbers stay per dataset where
+    every metric unmeasured and no name, and the numbers stay per dataset where
     the record keeps them apart. Unknown, never an average nobody computed.
 
     It lives here rather than in a reader because the console route and the

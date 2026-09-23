@@ -226,7 +226,7 @@ class TestTheFieldsAreRefusedWhenTheyWouldMisreport:
     def test_a_nan_score_is_refused_rather_than_compared(self):
         """A NaN loses every comparison, so it would read as a quiet failure.
 
-        `_score_samples` already converts a NaN cell to None. This is what stops
+        `_placed_score_rows` already converts a NaN cell to None. This is what stops
         that conversion being dropped upstream without anything going red.
         """
         with pytest.raises(InvalidJudgeRecord, match="NaN"):

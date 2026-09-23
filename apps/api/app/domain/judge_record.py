@@ -27,11 +27,10 @@ THE VERDICT IS DERIVED, AND CONSTRUCTION REFUSES A WRONG ONE
     than believed because it is already in the database.
 
 NULL IS NOT FALSE, TWICE OVER
-    A metric with no threshold gets no verdict. `context_precision` and
-    `context_recall` have no threshold anywhere in this codebase, so their rows
-    say so with None rather than borrowing one of the other two.
+    A metric with no threshold gets no verdict. Its row says so with None rather
+    than borrowing another metric's threshold.
 
-    A metric the judge did not score gets no verdict either, AND IT STILL GETS A
+    A metric the rule did not score gets no verdict either, AND IT STILL GETS A
     ROW. An unscored metric is visible as a row carrying no score, never as an
     absent row, because absence is indistinguishable from a scenario that was
     never sent and a reader counting rows would silently lose the denominator.
@@ -47,10 +46,11 @@ WHY THE LEDGER REFERENCE IS A PURPOSE
     value, which is per metric within the run and NOT per scenario. The ledger
     cannot go finer: `record_model_call` mints each row's uuid inside itself and
     `Recorder` returns None, so no caller holds a call id, and the row is written
-    from an httpx response hook firing under ragas' own scoring loop, which sees
+    from an httpx response hook firing under the judge's own scoring loop, which sees
     a purpose, a tenant, an agent and a job and never a scenario. Tenant
     migration 0023's column comment carries the same sentence, for a reader who
-    has the catalogue and not this file.
+    has the catalogue and not this file. A row the grounding rule scored
+    (ADR 0015) carries None, because no model call paid for it.
 
 THE CLAIMS ARE THE VERDICT'S WORKING (#290)
     Faithfulness is decided one atomic statement at a time and the score is the
@@ -117,8 +117,8 @@ def _require_optional_text(name: str, value: Any) -> None:
 def _as_optional_float(name: str, value: Any) -> float | None:
     """A real number or None. bool is refused first, and so is NaN.
 
-    NaN is the one that matters. `_score_samples` already converts a NaN cell to
-    None because a NaN compares False against every threshold, so a NaN score
+    NaN is the one that matters. `_placed_score_rows` already converts a NaN cell
+    to None because a NaN compares False against every threshold, so a NaN score
     would reach `verdict_for` and come back a quiet failure. Refusing it here
     means the conversion cannot be dropped upstream without this going red.
     """

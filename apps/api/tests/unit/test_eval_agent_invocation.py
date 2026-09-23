@@ -967,8 +967,8 @@ def test_every_model_call_of_an_eval_turn_is_billed_under_the_run():
     `make_async_client` builds the `CallContext` that every `ModelCall` the ledger
     hook records carries, and `job_id` is the field a rollup groups by. The seam
     passes its `job_id` straight into it, so the id the factory is asked for IS the
-    id on the rows. The judges bill under the run id (`_run_ledger`); before this,
-    the agent turns billed under a uuid minted per scenario that named no job.
+    id on the rows. A uuid minted per scenario would name no job, and
+    `model_calls WHERE job_id = <run_id>` would miss the run's agent turns.
     """
     agent = _agent_row()
     db = MagicMock()
@@ -1895,8 +1895,8 @@ def test_the_broker_lets_a_run_reach_the_ceiling_the_run_advertises():
     minutes and a second worker began driving the same agent concurrently. The
     run's own record described a bound the transport refused.
 
-    A relation, not a copy: celery_app cannot import eval_service (ragas,
-    instructor and anthropic at module scope, in a module every task and the API
+    A relation, not a copy: celery_app does not import eval_service (psycopg2 and
+    the database layer at module scope, in a module every task and the API
     process imports), so the two numbers live apart and this is what stops them
     drifting.
     """
@@ -2058,7 +2058,7 @@ def task_wired(monkeypatch):
     monkeypatch.setattr(
         mod,
         "run_ragas_eval",
-        lambda scenarios, ledger: (
+        lambda scenarios: (
             rec["scored"].append(list(scenarios))
             or {"scores": [], "judge_records": [], "sent": 0, "returned": 0, "unattributed": 0}
         ),
@@ -2242,14 +2242,9 @@ def test_the_row_exists_before_the_first_turn_and_is_corrected_after_the_last(
     that dies in between keeps the false and the deploy gate refuses it.
 
     The correction lands BEFORE scoring, too: the invocation is the expensive,
-    unrepeatable half, and a judge outage must not take the record of what the
-    agent did down with it.
-
-    A SECOND patch lands AFTER scoring, and it is the opposite rule for the
-    opposite reason. `question_resolution_provenance` describes the rows the
-    judge returned, so it cannot be written before those rows exist, and writing
-    it first would leave a run that died in between describing scores nobody
-    wrote (#233). Two patches, two directions, one sequence.
+    unrepeatable half, and a scoring failure must not take the record of what
+    the agent did down with it. It is the only config patch since ADR 0015
+    removed the question-resolution stamp.
     """
     order: list[str] = []
 
@@ -2271,7 +2266,7 @@ def test_the_row_exists_before_the_first_turn_and_is_corrected_after_the_last(
     monkeypatch.setattr(
         mod,
         "run_ragas_eval",
-        lambda scenarios, ledger: order.append("score")
+        lambda scenarios: order.append("score")
         or {"scores": [], "judge_records": [], "sent": 0, "returned": 0, "unattributed": 0},
     )
 
@@ -2285,13 +2280,10 @@ def test_the_row_exists_before_the_first_turn_and_is_corrected_after_the_last(
         "turn",
         "patch",
         "score",
-        "patch",
     ], (
         f"the run's write order is {order}. 'insert' must precede every 'turn' "
-        "(the row is the idempotency key); the FIRST 'patch' must precede 'score' "
-        "(a judge outage must not take the record of what the agent did with it); "
-        "and the SECOND must follow it (it describes scores, so it cannot be "
-        "written before they exist)."
+        "(the row is the idempotency key), and 'patch' must precede 'score' "
+        "(a scoring failure must not take the record of what the agent did with it)."
     )
 
 
@@ -2519,9 +2511,9 @@ def test_the_scored_text_is_written_before_scoring_and_is_what_the_scorer_gets(
     monkeypatch.setattr(mod, "write_eval_samples", _fake_samples)
     scorer = mod.run_ragas_eval
 
-    def _fake_scorer(scenarios, ledger):
+    def _fake_scorer(scenarios):
         order.append("score")
-        return scorer(scenarios, ledger)
+        return scorer(scenarios)
 
     monkeypatch.setattr(mod, "run_ragas_eval", _fake_scorer)
 

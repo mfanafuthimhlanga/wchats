@@ -1,5 +1,5 @@
 """
-Issue #79: the five readers of `messages` get one turn's rows in insert order.
+Issue #79: the readers of `messages` get one turn's rows in insert order.
 
 `_persist_messages` writes a turn's user row and its assistant row in ONE
 transaction, and Postgres `now()` is `transaction_timestamp()`, so both rows
@@ -196,40 +196,6 @@ def test_mined_transcript_is_in_insert_order(monkeypatch, tie_order):
     assert [row["role"] for row in messages] == ["user", "assistant", "user", "assistant"], (
         "the mined transcript came back out of order under tie_order=%s: %r"
         % (tie_order, [(row["role"], row["content"]) for row in messages])
-    )
-
-
-# ---------------------------------------------------------------------------
-# retrieval_eval._fetch_last_user_message — the question Ragas is scored against
-# ---------------------------------------------------------------------------
-
-
-#: Two user rows sharing one `created_at`. Rare on the clock, and the only thing
-#: that ever separated them was a column with no tiebreaker.
-TWO_QUESTIONS_ONE_TIMESTAMP: list[dict] = [
-    {"seq": 1, "created_at": "2026-09-01T10:00:00Z", "role": "user", "content": "the earlier question"},
-    {"seq": 2, "created_at": "2026-09-01T10:00:00Z", "role": "assistant", "content": "the earlier answer"},
-    {"seq": 3, "created_at": "2026-09-01T10:00:00Z", "role": "user", "content": "the latest question"},
-]
-
-
-@pytest.mark.parametrize("tie_order", TIE_ORDERS)
-def test_faithfulness_scores_the_latest_question(monkeypatch, tie_order):
-    """The faithfulness score is computed against whatever this returns, so the
-    wrong row scores an answer against a question nobody asked of it."""
-    from app.worker.tasks.runtime import retrieval_eval
-
-    monkeypatch.setattr(
-        retrieval_eval.psycopg2,
-        "connect",
-        _connect(TWO_QUESTIONS_ONE_TIMESTAMP, tie_order),
-    )
-
-    question = retrieval_eval._fetch_last_user_message("postgresql://tenant", "conv-1")
-
-    assert question == "the latest question", (
-        "under tie_order=%s the score would be computed against %r"
-        % (tie_order, question)
     )
 
 

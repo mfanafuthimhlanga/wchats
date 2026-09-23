@@ -661,9 +661,8 @@ def _measured_eval_signal():
         scored=30,
         metrics={
             "faithfulness": Measurement(value=0.92, observations=30, measured=True),
-            "answer_relevancy": Measurement(value=0.9, observations=30, measured=True),
         },
-        # Both gates measured and cleared on all thirty. The three verdict
+        # The gate measured and cleared on all thirty. The three verdict
         # counts add up to `scored` or the record refuses to be built.
         scenarios_passed=30,
     )

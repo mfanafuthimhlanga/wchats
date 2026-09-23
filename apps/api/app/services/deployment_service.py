@@ -593,7 +593,7 @@ def _readings(metrics: dict, *, measured: bool) -> dict:
 
 
 def _dataset_block(record: EvalResult | None, *, measured: bool) -> dict:
-    """Per dataset: the three counts always, the four metrics only as evidence.
+    """Per dataset: the three counts always, the metrics only as evidence.
 
     The counts travel on every state, refusals included. A run that attempted
     forty and scored none is a different event from a run that attempted none,
@@ -2484,11 +2484,15 @@ def _resolver_failure_cause(multi_turn: int, fallback: int) -> str | None:
 def _relevancy_provenance_cause(eval_summary: dict) -> str | None:
     """Refuse a relevancy number measured on unresolved follow-ups, or None.
 
-    THE NUMBER EXISTS AND IT IS NOT ABOUT WHAT IT CLAIMS. A multi-turn scenario
-    asks its question inside a conversation, so `resolve_question` rewrites it
-    into a standalone question before the Judge scores relevancy against it. A
-    rewrite that fails leaves the raw follow-up to be scored, and "what about the
-    second one?" names nothing to be relevant to. The run still reports a
+    THIS READER EXISTS FOR RECORDS WRITTEN BEFORE ADR 0015. Those runs rewrote a
+    multi-turn scenario's follow-up into a standalone question before a Judge
+    scored relevancy against it, and `question_resolution` carries the counts of
+    that rewrite. A record written since ADR 0015 resolves no question and
+    carries zeros, so this returns None for it. #286 owns the rule itself.
+
+    ON AN OLD RECORD, THE NUMBER EXISTS AND IT IS NOT ABOUT WHAT IT CLAIMS. A
+    failed rewrite left the raw follow-up to be scored, and "what about the
+    second one?" names nothing to be relevant to. The record still reports a
     relevancy figure, which is why this is missing evidence in the same sense as
     the other two causes rather than a low score.
 
@@ -2512,9 +2516,9 @@ def _relevancy_provenance_cause(eval_summary: dict) -> str | None:
     refuses. A gate that cannot read its evidence has not been satisfied.
 
     `relevancy_scored` at zero returns None rather than dividing. That run scored
-    relevancy on nothing, and since ADR 0014 relevancy is reported rather than
-    gated, so a run that scored none of it still has faithfulness to be judged
-    on. There is no share to read and no cause to report.
+    relevancy on nothing, and relevancy is not gated (ADR 0014), so the run still
+    has faithfulness to be judged on. There is no share to read and no cause to
+    report.
     """
     if "question_resolution" not in eval_summary:
         return None

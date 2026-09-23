@@ -174,9 +174,8 @@ def _sync_db(mock_db):
 
 
 #: The columns this file's score double fills, read off the service rather than
-#: listed, so a metric added there (#274 added `ragas_answer_relevancy`) does not
-#: leave one column silently unobserved while the assertions below count
-#: observations per metric.
+#: listed, so a metric added there does not leave one column silently
+#: unobserved while the assertions below count observations per metric.
 _METRICS = eval_service.METRIC_KEYS
 
 
@@ -272,7 +271,7 @@ def _wire(monkeypatch, *, exploratory_rows, silent_ids=(), scores_by_id=None):
     )
     overrides = dict(scores_by_id or {})
 
-    def _fake_ragas(scenarios, ledger):
+    def _fake_scorer(scenarios, ledger):
         rec["scored_input"].append(list(scenarios))
         scores = [
             {
@@ -291,7 +290,7 @@ def _wire(monkeypatch, *, exploratory_rows, silent_ids=(), scores_by_id=None):
             "judge_records": eval_service.build_judge_records(scores),
         }
 
-    monkeypatch.setattr(mod, "run_ragas_eval", _fake_ragas)
+    monkeypatch.setattr(mod, "run_ragas_eval", _fake_scorer)
     monkeypatch.setattr(
         mod,
         "write_eval_results",
@@ -558,9 +557,6 @@ def _labelled_scenario(source="mined"):
     score = {
         "scenario_id": "s-labelled",
         "faithfulness": 1.0,
-        "answer_relevancy": 1.0,
-        "context_precision": 1.0,
-        "context_recall": 1.0,
     }
     return scenario, score
 
@@ -741,9 +737,6 @@ def _record_scoring(faithfulness: float):
                 scenarios_failed=0 if faithfulness >= 0.9 else 30,
                 metrics={
                     "faithfulness": eval_result_domain.Measurement(
-                        value=faithfulness, observations=30, measured=True
-                    ),
-                    "answer_relevancy": eval_result_domain.Measurement(
                         value=faithfulness, observations=30, measured=True
                     ),
                 },

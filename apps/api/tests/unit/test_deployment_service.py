@@ -766,7 +766,7 @@ class TestBlockingConditions:
             datasets={
                 "exploratory": _outcome(
                     attempted=40, valid=40, scored=40, failed=20,
-                    faithfulness=0.5, answer_relevancy=0.5,
+                    faithfulness=0.5,
                 )
             }
         )
@@ -827,7 +827,6 @@ def _record(
                 failed=failed,
                 unmeasured=unmeasured,
                 faithfulness=0.92,
-                answer_relevancy=0.88,
             )
         }
     fields = {
@@ -957,7 +956,6 @@ class TestSignalCollectionFunctions:
 
         assert result["eval_signal"] == EVAL_SIGNAL_MEASURED
         assert result["pass_rates"]["faithfulness"] == pytest.approx(0.92)
-        assert result["pass_rates"]["answer_relevancy"] == pytest.approx(0.88)
         assert result["pass_rates_dataset"] == "exploratory", (
             "a run-level number nobody attributed is a number a reader will "
             "attribute to the wrong half"
@@ -1001,9 +999,6 @@ class TestSignalCollectionFunctions:
         assert result["valid_scenario_count"] == 11
         assert result["scored_scenario_count"] == 7
         assert result["datasets"]["exploratory"]["scenario_count"] == 12
-        assert result["metrics"]["answer_relevancy"]["measured"] is False, (
-            "a metric the record does not report reads unmeasured, never zero"
-        )
 
     def test_the_measurements_survive_every_result_row_being_deleted(self):
         """No `eval_results` row exists, and every number is still the record's.
@@ -1016,17 +1011,16 @@ class TestSignalCollectionFunctions:
         scored thirty, and the gate shipped on "nothing failed". The counts are
         the run's own now and the deleted rows change none of them.
         """
-        # The judge returned context_precision for all thirty rows and neither
-        # gated dimension for any of them, which is the run the reviewer built:
-        # `scored` is thirty and the evidence a deploy needs is nought.
+        # Thirty rows scored and twenty failed the gate. No `eval_results` row
+        # exists, so every count below can only have come off the record.
         record = _record(
             datasets={
                 "exploratory": _outcome(
                     attempted=30,
                     valid=30,
                     scored=30,
-                    unmeasured=30,
-                    context_precision=0.71,
+                    failed=20,
+                    faithfulness=0.41,
                 )
             }
         )
@@ -1042,14 +1036,43 @@ class TestSignalCollectionFunctions:
             result = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
 
         assert result["eval_signal"] == EVAL_SIGNAL_MEASURED
-        assert result["pass_rates"] == {"context_precision": pytest.approx(0.71)}
         assert result["datasets"]["exploratory"]["scored_scenario_count"] == 30
-        assert result["failing_scenarios"] == 0
-        assert result["unmeasured_scenarios"] == 30, (
-            "thirty scenarios scored and no gated verdict decided one of them; "
-            "the count says thirty undecided rather than nought failing"
+        assert result["failing_scenarios"] == 20
+        assert result["unmeasured_scenarios"] == 0
+
+    def test_a_run_that_measured_faithfulness_on_no_row_refuses_to_ship(self):
+        """Thirty rows scored and faithfulness measured over none of them.
+
+        Only the clarifying rule can score a row without faithfulness, so this
+        record says `scored` is thirty and the evidence a deploy needs is nought.
+        Faithfulness is the only metric, so a record that measured it nowhere
+        reports no metric at all and the collector classifies it as no valid
+        scores; the gate then says the agent has not been measured. Unknown
+        quality may never approve a deploy.
+        """
+        record = _record(
+            datasets={
+                "exploratory": _outcome(
+                    attempted=30,
+                    valid=30,
+                    scored=30,
+                    unmeasured=30,
+                    faithfulness=None,
+                )
+            }
+        )
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
+            record=record,
         )
 
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            result = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+        assert result["eval_signal"] == EVAL_SIGNAL_NO_VALID_SCORES
         recommendation, warnings = apply_signal_evidence_gate(
             "ship", result, _measured_red_team()
         )
@@ -1057,9 +1080,7 @@ class TestSignalCollectionFunctions:
             "a run that decided no scenario has no quality evidence, and "
             "unknown quality may never approve a deploy"
         )
-        assert [w.warning_id for w in warnings] == [
-            EVAL_QUALITY_UNMEASURED_WARNING_ID
-        ]
+        assert [w.warning_id for w in warnings] == ["eval_signal_unavailable"]
 
     def test_the_collector_reads_nothing_out_of_eval_results(self):
         """Read out of the SQL that ran, not out of the source text.
@@ -1439,12 +1460,10 @@ class TestTheTwoDatasetsAreNeverPooled:
         return _record(
             datasets={
                 "golden": _outcome(
-                    attempted=12, valid=12, scored=12,
-                    faithfulness=0.94, answer_relevancy=0.90,
+                    attempted=12, valid=12, scored=12, faithfulness=0.94,
                 ),
                 "exploratory": _outcome(
-                    attempted=30, valid=28, scored=25,
-                    faithfulness=0.71, answer_relevancy=0.66,
+                    attempted=30, valid=28, scored=25, faithfulness=0.71,
                 ),
             },
             attempted=42,
@@ -1499,19 +1518,20 @@ class TestTheTwoDatasetsAreNeverPooled:
         )
 
     def test_a_gated_metric_measured_on_no_dataset_refuses(self):
-        """The reachable fail-open the pooled mean used to hide.
+        """The fail-open the pooled mean used to hide.
 
-        `context_precision` came back and the two gated metrics did not, so the
-        record reports `scored` above zero and the deploy gate has no quality
-        evidence at all. Missing data is never passing data.
+        Every row scored and faithfulness was measured on neither dataset, so
+        the record reports `scored` above zero and no metric on any dataset. The
+        collector classifies that as no valid scores and the gate refuses as
+        unmeasured. Missing data is never passing data.
         """
         ungated_only = _record(
             datasets={
                 "golden": _outcome(
-                    attempted=12, valid=12, scored=12, context_precision=0.99
+                    attempted=12, valid=12, scored=12, faithfulness=None
                 ),
                 "exploratory": _outcome(
-                    attempted=30, valid=30, scored=30, context_recall=0.98
+                    attempted=30, valid=30, scored=30, faithfulness=None
                 ),
             },
             attempted=42,
@@ -1520,12 +1540,12 @@ class TestTheTwoDatasetsAreNeverPooled:
         )
         result = self._summary(ungated_only)
 
-        assert result["eval_signal"] == EVAL_SIGNAL_MEASURED
+        assert result["eval_signal"] == EVAL_SIGNAL_NO_VALID_SCORES
         recommendation, warnings = apply_signal_evidence_gate(
             "ship", result, _measured_red_team()
         )
         assert recommendation == "block"
-        assert any(w.warning_id == "eval_quality_unmeasured" for w in warnings)
+        assert [w.warning_id for w in warnings] == ["eval_signal_unavailable"]
 
     def test_one_scoring_dataset_names_itself(self):
         """A golden-only run reports the golden numbers AS the run's, named."""
@@ -3663,15 +3683,11 @@ class TestTheCalibrationBlock:
         yesterday's agreement over today's Judge, which is the alignment decay
         the three-field key exists to catch.
 
-        ONE PER GATED DIMENSION SINCE #274. The run-level `judge_identity` is
-        null on every run scored by two instruments, so the record carries
-        `judge_identities` and the loader matches each stored dimension against
-        the Judge that run used for it.
+        ONE PER GATED DIMENSION. The record carries `judge_identities` and the
+        loader matches each stored dimension against the identity that run used
+        for it. Faithfulness is the one dimension a record holds (ADR 0015).
         """
-        identities = {
-            "faithfulness": _judge(prompt_version="ragas-0.4.2"),
-            "answer_relevancy": _judge(prompt_version="relevance-judge-v1"),
-        }
+        identities = {"faithfulness": _judge(prompt_version="grounding-v1")}
         seen: dict = {}
 
         def _spy(path, judges):
@@ -4732,22 +4748,24 @@ class TestRelevancyIsReportedAndGatesNothing:
         assert _unmeasured_gated_metrics(faithfulness_only) == []
         assert _unmeasured_gated_metrics(relevancy_only) == ["faithfulness"]
 
-    def test_a_run_failing_relevancy_on_every_row_is_measured_and_ships(self):
-        """Every scenario scored 0.01 relevancy and cleared faithfulness.
+    def test_a_stored_record_carrying_relevancy_is_read_on_faithfulness_and_ships(self):
+        """A record written before ADR 0015 carries relevancy under `metrics`.
 
-        The signal stays `measured`, no warning names relevancy, and the number
-        is still on the payload for the console to draw. That last assertion is
-        the half that stops this reading as a deletion.
+        Every scenario scored 0.01 relevancy and cleared faithfulness. The record
+        still loads, the signal stays `measured`, no warning names relevancy, and
+        the retired metric does not reach the summary.
         """
-        record = _record(
+        payload = _record(
             datasets={
                 "exploratory": _outcome(
-                    attempted=30, valid=30, scored=30,
-                    faithfulness=0.94, answer_relevancy=0.01,
+                    attempted=30, valid=30, scored=30, faithfulness=0.94,
                 )
             },
-        )
-        summary = self._summary(record)
+        ).payload
+        payload["datasets"]["exploratory"]["metrics"]["answer_relevancy"] = {
+            "value": 0.01, "measured": True, "observations": 10,
+        }
+        summary = self._summary(payload)
 
         recommendation, warnings = apply_signal_evidence_gate(
             "ship", summary, _measured_red_team()
@@ -4756,8 +4774,4 @@ class TestRelevancyIsReportedAndGatesNothing:
         assert summary["eval_signal"] == EVAL_SIGNAL_MEASURED
         assert recommendation == "ship"
         assert warnings == []
-        assert summary["metrics"]["answer_relevancy"] == {
-            "value": pytest.approx(0.01),
-            "measured": True,
-            "observations": 10,
-        }
+        assert "answer_relevancy" not in summary["metrics"]

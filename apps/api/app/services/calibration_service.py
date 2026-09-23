@@ -86,11 +86,10 @@ def load_calibration_status(
 ) -> CalibrationStatus:
     """What the calibration artifact says about this run's Judges, or why nothing.
 
-    PER DIMENSION SINCE #274. A run is scored by two instruments, ragas
-    faithfulness and the relevance Judge, so one identity cannot describe it and
-    `EvalResult.judge_identity` is null on every run from that ticket. The
-    artifact is an envelope of one record per gated dimension, and this matches
-    each stored dimension against the Judge that run used for it. An envelope
+    PER DIMENSION. A run's gated metric is scored by the grounding rule (ADR
+    0015), and the run's record carries an identity per dimension, so the
+    artifact is an envelope of one record per gated dimension. This matches each
+    stored dimension against the identity that run used for it. An envelope
     whose every dimension matches and is calibrated comes back calibrated.
 
     Args:

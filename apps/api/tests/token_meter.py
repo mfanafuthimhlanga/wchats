@@ -27,8 +27,8 @@ those backslashes are literal characters inside the message. That distinction is
 worth 4.7x on a non-English corpus, and `agent_tools.retrieve_tool` is where it
 is decided.
 
-`tiktoken` reaches this tree through `ragas`, which is a base dependency, so it
-is present wherever the suite runs. `get_encoding` fetches its rank file once and
+`tiktoken` is a dev dependency in `pyproject.toml`, so it is present wherever
+the suite runs. `get_encoding` fetches its rank file once and
 caches it; a first run needs the network.
 """
 

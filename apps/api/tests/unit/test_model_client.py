@@ -1,9 +1,8 @@
 """Tests for app.core.model_client, the ledger seam on the HTTP layer (ticket #46, issue #22).
 
 WHAT THE HOOK HAS TO SURVIVE
-    #47 wraps this client in `instructor.from_anthropic(...)`, and Ragas wraps that
-    again. A recorder bolted onto a wrapper method disappears the moment someone
-    wraps it once more, so the hook sits on the httpx client and every one of those
+    #47 wraps this client in `instructor.from_anthropic(...)`. A recorder bolted
+    onto a wrapper method disappears the moment someone wraps it once more, so the hook sits on the httpx client and every one of those
     layers passes its traffic through it. The tests below therefore drive the hook
     two ways. `attach_ledger_hook` runs against a bare `httpx.Client` that this
     module never constructed, and `make_client` runs through the real anthropic SDK.
@@ -598,7 +597,7 @@ def _openai_hooked(recorder, body: dict, **kwargs):
     client = httpx.Client(transport=_transport(body, **kwargs))
     attach_ledger_hook(
         client,
-        _context("judge_faithfulness"),
+        _context("calibration_judge"),
         provider="openai",
         recorder=recorder,
         clock=lambda: AT,
@@ -737,7 +736,7 @@ class TestABodyMatchingNeitherShape:
 
         skipped = [entry for entry in logs if entry["event"] == "model_ledger.shape_skipped"]
         assert len(skipped) == 1, f"expected one event naming the unreadable body, got {logs}"
-        assert skipped[0]["purpose"] == "judge_faithfulness"
+        assert skipped[0]["purpose"] == "calibration_judge"
         assert skipped[0]["requested_model"] == LUNA
         assert skipped[0]["tenant_id"] == TENANT
 
@@ -756,18 +755,18 @@ class TestABodyMatchingNeitherShape:
 
 
 class TestTheAsyncHookFailsOpenToo:
-    """The async twin of TestRecordingFailureIsFailOpen, on the client Ragas drives.
+    """The async twin of TestRecordingFailureIsFailOpen, on the async client.
 
     The sync hook and the async hook each carry their own try/except around the
     same shared body, so a guard deleted from one is invisible to every test of
     the other. Deleting the async one broke nothing until this class existed.
     It builds the async OpenAI client through the factory, which is what every
-    judge call in an eval run runs through.
+    turn of the owned Agent loop runs through.
     """
 
     def _client(self, recorder):
         return make_async_client(
-            "judge_faithfulness",
+            "calibration_judge",
             tenant_id=TENANT,
             recorder=recorder,
             credentials=Credentials(api_key="test-key"),
@@ -797,13 +796,13 @@ class TestTheAsyncHookFailsOpenToo:
 
         failures = [entry for entry in logs if entry["event"] == "model_ledger.record_failed"]
         assert len(failures) == 1, f"expected one loud event, got {logs}"
-        assert failures[0]["purpose"] == "judge_faithfulness"
+        assert failures[0]["purpose"] == "calibration_judge"
         assert failures[0]["tenant_id"] == TENANT
         assert failures[0]["log_level"] == "error"
 
     async def test_the_async_recorder_runs_off_the_event_loop_thread(self):
-        """The recorder opens a psycopg2 connection and commits, which blocks. Four
-        judge calls in flight (#206) each stall on every other one's ledger write
+        """The recorder opens a psycopg2 connection and commits, which blocks. Calls
+        in flight (#206) each stall on every other one's ledger write
         when that runs on the loop, so the hook hands it to a thread."""
         seen: list[threading.Thread] = []
 
@@ -824,7 +823,7 @@ class TestTheAsyncHookFailsOpenToo:
         )
         attach_async_ledger_hook(
             client,
-            _context("judge_faithfulness"),
+            _context("calibration_judge"),
             provider="openai",
             recorder=lambda call: None,
             clock=lambda: AT,
@@ -844,21 +843,6 @@ class TestTheAsyncHookFailsOpenToo:
 #: Every purpose the direct-API half calls a model for, spelled out here rather
 #: than read out of the table, so a row deleted from the table fails this file.
 EVERY_PURPOSE = [
-    "judge_faithfulness",
-    "judge_answer_relevancy",
-    "judge_context_precision",
-    "judge_context_recall",
-    "judge_retrieval_faithfulness",
-    # Added by #274. The instrument behind the gated `answer_relevancy` metric.
-    # `judge_answer_relevancy` above still bills the ragas figure, which is
-    # reported and gates nothing now; these are two Judges and two spends, so a
-    # rollup that shared a purpose could not say what the gate cost (ADR 0013).
-    "judge_relevance",
-    # Added by #227 PR 2. Not a judge: it rewrites a multi-turn scenario's last
-    # customer message as a standalone question so relevancy is scored against
-    # what was asked. Its own row so a rollup does not report the Judge as
-    # costing what the rewrite cost.
-    "eval_question_resolution",
     "scenario_generation",
     "golden_draft",
     "metadata_enrichment",
@@ -884,17 +868,8 @@ EVERY_PURPOSE = [
     "calibration_judge",
 ]
 
-#: The purposes decision #34 priced at effort `none`.
-JUDGE_PURPOSES = [
-    "judge_faithfulness",
-    "judge_answer_relevancy",
-    "judge_context_precision",
-    "judge_context_recall",
-    "judge_retrieval_faithfulness",
-]
-
-#: Every purpose runs at effort `none` since 2026-09-05. The judges and the
-#: Agent turn were priced there by decision #34; the rest landed there because
+#: Every purpose runs at effort `none` since 2026-09-05. The Agent turn was
+#: priced there by decision #34; the rest landed there because
 #: the provider refuses a tool-bearing chat completion that sends any other
 #: effort, or none at all. See `TestTheRawPathCarriesTheRouteEffort`.
 EFFORT_NONE_PURPOSES = list(EVERY_PURPOSE)
@@ -908,10 +883,43 @@ class TestTheRoutingTable:
         assert route.provider == "openai"
         assert route.model == LUNA
 
-    @pytest.mark.parametrize("purpose", JUDGE_PURPOSES)
-    def test_a_judge_runs_at_effort_none(self, purpose):
-        """The $0.62 per thousand floor holds only at effort none (decision #34)."""
-        assert route_for(purpose).reasoning_effort == "none"
+    def test_no_eval_judge_has_a_route(self):
+        """ADR 0015 took every judge off the eval path; the grounding rule bills nothing.
+
+        `calibration_judge` is the M4 harness under `tests/`, not an eval judge.
+        The table is pinned whole, so a new route under any name fails here
+        until someone adds it to this tuple on purpose.
+        """
+        expected = (
+            "agent_turn",
+            "scenario_generation",
+            "golden_draft",
+            "metadata_enrichment",
+            "actor_gate",
+            "red_team_prompt",
+            "red_team_probe",
+            "red_team_severity",
+            "deployment_orchestrator",
+            "query_expansion",
+            "retrieval_strategist",
+            "strategist",
+            "gatekeeper",
+            "auditor",
+            "calibration_judge",
+        )
+        assert set(PURPOSE_ROUTES) == set(expected), (
+            f"routes added: {sorted(set(PURPOSE_ROUTES) - set(expected))}, "
+            f"routes removed: {sorted(set(expected) - set(PURPOSE_ROUTES))}"
+        )
+
+    @pytest.mark.parametrize("purpose", EVERY_PURPOSE)
+    def test_every_openai_purpose_reads_the_one_shared_key(self, purpose, monkeypatch):
+        """The per-judge key spread (#213) went with the judges."""
+        from app.core.model_client import resolve_credentials
+
+        monkeypatch.setattr(settings, "OPENAI_API_KEY", "shared-key")
+
+        assert resolve_credentials(route_for(purpose).provider).api_key == "shared-key"
 
     @pytest.mark.parametrize("purpose", EFFORT_NONE_PURPOSES)
     def test_every_purpose_names_effort_none(self, purpose):
@@ -942,8 +950,8 @@ class TestTheRoutingTable:
             route_for("spellcheck")
 
     def test_the_message_names_what_the_table_does_hold(self):
-        with pytest.raises(UnknownPurpose, match="judge_faithfulness"):
-            route_for("judge_faithfullness")
+        with pytest.raises(UnknownPurpose, match="calibration_judge"):
+            route_for("calibration_judgee")
 
     def test_unknown_purpose_is_a_lookup_error(self):
         assert issubclass(UnknownPurpose, LookupError)
@@ -959,7 +967,7 @@ class TestTheRoutingTable:
         every reader downstream would report the new one as what ran.
         """
         with pytest.raises(TypeError):
-            PURPOSE_ROUTES["judge_faithfulness"] = ModelRoute(  # type: ignore[index]
+            PURPOSE_ROUTES["calibration_judge"] = ModelRoute(  # type: ignore[index]
                 provider="openai", model="gpt-5-mini"
             )
 
@@ -1373,27 +1381,27 @@ class TestMakeInstructorClient:
         )
 
     def test_the_wrapped_call_still_lands_one_ledger_row(self):
-        """The whole point of hooking httpx. Ragas wraps instructor, instructor wraps this."""
+        """The whole point of hooking httpx. Instructor wraps this client."""
         recorded = []
-        self._ask(self._client("judge_faithfulness", recorded.append))
+        self._ask(self._client("calibration_judge", recorded.append))
 
         assert len(recorded) == 1, f"expected one ledger row, got {len(recorded)}"
-        assert recorded[0].purpose == "judge_faithfulness"
+        assert recorded[0].purpose == "calibration_judge"
         assert recorded[0].served_model == LUNA
 
     def test_the_structured_answer_still_comes_back(self):
-        assert self._ask(self._client("judge_faithfulness", lambda call: None)).passed is True
+        assert self._ask(self._client("calibration_judge", lambda call: None)).passed is True
 
     def test_the_factory_puts_the_routed_model_on_the_wire(self):
         seen = {}
-        self._ask(self._client("judge_faithfulness", lambda call: None, seen))
+        self._ask(self._client("calibration_judge", lambda call: None, seen))
 
         assert seen["model"] == LUNA
 
     def test_the_factory_puts_the_judge_effort_on_the_wire(self):
         """`none` is a ReasoningEffort literal in openai 2.45.0, not a missing value."""
         seen = {}
-        self._ask(self._client("judge_faithfulness", lambda call: None, seen))
+        self._ask(self._client("calibration_judge", lambda call: None, seen))
 
         assert seen["reasoning_effort"] == "none"
 
@@ -1412,7 +1420,7 @@ class TestMakeInstructorClient:
         """Only the OpenAI wire format is wired here, so a silently wrong client is worse."""
         with pytest.raises(UnsupportedProvider, match="deepseek"):
             self._client(
-                "judge_faithfulness",
+                "calibration_judge",
                 lambda call: None,
                 route=ModelRoute(provider="deepseek", model="deepseek-v4-flash"),
             )
@@ -1427,7 +1435,7 @@ class TestMakeInstructorClient:
         """A sync transport under AsyncOpenAI fails at the first await, far from here."""
         with pytest.raises(TypeError, match="passed an httpx.Client"):
             make_instructor_client(
-                "judge_faithfulness",
+                "calibration_judge",
                 tenant_id=TENANT,
                 recorder=lambda call: None,
                 credentials=Credentials(api_key="test-key"),
@@ -1440,7 +1448,7 @@ class TestMakeInstructorClient:
         """And the same mismatch the other way round, which the sync SDK cannot use."""
         with pytest.raises(TypeError, match="passed an httpx.AsyncClient"):
             make_instructor_client(
-                "judge_faithfulness",
+                "calibration_judge",
                 tenant_id=TENANT,
                 recorder=lambda call: None,
                 credentials=Credentials(api_key="test-key"),

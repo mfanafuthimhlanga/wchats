@@ -275,15 +275,8 @@ def _judge_row(scenario_id: str, metric: str, score: float | None) -> tuple:
 
 
 def _fake_eval_results_rows(run_id: str, scenario_id: str) -> list[tuple]:
-    """Rows for a single scenario with all four metrics, all above their gate."""
-    scores = {
-        "faithfulness": 0.95,
-        # 1.0 rather than a similarity, because #274 made this column a decision.
-        "answer_relevancy": 1.0,
-        "context_precision": 0.90,
-        "context_recall": 0.85,
-        "ragas_answer_relevancy": 0.88,
-    }
+    """Rows for a single scenario, one per metric, all above their gate."""
+    scores = {"faithfulness": 0.95}
     return [_judge_row(scenario_id, metric, scores[metric]) for metric in METRIC_KEYS]
 
 
@@ -344,9 +337,7 @@ class TestListEvalRuns:
         assert "aggregate_scores" in first
         scores = first["aggregate_scores"]
         assert "faithfulness" in scores
-        assert "answer_relevancy" in scores
-        assert "context_precision" in scores
-        assert "context_recall" in scores
+        assert "answer_relevancy" not in scores, "a retired metric reached the console"
         assert first["status"] == "complete"
         assert first["result"] == "present"
         assert first["scenario_count"] == 20
@@ -439,34 +430,33 @@ class TestListEvalRuns:
 
     async def test_a_measured_zero_is_distinguishable_from_an_unmeasured_one(self):
         """The two states that used to be identical on the wire."""
-        run_id = str(uuid4())
-        row = (
-            run_id,
-            datetime(2026, 5, 24, 2, 0, 0, tzinfo=timezone.utc),
-            datetime(2026, 5, 24, 2, 6, 0, tzinfo=timezone.utc),
-            "complete",
-            _record_payload(
+
+        def _row(faithfulness):
+            run_id = str(uuid4())
+            return (
                 run_id,
-                golden=_outcome(*_NO_ROWS),
-                # Faithfulness genuinely averaged 0.0 over 30 rows; relevancy
-                # came back with nothing at all.
-                exploratory=_outcome(30, 30, 30, 0.0, None, None, None),
-            ),
-            None,
-        )
+                datetime(2026, 5, 24, 2, 0, 0, tzinfo=timezone.utc),
+                datetime(2026, 5, 24, 2, 6, 0, tzinfo=timezone.utc),
+                "complete",
+                _record_payload(
+                    run_id,
+                    golden=_outcome(*_NO_ROWS),
+                    exploratory=_outcome(
+                        30, 30, 30, faithfulness,
+                        unmeasured=30 if faithfulness is None else 0,
+                    ),
+                ),
+                None,
+            )
 
-        body = await self._get_runs([row])
-        run = body["eval_runs"][0]
+        # One run genuinely averaged 0.0 over 30 rows; the other came back with
+        # nothing at all.
+        body = await self._get_runs([_row(0.0), _row(None)])
+        zero, nothing = (run["metrics"]["faithfulness"] for run in body["eval_runs"])
 
-        assert run["metrics"]["faithfulness"] == {
-            "value": 0.0,
-            "measured": True,
-            "observations": 30,
-        }
-        assert run["metrics"]["answer_relevancy"]["measured"] is False
-        assert (
-            run["metrics"]["faithfulness"] != run["metrics"]["answer_relevancy"]
-        ), "a measured 0.0 and an unmeasured metric are the same on the wire"
+        assert zero == {"value": 0.0, "measured": True, "observations": 30}
+        assert nothing["measured"] is False
+        assert zero != nothing, "a measured 0.0 and an unmeasured metric are the same on the wire"
 
     async def test_every_run_carries_all_three_of_its_counts(self):
         """attempted, valid and scored are three claims, and #26 is what two look like.
@@ -969,10 +959,7 @@ class TestGetEvalRunResults:
         assert "passed" in result
         scores = result["scores"]
         assert abs(scores["faithfulness"] - 0.95) < 0.001
-        assert abs(scores["answer_relevancy"] - 1.0) < 0.001
-        assert abs(scores["ragas_answer_relevancy"] - 0.88) < 0.001, (
-            "the ragas figure still reaches the console, reported and ungated"
-        )
+        assert set(scores) == set(METRIC_KEYS)
 
     async def test_passed_flag_true_when_the_stored_gated_verdict_is_true(self):
         """passed=True when every gated row carries a True verdict (ADR 0014)."""
@@ -1052,14 +1039,11 @@ class TestGetEvalRunResults:
         body = response.json()
         assert body["results"][0]["passed"] is False
 
-    async def test_passed_flag_ignores_ungated_metrics_below_threshold(self):
-        """passed stays True when only NON-gated metrics are low.
+    async def test_passed_flag_ignores_retired_metrics_below_threshold(self):
+        """passed stays True when only rows under a retired metric are low.
 
-        Pins the contract ADR 0014 leaves. answer_relevancy, context_precision
-        and context_recall are reported and deliberately NOT part of the
-        promotion gate. A prior version of this suite asserted a 4-metric "any
-        score" rule, which contradicts it and never ran, because the module was
-        uncollectable while the ragas import was broken.
+        A run before ADR 0015 wrote rows for answer_relevancy, context_precision
+        and context_recall. None of them is part of the promotion gate.
         """
         fake_tenant = _make_fake_tenant()
         ready_agent = _make_ready_agent(fake_tenant)
@@ -1167,9 +1151,9 @@ class TestGetEvalRunResults:
         """No measurement is not a verdict.
 
         faithfulness produced nothing, so the gate (ADR 0014) cannot be
-        evaluated, and the relevancy score beside it decides nothing. Reporting
-        passed=false here would attribute a failure to a metric that was never
-        observed.
+        evaluated, and the historical relevancy row beside it decides nothing.
+        Reporting passed=false here would attribute a failure to a metric that
+        was never observed.
         """
         scenario_id = str(uuid4())
         rows = [
@@ -1182,14 +1166,13 @@ class TestGetEvalRunResults:
 
         assert result["passed"] is None
         assert result["metrics"]["faithfulness"]["measured"] is False
-        assert result["metrics"]["answer_relevancy"]["measured"] is True
+        assert "answer_relevancy" not in result["metrics"]
 
-    async def test_a_relevancy_row_that_fails_still_ships_and_still_reports(self):
-        """ADR 0014, on the payload the console and get_eval_results read.
+    async def test_a_row_under_a_retired_metric_is_history_and_decides_nothing(self):
+        """Rows a run wrote before ADR 0015 stay in `eval_results` as history.
 
-        The relevancy score survives the change and is the point of it. The
-        number is on the row, on `metrics` and in the numeric `scores`
-        projection, and nothing about it decides the scenario.
+        The route reads METRIC_KEYS, so a failing relevancy row neither decides
+        the scenario nor reaches the payload the console draws.
         """
         scenario_id = str(uuid4())
         rows = [
@@ -1197,18 +1180,14 @@ class TestGetEvalRunResults:
             _judge_row(scenario_id, "answer_relevancy", 0.02),
             _judge_row(scenario_id, "context_precision", 0.91),
             _judge_row(scenario_id, "context_recall", 0.90),
+            _judge_row(scenario_id, "ragas_answer_relevancy", 0.10),
         ]
 
         result = (await self._get_results(rows))["results"][0]
 
         assert result["passed"] is True
-        assert result["metrics"]["answer_relevancy"] == {
-            "score": 0.02,
-            "measured": True,
-            "verdict": None,
-            "threshold": None,
-        }
-        assert abs(result["scores"]["answer_relevancy"] - 0.02) < 1e-9
+        assert set(result["metrics"]) == set(METRIC_KEYS)
+        assert set(result["scores"]) == set(METRIC_KEYS)
 
     async def test_a_measured_zero_still_fails(self):
         """The tri-state must not turn a real zero into 'unknown' — that would
@@ -1302,25 +1281,6 @@ class TestGetEvalRunResults:
         assert result["passed"] is None
         assert result["metrics"]["faithfulness"]["measured"] is True
         assert result["metrics"]["faithfulness"]["verdict"] is None
-
-    async def test_an_ungated_metric_carries_no_verdict_and_no_gate(self):
-        """Three of the four metrics have no threshold anywhere (ADR 0014).
-
-        Their rows carry none either, so the response reports none. Inventing a
-        gate for them would put three extra failures on every scenario for a
-        reader that aggregates verdicts.
-        """
-        scenario_id = str(uuid4())
-        result = (
-            await self._get_results(_fake_eval_results_rows(str(uuid4()), scenario_id))
-        )["results"][0]
-
-        for metric in ("answer_relevancy", "context_precision", "context_recall"):
-            assert result["metrics"][metric]["verdict"] is None
-            assert result["metrics"][metric]["threshold"] is None
-            assert result["metrics"][metric]["measured"] is True, (
-                "an ungated metric is still measured; it just has nothing to clear"
-            )
 
     async def test_pre_0023_rows_read_as_undecided_rather_than_failed(self):
         """A run scored before the verdict had a column decided nothing on the record.

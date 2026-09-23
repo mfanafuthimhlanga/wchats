@@ -32,7 +32,6 @@ from app.services import eval_service
 from app.worker.tasks.runtime import rejudge as mod
 
 AGENT_ID = "22222222-2222-2222-2222-222222222222"
-TENANT_ID = "11111111-1111-1111-1111-111111111111"
 SOURCE_RUN = "aaaaaaaa-0000-4000-8000-000000000001"
 PRODUCTION = "postgresql://production"
 
@@ -84,14 +83,12 @@ def _make_sync_db_context(db):
 def wired(monkeypatch):
     """The task with every boundary doubled and every call recorded."""
     agent = MagicMock()
-    agent.tenant_id = TENANT_ID
     agent.neon_connection_string = b"encrypted"
     db = MagicMock()
     db.get.return_value = agent
 
     monkeypatch.setattr(mod, "get_sync_db", _make_sync_db_context(db))
     monkeypatch.setattr(mod, "fernet_decrypt", lambda _e: PRODUCTION)
-    monkeypatch.setattr(mod, "ledger_recorder", lambda _dsn: (lambda _call: None))
     monkeypatch.setattr(mod, "rejudge_instrument", lambda: INSTRUMENT)
 
     rec: dict = {
@@ -138,7 +135,7 @@ def wired(monkeypatch):
         ),
     )
 
-    def _score(scenarios, ledger, metric_keys=None):
+    def _score(scenarios, metric_keys=None):
         rec["scored"].append({"scenarios": list(scenarios), "metric_keys": metric_keys})
         return {
             "scores": [{"scenario_id": s["id"], "faithfulness": 0.9} for s in scenarios],
@@ -432,8 +429,8 @@ class TestTheRunRowAndTheLookup:
 class TestTheKeyIsEveryJudgeAndEveryGate:
     """The key was the relevance Judge's identity alone, and that was too narrow.
 
-    A rejudge also pays for ragas faithfulness, whose prompt moves with the
-    installed distribution, and it stores a `threshold` on every row it writes.
+    A rejudge scores faithfulness by the grounding rule, whose version moves when
+    one of its numbers does, and it stores a `threshold` on every row it writes.
     A gate move restates nothing already written down, which is what storing the
     threshold is for, but the next rejudge answers a different question, and a
     key that ignored it would hand back a run scored against the old number.
@@ -558,9 +555,7 @@ class TestWhatHappensWhenTheWorkFails:
         monkeypatch.setattr(mod, "run_ragas_eval", _boom)
 
         with pytest.raises(RuntimeError, match="went dark"):
-            mod._rejudge(
-                AGENT_ID, SOURCE_RUN, tenant_id=TENANT_ID, conn_str=PRODUCTION
-            )
+            mod._rejudge(AGENT_ID, SOURCE_RUN, conn_str=PRODUCTION)
 
         [(run_id, status)] = wired["status"]
         assert status == "failed"

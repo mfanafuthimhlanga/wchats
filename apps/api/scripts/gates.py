@@ -221,11 +221,10 @@ LIZARD_BASELINE = {
     ("app/services/eval_service.py", "build_eval_run_config"): (11, 191),
     ("app/services/eval_service.py", "insert_eval_run"): (4, 62),
     # 11/153 to 6/125: #274 lifted the metric assembly into `_judge_samples` and
-    # the attribution into `_attributed`, because the function gained a second
-    # instrument to build and choosing what to spend money on is its own job.
-    ("app/services/eval_service.py", "run_ragas_eval"): (6, 125),
+    # the attribution into `_attributed`. 6/125 to 6/118: #296 deleted the judges.
+    ("app/services/eval_service.py", "run_ragas_eval"): (6, 114),
     ("app/services/eval_service.py", "summarise_agent_invocation"): (31, 186),
-    ("app/services/eval_service.py", "summarise_run_validity"): (13, 108),
+    ("app/services/eval_service.py", "summarise_run_validity"): (13, 107),
     ("app/services/eval_service.py", "update_eval_run_config"): (4, 70),
     ("app/services/identity_service.py", "verify_otp"): (8, 103),
     ("app/services/label_service.py", "record_human_label"): (6, 120),
@@ -286,10 +285,10 @@ LIZARD_BASELINE = {
     ("app/worker/tasks/runtime/eval.py", "_invoke_agent_for_scenarios"): (13, 196),
     ("app/worker/tasks/runtime/eval.py", "_run_one_eval_turn"): (3, 80),
     ("app/worker/tasks/runtime/eval.py", "generate_eval_suite"): (8, 73),
-    ("app/worker/tasks/runtime/eval.py", "run_eval_suite"): (24, 455),
+    ("app/worker/tasks/runtime/eval.py", "run_eval_suite"): (24, 446),
     ("app/worker/tasks/runtime/red_team.py", "_build_probe_fn"): (11, 65),
     ("app/worker/tasks/runtime/red_team.py", "run_red_team"): (28, 425),
-    ("app/worker/tasks/runtime/retrieval_eval.py", "run_retrieval_faithfulness"): (12, 82),
+    ("app/worker/tasks/runtime/retrieval_eval.py", "run_retrieval_faithfulness"): (10, 80),
     ("app/worker/tasks/runtime/retrieve.py", "retrieve_and_rank"): (12, 212),
     ("app/worker/tasks/runtime/validators.py", "run_auditor"): (15, 179),
     ("app/worker/tasks/runtime/validators.py", "run_gatekeeper"): (5, 99),
@@ -340,7 +339,7 @@ SOURCE_ASSERTION_BASELINE = {
     "tests/unit/test_confirmation_resolution.py": 1,
     "tests/unit/test_deployment_service.py": 1,
     "tests/unit/test_eval_agent_invocation.py": 5,
-    "tests/unit/test_eval_service.py": 5,
+    "tests/unit/test_eval_service.py": 4,
     "tests/unit/test_eval_task.py": 1,
     "tests/unit/test_idv_message_verdict_pin.py": 2,
     "tests/unit/test_index_staleness.py": 1,

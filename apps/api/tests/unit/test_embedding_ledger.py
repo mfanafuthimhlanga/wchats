@@ -465,34 +465,3 @@ class TestTheRowRecordEmbeddingWrites:
 
         assert rows[0].at == MIDDAY_UTC
 
-
-# ---------------------------------------------------------------------------
-# The eval path
-# ---------------------------------------------------------------------------
-
-
-class TestTheEvalScorerRecordsItsEmbeddings:
-    def test_embed_text_leaves_one_row_billed_to_the_run(self, monkeypatch):
-        """AnswerRelevancy embeds through `_VoyageRagasEmbedding`, which is a
-        Voyage call per scored sample and was the third unrecorded path.
-
-        The real class, not the fake `tests/unit/test_eval_service.py` installs.
-        A fake that only stored the ledger proved the argument arrived and
-        nothing about the row.
-        """
-        import app.services.eval_service as eval_service
-
-        rows: list[ModelCall] = []
-        monkeypatch.setattr(
-            eval_service, "_get_vo", lambda: voyage_client(21, [[0.7] * 1024])
-        )
-
-        embedder = eval_service._VoyageRagasEmbedding(ledger(rows))
-        vector = embedder.embed_text("did that answer the question?")
-
-        assert vector == [0.7] * 1024
-        assert len(rows) == 1, f"Expected one row per embed_text call, got {len(rows)}"
-        assert rows[0].purpose == EMBED_QUERY
-        assert rows[0].job_id == JOB_ID, "billed to the eval run, like the judges beside it"
-        assert rows[0].input_tokens == 21
-        assert rows[0].provider == VOYAGE_PROVIDER

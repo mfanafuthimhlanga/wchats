@@ -13,7 +13,7 @@ a tenant's; a tenant's yes or no on a flagged claim lands here as a labelled row
 | `truth.csv` | claim with known truth | `scenario_id, claim, supported, novel, source, added, note` |
 | `claims_<identity>.csv` | claim the judge decided | `scenario_id, position, statement, supported, reason` |
 | `scores_<identity>.csv` | answer the judge scored | `scenario_id, dimension, verdict, score, claims` |
-| `judge_rows.py` | | scores `rows.csv` through the production judge and writes the two files above; spends money |
+| `ground_rows.py` | | scores `truth.csv` and `rows.csv` with the grounding rule and prints recall on the planted sentences and the real answers' scores at the gate; no model call |
 | `score_claims.py` | | the scorer, vendored from `~/.claude/skills/calibrate-judge`; edits go to the skill first |
 | `import_reviews.py` | | turns a run's Tenant answers into the REVIEWED benchmark below; never writes here |
 | `reviewed/` | | a second benchmark of the same three file kinds, holding reviewed truth; absent until the first import |
@@ -48,15 +48,16 @@ precision or `unknown` with the confirmed and undecided counts, and the answer-l
 Precision reads `unknown` until `truth.csv` holds a supported claim, because until then a false
 alarm cannot occur.
 
-A new judge identity:
+The grounding rule:
 
 ```bash
-OPENAI_API_KEY=... .venv/Scripts/python.exe tests/evals/calibration/benchmark/judge_rows.py \
-  --benchmark tests/evals/calibration/benchmark
+.venv/Scripts/python.exe tests/evals/calibration/benchmark/ground_rows.py \
+  [--floor 0.4] [--threshold 0.80]
 ```
 
-then add its numbers to `PUBLISHED` in `tests/unit/test_claims_benchmark.py`, which refuses a
-shipped claims file with no published row.
+`--floor` defaults to `CARRIED_FLOOR` in `app/domain/grounding.py` and `--threshold` to 0.80.
+A claims file added here needs its numbers in `PUBLISHED` in
+`tests/unit/test_claims_benchmark.py`, which refuses a shipped claims file with no published row.
 
 ## Adding truth
 

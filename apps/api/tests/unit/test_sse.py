@@ -651,7 +651,7 @@ class TestTheJoinKeyStaysOnThePersistedRow:
             "message_id": "m-1",
         })
 
-        _, _, _, message_id = _fetch_turn_context(db, "job-1")
+        _, _, message_id = _fetch_turn_context(db, "job-1")
 
         assert message_id == "m-1"
 
