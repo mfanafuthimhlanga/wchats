@@ -1,7 +1,7 @@
-"""M6 eval tasks — nightly eval suite, per-agent Ragas eval, scenario generation.
+"""M6 eval tasks: nightly eval suite, per-agent eval, scenario generation.
 
 All tasks: acks_late=True, runtime queue, no conn_str in args (CTL-08).
-Ragas 0.4.x only — D-01 through D-04.
+The grounding rule scores faithfulness (ADR 0015); no judge is called.
 
 Where each write lands
 ----------------------
@@ -10,7 +10,7 @@ An eval result is an OBSERVATION ABOUT a run, not tenant data. So:
     scenario read / eval_runs / results  -> conn_str         (PRODUCTION)
     scoring (run_ragas_eval)             -> no database at all
 
-run_ragas_eval scores rows that are already in memory against the judge API and
+run_ragas_eval scores rows that are already in memory with the grounding rule and
 opens no connection at all. The scenario rows themselves are read from
 PRODUCTION below.
 
@@ -44,7 +44,7 @@ the fixed half being overfit. The two are reported separately all the way out
 score and an exploratory score are different measurements.
 
 Every report carries (attempted, valid, scored): rows fetched, rows carrying a
-label, rows Ragas returned a real number for. A rate without its denominator
+label, rows the rule returned a real number for. A rate without its denominator
 must not be constructible from what this task returns.
 
 The agent is invoked (audit D1, plan P2)
@@ -87,8 +87,8 @@ THE PII FIREWALL RUNS ON THIS PATH TOO, since #50. It used to run in the live
 Celery task body only, so an eval scored the agent's own words while a customer
 read the deflection — and a response carrying a customer's email address, card
 number or ID number was posted verbatim to a third-party judge API.
-`agent_loop._turn_result` scans inside the seam now, so what Ragas scores is what
-a customer would have read. The cost of that is stated rather than left implicit:
+`agent_loop._turn_result` scans inside the seam now, so what the rule scores is
+what a customer would have read. The cost of that is stated rather than left implicit:
 a deflected turn is scored AS the deflection, which measures the firewall rather
 than the answer behind it, and a run whose firewall fires often will read as a
 grounding regression.
@@ -113,7 +113,7 @@ import structlog
 
 from app.core.database import get_sync_db
 from app.core.log_bounds import log_failure
-from app.core.model_client import LedgerContext, ledger_recorder
+from app.core.model_client import ledger_recorder
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent, select_beat_fanout_agents
 from app.services.clarifying_check import (
@@ -136,7 +136,6 @@ from app.services.eval_service import (
     dataset_of,
     insert_eval_run,
     invocation_provenance,
-    question_resolution_provenance,
     read_run_ledger,
     run_ragas_eval,
     summarise_agent_invocation,
@@ -161,8 +160,8 @@ log = structlog.get_logger(__name__)
 #:
 #: `judge_records` is the key `write_eval_results` takes, and it is a different
 #: grain from `scores`. One JudgeRecord is one (scenario, metric) decision
-#: carrying its threshold, its verdict, its Judge and the ledger bucket that paid
-#: for it; one `scores` row is one scenario carrying four numbers, which is what
+#: carrying its threshold, its verdict and the instrument that scored it; one
+#: `scores` row is one scenario carrying its faithfulness score, which is what
 #: `summarise_run_validity` counts. Both come out of `run_ragas_eval` built from
 #: the same attributed rows. Rebuilding either at the call site would put a
 #: second derivation between the number this task reports and the row it writes,
@@ -172,8 +171,8 @@ log = structlog.get_logger(__name__)
 _NOTHING_SCORED = {
     "scores": [], "judge_records": [],
     "sent": 0, "returned": 0, "unattributed": 0,
-    # A run below the floor discards the rule's verdicts as it discards the
-    # Ragas rows: nothing it measured is reported (#226).
+    # A run below the floor discards the clarifying rule's verdicts as it
+    # discards the scored rows: nothing it measured is reported (#226).
     "clarifying_verdicts": {},
 }
 
@@ -204,19 +203,6 @@ def _log_below_measurement_floor(agent_id: str, run_id: str, invocation: dict) -
             "floor is not a measurement, and writing its scores would make the "
             "deploy gate read it as one"
         ),
-    )
-
-
-def _run_ledger(tenant_id: str, agent_id: str, run_id: str, conn_str: str) -> LedgerContext:
-    """Who this run's judge calls are billed to, and which database records them.
-
-    The dsn reaches the recorder here and travels no further: `LedgerContext` has
-    no field that could hold one, which is what lets `run_ragas_eval` go on saying
-    it takes no connection string.
-    """
-    return LedgerContext(
-        tenant_id=tenant_id, agent_id=agent_id, job_id=run_id,
-        recorder=ledger_recorder(conn_str),
     )
 
 
@@ -509,11 +495,11 @@ def _run_one_eval_turn(
         posture a mined production scenario carries no evidence against.
       * `history` is THIS SCENARIO'S OWN `turns` (tenant 0028, #227) bounded by
         `_scenario_history`, so the rows stay independent; fresh conversation id.
-      * `job_id=run_id`, the eval run's own id and the id `_run_ledger` bills
-        the judges under. A synthesised uuid per scenario names no job, so
-        `model_calls WHERE job_id = <run_id>` returned the judge half of a run and
-        none of the agent turns, and this run's agent traffic was indistinguishable
-        from live customer traffic under `purpose='agent_turn'`.
+      * `job_id=run_id`, the eval run's own id, so
+        `model_calls WHERE job_id = <run_id>` returns every agent turn the run
+        paid for. A synthesised uuid per scenario would name no job, and this
+        run's agent traffic would be indistinguishable from live customer
+        traffic under `purpose='agent_turn'`.
       * No `conversations` row is created. Nothing writes one because recorded
         mode suppresses every tenant write the tools would make, and creating one
         would put eval traffic into the table `mine_production_scenarios` reads —
@@ -609,13 +595,13 @@ def _measured_row(
 
     AN AMBIGUOUS SCENARIO IS DECIDED HERE, NOT BY THE JUDGE (#226, ADR 0012).
     Its correct reply is a clarifying question, which retrieves nothing, so the
-    ordinary rule below would drop it as `no_retrieval`, and the four metrics
-    would measure the wrong thing if it did retrieve. Its row carries the
+    ordinary rule below would drop it as `no_retrieval`, and faithfulness would
+    measure the wrong thing if it did retrieve. Its row carries the
     rule's verdict under `CLARIFYING_CHECK_KEY`, read off the turn's TOOL LOG:
     the agent asked when it called `clarify` and did not retrieve. That key is
-    what keeps the row out of the Ragas set in `_score_run`, and such a row is
+    what keeps the row out of the scored set in `_score_run`, and such a row is
     NOT `scorable` in the invocation record: `scorable` stays the count of rows
-    the four metrics were computed over.
+    faithfulness was computed over.
 
     Every other responded turn is a row only when it retrieved something.
     EXCLUDED AND COUNTED otherwise: Faithfulness / ContextPrecision /
@@ -658,7 +644,7 @@ def _invoke_agent_for_scenarios(
 
     `scored_rows` is the subset that produced a response, each carrying the
     agent's own `agent_response` and the contexts the AGENT retrieved. Those are
-    the only rows handed to Ragas. A row that is not in this list was not scored
+    the only rows handed to the scorer. A row that is not in this list was not scored
     — not scored 0, not scored against its reference answer, not scored at all —
     and the observation says how many there were and why.
 
@@ -1167,10 +1153,8 @@ def _scenario_dict(row: Mapping) -> dict:
     }
 
 
-def _record_and_judge(
-    run_id: str, scored_scenarios: list, ledger: LedgerContext, conn_str: str
-) -> tuple[dict, list]:
-    """Write every measured row, then put the Judge's rows to the Judge.
+def _record_and_judge(run_id: str, scored_scenarios: list, conn_str: str) -> dict:
+    """Write every measured row, then score the rows the rule reads.
 
     THE CHECKED ROWS NEVER REACH THE JUDGE (#226, ADR 0012). An ambiguous
     scenario's verdict was decided in the invocation loop and rides on the row;
@@ -1179,28 +1163,24 @@ def _record_and_judge(
     scored and as passed or failed. No rewrite is asked for it: the rule reads
     the response alone.
 
-    Returns (run_ragas_eval's payload, the rows it was handed).
+    Returns run_ragas_eval's payload.
     """
     judged, checked = split_checked_rows(scored_scenarios)
-    # NO QUESTION RESOLVER (ADR 0015). The rewrite fed relevancy, which gates
-    # nothing since ADR 0014 and is not scored since ADR 0015; the sample row
-    # keeps `resolved_question` NULL. The provenance stamp counts rows that
-    # carry a relevancy score, so on a run that scores none it stamps zeros.
+    # NO QUESTION RESOLVER (ADR 0015): the sample row keeps `resolved_question`
+    # NULL.
     write_eval_samples(run_id, [*judged, *checked], conn_str)
-    results = run_ragas_eval(judged, ledger)
+    results = run_ragas_eval(judged)
     results["clarifying_verdicts"] = clarifying_verdicts(checked)
-    return results, judged
+    return results
 
 
 def _score_run(
     *,
-    tenant_id: str,
-    agent_id: str,
     run_id: str,
     scored_scenarios: list,
     conn_str: str,
-) -> tuple[dict, dict]:
-    """Score the answered turns, persist what the Judge said, close the run.
+) -> dict:
+    """Score the answered turns, persist the verdicts, close the run.
 
     The whole of `run_eval_suite`'s measured path, lifted out so the task body
     stays under its complexity pin and so the ordering below has room to be
@@ -1211,46 +1191,18 @@ def _score_run(
 
       1. `write_eval_samples` first, so the scored text outlives a scoring
          failure (#58). No question is resolved before it writes (ADR 0015).
-      2. `run_ragas_eval`, the expensive half.
+      2. `run_ragas_eval`, the scoring pass.
       3. `write_eval_results` on PRODUCTION, because the eval branch is about to
          be destroyed. It is the JUDGE RECORDS that go there, not `scores`.
-      4. The question-resolution counts, AFTER the rows they describe, so a death
-         in between leaves the run saying nothing rather than describing scores
-         that were never written (#233).
-      5. Terminal status last.
-
-    Step 4 is DERIVED ONCE AND STAMPED TWICE (#235). The counts go on
-    `eval_runs.config` for a reader holding only the row, and the same object is
-    returned for `build_eval_result`.
-
-    ONE DERIVATION IS NOT ONE PERSISTENCE, and the difference matters to whoever
-    reads the row. `update_eval_run_config` never raises: it returns False on a
-    missing column and False on any other write failure. So the two homes hold
-    one set of counts but can still end up holding DIFFERENT AMOUNTS of it, and
-    the record is the authority. The deploy gate reads the record; the config is
-    the human-readable copy and it is best effort. A failed stamp is logged here
-    rather than swallowed, because the alternative is a row that silently says
-    nothing about a run whose record refuses a deploy.
+      4. Terminal status last.
 
     Returns:
-        (results, question_resolution): `run_ragas_eval`'s payload, and the
-        config patch `question_resolution_provenance` produced.
+        `run_ragas_eval`'s payload.
     """
-    ledger = _run_ledger(tenant_id, agent_id, run_id, conn_str)
-    results, judged = _record_and_judge(run_id, scored_scenarios, ledger, conn_str)
+    results = _record_and_judge(run_id, scored_scenarios, conn_str)
     write_eval_results(run_id, results["judge_records"], conn_str)
-    question_resolution = question_resolution_provenance(judged, results["scores"])
-    if not update_eval_run_config(run_id, question_resolution, conn_str):
-        # The record still carries them, so the gate is unaffected. What is lost
-        # is the row a human reads, and losing it quietly is how the two came to
-        # be described as unable to disagree.
-        log.warning(
-            "score_run.question_resolution_not_stamped",
-            run_id=run_id,
-            **question_resolution["question_resolution"],
-        )
     update_eval_run_status(run_id, "complete", finished_at=True, conn_str=conn_str)
-    return results, question_resolution
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -1282,7 +1234,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
            PRODUCTION with it (status='running').
         5. try: INVOKE THE AGENT once per valid scenario (recorded side effects)
                 → patch the observation onto the run's config on PRODUCTION
-                → run Ragas eval over the rows that answered (no database)
+                → score the rows that answered (no database)
                 → write results to PRODUCTION → mark complete on PRODUCTION.
            except: mark failed on PRODUCTION.
 
@@ -1332,10 +1284,8 @@ def run_eval_suite(self, agent_id: str) -> dict:
     population — an owner can lower their own pass rates by doing the work, with
     nothing connecting the refused deploy back to their labelling. The inverse is
     equally live: an owner who pastes the agent's own answer back in as the
-    reference inflates faithfulness. And an owner-authored answer is not grounded
-    in the retrieved corpus by construction, so context_recall over labelled rows
-    measures something different from context_recall over Haiku-written
-    references — averaged into one dataset mean, because no selector projects
+    reference inflates faithfulness. Labelled rows and Haiku-written references
+    are averaged into one dataset mean, because no selector projects
     `label_trust_tier` (`BACKLOG 4.12`).
 
     Args:
@@ -1359,7 +1309,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
 
     (attempted, valid, scored) are three different claims and all three are
     reported: rows fetched, rows carrying a label (the DENOMINATOR), and rows
-    Ragas returned a real number for. `scored < valid` means the run measured
+    the rule returned a real number for. `scored < valid` means the run measured
     less than it attempted, and that is invisible from any one of them alone.
     """
     # ------------------------------------------------------------------
@@ -1377,7 +1327,6 @@ def run_eval_suite(self, agent_id: str) -> dict:
 
         # Decrypt conn_str at runtime — never stored, never passed as arg (CTL-08)
         conn_str = fernet_decrypt(agent.neon_connection_string)
-        tenant_id = str(agent.tenant_id)  # read while the session is open
 
     # Check eval_runs table on tenant DB for a recent running run.
     #
@@ -1555,7 +1504,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
         # but double-check here for safety. This is the VALID set: rows that
         # were fetched and carry a label, i.e. the rows that can be scored at
         # all. It is the denominator, and it is not the same number as the rows
-        # fetched (attempted) or the rows Ragas came back with (scored).
+        # fetched (attempted) or the rows scoring came back with (scored).
         valid_scenarios = [s for s in scenarios if s.get("reference_answer")]
 
         # ------------------------------------------------------------------
@@ -1577,7 +1526,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
         # WRITTEN BEFORE SCORING, DELIBERATELY. The invocation is the expensive,
         # unrepeatable half of the run; scoring can fail on a judge outage and be
         # retried. Patching the observation in first means a run that dies in
-        # Ragas still carries what its agent actually did, and a run that dies
+        # scoring still carries what its agent actually did, and a run that dies
         # BEFORE this point keeps the agent_invoked=false it was inserted with —
         # so the deploy gate refuses it rather than inheriting a hopeful default.
         provenance = invocation_provenance(invocation)
@@ -1613,18 +1562,13 @@ def run_eval_suite(self, agent_id: str) -> dict:
         # `results["scores"]` and `results["judge_records"]` an `object` that
         # summarise_run_validity and write_eval_results reject.
         results: dict
-        # An empty patch builds the record's four zeros, and for a run below the
-        # measurement floor that is the reading: it scored no relevancy, so it
-        # resolved no question (#235).
-        question_resolution: dict = {}
         if invocation["status"] != AGENT_INVOCATION_MEASURED:
             _log_below_measurement_floor(agent_id, run_id, invocation)
             update_eval_run_status(run_id, "complete", finished_at=True, conn_str=conn_str)
             results = dict(_NOTHING_SCORED)
         else:
-            results, question_resolution = _score_run(
-                tenant_id=tenant_id, agent_id=agent_id, run_id=run_id,
-                scored_scenarios=scored_scenarios, conn_str=conn_str,
+            results = _score_run(
+                run_id=run_id, scored_scenarios=scored_scenarios, conn_str=conn_str,
             )
 
         # (attempted, valid, scored) for the run and for each dataset. Computed
@@ -1653,7 +1597,6 @@ def run_eval_suite(self, agent_id: str) -> dict:
             ledger=read_run_ledger(run_id, conn_str),
             scenarios=scenarios,
             judge_records=results["judge_records"],
-            question_resolution=question_resolution,
         )
         result_recorded = write_eval_result(run_id, result, conn_str)
 

@@ -34,11 +34,6 @@ import pytest
 from app.services.eval_service import build_judge_records
 from app.worker.tasks.runtime import eval as mod
 
-# The canned Judge outputs and the embedding stand-in are borrowed rather than
-# copied, because a second set of canned verdicts would let this module and the
-# eval_service tests disagree about what a Judge returns.
-from tests.unit.test_eval_service import _CANNED_JUDGE_OUTPUTS, _FakeRagasEmbedding
-
 PRODUCTION = "postgresql://production/tenant"
 #: The tenant every ledger row this module produces is billed to. A real UUID,
 #: because `ModelCall` and the ledger columns take UUID strings.
@@ -168,7 +163,7 @@ def _make_sync_db_context(mock_db):
     return _ctx
 
 
-def _ragas_return(scores: list[dict], **extra) -> dict:
+def _scorer_return(scores: list[dict], **extra) -> dict:
     """What `run_ragas_eval` returns, with the judge records derived the real way.
 
     `build_judge_records` is the shipped function, not a copy. A double that
@@ -241,7 +236,7 @@ def wired(monkeypatch):
         "inserted": [],
         "invoked": [],
         "config_patched": [],
-        "ragas": [],
+        "scorer": [],
         "results": [],
         "status": [],
         # The EvalResult the task built and the connection it wrote it on (#51),
@@ -330,11 +325,11 @@ def wired(monkeypatch):
             rec["inserted"].append((kind, pv, config, conn_str)) or True
         ),
     )
-    def _fake_ragas(*args, **kwargs):
+    def _fake_scorer(*args, **kwargs):
         # Recorded as (args, kwargs) rather than as a named connection string:
         # the property under test is that scoring is handed NO connection at
         # all, and that cannot be expressed by a signature that names one.
-        rec["ragas"].append((args, kwargs))
+        rec["scorer"].append((args, kwargs))
         scores = [{"scenario_id": "s1"}]
         # The records the real function derives from those scores, through
         # the real deriver. A double inventing its own would let the writer
@@ -344,7 +339,7 @@ def wired(monkeypatch):
             "judge_records": build_judge_records(scores),
         }
 
-    monkeypatch.setattr(mod, "run_ragas_eval", _fake_ragas)
+    monkeypatch.setattr(mod, "run_ragas_eval", _fake_scorer)
     monkeypatch.setattr(mod, "read_run_ledger", lambda run_id, conn_str: rec["ledger"])
     monkeypatch.setattr(
         mod,
@@ -401,19 +396,14 @@ class TestPersistenceSplit:
             "eval_results were not written to production, which is audit "
             "defect D2"
         )
-        assert len(wired["ragas"]) == 1
-        args, kwargs = wired["ragas"][0]
-        assert len(args) == 2 and kwargs == {}, (
-            "scoring was handed something besides the scenarios and the "
-            "ledger. The argument it used to be given and never read was a "
-            "connection string"
+        assert len(wired["scorer"]) == 1
+        args, kwargs = wired["scorer"][0]
+        assert len(args) == 1 and kwargs == {}, (
+            "scoring was handed something besides the scenarios; a connection "
+            "string is the argument it must never take"
         )
-        scenarios, led = args
+        [scenarios] = args
         assert isinstance(scenarios, list)
-        assert not [
-            value for value in vars(led).values() if isinstance(value, str)
-            and value.startswith("postgres")
-        ], f"a connection string reached scoring on the ledger: {led!r}"
         assert result["run_id"]
 
     def test_terminal_status_lands_on_production(self, wired):
@@ -835,23 +825,11 @@ class TestTheRunResolvesNoQuestion:
     FOLLOW_UP = "f0000000-0000-0000-0000-00000000000f"
 
     def _run_with_a_follow_up(self, wired, monkeypatch):
-        """One multi-turn scenario through the task, with the resolver counting its calls.
+        """One multi-turn scenario through the task.
 
-        `resolve_question` is the model call a rewrite would cost. Doubling it
-        with a counter is what shows the task never asks, rather than asking and
-        dropping the answer. The rows handed to `write_eval_samples` are kept, so
-        the columns the sample table would receive can be read off them.
+        The rows handed to `write_eval_samples` are kept, so the columns the
+        sample table would receive can be read off them.
         """
-        from app.services import question_resolution
-
-        self.resolver_calls: list = []
-        monkeypatch.setattr(
-            question_resolution,
-            "resolve_question",
-            lambda question, turns, **kw: (
-                self.resolver_calls.append(question) or "a rewrite nobody asked for"
-            ),
-        )
         self.sample_rows: list = []
         monkeypatch.setattr(
             mod,
@@ -869,7 +847,7 @@ class TestTheRunResolvesNoQuestion:
         )
         monkeypatch.setattr(mod.psycopg2, "connect", lambda *a, **kw: conn)
         _run()
-        [(args, _kwargs)] = wired["ragas"]
+        [(args, _kwargs)] = wired["scorer"]
         return {row["id"]: row for row in args[0]}
 
     def test_the_task_calls_no_resolver_and_writes_no_rewrite(self, wired, monkeypatch):
@@ -880,9 +858,6 @@ class TestTheRunResolvesNoQuestion:
         assert not hasattr(mod, "annotate_resolved_questions"), (
             "the eval task imports the question resolver again"
         )
-        assert self.resolver_calls == [], (
-            f"the run asked for {len(self.resolver_calls)} rewrite(s) that nothing scores"
-        )
         assert self.FOLLOW_UP in scored, "the multi-turn row never reached the scorer"
         assert all(row.get("resolved_question") is None for row in scored.values())
         written = {row["id"]: _sample_row_params("run-1", row) for row in self.sample_rows}
@@ -892,144 +867,27 @@ class TestTheRunResolvesNoQuestion:
         )
 
 
-class TestTheRunRecordsWhichQuestionRelevancyScored:
-    """The stamp, driven through the task rather than called directly (#233).
+class TestTheRunStampsNoQuestionResolution:
+    """The task patches the run config once, with the invocation provenance (ADR 0015).
 
-    `question_resolution_provenance` has its own unit tests and they cover the
-    counting. Three things only the task can show, and each is a real way to
-    build this wrong:
-
-    - that `run_eval_suite` calls `update_eval_run_config` a SECOND time at all,
-    - that it hands the deriver the judged rows, the ones carrying `turns`,
-      rather than a list that would count no conversation at all,
-    - that the patch names only its own key, so the observed `agent_invocation`
-      object the first patch wrote survives the second one.
-
-    Since ADR 0015 the task resolves no question, so every multi-turn row the
-    judge double scores is a raw-question fallback. The resolver double below
-    would rewrite one of the two if it were ever called, so a run that started
-    asking again reports `rewritten` 1 and fails here.
+    The question-resolution stamp went with the resolver, so the record carries
+    the default counts and the config carries no `question_resolution` key.
     """
 
-    FOLLOW_UP = "f0000000-0000-0000-0000-00000000000f"
-    UNRESOLVABLE = "f0000000-0000-0000-0000-00000000000e"
-    LEAD_IN = [{"role": "user", "content": "I'm setting up Earth Elements locally."}]
+    def test_the_only_config_patch_is_the_invocation_provenance(self, wired):
+        report = _run()
 
-    def _run_a_mixed_conversation(self, wired, monkeypatch, *, relevancy=0.9):
-        """Two multi-turn rows plus singles, with a resolver that would rewrite one.
-
-        `resolve_question` is doubled so a run that called it would record a
-        rewrite, and the judge double scores the rows it was handed rather than
-        a fixed id, so the record has something to be derived FROM.
-        """
-        from app.services import question_resolution
-
-        monkeypatch.setattr(
-            question_resolution,
-            "resolve_question",
-            lambda question, turns, **kw: (
-                None if "deliver" in question else "How do I start the dev server?"
-            ),
-        )
-        monkeypatch.setattr(
-            mod,
-            "run_ragas_eval",
-            lambda scenarios, ledger: _ragas_return(
-                [
-                    {"scenario_id": s["id"], "answer_relevancy": relevancy,
-                     "faithfulness": 0.8, "context_precision": 0.7, "context_recall": 0.6}
-                    for s in scenarios
-                ]
-            ),
-        )
-        conn = MagicMock()
-        conn.cursor.return_value = _Cursor(
-            golden_rows=[
-                scenario_row(self.FOLLOW_UP, "how do I start it?", "Run pnpm dev.",
-                             dataset="golden", turns=self.LEAD_IN),
-                scenario_row(self.UNRESOLVABLE, "and do you deliver?", "Yes.",
-                             dataset="golden", turns=self.LEAD_IN),
-            ],
-            exploratory_rows=wired["cursor"].exploratory_rows,
-        )
-        monkeypatch.setattr(mod.psycopg2, "connect", lambda *a, **kw: conn)
-        self.report = _run()
-        return [patch for _run_id, patch, _conn in wired["config_patched"]]
-
-    def test_the_run_config_records_every_multi_turn_row_as_a_raw_question_fallback(
-        self, wired, monkeypatch
-    ):
-        patches = self._run_a_mixed_conversation(wired, monkeypatch)
-
-        [counts] = [p["question_resolution"] for p in patches if "question_resolution" in p]
-        assert counts == {
-            "relevancy_scored": 4,
-            "multi_turn": 2,
-            "rewritten": 0,
-            "raw_question_fallback": 2,
-        }, (
-            "the run does not record that relevancy read the raw question on "
-            "every conversation, so a collector cannot tell the run resolved "
-            "nothing (#233, ADR 0015)"
-        )
-
-    def test_the_stamp_does_not_disturb_the_invocation_provenance(
-        self, wired, monkeypatch
-    ):
-        """Two patches, and the second names only its own key.
-
-        Merging the two into one call would land the same config, so nothing
-        clobbers today. What this holds is the shape that keeps it that way: the
-        stamp patch carries `question_resolution` alone, so it can never be the
-        write that replaces the observed `agent_invocation` object with a stale
-        one. `||` is a shallow merge and that object is replaced whole.
-        """
-        patches = self._run_a_mixed_conversation(wired, monkeypatch)
-
+        patches = [patch for _run_id, patch, _conn in wired["config_patched"]]
         assert [sorted(p) for p in patches] == [
             ["agent_invocation", "agent_invoked", "dimensions_not_exercised",
              "scored_response_source"],
-            ["question_resolution"],
         ]
-
-    def test_the_run_record_carries_the_same_counts_as_the_config(
-        self, wired, monkeypatch
-    ):
-        """The wiring into `build_eval_result`, which nothing else reaches.
-
-        Every other test of this fact stops at the config patch, and the
-        `_score_run` identity test calls that helper directly rather than through
-        the task, so the keyword on the `build_eval_result` call was reachable by
-        no test at all. Wiring it to `{}` left 518 tests green while the record
-        read four zeros and the deploy gate found nothing to distrust, which is
-        the whole of #235 silently off.
-
-        `_run_report` returns the record's payload, so the counts the config
-        carries and the counts the record carries are read from one run here.
-        """
-        patches = self._run_a_mixed_conversation(wired, monkeypatch)
-
-        [counts] = [p["question_resolution"] for p in patches if "question_resolution" in p]
-        assert self.report["question_resolution"] == counts, (
-            "the record and the config describe one measurement; a record "
-            "reading zeros here ships a run whose relevancy was never checked"
-        )
-        assert self.report["question_resolution"]["raw_question_fallback"] == 2
-        assert self.report["question_resolution"]["rewritten"] == 0
-
-    def test_a_row_the_judge_scored_no_relevancy_for_is_not_counted(
-        self, wired, monkeypatch
-    ):
-        """A relevancy outage leaves the other three metrics and no denominator.
-
-        The run still completes and still writes its rows; what it must not do is
-        claim two rewrites were measured when relevancy measured nothing.
-        """
-        patches = self._run_a_mixed_conversation(wired, monkeypatch, relevancy=None)
-
-        [counts] = [p["question_resolution"] for p in patches if "question_resolution" in p]
-        assert counts["relevancy_scored"] == 0
-        assert counts["rewritten"] == 0
+        assert report["question_resolution"] == {
+            "relevancy_scored": 0,
+            "multi_turn": 0,
+            "rewritten": 0,
+            "raw_question_fallback": 0,
+        }
 
 
 class TestTheProjectionAndTheReadCannotDisagree:
@@ -1129,7 +987,7 @@ class TestTheProjectionAndTheReadCannotDisagree:
 
         _run()
 
-        [(args, _kwargs)] = wired["ragas"]
+        [(args, _kwargs)] = wired["scorer"]
         scored = {row["id"]: row for row in args[0]}
         assert len(scored) == 4
         assert scored["a0000000-0000-0000-0000-000000000000"]["turns"] == lead_in, (
@@ -1213,25 +1071,21 @@ class TestValidityDenominators:
             "not in the fetched set, so nothing is attributable"
         )
 
-    def test_scored_is_below_valid_when_ragas_returns_fewer_rows(
+    def test_scored_is_below_valid_when_scoring_returns_fewer_rows(
         self, wired, monkeypatch
     ):
-        """Ragas returning fewer rows than it was given must be visible.
+        """A scoring pass returning fewer rows than it was given must be visible.
 
-        A judge outage or a parse failure drops rows silently. Reporting only
-        the submitted count would then claim a measurement of two over an
-        observation of one.
+        Reporting only the submitted count would then claim a measurement of two
+        over an observation of one.
         """
         monkeypatch.setattr(
             mod,
             "run_ragas_eval",
-            lambda scenarios, ledger: _ragas_return([
+            lambda scenarios: _scorer_return([
                 {
                     "scenario_id": "g0000000-0000-0000-0000-000000000001",
                     "faithfulness": 0.9,
-                    "answer_relevancy": 0.9,
-                    "context_precision": None,
-                    "context_recall": None,
                 }
             ]),
         )
@@ -1248,8 +1102,8 @@ class TestValidityDenominators:
     ):
         """A metric over zero observations is 'unknown', never 'pass'.
 
-        The failing input: every judge call returns NaN, run_ragas_eval emits
-        None for all four metrics, and the run completes. Rendered as 0.0 that
+        The failing input: the rule scores no answer, run_ragas_eval emits None
+        for every metric, and the run completes. Rendered as 0.0 that
         reads as a total quality collapse; omitted, it reads as fine. Both are
         wrong, and `measured: False` with `observations: 0` is the only honest
         third answer.
@@ -1257,14 +1111,8 @@ class TestValidityDenominators:
         monkeypatch.setattr(
             mod,
             "run_ragas_eval",
-            lambda scenarios, ledger: _ragas_return([
-                {
-                    "scenario_id": s["id"],
-                    "faithfulness": None,
-                    "answer_relevancy": None,
-                    "context_precision": None,
-                    "context_recall": None,
-                }
+            lambda scenarios: _scorer_return([
+                {"scenario_id": s["id"], "faithfulness": None}
                 for s in scenarios
             ]),
         )
@@ -1283,178 +1131,64 @@ class TestValidityDenominators:
 
 
 # ---------------------------------------------------------------------------
-# The judge calls a run pays for (ticket #47)
+# The model calls a run pays for (ticket #47)
 # ---------------------------------------------------------------------------
 
-#: The tool `relevance_judge` forces. The transport below answers it, so a stray
-#: relevance call is counted as a request rather than failing on an unknown name.
-RELEVANCE_TOOL = "submit_relevance_verdict"
 
-
-def _luna_judge_transport(seen: list[str]) -> httpx.MockTransport:
-    """Canned Luna chat-completion bodies, one per structured judge request.
-
-    Instructor names the response model as the tool it forces, so the handler
-    reads that name off the request and answers with the canned output for it.
-    One fixed shape would fail four of the five schemas ragas asks for.
-    `_CANNED_JUDGE_OUTPUTS` is reused from the eval_service tests rather than
-    copied, so the two modules can only ever agree about what a Judge returns.
-
-    Every body carries `model` and a `usage` block in OpenAI's shape, which is
-    what makes the response hook write a real `model_calls` row instead of
-    logging a gap.
-    """
-    by_name = {
-        cls.__name__: (lambda make=make: make().model_dump_json())
-        for cls, make in _CANNED_JUDGE_OUTPUTS.items()
-    }
-    # The relevance Judge is not a ragas metric and forces a tool of its own, so
-    # it is named here rather than derived from a response model (#274).
-    by_name[RELEVANCE_TOOL] = lambda: json.dumps(
-        {"verdict": "pass", "reason": "canned"}
-    )
+def _counting_transport(seen: list[str]) -> httpx.MockTransport:
+    """Records every request that reaches the wire and answers 500."""
 
     def _handler(request: httpx.Request) -> httpx.Response:
-        name = json.loads(request.content)["tools"][0]["function"]["name"]
-        seen.append(name)
-        return httpx.Response(
-            200,
-            json={
-                "id": "chatcmpl-1",
-                "object": "chat.completion",
-                "model": "gpt-5.6-luna",
-                "choices": [{
-                    "index": 0,
-                    "finish_reason": "tool_calls",
-                    "message": {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [{
-                            "id": "call_1",
-                            "type": "function",
-                            "function": {
-                                "name": name,
-                                "arguments": by_name[name](),
-                            },
-                        }],
-                    },
-                }],
-                "usage": {
-                    "prompt_tokens": 100,
-                    "completion_tokens": 20,
-                    "prompt_tokens_details": {"cached_tokens": 10},
-                },
-            },
-            headers={"content-type": "application/json"},
-        )
+        seen.append(str(request.url))
+        return httpx.Response(500)
 
     return httpx.MockTransport(_handler)
 
 
 class TestAFullRunBuysNoJudgeCall:
-    """A whole run's judge calls, counted where the bill is read: none (ADR 0015).
+    """A whole run's scoring calls, counted where the bill is read: none (ADR 0015).
 
-    The run scores faithfulness by the grounding rule and nothing else, so every
-    `model_calls` row under a `judge_*` purpose would be a bill nobody planned.
-    Everything between the task and the wire is real: the scorer, instructor,
-    the OpenAI SDK, the response hook and `record_model_call`'s own INSERT. Only
-    the network hops are canned, so a Judge call that came back would be counted
-    here rather than failing on the fixture key and vanishing into `unknown`.
+    The run scores faithfulness by the grounding rule and nothing else. The
+    agent turns are doubled by `wired`, so every request on the wire here would
+    be scoring spend nobody planned. The scorer is the real one.
     """
 
-    def test_a_full_run_makes_no_judge_call_and_bills_no_judge_purpose(
-        self, wired, monkeypatch
-    ):
-        """No judge request on the wire, no judge row in the ledger, and the ledger still wired."""
+    def test_a_full_run_makes_no_model_call(self, wired, monkeypatch):
+        """No request reaches the wire, and the real scorer scored the run."""
         from app.services import eval_service
-        from app.services.eval_service import JUDGE_PURPOSES
 
-        rows: list = []
         seen: list[str] = []
-        bound: list = []
-        real_recorder = mod.ledger_recorder
+        scored: list = []
 
-        def _recording_recorder(conn_str):
-            """The production recorder, with every row read on its way past."""
-            write = real_recorder(conn_str)
+        def _real_scorer(scenarios, **kwargs):
+            result = eval_service.run_ragas_eval(scenarios, **kwargs)
+            scored.append(result)
+            return result
 
-            def record(call):
-                rows.append((conn_str, call))
-                write(call)
-
-            bound.append((conn_str, record))
-            return record
-
-        handed: list = []
-
-        def _real_scorer_keeping_its_ledger(scenarios, ledger, **kwargs):
-            handed.append(ledger)
-            return eval_service.run_ragas_eval(scenarios, ledger, **kwargs)
-
-        monkeypatch.setattr(mod, "ledger_recorder", _recording_recorder)
         # `wired` doubles the scorer, because every other test in this module is
         # about which connection string a write opens. This one is about the
         # calls scoring makes, so the real scorer goes back.
-        monkeypatch.setattr(mod, "run_ragas_eval", _real_scorer_keeping_its_ledger)
-        monkeypatch.setattr(
-            eval_service, "_VoyageRagasEmbedding", _FakeRagasEmbedding
-        )
+        monkeypatch.setattr(mod, "run_ragas_eval", _real_scorer)
 
-        transport = _luna_judge_transport(seen)
+        transport = _counting_transport(seen)
 
         class _Pinned(httpx.AsyncClient):
-            """A client the OpenAI SDK still recognises, answering canned bytes.
-
-            A lambda fails here, because the SDK isinstance-checks the client
-            it is handed, so the stand-in has to be a real subclass.
-            """
-
             def __init__(self, **kwargs):
                 super().__init__(transport=transport, **kwargs)
 
         class _PinnedSync(httpx.Client):
-            """The same, for the SYNC client the relevance Judge builds (#274).
-
-            Every ragas metric reaches the provider through instructor's async
-            client; `judge_relevance` calls `chat.completions.create` on a plain
-            `openai.OpenAI`, which builds an `httpx.Client`. Without this the
-            Judge reaches the real endpoint, its calls leave no canned row, and
-            the count below misses four.
-            """
-
             def __init__(self, **kwargs):
                 super().__init__(transport=transport, **kwargs)
 
         with patch("httpx.AsyncClient", _Pinned), patch("httpx.Client", _PinnedSync):
             result = _run()
 
-        assert seen == [], (
-            f"the run made {len(seen)} judge requests ({sorted(set(seen))}) where "
-            "the grounding rule makes none; each one is a bill nobody planned"
-        )
-        judge_rows = [
-            call.purpose for _dsn, call in rows
-            if call.purpose in JUDGE_PURPOSES or call.purpose.startswith("judge_")
-        ]
-        assert judge_rows == [], (
-            f"{len(judge_rows)} model_calls rows were billed to a Judge: {judge_rows[:4]}"
-        )
-        inserts = [
-            sql for sql in wired["cursor"].executed if "INSERT INTO model_calls" in sql
-        ]
-        assert len(inserts) == len(rows), (
-            f"{len(rows)} ledger rows were recorded and {len(inserts)} reached the database"
-        )
-        # THE LEDGER IS STILL WIRED, so the zeros above are an absence of calls
-        # and not a recorder nobody bound. The scorer was handed a ledger billed
-        # to this run, whose recorder is the one bound to production.
-        [ledger] = handed
-        assert (ledger.job_id, ledger.tenant_id, ledger.agent_id) == (
-            result["run_id"], TENANT_ID, "agent-1"
-        )
-        assert (PRODUCTION, ledger.recorder) in bound, (
-            "the scorer's ledger records to no recorder bound on production"
-        )
+        assert seen == [], f"the run made {len(seen)} request(s) where the rule makes none"
+        # THE SCORER RAN, so the empty wire above is an absence of calls and not
+        # a scoring pass nobody reached.
+        [scoring] = scored
+        assert scoring["sent"] > 0, "the real scorer was handed nothing to score"
+        assert result["run_id"]
 
 
 # ---------------------------------------------------------------------------
@@ -1477,30 +1211,24 @@ _EXPLORATORY_IDS = (
 
 
 def _scored(scenario_id: str, value: float) -> dict:
-    return {
-        "scenario_id": scenario_id,
-        "faithfulness": value,
-        "answer_relevancy": value,
-        "context_precision": value,
-        "context_recall": value,
-    }
+    return {"scenario_id": scenario_id, "faithfulness": value}
 
 
 @pytest.fixture
 def scored(wired, monkeypatch):
-    """`wired`, with Ragas returning real per-scenario numbers for all four rows."""
+    """`wired`, with the scorer returning real per-scenario numbers for all four rows."""
     scores = [_scored(sid, 0.8) for sid in _GOLDEN_IDS]
     scores += [_scored(sid, 0.2) for sid in _EXPLORATORY_IDS]
 
-    def _fake_ragas(*args, **kwargs):
-        wired["ragas"].append((args, kwargs))
+    def _fake_scorer(*args, **kwargs):
+        wired["scorer"].append((args, kwargs))
         return {
             "scores": scores,
             "judge_records": build_judge_records(scores),
             "sent": 4, "returned": 4, "unattributed": 0,
         }
 
-    monkeypatch.setattr(mod, "run_ragas_eval", _fake_ragas)
+    monkeypatch.setattr(mod, "run_ragas_eval", _fake_scorer)
     return wired
 
 
@@ -1839,7 +1567,6 @@ class TestATimeoutReachesTheRecordWithItsMessage:
         owner reads back, so a raw exception string landing there is #96's
         class one table over.
         """
-        import json
 
         _run()
         _, honest, _ = one_turn_timed_out["record"][0]
@@ -1993,12 +1720,11 @@ class TestTheCheckedRowsNeverReachTheJudge:
         """The grounding rule scores the judged row alone; the samples table holds all three."""
         handed = {}
         monkeypatch.setattr(mod, "write_eval_samples", lambda run_id, rows, conn_str: handed.setdefault("samples", rows))
-        monkeypatch.setattr(mod, "run_ragas_eval", lambda rows, ledger: handed.setdefault("ragas", rows) and {"scores": [], "judge_records": []})
+        monkeypatch.setattr(mod, "run_ragas_eval", lambda rows: handed.setdefault("scorer", rows) and {"scores": [], "judge_records": []})
 
-        results, judged = mod._record_and_judge("run-1", self._rows(), object(), "postgresql://prod")
+        results = mod._record_and_judge("run-1", self._rows(), "postgresql://prod")
 
-        assert [r["id"] for r in handed["ragas"]] == ["s0"]
-        assert [r["id"] for r in judged] == ["s0"]
+        assert [r["id"] for r in handed["scorer"]] == ["s0"]
         assert [r["id"] for r in handed["samples"]] == ["s0", "s1", "s2"]
         assert results["clarifying_verdicts"] == {"s1": True, "s2": False}
 
@@ -2047,13 +1773,12 @@ class TestTheRuleVerdictsReachTheRecordThroughTheTask:
         monkeypatch.setattr(mod, "_invoke_agent_for_scenarios", _invoke)
         monkeypatch.setattr(mod, "write_eval_samples", lambda run_id, rows, conn_str: len(rows))
 
-        def _ragas(rows, ledger):
-            assert len(rows) == 1 and "clarifying_check" not in rows[0], "a checked row reached Ragas"
-            scores = [{"scenario_id": rows[0]["id"], "faithfulness": 0.95, "answer_relevancy": 0.95,
-                       "context_precision": 0.95, "context_recall": 0.95}]
+        def _scorer(rows):
+            assert len(rows) == 1 and "clarifying_check" not in rows[0], "a checked row reached the scorer"
+            scores = [{"scenario_id": rows[0]["id"], "faithfulness": 0.95}]
             return {"scores": scores, "judge_records": build_judge_records(scores)}
 
-        monkeypatch.setattr(mod, "run_ragas_eval", _ragas)
+        monkeypatch.setattr(mod, "run_ragas_eval", _scorer)
 
         _run()
 

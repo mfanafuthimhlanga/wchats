@@ -19,7 +19,7 @@ import {
 //
 // The bug this pins: `GET /agents/{id}/eval-runs` stores a Measurement per
 // dataset per metric and no pooled mean, so a tenant that has designated a
-// golden set gets `metrics_dataset: null` and four run-level metrics that read
+// golden set gets `metrics_dataset: null` and a run-level metric that reads
 // unmeasured. `aggregate_scores` projects an unmeasured metric to 0.0 for
 // clients that type the field `number`, and the chart used to plot that
 // projection, so every run sat at 0.00, a fabricated total-quality collapse.
@@ -59,9 +59,8 @@ function outcome(value: number | null) {
 }
 
 // A run whose two datasets scored. `metrics_dataset` is null and the run-level
-// metrics read unmeasured, exactly as apps/api/app/api/v1/evals.py builds it.
-// `aggregate_scores` therefore reads 0.0 on all four, the lie the chart used
-// to plot.
+// metric reads unmeasured, exactly as apps/api/app/api/v1/evals.py builds it.
+// `aggregate_scores` therefore reads 0.0, the lie the chart used to plot.
 function twoDatasetRun(
   id: string,
   startedAt: string,
@@ -76,12 +75,7 @@ function twoDatasetRun(
     scenario_count: 12,
     metrics: metricsAt(null),
     metrics_dataset: null,
-    aggregate_scores: {
-      faithfulness: 0,
-      answer_relevancy: 0,
-      context_precision: 0,
-      context_recall: 0,
-    },
+    aggregate_scores: { faithfulness: 0 },
     datasets: {
       available: true,
       golden: outcome(golden),
@@ -107,12 +101,7 @@ function singleDatasetRun(
     scenario_count: 6,
     metrics: metricsAt(value),
     metrics_dataset: dataset,
-    aggregate_scores: {
-      faithfulness: value,
-      answer_relevancy: value,
-      context_precision: value,
-      context_recall: value,
-    },
+    aggregate_scores: { faithfulness: value },
   }
 }
 
@@ -207,12 +196,7 @@ test.describe('buildEvalSeries', () => {
       scenario_count: null,
       metrics: metricsAt(null),
       metrics_dataset: null,
-      aggregate_scores: {
-        faithfulness: 0,
-        answer_relevancy: 0,
-        context_precision: 0,
-        context_recall: 0,
-      },
+      aggregate_scores: { faithfulness: 0 },
       datasets: { available: false },
     }
     const series = buildEvalSeries([
@@ -286,7 +270,7 @@ test.describe('datasetsCovered and describeSeries', () => {
     ])
 
     expect(describeChart(series, 2)).toBe(
-      'Channel telemetry over 2 runs: 8 series across the golden set and exploratory sample.',
+      'Channel telemetry over 2 runs: 2 series across the golden set and exploratory sample.',
     )
   })
 

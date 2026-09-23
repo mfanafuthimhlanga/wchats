@@ -74,8 +74,8 @@ record the output.
    fetches and decrypts from the control DB at runtime.
 2. **`acks_late=True` AND idempotency** on every task. Two requirements, both always.
 3. **Langfuse v4 API only.** `start_span()` and `start_generation()` are gone.
-4. **Ragas 0.4.x API only.** `ragas.metrics.collections`, `MetricResult`, and `reference` rather
-   than `ground_truths`.
+4. **Faithfulness is scored by `app/domain/grounding.py`, never a model call** (ADR 0015). The
+   eval suite has no judge route; `test_no_eval_judge_has_a_route` pins the exact route set.
 5. **No pg_search or pgbm25**, deprecated on Neon March 2026. BM25 is native `tsvector` plus
    `ts_rank_cd`.
 6. **No Docker.** Local processes only: `redis-server`, PostgreSQL, `uvicorn`,

@@ -32,6 +32,7 @@ from app.domain.eval_result import (
     EVAL_DATASETS,
     METRIC_KEYS,
     NO_QUESTION_RESOLUTION,
+    RETIRED_METRIC_KEYS,
     Cost,
     DatasetOutcome,
     EvalResult,
@@ -49,10 +50,10 @@ from app.domain.model_call import ModelCall
 RUN_ID = "3f3a1c66-0000-4000-8000-000000000051"
 AGENT_ID = "3f3a1c66-0000-4000-8000-0000000000a9"
 
-#: The metric reported over nothing, and the metric not reported at all. Naming
-#: them once keeps every assertion below about the same two states.
-UNMEASURED_METRIC = "context_recall"
-ABSENT_METRIC = "context_precision"
+#: The one metric a run reports. `_result()` carries it measured on golden and
+#: over nothing on exploratory; `_without_exploratory_metrics()` leaves it
+#: unreported, which is the absent state.
+METRIC = "faithfulness"
 
 
 def _call(**overrides) -> ModelCall:
@@ -77,7 +78,7 @@ def _call(**overrides) -> ModelCall:
 
 def _identity() -> JudgeIdentity:
     return JudgeIdentity(
-        model="gpt-5.6-luna", reasoning_effort="none", prompt_version="ragas-0.4.1"
+        model="gpt-5.6-luna", reasoning_effort="none", prompt_version="prompt-v1"
     )
 
 
@@ -97,21 +98,17 @@ def _invocation(**overrides) -> Invocation:
 
 
 def _golden() -> DatasetOutcome:
-    """Two rows, three metrics reported, one of the three over nothing.
+    """Two rows, faithfulness reported over both.
 
-    Both rows FAILED: 0.75 faithfulness and 0.5 answer relevancy are under the
-    0.90 gates, and the two verdict counts have to add up to `scored` anyway.
+    Both rows FAILED: 0.75 faithfulness is under the 0.80 gate, and the two
+    verdict counts have to add up to `scored` anyway.
     """
     return DatasetOutcome(
         attempted=2,
         valid=2,
         scored=2,
         scenarios_failed=2,
-        metrics={
-            "faithfulness": Measurement(value=0.75, observations=2, measured=True),
-            "answer_relevancy": Measurement(value=0.5, observations=2, measured=True),
-            UNMEASURED_METRIC: Measurement(value=None, observations=0, measured=False),
-        },
+        metrics={METRIC: Measurement(value=0.75, observations=2, measured=True)},
     )
 
 
@@ -122,9 +119,12 @@ def _result(**overrides) -> EvalResult:
         "invocation": _invocation(),
         "datasets": {
             "golden": _golden(),
-            # Two rows scored and no metric reported for either, so no gated
-            # verdict decided either: unmeasured, never a pass.
-            "exploratory": DatasetOutcome(2, 2, 2, scenarios_unmeasured=2),
+            # Two rows scored and faithfulness measured over neither, so no
+            # gated verdict decided either: unmeasured, never a pass.
+            "exploratory": DatasetOutcome(
+                2, 2, 2, scenarios_unmeasured=2,
+                metrics={METRIC: Measurement(value=None, observations=0, measured=False)},
+            ),
         },
         "requested_model": "gpt-5.6-luna",
         "served_model": "gpt-5.6-luna-2026-08",
@@ -133,6 +133,13 @@ def _result(**overrides) -> EvalResult:
     }
     fields.update(overrides)
     return EvalResult(**fields)
+
+
+def _without_exploratory_metrics() -> EvalResult:
+    """`_result()` with exploratory reporting no metric at all."""
+    return _result(
+        datasets={"golden": _golden(), "exploratory": DatasetOutcome(2, 2, 2, scenarios_unmeasured=2)}
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -222,16 +229,16 @@ class TestAMetricOverNothingIsUnknown:
 class TestAnUnreportedMetricIsAbsent:
 
     def test_a_metric_nobody_reported_has_no_key_at_all(self):
-        metrics = _result().payload["datasets"]["golden"]["metrics"]
-        assert ABSENT_METRIC not in metrics, (
-            f"{ABSENT_METRIC} was never reported and the payload invented a "
-            f"default for it: {metrics.get(ABSENT_METRIC)}"
+        metrics = _without_exploratory_metrics().payload["datasets"]["exploratory"]["metrics"]
+        assert METRIC not in metrics, (
+            f"{METRIC} was never reported and the payload invented a "
+            f"default for it: {metrics.get(METRIC)}"
         )
 
     def test_a_metric_reported_over_nothing_is_present_and_unmeasured(self):
         """The other half of criterion 4. Absent OR measured=False, never a zero."""
-        metrics = _result().payload["datasets"]["golden"]["metrics"]
-        assert metrics[UNMEASURED_METRIC] == {
+        metrics = _result().payload["datasets"]["exploratory"]["metrics"]
+        assert metrics[METRIC] == {
             "value": None,
             "measured": False,
             "observations": 0,
@@ -251,6 +258,70 @@ class TestAnUnreportedMetricIsAbsent:
                 metrics={"vibes": Measurement(value=1.0, observations=1, measured=True)},
             )
         assert "vibes" in str(exc.value)
+
+    def test_the_run_reports_faithfulness_alone(self):
+        """ADR 0015 took the judges out, and the four columns they filled went with them."""
+        assert METRIC_KEYS == ("faithfulness",)
+
+    @pytest.mark.parametrize("retired", RETIRED_METRIC_KEYS)
+    def test_a_retired_metric_name_is_refused_on_a_new_outcome(self, retired):
+        """Retired names are history to read, not a metric a run can report."""
+        with pytest.raises(InvalidEvalResult) as exc:
+            DatasetOutcome(
+                attempted=1,
+                valid=1,
+                scored=1,
+                scenarios_passed=1,
+                metrics={retired: Measurement(value=0.9, observations=1, measured=True)},
+            )
+        assert retired in str(exc.value)
+
+    def test_a_stored_outcome_carrying_the_four_retired_metrics_loads_without_them(self):
+        """A record written before ADR 0015 carries all four under `metrics`."""
+        payload = _golden().payload
+        for retired in RETIRED_METRIC_KEYS:
+            payload["metrics"][retired] = {"value": 0.9, "measured": True, "observations": 2}
+
+        outcome = DatasetOutcome.from_payload(payload)
+
+        assert outcome == _golden()
+        assert set(outcome.metrics) == {METRIC}
+
+    def test_a_stored_record_carrying_the_retired_metrics_round_trips_to_faithfulness(self):
+        payload = _result().payload
+        for dataset in payload["datasets"].values():
+            dataset["metrics"]["answer_relevancy"] = {"value": 0.5, "measured": True, "observations": 2}
+            dataset["metrics"]["ragas_answer_relevancy"] = {"value": None, "measured": False, "observations": 0}
+
+        assert EvalResult.from_payload(payload) == _result()
+
+    def test_a_stored_record_naming_five_instruments_loads_naming_one(self):
+        """An identity keyed by a retired metric is dropped with the metric.
+
+        A record written before ADR 0015 names a Judge for all five dimensions.
+        It loads holding faithfulness alone, so it names the one instrument
+        behind that dimension and no instrument for a dimension it dropped.
+        """
+        expected = _result(judge_identities={METRIC: _identity()})
+        payload = expected.payload
+        for retired in RETIRED_METRIC_KEYS:
+            payload["judge_identities"][retired] = dataclasses.asdict(_identity())
+        assert len(payload["judge_identities"]) == 5
+
+        loaded = EvalResult.from_payload(payload)
+
+        assert loaded.judge_identities is not None
+        assert set(loaded.judge_identities) == {METRIC}
+        assert loaded == expected
+
+    def test_a_stored_outcome_carrying_an_unknown_metric_is_refused(self):
+        """Only the retired names are dropped; any other stray name is a defect."""
+        payload = _golden().payload
+        payload["metrics"]["nonsense"] = {"value": 0.9, "measured": True, "observations": 2}
+
+        with pytest.raises(InvalidEvalResult) as exc:
+            DatasetOutcome.from_payload(payload)
+        assert "nonsense" in str(exc.value)
 
     def test_a_metric_that_is_not_a_measurement_is_refused(self):
         with pytest.raises(InvalidEvalResult):
@@ -532,13 +603,13 @@ class TestThePayloadRoundTrips:
         assert EvalResult.from_payload(json.loads(json.dumps(result.payload))) == result
 
     def test_the_round_trip_keeps_a_metric_absent(self):
-        rebuilt = EvalResult.from_payload(_result().payload)
-        assert ABSENT_METRIC not in rebuilt.datasets["golden"].metrics
+        rebuilt = EvalResult.from_payload(_without_exploratory_metrics().payload)
+        assert METRIC not in rebuilt.datasets["exploratory"].metrics
 
     def test_a_stored_payload_that_breaks_a_rule_is_refused_on_the_way_out(self):
         """A metric claiming `measured` over zero observations, in the row."""
         payload = _result().payload
-        payload["datasets"]["golden"]["metrics"][UNMEASURED_METRIC]["measured"] = True
+        payload["datasets"]["exploratory"]["metrics"][METRIC]["measured"] = True
         with pytest.raises(InvalidEvalResult):
             EvalResult.from_payload(payload)
 
@@ -705,9 +776,9 @@ class TestQuestionResolutionOnTheRecord:
 
     def test_the_two_halves_must_add_up_to_the_multi_turn_rows(self):
         """A multi-turn row was either rewritten or it fell back. A stored row
-        where the three disagree was not written by
-        `question_resolution_provenance`, and the share the deploy gate reads off
-        it would be uninterpretable."""
+        where the three disagree was not written by the provenance stamp that
+        wrote these counts until ADR 0015, and the share the deploy gate reads
+        off it would be uninterpretable."""
         with pytest.raises(InvalidEvalResult) as exc:
             QuestionResolution(
                 relevancy_scored=9, multi_turn=4, rewritten=3, raw_question_fallback=0

@@ -31,17 +31,9 @@ export const DATASET_LABELS: Record<DatasetKey, string> = {
   exploratory: 'exploratory sample',
 }
 
-// Channel order is the chart's own, and it is also the colour order: --ch-1 is
-// the brightest because faithfulness matters most. Colour carries the channel;
-// the dataset is carried by the stroke pattern and by the series label, so a
-// reader never has to tell two greys apart to know which half of the suite a
-// line belongs to.
-export const EVAL_CHANNELS = [
-  { key: 'faithfulness', label: 'Faithfulness' },
-  { key: 'answer_relevancy', label: 'Answer relevancy' },
-  { key: 'context_recall', label: 'Context recall' },
-  { key: 'context_precision', label: 'Context precision' },
-] as const
+// Drives the chart's channel order and colour order. One channel, because
+// faithfulness is the metric a deploy gates on.
+export const EVAL_CHANNELS = [{ key: 'faithfulness', label: 'Faithfulness' }] as const
 
 export type ChannelKey = (typeof EVAL_CHANNELS)[number]['key']
 
@@ -54,7 +46,7 @@ export interface Measurement {
 
 export type ChannelMetrics = Record<ChannelKey, Measurement>
 
-/** One dataset's half of a run: its three counts and its four measurements. */
+/** One dataset's half of a run: its three counts and its one measurement. */
 export interface DatasetOutcome {
   scenario_count: number | null
   valid_scenario_count: number | null
@@ -102,7 +94,7 @@ export interface EvalSeries {
   datasetLabel: string
   /** The whole series named once, e.g. "Faithfulness on the golden set". */
   label: string
-  /** Index into the --ch-1..4 channel colours. Colour follows the channel. */
+  /** Index into the --ch-1 channel colour. Colour follows the channel. */
   colorIndex: number
   /** One entry per run, oldest first. Null is a gap, never a floor. */
   values: (number | null)[]
@@ -150,9 +142,9 @@ function valueOf(reading: Measurement | undefined): number | null {
  * halves of one metric.
  *
  * A series with no measurement on any run is dropped rather than drawn flat: an
- * ordinary tenant designates no golden rows, so the golden half of every channel
- * is absent and the chart shows the same four lines it always did. The moment a
- * tenant curates a golden set, four more appear.
+ * ordinary tenant designates no golden rows, so the golden half of the channel
+ * is absent and the chart shows the same one line it always did. The moment a
+ * tenant curates a golden set, a second appears.
  *
  * @param runs Chronological, oldest first, the order the chart plots.
  */

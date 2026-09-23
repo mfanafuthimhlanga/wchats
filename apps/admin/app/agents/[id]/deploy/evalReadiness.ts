@@ -66,7 +66,7 @@ export interface DatasetReading {
   datasetLabel: string
   /** The mean of this dataset's measured metrics. Metrics pool, datasets do not. */
   average: number
-  /** How many of the four channels produced that mean. A denominator, always shown. */
+  /** How many channels produced that mean. One today, faithfulness; a denominator, always shown. */
   metricCount: number
 }
 

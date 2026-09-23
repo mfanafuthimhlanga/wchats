@@ -409,7 +409,7 @@ export default function CreateAgentPage() {
           <p className="label" id="instruments-h">Instruments · no signal yet</p>
 
           <div className="instruments">
-            {['Faithfulness', 'Answer relevancy', 'Context recall', 'Context precision'].map((c) => (
+            {['Faithfulness'].map((c) => (
               <div className="chan" key={c}>
                 <span>{c}</span>
                 <span className="flatline" aria-hidden="true" />

@@ -3,8 +3,8 @@
 WHY THE HOOK IS ON THE HTTP LAYER
     Every direct-API site in `apps/api/app` builds its client here and reads the
     text back. `make_instructor_client` wraps one in `instructor.from_openai(...)`,
-    and Ragas wraps that again, so a recorder attached to a wrapper method stops
-    firing the moment someone adds another wrapper. `usage` and `model` arrive as
+    so a recorder attached to a wrapper method stops firing the moment someone
+    adds another wrapper. `usage` and `model` arrive as
     bytes on the wire, and the httpx response hook is the one place every wrapper
     still passes through. `attach_ledger_hook` therefore takes an httpx client it
     did not construct, which is what keeps the seam intact under instructor.
@@ -150,8 +150,7 @@ Clock = Callable[[], datetime]
 ProviderClient = _anthropic.Anthropic | _openai.OpenAI
 _C = TypeVar("_C", bound="ProviderClient | _openai.AsyncOpenAI")
 _R = TypeVar("_R")
-#: What `make_instructor_client` hands back. `AsyncInstructor` is the one Ragas
-#: accepts, because `InstructorLLM.agenerate` refuses a synchronous client.
+#: What `make_instructor_client` hands back, sync or async by its `is_async`.
 InstructorClient = _instructor.Instructor | _instructor.AsyncInstructor
 
 
@@ -162,7 +161,7 @@ class _InstructorDefaults(TypedDict, total=False):
     `dict[str, str]` into it offers a str for that enum and matches no overload.
     Naming the keys checks each against the parameter it actually lands on: `model`
     against `model: str | None`, `reasoning_effort` against `**kwargs`. `total=False`
-    because a non-judge route names no effort and the key is then absent, which is a
+    because a route may name no effort and the key is then absent, which is a
     different request from an explicit null.
     """
 
@@ -384,15 +383,6 @@ TRANSIENT_ERRORS: tuple[type[Exception], ...] = (
     _openai.APITimeoutError,
 )
 
-# Effort `none` is the figure decision #34 priced, $0.62 per thousand turns for a
-# Judge against DeepSeek's $1.23. The floor holds ONLY at effort none, and the
-# decision says any increase is re-measured from the `model_calls` ledger rather
-# than assumed, so the effort travels with the route and reaches `JudgeIdentity`.
-# `none` is one of the seven literals the installed SDK accepts, read off
-# `.venv/Lib/site-packages/openai/types/shared/reasoning_effort.py` in openai
-# 2.45.0, so it is a real effort and never a stand-in for a missing value.
-_JUDGE = ModelRoute(OPENAI_PROVIDER, LUNA_MODEL, reasoning_effort="none")
-
 # Effort `none`, the one value the provider accepts beside a function tool on
 # `/v1/chat/completions` (OBSERVED 2026-09-05, see WHERE A PURPOSE GOES). Sending
 # no field asked for the provider default, and the provider refuses that request
@@ -431,27 +421,6 @@ _AGENT_TURN = ModelRoute(OPENAI_PROVIDER, AGENT_TURN_MODEL, reasoning_effort="no
 #: carries the reason; `tests/unit/test_embedding_ledger.py` pins the two tables
 #: as disjoint.
 PURPOSE_ROUTES: Mapping[str, ModelRoute] = MappingProxyType({
-    # The Ragas metrics, one purpose each, so a rollup shows which dimension
-    # spent the money and a calibration figure names the Judge it measured.
-    "judge_faithfulness": _JUDGE,
-    "judge_answer_relevancy": _JUDGE,
-    "judge_context_precision": _JUDGE,
-    "judge_context_recall": _JUDGE,
-    "judge_retrieval_faithfulness": _JUDGE,
-    # Added by #274. The instrument behind the gated `answer_relevancy` metric.
-    # Ragas answer relevancy still runs and still bills `judge_answer_relevancy`,
-    # but it is reported rather than gated now, and the two are separate purposes
-    # because they are separate spends and separate Judges: a rollup that folded
-    # them together could not say what the gate cost, and a calibration figure
-    # could not say which instrument it measured (ADR 0013).
-    "judge_relevance": _JUDGE,
-    # Added by #227 PR 2. Not a judge: it rewrites a multi-turn scenario's last
-    # customer message as a standalone question so answer relevancy is scored
-    # against what was actually asked. Its own purpose because it is its own
-    # spend, one call per multi-turn scored row, and a rollup that folded it into
-    # `judge_answer_relevancy` would report the Judge as costing more than it
-    # does. Same route as the judges, because it runs in the same scoring pass.
-    "eval_question_resolution": _JUDGE,
     # The customer turn, added by ticket #48 when it left the SDK harness for the
     # owned loop in `app.services.agent_loop`.
     "agent_turn": _AGENT_TURN,
@@ -484,8 +453,7 @@ PURPOSE_ROUTES: Mapping[str, ModelRoute] = MappingProxyType({
     # the owner's labels (#58) built its own Anthropic client under `tests/`, so
     # it left no row and #153 did not reach it. It runs on the raw path, because
     # `tests/evals/judge.py` forces a tool over `chat.completions.create`, and so
-    # at `_LUNA`'s effort: the same `none` the five production judges run at,
-    # which is what lets its `judge_identity()` name a real Judge.
+    # at `_LUNA`'s effort, which its `judge_identity()` names.
     "calibration_judge": _LUNA,
 })
 
@@ -514,49 +482,10 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-#: The eval judges that may carry their own OpenAI key, and the Settings field
-#: each reads (#213). A purpose absent here, or a field left empty, reads
-#: OPENAI_API_KEY: that includes the sampled live-turn judge
-#: `judge_retrieval_faithfulness` and `calibration_judge`, which are not batch
-#: scorers and stay on the shared key. The names are the purpose upper-cased
-#: under the key's prefix, so adding a judge here is one row and one field.
-PURPOSE_KEY_SETTINGS: Mapping[str, str] = MappingProxyType({
-    "judge_faithfulness": "OPENAI_API_KEY_JUDGE_FAITHFULNESS",
-    "judge_answer_relevancy": "OPENAI_API_KEY_JUDGE_ANSWER_RELEVANCY",
-    "judge_context_precision": "OPENAI_API_KEY_JUDGE_CONTEXT_PRECISION",
-    "judge_context_recall": "OPENAI_API_KEY_JUDGE_CONTEXT_RECALL",
-    # Added by #274. One call per scored row, the same batch shape the four above
-    # have, so it belongs on the same spread. `judge_key_spread` counts the
-    # distinct keys these five resolve to and logs it at the start of a run.
-    "judge_relevance": "OPENAI_API_KEY_JUDGE_RELEVANCE",
-})
-
-
-def _openai_key_for(purpose: str | None) -> str:
-    """The purpose's own key when one is set, else the shared one."""
-    field = PURPOSE_KEY_SETTINGS.get(purpose or "")
-    own = getattr(settings, field, "") if field else ""
-    return own or settings.OPENAI_API_KEY
-
-
-def judge_key_spread() -> int:
-    """How many distinct OpenAI keys the batch judge purposes resolve to right now.
-
-    Logged at the start of every scoring run, so a run that was meant to spread
-    its calls across keys and did not (a variable unset on the worker) says so in
-    its own log rather than in a rate-limit retry an hour later. 1 means every
-    judge shares OPENAI_API_KEY.
-    """
-    return len({_openai_key_for(purpose) for purpose in PURPOSE_KEY_SETTINGS})
-
-
-def resolve_credentials(provider: str | None = None, purpose: str | None = None) -> Credentials:
+def resolve_credentials(provider: str | None = None) -> Credentials:
     """The api key from Settings and the base url from `os.environ`, per provider.
 
-    For the `openai` provider a judge purpose reads its own key when one is set
-    (PURPOSE_KEY_SETTINGS), so the four judges' calls can spread across four
-    rates. Every other purpose, and a judge whose variable is empty, reads
-    OPENAI_API_KEY.
+    Every purpose on the `openai` provider reads OPENAI_API_KEY.
 
     The key comes from Settings because a Celery worker started without inheriting
     `.env` has it nowhere else, which is the reason `metadata_service` already
@@ -578,7 +507,7 @@ def resolve_credentials(provider: str | None = None, purpose: str | None = None)
     """
     if provider == OPENAI_PROVIDER:
         return Credentials(
-            api_key=_openai_key_for(purpose),
+            api_key=settings.OPENAI_API_KEY,
             base_url=os.environ.get("OPENAI_BASE_URL"),
         )
     return Credentials(api_key=settings.ANTHROPIC_API_KEY, base_url=None)
@@ -836,12 +765,10 @@ def attach_async_ledger_hook(
     bytes is the shared code above, so the two providers' usage shapes are parsed
     in exactly one place.
 
-    Two call paths need an async client, so two need this hook. Ragas'
-    collections metrics await `llm.agenerate(...)` and
-    `InstructorLLM` refuses that on a sync client, so the judge seam in #47 needs
-    an async OpenAI client with this hook underneath. The owned Agent loop is the
-    other. Since #48 it awaits `chat.completions.create` once per iteration of a
-    customer turn, and this hook writes the `model_calls` row for each one.
+    `make_async_client` and `make_instructor_client(is_async=True)` build async
+    clients, so both need this hook. The owned Agent loop is the caller that
+    matters: since #48 it awaits `chat.completions.create` once per iteration of
+    a customer turn, and this hook writes the `model_calls` row for each one.
     """
 
     async def on_response(response: httpx.Response) -> None:
@@ -850,7 +777,7 @@ def attach_async_ledger_hook(
                 return
             await response.aread()
             # The recorder opens a psycopg2 connection and commits, which blocks. On
-            # the loop it would stall every other in-flight judge call for the
+            # the loop it would stall every other in-flight call for the
             # connect and insert round trip (#206 review), so it runs on a thread.
             # Every recorder binds a dsn string, one connection per write, so no
             # connection is shared across threads.
@@ -889,9 +816,7 @@ def _with_default(call: Callable[..., _R], **defaults: object) -> Callable[..., 
     2026-09-05, openai 2.45.0: `inspect.iscoroutinefunction` already answers
     False for the SDK's own `AsyncCompletions.create`, which the SDK wraps in
     `required_args`; only `inspect.unwrap` reaches the coroutine function, and
-    `functools.wraps` keeps that chain intact through this wrapper too. Ragas
-    reads the instructor method, not this one (`ragas/llms/base.py`,
-    `_check_client_async`, ragas 0.4.3).
+    `functools.wraps` keeps that chain intact through this wrapper too.
     """
 
     @functools.wraps(call)
@@ -943,7 +868,7 @@ def _hooked_sdk_client(
     so this function hands back the client bare.
     """
     provider = provider or route_for(purpose).provider
-    credentials = credentials or resolve_credentials(provider, purpose)
+    credentials = credentials or resolve_credentials(provider)
     http_client = http_client or httpx.Client()
     attach_ledger_hook(
         http_client,
@@ -1025,16 +950,10 @@ def make_async_client(
     http_client: httpx.AsyncClient | None = None,
     clock: Clock = _utc_now,
 ) -> _openai.AsyncOpenAI:
-    """The async half of `make_client`, for the two callers that need one.
+    """The async half of `make_client`, for the callers that need one.
 
-    Ragas is the first, and it arrives through `make_instructor_client`. Its
-    collections metrics await `llm.agenerate(...)`, and `InstructorLLM` raises
-    `TypeError("Cannot use agenerate() with a synchronous client")` for anything
-    whose underlying `chat.completions.create` is not a coroutine function
-    (`ragas/llms/base.py`, `_check_client_async`, ragas 0.4.3).
-
-    `app.services.agent_loop._turn_client` is the second, and it calls this
-    function directly. The owned loop awaits `chat.completions.create` once per
+    `make_instructor_client(is_async=True)` builds through here.
+    `app.services.agent_loop._turn_client` calls this function directly. The owned loop awaits `chat.completions.create` once per
     iteration of a customer turn, so nothing sync would serve it either.
 
     The route's effort rides along as a default on `chat.completions`, through
@@ -1057,7 +976,7 @@ def make_async_client(
         http_client: an async httpx client to hook instead of a fresh one.
         clock:       reads the instant each row is stamped with.
     """
-    credentials = credentials or resolve_credentials(OPENAI_PROVIDER, purpose)
+    credentials = credentials or resolve_credentials(OPENAI_PROVIDER)
     http_client = http_client or httpx.AsyncClient()
     attach_async_ledger_hook(
         http_client,
@@ -1117,9 +1036,9 @@ def _instructor_over_openai(
     Args:
         http_client: an httpx client to hook instead of a fresh one. Async when
                      `is_async` is set, sync otherwise.
-        is_async:    build on `AsyncOpenAI`, which Ragas needs.
+        is_async:    build on `AsyncOpenAI`.
         defaults:    what this route supplies as instructor defaults: the model,
-                     and the reasoning effort for a judge purpose.
+                     and the reasoning effort when the route names one.
 
     Returns:
         An `AsyncInstructor` when `is_async` is set, an `Instructor` otherwise.
@@ -1171,10 +1090,10 @@ def make_instructor_client(
 ) -> InstructorClient:
     """An instructor client over a factory-built one, so structured calls are counted.
 
-    Ragas asks its metrics through instructor, instructor asks through the
-    provider SDK, and the SDK asks through httpx. The hook sits on the httpx
-    client, the one layer all three still pass through, so a Ragas run lands
-    ledger rows without Ragas knowing this module exists. The route supplies the
+    Instructor asks through the provider SDK, and the SDK asks through httpx.
+    The hook sits on the httpx client, the one layer both pass through, so a
+    structured call lands ledger rows without instructor knowing this module
+    exists. The route supplies the
     model and the reasoning effort as instructor defaults. THE RULE: never pass
     `reasoning_effort` at a call site, because a default fills an absent kwarg
     only and one passed at the call wins silently. See WHERE A PURPOSE GOES.
@@ -1190,7 +1109,7 @@ def make_instructor_client(
         http_client: an httpx client to hook instead of a fresh one. Async when
                      `is_async` is set, since that is the client it wraps.
         clock:       reads the instant each row is stamped with.
-        is_async:    build on an async OpenAI client, which Ragas needs.
+        is_async:    build on an async OpenAI client.
 
     Returns:
         An `AsyncInstructor` when `is_async` is set, an `Instructor` otherwise.

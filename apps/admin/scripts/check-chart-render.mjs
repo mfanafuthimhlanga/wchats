@@ -19,10 +19,10 @@
 // Fixtures are the shapes that break it, not the shape that works. The pin
 // stack has two halves and the second one is where the bug lived: a series the
 // latest run measured takes a slot by its value, and a series it did not
-// measure is parked below the whole stack. Four series with three of them
-// unmeasured pushes that tail furthest, and doing it across both datasets makes
-// each pin three lines instead of two, which is the tallest column the gutter
-// is ever asked to hold.
+// measure is parked below the whole stack. The chart draws one channel now
+// (ADR 0015), so two series, faithfulness over both datasets, is the most the
+// gutter is ever asked to hold; doing it across both datasets makes each pin
+// three lines instead of two, which is the tallest column there is.
 //
 // Four viewports, because the wrap's height follows the trace's width and the
 // trace is `calc(100% - 168px)` of a container that follows the viewport. The
@@ -56,7 +56,7 @@ const round = (n) => Math.round(n * 10) / 10
 // the 0.0 projection the route really sends, so a fixture cannot pass by having
 // been handed cleaner data than production sends.
 
-const CHANNELS = ['faithfulness', 'answer_relevancy', 'context_recall', 'context_precision']
+const CHANNELS = ['faithfulness']
 const measurement = (v) =>
   v === null ? { value: null, measured: false, observations: 0 } : { value: v, measured: true, observations: 6 }
 const metrics = (values) => Object.fromEntries(CHANNELS.map((k, i) => [k, measurement(values[i] ?? null)]))
@@ -105,57 +105,61 @@ const nothingRun = {
   datasets: { available: false },
 }
 
-// Four three-line pins clustered on the gate, the tallest column the gutter
-// ever holds and so the largest min-height the layout effect ever writes.
+// Two three-line pins clustered on the gate, the tallest column the gutter
+// ever holds now the chart draws one channel (ADR 0015) and so the largest
+// min-height the layout effect ever writes.
 const clusteredRuns = [
-  bothSets(0, [0.9, 0.899], [0.898, 0.897]),
-  bothSets(1, [0.901, 0.9], [0.899, 0.898]),
-  bothSets(2, [0.9005, 0.9004], [0.9003, 0.9002]),
+  bothSets(0, [0.9], [0.898]),
+  bothSets(1, [0.901], [0.899]),
+  bothSets(2, [0.9005], [0.9003]),
 ]
 
 const FIXTURES = [
   {
-    id: 'four-measured',
-    about: 'four channels on one dataset, every one measured on the latest run',
-    pins: 4,
-    runs: [
-      oneSet(0, [0.95, 0.91, 0.88, 0.86]),
-      oneSet(1, [0.948, 0.916, 0.89, 0.872]),
-      oneSet(2, [0.946, 0.922, 0.9, 0.884]),
-    ],
+    id: 'measured-every-run',
+    about: 'one channel on one dataset, measured on every run',
+    pins: 1,
+    runs: [oneSet(0, [0.95]), oneSet(1, [0.948]), oneSet(2, [0.946])],
   },
   {
-    // The block. One pin takes a slot by its value and three are parked below
-    // it, and before the fix the clamp only ever moved the first of those four.
-    id: 'three-unmeasured',
-    about: 'four channels on one dataset, the latest run measured one of them',
-    pins: 4,
+    // The same shape with three-line pins, both datasets scored so the pin
+    // names which one it came off. One channel over both datasets is as far
+    // as the park-below-the-stack scenario goes now: it used to take four
+    // series with three parked to catch the clamp only moving the first of
+    // them, and it takes two with one since the chart draws a single channel.
+    id: 'one-unmeasured-of-two',
+    about: 'one channel across both datasets, the latest run measured one of the two',
+    pins: 2,
     runs: [
-      oneSet(0, [0.95, 0.91, 0.88, 0.86]),
-      oneSet(1, [0.948, 0.916, 0.89, 0.872]),
-      { ...oneSet(2, [0.946, 0.922, 0.9, 0.884]), metrics: metrics([null, null, 0.9, null]) },
-    ],
-  },
-  {
-    // The same shape with three-line pins: two channels across both datasets is
-    // four series, which is still a gutter and not the legend grid.
-    id: 'both-sets-three-unmeasured',
-    about: 'two channels across both datasets, the latest run measured one of the four',
-    pins: 4,
-    runs: [
-      bothSets(0, [0.96, 0.93], [0.94, 0.9]),
-      bothSets(1, [0.955, 0.934], [0.936, 0.906]),
+      bothSets(0, [0.96], [0.94]),
+      bothSets(1, [0.955], [0.936]),
       bothSets(2, [], [0.932]),
     ],
   },
   {
-    // Four three-line pins all measured and all within a thousandth of the
-    // gate, so the collision loop stacks them at the full gap and the column is
-    // the tallest the gutter ever holds.
+    // Two three-line pins both measured and within a thousandth of the gate,
+    // so the collision loop stacks them at the full gap and the column is the
+    // tallest the gutter ever holds.
     id: 'both-sets-clustered',
-    about: 'two channels across both datasets, all four measured and clustered on the gate',
-    pins: 4,
+    about: 'one channel across both datasets, both measured and clustered on the gate',
+    pins: 2,
     runs: clusteredRuns,
+  },
+  {
+    // Both series measured on the earlier runs and on neither dataset on the
+    // latest one, so both are parked below the stack with nothing led above
+    // them: the shape the deleted three-unmeasured fixture covered with four
+    // series is still reachable with the two this chart draws now, and it is
+    // the shape that found the clamp moving only the first parked pin instead
+    // of the whole column.
+    id: 'both-sets-unmeasured-latest',
+    about: 'one channel across both datasets, the latest run measured neither',
+    pins: 2,
+    runs: [
+      bothSets(0, [0.93], [0.91]),
+      bothSets(1, [0.928], [0.914]),
+      bothSets(2, [], []),
+    ],
   },
   {
     // Every series measured on the latest run and on no earlier one, so each is
@@ -165,31 +169,19 @@ const FIXTURES = [
     // point. Both datasets, so a golden open ring and an exploratory filled dot
     // are each covered.
     id: 'lone-latest-both-sets',
-    about: 'two channels across both datasets, measured on the latest run and on no other',
-    pins: 4,
+    about: 'one channel across both datasets, measured on the latest run and on no other',
+    pins: 2,
     runs: [
       bothSets(0, [], []),
       bothSets(1, [], []),
-      bothSets(2, [0.95, 0.91], [0.93, 0.89]),
-    ],
-  },
-  {
-    // Above four series the pins leave the gutter for the legend grid. The
-    // clamp does not run here, and this fixture is what says so.
-    id: 'eight-series',
-    about: 'four channels across both datasets, the legend grid rather than the gutter',
-    pins: 8,
-    runs: [
-      bothSets(0, [0.96, 0.93, 0.9, 0.88], [0.94, 0.9, 0.87, 0.85]),
-      bothSets(1, [0.955, 0.934, 0.902, 0.884], [0.936, 0.906, 0.872, 0.854]),
-      bothSets(2, [0.958, 0.936, 0.904, 0.886], [0.938, 0.908, 0.874, 0.856]),
+      bothSets(2, [0.95], [0.93]),
     ],
   },
   {
     id: 'one-run',
-    about: 'a single run, four channels measured',
-    pins: 4,
-    runs: [oneSet(0, [0.95, 0.91, 0.88, 0.86])],
+    about: 'a single run, one channel measured',
+    pins: 1,
+    runs: [oneSet(0, [0.95])],
   },
   {
     // No pins at all. The chart says so in a sentence, and the sentence has to
@@ -209,13 +201,18 @@ const FIXTURES = [
     // each fixture into a fresh root, which is what every fixture above
     // does, is the one way to miss it.
     id: 'nothing-measured-after-pins',
-    about: 'four three-line pins, then a run that recorded no measurement at all',
+    about: 'two three-line pins, then a run that recorded no measurement at all',
     pins: 0,
     announces: true,
     before: clusteredRuns,
     runs: [nothingRun],
   },
 ]
+
+// TelemetryChart.tsx deleted the legend-grid branch that used to switch the
+// pins from the gutter to a static grid above four series: one channel over
+// the two datasets tops out at two, so nothing this script can hand the real,
+// compiled EVAL_CHANNELS array ever reached it.
 
 const VIEWPORTS = [
   { width: 1280, height: 900, about: 'a full-width desk' },

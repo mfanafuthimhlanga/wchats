@@ -1,8 +1,8 @@
 """
-Unit tests for app.services.eval_service (M6 Ragas 0.4.x eval harness).
+Unit tests for app.services.eval_service (the M6 eval harness).
 
-Original M6 coverage (TestRunRagasEval): Ragas 0.4.x dataset shape and import
-path (D-01/D-02/D-04).
+TestRunRagasEval: faithfulness is scored by the grounding rule, with no model
+call (ADR 0015).
 
 P1 coverage (measurement-layer audit) — the three things that must hold together
 or the eval layer means nothing:
@@ -30,7 +30,7 @@ or the eval layer means nothing:
       genuinely absent" (None, not named) — missing data is never passing data.
 
 Mock strategy:
-    - All external calls (ragas, psycopg2, Voyage) patched at module boundary.
+    - All external calls (psycopg2) patched at module boundary.
     - psycopg2.connect is patched by attribute, never the whole psycopg2 module,
       wherever a test exercises `except psycopg2.errors.UndefinedColumn` — a
       MagicMock in that except clause is not a BaseException subclass and would
@@ -48,93 +48,10 @@ import re
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pandas as pd
 import psycopg2
 import pytest
-from ragas.embeddings.base import BaseRagasEmbedding
-from ragas.llms.base import InstructorBaseRagasLLM
-from ragas.metrics.collections.answer_relevancy.util import AnswerRelevanceOutput
-from ragas.metrics.collections.context_precision.util import ContextPrecisionOutput
-from ragas.metrics.collections.context_recall.util import (
-    ContextRecallClassification,
-    ContextRecallOutput,
-)
-from ragas.metrics.collections.faithfulness.util import (
-    NLIStatementOutput,
-    StatementFaithfulnessAnswer,
-    StatementGeneratorOutput,
-)
-
-from tests.model_doubles import ledger
-
-# ---------------------------------------------------------------------------
-# Real-ragas doubles (7.18)
-#
-# Collections metrics validate their components at construction: anything that
-# is not an InstructorBaseRagasLLM / BaseRagasEmbedding is rejected outright, so
-# a MagicMock never reaches the scoring code. These two subclass the real bases
-# and replace only the network hop.
-# ---------------------------------------------------------------------------
-
-# One statement, supported, attributed — every metric scores 1.0 off this.
-_CANNED_JUDGE_OUTPUTS = {
-    StatementGeneratorOutput: lambda: StatementGeneratorOutput(
-        statements=["the only claim"]
-    ),
-    NLIStatementOutput: lambda: NLIStatementOutput(
-        statements=[
-            StatementFaithfulnessAnswer(
-                statement="the only claim", reason="canned", verdict=1
-            )
-        ]
-    ),
-    AnswerRelevanceOutput: lambda: AnswerRelevanceOutput(
-        question="What is the return policy?", noncommittal=0
-    ),
-    ContextPrecisionOutput: lambda: ContextPrecisionOutput(reason="canned", verdict=1),
-    ContextRecallOutput: lambda: ContextRecallOutput(
-        classifications=[
-            ContextRecallClassification(
-                statement="the only claim", reason="canned", attributed=1
-            )
-        ]
-    ),
-}
-
-
-class _FakeInstructorLLM(InstructorBaseRagasLLM):
-    def generate(self, prompt, response_model):
-        raise AssertionError(
-            "collections metrics must reach the LLM through agenerate()"
-        )
-
-    async def agenerate(self, prompt, response_model):
-        return _CANNED_JUDGE_OUTPUTS[response_model]()
-
-
-class _FakeRagasEmbedding(BaseRagasEmbedding):
-    """Stands in for _VoyageRagasEmbedding. One fixed unit vector, so
-    AnswerRelevancy's cosine similarity is exactly 1.0.
-
-    It takes the run's ledger because the real one does (#265). Every sample it
-    embeds leaves an `embed_query` row beside the four judge rows.
-    """
-
-    def __init__(self, ledger=None):
-        self.ledger = ledger
-
-    def embed_text(self, text: str, **kwargs) -> list[float]:
-        return [1.0, 0.0, 0.0]
-
-    async def aembed_text(self, text: str, **kwargs) -> list[float]:
-        return [1.0, 0.0, 0.0]
-
-
-def _fake_ragas_instructor_llm(purpose, ledger):  # noqa: ARG001
-    """Stands in for `_build_instructor_llm`, whose signature it must match."""
-    return _FakeInstructorLLM()
 
 
 def eval_service_metric_keys() -> tuple:
@@ -142,24 +59,6 @@ def eval_service_metric_keys() -> tuple:
     from app.services.eval_service import METRIC_KEYS
 
     return METRIC_KEYS
-
-
-def _fake_relevance_judge(question, response, *, ledger):  # noqa: ARG001
-    """Stands in for `relevance_judge.judge_relevance` (#274).
-
-    A PASS for any non-empty response, which is all the scoring tests need.
-
-    IT IS NOT OPTIONAL. The relevance Judge is not a ragas metric, so
-    `_build_instructor_llm` does not stand in for it: every test that drives
-    `run_ragas_eval` without this patch reaches the real OpenAI endpoint, gets a
-    401 on the fixture key, and records the column as `unknown`. Observed
-    2026-09-15, thirteen seconds a test.
-    """
-    from app.services.relevance_judge import RelevanceVerdict
-
-    return RelevanceVerdict(
-        verdict="pass" if response.strip() else "fail", reason="canned"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -247,26 +146,7 @@ def _recording_connect(cursor, conn_strings: list[str]):
 
 
 class TestRunRagasEval:
-    """Tests for the Ragas 0.4.x harness (run_ragas_eval)."""
-
-    @staticmethod
-    def _spy_on_from_list(monkeypatch) -> list:
-        """Record every `EvaluationDataset.from_list` call, and still build the real dataset."""
-        from ragas import EvaluationDataset
-
-        from app.services import eval_service
-
-        from_list_calls: list = []
-        real_from_list = EvaluationDataset.from_list
-
-        class _SpyDataset:
-            @staticmethod
-            def from_list(samples):
-                from_list_calls.append(samples)
-                return real_from_list(samples)
-
-        monkeypatch.setattr(eval_service, "EvaluationDataset", _SpyDataset)
-        return from_list_calls
+    """Tests for the scoring pass (run_ragas_eval)."""
 
     _SCENARIOS = (
         {
@@ -285,34 +165,17 @@ class TestRunRagasEval:
         },
     )
 
-    def test_the_default_run_grounds_every_sample_and_builds_no_ragas_dataset(
-        self, monkeypatch
-    ):
-        """The default path scores faithfulness by the rule, with no dataset and no Judge (ADR 0015).
+    def test_the_default_run_grounds_every_sample_and_calls_no_model(self):
+        """The default path scores faithfulness by the rule, with no Judge (ADR 0015).
 
-        `EvaluationDataset.from_list` is ragas' schema check for a scoring loop
-        that the default run no longer enters, so a call to it here means the run
-        built the judged path it no longer pays for. The judge client builder
-        raises, so a default run that reached for a Judge fails here rather than
-        passing on a canned answer. The score each sample carries is the one
-        `ground` gives its own response and contexts, so a column filled by
-        anything else, or left empty, fails.
+        The score each sample carries is the one `ground` gives its own response
+        and contexts, so a column filled by anything else, or left empty, fails.
         """
         from app.domain.grounding import ground
-        from app.services import eval_service
         from app.services.eval_service import run_ragas_eval
 
-        from_list_calls = self._spy_on_from_list(monkeypatch)
+        result = run_ragas_eval([dict(s) for s in self._SCENARIOS])
 
-        def _no_judge(purpose, ledger):  # noqa: ARG001
-            raise AssertionError(f"the default run built a Judge client for {purpose}")
-
-        monkeypatch.setattr(eval_service, "_build_instructor_llm", _no_judge)
-        monkeypatch.setattr(eval_service, "judge_relevance", _no_judge)
-
-        result = run_ragas_eval([dict(s) for s in self._SCENARIOS], ledger())
-
-        assert from_list_calls == [], "the default run built a ragas EvaluationDataset"
         by_id = {row["scenario_id"]: row for row in result["scores"]}
         assert sorted(by_id) == sorted(s["id"] for s in self._SCENARIOS), (
             "a sample went unscored"
@@ -321,205 +184,32 @@ class TestRunRagasEval:
             expected = ground(scenario["agent_response"], scenario["retrieved_contexts"]).score
             assert expected is not None
             assert by_id[scenario["id"]]["faithfulness"] == expected, scenario["id"]
-            for metric in ("answer_relevancy", "context_precision", "context_recall"):
-                assert by_id[scenario["id"]][metric] is None, (
-                    f"{metric} was scored on a run that asked only for faithfulness"
-                )
+            assert set(by_id[scenario["id"]]) <= {
+                "scenario_id", "faithfulness", "faithfulness_claims"
+            }, "a score row carries a metric outside METRIC_KEYS"
 
-    def test_a_judged_key_builds_the_dataset_with_the_reference_field(self, monkeypatch):
-        """Asking for a ragas metric builds the dataset, keyed 'reference' (D-02 LOCKED).
-
-        This test used to mock `evaluate`, `EvaluationDataset` and all four
-        metric classes, which is exactly how the harness shipped with a scoring
-        call ragas rejects (7.18). Nothing in ragas is mocked here: the real
-        EvaluationDataset validates the samples, the real metric runs, and only
-        the two network hops, the judge LLM and Voyage, are canned.
-        """
-        from app.services import eval_service
+    def test_a_run_that_asks_for_no_faithfulness_scores_nothing(self):
+        """Faithfulness is the one metric with an instrument, so leaving it out scores nothing."""
         from app.services.eval_service import run_ragas_eval
 
-        from_list_calls = self._spy_on_from_list(monkeypatch)
-        monkeypatch.setattr(
-            eval_service, "_build_instructor_llm", _fake_ragas_instructor_llm
-        )
-        monkeypatch.setattr(eval_service, "_VoyageRagasEmbedding", _FakeRagasEmbedding)
+        result = run_ragas_eval([dict(s) for s in self._SCENARIOS], metric_keys=())
 
-        result = run_ragas_eval(
-            [dict(self._SCENARIOS[0])], ledger(), metric_keys=("context_precision",)
-        )
-
-        assert from_list_calls, "EvaluationDataset.from_list was not called"
-        samples_list = from_list_calls[0]
-        assert len(samples_list) == 1
-        assert "reference" in samples_list[0], (
-            "D-02 violation: EvaluationDataset.from_list sample missing 'reference' key"
-        )
-        assert "ground_truths" not in samples_list[0], (
-            "D-02 violation: 'ground_truths' key present, must be 'reference' in Ragas 0.4.x"
-        )
-        assert samples_list[0]["reference"] == "Items can be returned within 30 days."
-        assert result["scores"][0]["context_precision"] is not None, (
-            "context_precision came back unknown against a metric that cannot fail here"
-        )
-
-    def test_built_metrics_are_instances_not_classes(self):
-        """Every element of the metrics list is a constructed metric object,
-        and none of them is a legacy `ragas.metrics.base.Metric`.
-
-        The second half is the one that fell over live: ragas/evaluation.py:133
-        raises "All metrics must be initialised metric objects" for anything
-        failing `isinstance(m, Metric)`, and collections metrics fail it while
-        being perfectly initialised. That is why this harness scores through
-        ascore() and never through evaluate().
-        """
-        from ragas.metrics.base import Metric, SimpleBaseMetric
-
-        from app.services.eval_service import METRIC_KEYS, _build_ragas_metrics
-
-        pairs = _build_ragas_metrics(ledger(), _FakeRagasEmbedding(), METRIC_KEYS)
-        metrics = [metric for _column, metric in pairs]
-
-        assert sorted(column for column, _metric in pairs) == [
-            "context_precision", "context_recall", "ragas_answer_relevancy"
-        ], (
-            "three METRIC_KEYS are ragas metrics. answer_relevancy is the "
-            "relevance Judge (#274) and faithfulness is the grounding rule "
-            "(ADR 0015), so neither has an instance here"
-        )
-        for metric in metrics:
-            assert not isinstance(metric, type), f"{metric!r} is a class, not an instance"
-            assert isinstance(metric, SimpleBaseMetric)
-            assert not isinstance(metric, Metric), (
-                f"{type(metric).__name__} is now a legacy ragas Metric"
-            )
-
-    def test_instructor_llm_wraps_an_async_client(self):
-        """Collections metrics only ever await agenerate(), and
-        InstructorLLM.agenerate raises TypeError on a synchronous client."""
-        from app.services.eval_service import _build_instructor_llm
-
-        assert _build_instructor_llm("judge_faithfulness", ledger()).is_async is True
-
-    def test_the_judge_sends_luna_and_effort_none_on_the_wire(self):
-        """The two figures decision #34 priced, read off the bytes the judge sent.
-
-        Not off the route, and not off the InstructorLLM. Instructor fills in
-        each default the call did not name, and ragas maps parameters per
-        provider on the way past. Both layers sit between the routing table and
-        the request, so the request is where the claim is checked. A fake
-        transport answers with a real OpenAI-shaped body, which is also what
-        makes the ledger row underneath it a real one.
-        """
-        import asyncio
-        import json
-
-        import httpx
-        from pydantic import BaseModel
-
-        from app.services.eval_service import _build_instructor_llm
-
-        class _Verdict(BaseModel):
-            score: int
-
-        sent: dict = {}
-
-        def _handler(request: httpx.Request) -> httpx.Response:
-            sent.update(json.loads(request.content))
-            return httpx.Response(
-                200,
-                json={
-                    "id": "chatcmpl-1",
-                    "object": "chat.completion",
-                    "model": "gpt-5.6-luna",
-                    "choices": [{
-                        "index": 0,
-                        "finish_reason": "tool_calls",
-                        "message": {
-                            "role": "assistant",
-                            "content": None,
-                            "tool_calls": [{
-                                "id": "call_1",
-                                "type": "function",
-                                "function": {
-                                    "name": "_Verdict",
-                                    "arguments": json.dumps({"score": 1}),
-                                },
-                            }],
-                        },
-                    }],
-                    "usage": {
-                        "prompt_tokens": 100,
-                        "completion_tokens": 20,
-                        "prompt_tokens_details": {"cached_tokens": 10},
-                    },
-                },
-                headers={"content-type": "application/json"},
-            )
-
-        transport = httpx.MockTransport(_handler)
-
-        class _Pinned(httpx.AsyncClient):
-            """A client the OpenAI SDK still recognises, answering canned bytes.
-
-            A lambda here fails. The SDK isinstance-checks the client it is
-            handed, so the stand-in has to be a real subclass.
-            """
-
-            def __init__(self, **kwargs):
-                super().__init__(transport=transport, **kwargs)
-
-        rows = []
-        with patch("httpx.AsyncClient", _Pinned):
-            llm = _build_instructor_llm("judge_faithfulness", ledger(rows))
-            asyncio.run(llm.agenerate("score this", _Verdict))
-
-        assert sent.get("model") == "gpt-5.6-luna", (
-            f"the judge asked for model={sent.get('model')!r}"
-        )
-        assert sent.get("reasoning_effort") == "none", (
-            "the judge sent reasoning_effort="
-            f"{sent.get('reasoning_effort')!r}; decision #34 priced the Judge "
-            "floor at effort none and any other value is a different price"
-        )
-        assert [row.purpose for row in rows] == ["judge_faithfulness"], (
-            f"the call left {rows!r} on the ledger"
-        )
-        assert rows[0].served_model == "gpt-5.6-luna"
+        assert result["scores"] == []
+        assert result["judge_records"] == []
+        assert result["sent"] == len(self._SCENARIOS)
 
     def test_run_ragas_eval_empty_scenarios_returns_empty(self):
-        """run_ragas_eval returns no scores and no records when nothing is valid.
-        No mocking needed — the early-exit path never touches Ragas internals.
-        """
+        """run_ragas_eval returns no scores and no records when nothing is valid."""
         from app.services.eval_service import run_ragas_eval
 
         # Scenarios without reference_answer are filtered out — early exit
         result = run_ragas_eval(
             [{"question": "Q", "agent_response": "A", "retrieved_contexts": []}],
-            ledger(),
         )
 
         assert result["scores"] == []
         assert result["judge_records"] == []
         assert result["sent"] == 0
-
-    def test_run_ragas_eval_uses_correct_import(self):
-        """eval_service.py imports Ragas 0.4.x path (D-01 LOCKED regression guard).
-        'ground_truths' must NOT appear in the source (D-02 LOCKED regression guard).
-        """
-        import app.services.eval_service as eval_service_module
-
-        source = inspect.getsource(eval_service_module)
-
-        # D-01 LOCKED: must use the 0.4.x import path
-        assert "from ragas.metrics.collections import" in source, (
-            "D-01 violation: eval_service.py does not import from ragas.metrics.collections"
-        )
-
-        # D-02 LOCKED: the old 0.3.x field name must not appear
-        assert "ground_truths" not in source, (
-            "D-02 violation: 'ground_truths' found in eval_service.py — must use 'reference'"
-        )
-
 
 # ---------------------------------------------------------------------------
 # What the scoring half touches — and what it therefore cannot need
@@ -527,7 +217,7 @@ class TestRunRagasEval:
 
 
 class TestScoringTouchesNoDatabase:
-    """run_ragas_eval scores rows already in memory against the judge API.
+    """run_ragas_eval scores rows already in memory with the grounding rule.
 
     It used to accept a `branch_conn_str` marked `# noqa: ARG001` and never
     referenced it. Everything downstream read that parameter as evidence of
@@ -537,28 +227,16 @@ class TestScoringTouchesNoDatabase:
     """
 
     def test_scoring_takes_no_connection_string_because_it_opens_none(self):
-        """`ledger` is the second parameter and it is not a dsn.
+        """The parameter list is pinned exactly rather than left open.
 
-        Ticket #47 gave scoring one argument it did read: who the judge calls
-        are billed to, and a recorder for their rows. `LedgerContext` has no
-        field that could hold a connection string (project rule 1), so the claim
-        this test defends is unchanged and the parameter list is pinned exactly
-        rather than left open.
+        Scoring reads the scenarios and which metrics to score, and nothing
+        else, so no parameter can carry a connection string (project rule 1).
         """
-        from app.core.model_client import LedgerContext
         from app.services.eval_service import run_ragas_eval
 
         params = inspect.signature(run_ragas_eval).parameters
-        assert list(params) == ["scenarios", "ledger", "metric_keys"], (
+        assert list(params) == ["scenarios", "metric_keys"], (
             f"run_ragas_eval grew a parameter it does not read: {list(params)}"
-        )
-        carriers = [
-            field.name
-            for field in dataclasses.fields(LedgerContext)
-            if "conn" in field.name or "dsn" in field.name or "url" in field.name
-        ]
-        assert not carriers, (
-            f"LedgerContext grew {carriers}, a field that could carry a dsn"
         )
 
     def test_scoring_issues_no_statement_against_any_database(self):
@@ -711,10 +389,7 @@ class TestPersistenceSplit:
 
         eval_service.write_eval_results(
             str(uuid.uuid4()),
-            eval_service.build_judge_records(
-                [{"scenario_id": "s1", "faithfulness": 0.9, "answer_relevancy": 0.9,
-                  "context_precision": 0.9, "context_recall": 0.9}]
-            ),
+            eval_service.build_judge_records([{"scenario_id": "s1", "faithfulness": 0.9}]),
             "postgresql://production",
         )
 
@@ -768,8 +443,7 @@ class TestTheJudgeRowCarriesItsOwnDecision:
         eval_service.write_eval_results(
             str(uuid.uuid4()),
             eval_service.build_judge_records([score or {
-                "scenario_id": "s1", "faithfulness": 0.95, "answer_relevancy": 0.8,
-                "context_precision": 0.7, "context_recall": 0.6,
+                "scenario_id": "s1", "faithfulness": 0.95,
             }]),
             "postgresql://production",
         )
@@ -790,113 +464,26 @@ class TestTheJudgeRowCarriesItsOwnDecision:
                 "model", "prompt_version", "reasoning_effort"
             ], f"the {metric} row's identity is {identity!r}"
 
-    def test_faithfulness_records_the_rule_and_every_model_dimension_luna_at_effort_none(
-        self, monkeypatch
-    ):
-        """The two figures decision #34 priced, written out, and the rule where it scores.
+    def test_faithfulness_records_the_grounding_rule(self, monkeypatch):
+        """The row names the rule, its name and its version (ADR 0015).
 
-        This compared the record against `PURPOSE_ROUTES` until it was noticed
-        that the record is BUILT from `PURPOSE_ROUTES`, so both sides moved
-        together and the assertion held under any drift at all. Literals cannot.
-        The day a judge route moves off Luna or off effort none, this file goes
-        red and somebody re-measures the calibration figure instead of inheriting
-        it.
-
-        Faithfulness is scored by the grounding rule since ADR 0015, so its row
-        names the rule. A row that still named Luna would put rule verdicts into
-        the Judge's calibration population.
+        A row that named a model would put rule verdicts into a Judge's
+        calibration population.
         """
-        from app.domain.grounding import GROUNDING_IDENTITY
-        from app.services.eval_service import METRIC_KEYS
+        from app.domain.grounding import GROUNDING_IDENTITY, GROUNDING_RULE_VERSION
 
         rows = self._rows(monkeypatch)
 
-        assert json.loads(rows["faithfulness"]["judge_identity"]) == dataclasses.asdict(
-            GROUNDING_IDENTITY
-        )
-        for metric in METRIC_KEYS:
-            if metric == "faithfulness":
-                continue
-            identity = json.loads(rows[metric]["judge_identity"])
-            assert identity["model"] == "gpt-5.6-luna", (
-                f"the {metric} row records model {identity['model']!r}"
-            )
-            assert identity["reasoning_effort"] == "none", (
-                f"the {metric} row records effort {identity['reasoning_effort']!r}, "
-                "and the $0.62 per thousand floor holds only at effort none"
-            )
+        identity = json.loads(rows["faithfulness"]["judge_identity"])
+        assert identity == dataclasses.asdict(GROUNDING_IDENTITY)
+        assert identity["prompt_version"] == GROUNDING_RULE_VERSION
 
-    def test_the_prompt_version_names_the_artifact_the_prompt_ships_in(
-        self, monkeypatch
-    ):
-        """Each row names the artifact ITS OWN prompt, or rule, ships in.
+    def test_a_metric_name_with_no_instrument_has_no_identity(self):
+        """Only faithfulness has an instrument; any other name identifies nothing."""
+        from app.services.eval_service import judge_identity_for
 
-        Three of the five prompts belong to ragas, which carries them inside the
-        installed distribution, so the distribution is the identifier. The
-        fourth is `relevance_judge`, the first judge prompt written in this repo
-        (#274), and it carries its own version. Faithfulness is the grounding
-        rule (ADR 0015), versioned whenever one of its numbers moves. One key
-        over two instruments would put both sets of verdicts in one calibration
-        population.
-        """
-        import importlib.metadata
-
-        from app.domain.grounding import GROUNDING_RULE_VERSION
-        from app.services.eval_service import METRIC_KEYS, RELEVANCE_METRIC
-        from app.services.relevance_judge import RELEVANCE_PROMPT_VERSION
-
-        rows = self._rows(monkeypatch)
-        ragas_version = f"ragas-{importlib.metadata.version('ragas')}"
-        own_version = {
-            RELEVANCE_METRIC: RELEVANCE_PROMPT_VERSION,
-            "faithfulness": GROUNDING_RULE_VERSION,
-        }
-
-        for metric in METRIC_KEYS:
-            identity = json.loads(rows[metric]["judge_identity"])
-            expected = own_version.get(metric, ragas_version)
-            assert identity["prompt_version"] == expected, metric
-        assert sum(
-            json.loads(rows[m]["judge_identity"])["prompt_version"].startswith("ragas-")
-            for m in METRIC_KEYS
-        ) == 3, "the three ragas dimensions stopped naming the ragas distribution"
-
-    def test_a_route_with_no_effort_writes_no_judge_rather_than_a_partial_one(
-        self, monkeypatch
-    ):
-        """The fail-open path, observed rather than assumed.
-
-        Decision #34 priced the Judge floor at effort `none`, and every judge
-        route carries it today, so this branch is unreachable from the shipped
-        table. It exists because a route that dropped the effort would leave the
-        identity a field short, and two efforts filed under one key average two
-        populations. Writing NULL says the Judge is unknown, which is what it
-        would be, and it costs no scored run: the score and the row still land.
-
-        Exercised on context_precision, a ragas dimension whose identity comes
-        off the route. Faithfulness is the grounding rule (ADR 0015) and reads no
-        route, so the same broken route leaves its identity whole.
-        """
-        from app.core.model_client import ModelRoute
-        from app.domain.grounding import GROUNDING_IDENTITY
-        from app.services import eval_service
-
-        monkeypatch.setattr(
-            eval_service,
-            "route_for",
-            lambda _purpose: ModelRoute("openai", "gpt-5.6-luna"),
-        )
-
-        assert eval_service.judge_identity_for("context_precision") is None
-
-        rows = self._rows(monkeypatch)
-        row = rows["context_precision"]
-        assert row["judge_identity"] is None
-        assert row["score"] == 0.7, "the score was lost along with the identity"
-        assert eval_service.judge_identity_for("faithfulness") == GROUNDING_IDENTITY
-        assert json.loads(rows["faithfulness"]["judge_identity"]) == dataclasses.asdict(
-            GROUNDING_IDENTITY
-        ), "a route with no effort erased the rule's identity"
+        for metric in ("answer_relevancy", "context_precision", "context_recall"):
+            assert judge_identity_for(metric) is None, metric
 
     # -- the verdict and its gate -----------------------------------------
 
@@ -908,37 +495,16 @@ class TestTheJudgeRowCarriesItsOwnDecision:
         assert rows["faithfulness"]["threshold"] == settings.EVAL_FAITHFULNESS_THRESHOLD
         assert rows["faithfulness"]["binary_verdict"] is True
 
-    def test_an_ungated_metric_carries_neither_a_threshold_nor_a_verdict(
-        self, monkeypatch
-    ):
-        """answer_relevancy, context_precision and context_recall have no setting.
-
-        ADR 0014 moved relevancy into this set, so its row now looks like the two
-        context rows: NULL on both columns, never a borrowed threshold and never
-        False. The 0.8 the fixture scores it is written down; what is not written
-        is a decision about it. A reader aggregating verdicts would otherwise
-        count three extra failures on every scenario in the table.
-        """
-        rows = self._rows(monkeypatch)
-
-        assert rows["answer_relevancy"]["score"] == 0.8, "the score is still stored"
-        for metric in ("answer_relevancy", "context_precision", "context_recall", "ragas_answer_relevancy"):
-            assert rows[metric]["threshold"] is None, f"{metric} was given a gate"
-            assert rows[metric]["binary_verdict"] is None, f"{metric} was given a verdict"
-
     def test_an_unscored_metric_is_a_row_with_no_score_and_no_verdict(
         self, monkeypatch
     ):
-        """The judge returned nothing for one dimension. The row still exists.
+        """The rule returned nothing for the answer. The row still exists.
 
         Dropping it would make an unscored dimension indistinguishable from a
         scenario nobody sent, and `summarise_run_validity`'s per-metric
         observation counts would lose the denominator rather than show the hole.
         """
-        rows = self._rows(monkeypatch, score={
-            "scenario_id": "s1", "faithfulness": None, "answer_relevancy": 0.95,
-            "context_precision": None, "context_recall": None,
-        })
+        rows = self._rows(monkeypatch, score={"scenario_id": "s1", "faithfulness": None})
 
         assert len(rows) == len(eval_service_metric_keys()), (
             "an unscored metric lost its row"
@@ -949,9 +515,6 @@ class TestTheJudgeRowCarriesItsOwnDecision:
         )
         assert rows["faithfulness"]["threshold"] is not None, (
             "the gate the metric WOULD have been judged against is still recorded"
-        )
-        assert rows["answer_relevancy"]["binary_verdict"] is None, (
-            "relevancy is reported, not gated (ADR 0014), so no row of it decides"
         )
 
     def test_the_verdict_is_the_comparison_and_not_a_copy_of_the_score(
@@ -972,39 +535,11 @@ class TestTheJudgeRowCarriesItsOwnDecision:
 
     # -- the ledger reference ---------------------------------------------
 
-    def test_every_row_names_the_ledger_bucket_that_paid_for_it(self, monkeypatch):
-        """The reference is (eval_run_id, ledger_purpose), per metric per run.
-
-        The ledger cannot go per scenario: `record_model_call` mints each row's
-        uuid inside itself, the hook that calls it fires under ragas' scoring
-        loop and sees no scenario, and one metric call leaves several rows. So
-        the row stores the bucket, and tenant migration 0023's column comment
-        says that is the grain.
-        """
-        from app.services.eval_service import JUDGE_PURPOSE_BY_METRIC, METRIC_KEYS
-
+    def test_a_rule_scored_row_names_no_ledger_bucket(self, monkeypatch):
+        """The rule makes no model call, so no ledger bucket paid for the row."""
         rows = self._rows(monkeypatch)
 
-        for metric in METRIC_KEYS:
-            assert rows[metric]["ledger_purpose"] == JUDGE_PURPOSE_BY_METRIC[metric]
-
-    def test_each_metric_maps_to_a_purpose_the_routing_table_routes(self):
-        """The map is built from the two tuples, not from a `judge_` prefix rule.
-
-        `PURPOSE_ROUTES` also routes `judge_retrieval_faithfulness`, a different
-        Judge in a different task, and a string rule would hand its route here.
-        """
-        from app.core.model_client import PURPOSE_ROUTES
-        from app.services.eval_service import (
-            JUDGE_PURPOSE_BY_METRIC,
-            JUDGE_PURPOSES,
-            METRIC_KEYS,
-        )
-
-        assert list(JUDGE_PURPOSE_BY_METRIC) == list(METRIC_KEYS)
-        assert list(JUDGE_PURPOSE_BY_METRIC.values()) == list(JUDGE_PURPOSES)
-        for purpose in JUDGE_PURPOSE_BY_METRIC.values():
-            assert purpose in PURPOSE_ROUTES
+        assert rows["faithfulness"]["ledger_purpose"] is None
 
     # -- the blob that is gone ---------------------------------------------
 
@@ -1023,14 +558,10 @@ class TestTheJudgeRowCarriesItsOwnDecision:
                 f"the {metric} row still writes a detail blob: {params['detail']!r}"
             )
 
-    def test_the_row_holds_only_its_own_dimensions_score(self, monkeypatch):
-        """The four scores were different. Each row carries exactly one of them."""
+    def test_the_row_holds_its_own_dimensions_score(self, monkeypatch):
         rows = self._rows(monkeypatch)
 
         assert rows["faithfulness"]["score"] == 0.95
-        assert rows["answer_relevancy"]["score"] == 0.8
-        assert rows["context_precision"]["score"] == 0.7
-        assert rows["context_recall"]["score"] == 0.6
 
     def test_the_writer_inserts_one_row_per_record_and_no_more(self, monkeypatch):
         from app.services import eval_service
@@ -1110,28 +641,20 @@ class TestTheThresholdIsDefinedOnce:
         assert settings.EVAL_FAITHFULNESS_THRESHOLD == 0.80
         assert threshold_for("faithfulness") == 0.80
 
-    def test_the_ragas_relevancy_figure_is_reported_and_gates_nothing(self):
-        """#274 kept the ragas number and took the gate off it.
+    def test_the_metric_vocabulary_is_faithfulness_alone(self):
+        """ADR 0015 took the judges out, and the four columns they filled went with them."""
+        from app.domain.eval_result import METRIC_KEYS as DOMAIN_METRIC_KEYS
+        from app.services.eval_service import GATED_METRIC_KEYS, METRIC_KEYS
 
-        It is the instrument that failed 34 of 41 rows where the owner failed 18
-        of 46. Reported so a reader can still see it; gated on nothing, so no
-        deploy is decided by it.
-        """
-        from app.services.eval_service import (
-            GATED_METRIC_KEYS,
-            METRIC_KEYS,
-            threshold_for,
-        )
-
-        assert "ragas_answer_relevancy" in METRIC_KEYS
-        assert threshold_for("ragas_answer_relevancy") is None
-        assert "ragas_answer_relevancy" not in GATED_METRIC_KEYS
+        assert METRIC_KEYS == ("faithfulness",)
+        assert DOMAIN_METRIC_KEYS == METRIC_KEYS
+        assert GATED_METRIC_KEYS == METRIC_KEYS
 
 
 class TestBuildJudgeRecords:
     """The pairing of scored scenarios to judge rows, before any database."""
 
-    def test_four_records_per_scenario_in_metric_order(self):
+    def test_one_record_per_scenario_per_metric_in_metric_order(self):
         from app.services.eval_service import METRIC_KEYS, build_judge_records
 
         records = build_judge_records([{"scenario_id": "s1", "faithfulness": 0.9}])
@@ -1144,14 +667,13 @@ class TestBuildJudgeRecords:
 
         assert build_judge_records([]) == []
 
-    def test_a_scenario_the_judge_scored_on_one_dimension_still_gets_every_row(self):
+    def test_a_scenario_the_rule_could_not_score_still_gets_its_row(self):
         from app.services.eval_service import METRIC_KEYS, build_judge_records
 
-        records = build_judge_records([{"scenario_id": "s1", "faithfulness": 0.9}])
+        records = build_judge_records([{"scenario_id": "s1", "faithfulness": None}])
 
-        assert len(records) == len(METRIC_KEYS)
         assert [r.metric for r in records] == list(METRIC_KEYS)
-        assert [r.score for r in records] == [0.9] + [None] * (len(METRIC_KEYS) - 1)
+        assert [r.score for r in records] == [None]
 
 
 
@@ -1914,8 +1436,8 @@ class TestSummariseRunValidity:
     def test_zero_valid_observations_is_unknown_not_zero(self):
         """The rule this whole branch exists for.
 
-        Every judge call returned NaN, so run_ragas_eval emitted None for all
-        four metrics. Rendering that as 0.0 reports a total quality collapse;
+        The rule found nothing to score, so run_ragas_eval emitted None for
+        every metric. Rendering that as 0.0 reports a total quality collapse;
         omitting it reports nothing wrong. `measured: False` with
         `observations: 0` is the only reading that is true.
         """
@@ -1941,7 +1463,6 @@ class TestSummariseRunValidity:
             "measured": True,
             "observations": 1,
         }
-        assert metrics["answer_relevancy"]["measured"] is False
 
     def test_the_two_datasets_are_summarised_separately(self):
         scenarios = [_scenario("g1", "golden"), _scenario("e1", None)]
@@ -2160,9 +1681,11 @@ class TestAttributeReturnedRows:
 class TestRunRagasEvalAttribution:
     """The producer, exercised in the state the existing tests mocked away.
 
-    test_scored_is_below_valid_when_ragas_returns_fewer_rows monkeypatches
+    test_scored_is_below_valid_when_scoring_returns_fewer_rows monkeypatches
     run_ragas_eval out entirely, so the real function was never run against a
-    partial judge return — the one state in which its attribution was wrong.
+    partial return, the one state in which its attribution was wrong. The
+    grounding rule returns one row per sample, so these tests stand a shortfall
+    in at `_judge_samples`, the seam every returned row passes through.
     """
 
     def _scenarios(self, n):
@@ -2179,51 +1702,20 @@ class TestRunRagasEvalAttribution:
         ]
 
     def _judged(self, scenarios, indices, with_keys=True, faithfulness=None):
-        """A frame of the rows the judge actually returned."""
+        """The rows the scoring pass actually returned."""
         rows = []
         for i in indices:
-            row = {
-                "faithfulness": 0.1 * i if faithfulness is None else faithfulness,
-                "answer_relevancy": 0.5,
-                "context_precision": 0.5,
-                "context_recall": 0.5,
-            }
+            row = {"faithfulness": 0.1 * i if faithfulness is None else faithfulness}
             if with_keys:
                 row["user_input"] = scenarios[i]["question"]
                 row["reference"] = scenarios[i]["reference_answer"]
             rows.append(row)
-        return pd.DataFrame(rows)
+        return rows
 
-    def _run(self, monkeypatch, scenarios, frame):
-        """Real dataset, real metric objects, judge replaced at _score_samples.
-
-        The seam is the scoring loop rather than the judge client, because a
-        partial return is a shortfall of ROWS: these tests exist to drive
-        attribution when the judge answers for fewer samples than were sent.
-
-        The run asks for context_precision because the default run, faithfulness
-        alone, is scored by the grounding rule and never enters the scoring loop
-        (ADR 0015). A judged key is what makes the stubbed loop the path taken.
-        """
-
-        # `resolved_inputs` since #227 PR 2: relevancy is scored against the
-        # rewritten question and the other three are not. This double ignores it
-        # because these tests are about attribution, but it has to ACCEPT it or
-        # they would be passing against a signature the producer no longer has.
-        async def _fake_score_samples(
-            metrics, samples, resolved_inputs=None, relevance_ledger=None  # noqa: ARG001
-        ):
-            return frame.to_dict("records")
-
-        monkeypatch.setattr(
-            eval_service, "_build_instructor_llm", _fake_ragas_instructor_llm
-        )
-        monkeypatch.setattr(eval_service, "_VoyageRagasEmbedding", _FakeRagasEmbedding)
-        monkeypatch.setattr(eval_service, "judge_relevance", _fake_relevance_judge)
-        monkeypatch.setattr(eval_service, "_score_samples", _fake_score_samples)
-        return eval_service.run_ragas_eval(
-            scenarios, ledger(), metric_keys=("context_precision",)
-        )
+    def _run(self, monkeypatch, scenarios, rows):
+        """The real producer, with the scoring pass replaced at `_judge_samples`."""
+        monkeypatch.setattr(eval_service, "_judge_samples", lambda _samples, _keys: rows)
+        return eval_service.run_ragas_eval(scenarios)
 
     def test_a_partial_return_does_not_hand_the_golden_row_a_foreign_score(
         self, monkeypatch
@@ -2263,9 +1755,9 @@ class TestRunRagasEvalAttribution:
         assert validity["scored"] == 5
         assert validity["valid"] == 31
 
-    def test_the_run_reports_what_the_judge_did_not_return(self, monkeypatch):
-        """(sent, returned) is the judge's own denominator, and `scores` alone
-        cannot express it."""
+    def test_the_run_reports_what_the_scoring_pass_did_not_return(self, monkeypatch):
+        """(sent, returned) is the scoring pass's own denominator, and `scores`
+        alone cannot express it."""
         scenarios = self._scenarios(10)
 
         result = self._run(monkeypatch, scenarios, self._judged(scenarios, [1, 4]))
@@ -2282,11 +1774,11 @@ class TestRunRagasEvalAttribution:
         five on the first five scenarios with full confidence.
         """
         scenarios = self._scenarios(31)
-        frame = self._judged(
+        rows = self._judged(
             scenarios, [2, 7, 11, 19, 26], with_keys=False, faithfulness=0.95
         )
 
-        result = self._run(monkeypatch, scenarios, frame)
+        result = self._run(monkeypatch, scenarios, rows)
 
         assert result["scores"] == []
         assert result["unattributed"] == 5
@@ -2311,20 +1803,9 @@ class TestRunRagasEvalAttribution:
                 "agent_response": "a",
             }
         ]
-        frame = pd.DataFrame(
-            [
-                {
-                    "user_input": "q",
-                    "reference": "a",
-                    "faithfulness": 0.99,
-                    "answer_relevancy": 0.99,
-                    "context_precision": 0.99,
-                    "context_recall": 0.99,
-                }
-            ]
-        )
+        rows = [{"user_input": "q", "reference": "a", "faithfulness": 0.99}]
 
-        result = self._run(monkeypatch, scenarios, frame)
+        result = self._run(monkeypatch, scenarios, rows)
 
         assert result["scores"] == []
         assert result["unattributed"] == 1
@@ -2366,9 +1847,6 @@ def _validity_report(**overrides) -> dict:
                 "scored": 2,
                 "metrics": {
                     "faithfulness": {"value": 0.8, "measured": True, "observations": 2},
-                    "answer_relevancy": {"value": 0.6, "measured": True, "observations": 2},
-                    "context_precision": {"value": 0.5, "measured": True, "observations": 2},
-                    "context_recall": {"value": 0.4, "measured": True, "observations": 2},
                 },
             },
             "exploratory": {
@@ -2376,13 +1854,7 @@ def _validity_report(**overrides) -> dict:
                 "valid": 2,
                 "scored": 0,
                 "metrics": {
-                    metric: {"value": None, "measured": False, "observations": 0}
-                    for metric in (
-                        "faithfulness",
-                        "answer_relevancy",
-                        "context_precision",
-                        "context_recall",
-                    )
+                    "faithfulness": {"value": None, "measured": False, "observations": 0},
                 },
             },
         },
@@ -2408,11 +1880,6 @@ def _record_judge_records(scores=None):
     Built through `build_judge_records`, so the verdicts are the ones the shipped
     writer reaches. 0.79 faithfulness against the 0.80 gate is a FAILED scenario,
     which is what the counts below say.
-
-    0.8 UNTIL #274, AND THAT NUMBER STOPPED BEING THE REASON. The gate moved to
-    0.80 and 0.8 sits exactly on it, so faithfulness passed and the scenario went
-    on failing for the relevancy verdict alone. The stated reason has to be the
-    operative one, or a change to either gate silently re-aims this fixture.
     """
     from app.services.eval_service import build_judge_records
 
@@ -2420,13 +1887,7 @@ def _record_judge_records(scores=None):
         scores
         if scores is not None
         else [
-            {
-                "scenario_id": scenario_id,
-                "faithfulness": 0.79,
-                "answer_relevancy": 0.0,
-                "context_precision": 0.5,
-                "context_recall": 0.4,
-            }
+            {"scenario_id": scenario_id, "faithfulness": 0.79}
             for scenario_id in ("g1", "g2")
         ]
     )
@@ -2480,9 +1941,6 @@ def _built(**overrides):
         "ledger": [],
         "scenarios": _RECORD_SCENARIOS,
         "judge_records": _record_judge_records(),
-        # The single-turn default: nothing was resolved, so the record's four
-        # counts are zero. TestQuestionResolutionOnTheRecord overrides it.
-        "question_resolution": {},
     }
     fields.update(overrides)
     return build_eval_result(**fields)
@@ -2611,36 +2069,20 @@ class TestBuildEvalResult:
 
         assert _built().context_proxy_version == CONTEXT_PROXY_VERSION
 
-    def test_a_run_scored_by_two_instruments_names_no_single_judge(self):
-        """None, and it is the honest answer rather than a regression (#274).
+    def test_a_rule_scored_run_names_the_rule(self):
+        """Every record names the grounding rule (ADR 0015), so the run does too.
 
-        A run's records used to name one Judge because ragas authored every
-        prompt. `relevance_judge` authors its own, so the gated pair is two
-        instruments and `run_judge_identity` refuses to report either as the
-        Judge behind the run. The per-metric identity on each `eval_results` row
-        is finer grained and is what a calibration joins on.
-
-        WHAT THE DEPLOY SUMMARY READS INSTEAD is `judge_identities`, one per
-        gated dimension, and the calibration artifact carries one record per
-        dimension to be matched against it. Neither refuses a deploy: the
+        `judge_identities` carries one identity per gated dimension, and the
+        calibration artifact is matched against it. Neither refuses a deploy: the
         calibration key is reported and not gated (#54,
         `deployment_service._calibration_block`).
-
-        Since ADR 0015 the two instruments are the grounding rule behind
-        faithfulness and the Luna Judge behind every model dimension.
         """
         from app.domain.grounding import GROUNDING_IDENTITY
-        from app.services.eval_service import GATED_METRIC_KEYS, judge_identity_for
+        from app.services.eval_service import GATED_METRIC_KEYS
 
         built = _built()
-        assert built.judge_identity is None
-        assert judge_identity_for("faithfulness") != judge_identity_for(
-            "answer_relevancy"
-        )
-        assert set(built.judge_identities) == set(GATED_METRIC_KEYS), (
-            "one identity per gated dimension; relevancy's Judge is reported on its "
-            "rows and names nothing a deploy reads (ADR 0014)"
-        )
+        assert built.judge_identity == GROUNDING_IDENTITY
+        assert set(built.judge_identities) == set(GATED_METRIC_KEYS)
         assert built.judge_identities["faithfulness"] == GROUNDING_IDENTITY
 
     def test_the_verdict_counts_reach_the_record_per_dataset(self):
@@ -2686,86 +2128,40 @@ class TestDatasetVerdictCounts:
         )
 
     def test_a_scenario_whose_gated_verdicts_all_hold_passed(self):
-        counts = self._counts(
-            [{"scenario_id": "g1", "faithfulness": 0.95, "answer_relevancy": 0.92}]
-        )
+        counts = self._counts([{"scenario_id": "g1", "faithfulness": 0.95}])
         assert counts["golden"] == (1, 0, 0)
 
     def test_one_false_gated_verdict_fails_the_scenario(self):
-        counts = self._counts(
-            [{"scenario_id": "g1", "faithfulness": 0.10, "answer_relevancy": 0.92}]
-        )
+        counts = self._counts([{"scenario_id": "g1", "faithfulness": 0.10}])
         assert counts["golden"] == (0, 1, 0)
 
-    def test_a_failed_relevancy_row_leaves_the_scenario_passing(self):
-        """ADR 0014. Relevancy is reported, so no relevancy score decides a row.
-
-        The counts feed `golden_failure` and the exploratory pass rate, so a
-        scenario the owner would ship and relevancy would not is a pass here.
-        """
-        counts = self._counts(
-            [{"scenario_id": "g1", "faithfulness": 0.95, "answer_relevancy": 0.01}]
-        )
-        assert counts["golden"] == (1, 0, 0)
-
-    def test_a_missing_gated_score_is_unmeasured_and_beats_the_failure(self):
-        """The gate undecided, beside a relevancy score that is not a gate.
-
-        "Nobody decided" reported as "it failed" is what turns a judge outage
-        into an apparent quality collapse and an owner-initiated rollback.
-        """
-        counts = self._counts(
-            [
-                {
-                    "scenario_id": "g1",
-                    "faithfulness": None,
-                    "answer_relevancy": 0.10,
-                }
-            ]
-        )
-        assert counts["golden"] == (0, 0, 1)
-
-    def test_an_ungated_metric_alone_leaves_the_scenario_undecided(self):
-        """The judge returned context_precision and neither gated dimension.
-
-        `scored` counts this scenario and no gate decided it, which is the run
-        the deploy gate has to refuse rather than ship on nought failures.
-        """
-        counts = self._counts(
-            [{"scenario_id": "g1", "context_precision": 0.71}]
-        )
-        assert counts["golden"] == (0, 0, 1)
-
-    def test_a_scenario_the_judge_scored_nothing_for_is_counted_in_neither(self):
+    def test_a_scenario_the_rule_scored_nothing_for_is_counted_in_neither(self):
         """It is not in `scored` either, so counting it would break the sum."""
         counts = self._counts([{"scenario_id": "g1"}])
         assert counts["golden"] == (0, 0, 0)
 
     def test_a_scenario_that_belongs_to_no_fetched_row_joins_no_dataset(self):
         """Same rule `summarise_run_validity` applies to an unattributed score."""
-        counts = self._counts(
-            [{"scenario_id": "ghost", "faithfulness": 0.95, "answer_relevancy": 0.95}]
-        )
+        counts = self._counts([{"scenario_id": "ghost", "faithfulness": 0.95}])
         assert counts == {"golden": (0, 0, 0), "exploratory": (0, 0, 0)}
 
     def test_the_two_datasets_are_counted_apart(self):
         counts = self._counts(
             [
-                {"scenario_id": "g1", "faithfulness": 0.95, "answer_relevancy": 0.95},
-                {"scenario_id": "e1", "faithfulness": 0.10, "answer_relevancy": 0.95},
+                {"scenario_id": "g1", "faithfulness": 0.95},
+                {"scenario_id": "e1", "faithfulness": 0.10},
             ]
         )
         assert counts["golden"] == (1, 0, 0)
         assert counts["exploratory"] == (0, 1, 0)
 
 
-class TestARelevancyFailureNeverReachesGoldenFailure:
-    """ADR 0014, end to end from the judge rows into the rule that blocks.
+class TestAFailedFaithfulnessRowBlocks:
+    """The gate end to end, from the score rows into the rule that blocks.
 
     `golden_failure` turns one wrong golden scenario into a block and reads
     `scenarios_failed`, which `dataset_verdict_counts` fills from the gated
-    verdicts. Every row here fails relevancy and clears faithfulness, so the
-    count is zero and the rule returns nothing.
+    verdicts.
     """
 
     SCENARIOS = [
@@ -2773,7 +2169,7 @@ class TestARelevancyFailureNeverReachesGoldenFailure:
         for i in range(4)
     ]
 
-    def _result(self, relevancy: float, faithfulness: float = 0.95):
+    def _result(self, faithfulness: float):
         from app.services.eval_service import (
             build_eval_result,
             build_judge_records,
@@ -2781,13 +2177,7 @@ class TestARelevancyFailureNeverReachesGoldenFailure:
         )
 
         scores = [
-            {
-                "scenario_id": scenario["id"],
-                "faithfulness": faithfulness,
-                "answer_relevancy": relevancy,
-                "context_precision": 0.88,
-                "context_recall": 0.86,
-            }
+            {"scenario_id": scenario["id"], "faithfulness": faithfulness}
             for scenario in self.SCENARIOS
         ]
         return build_eval_result(
@@ -2799,21 +2189,14 @@ class TestARelevancyFailureNeverReachesGoldenFailure:
             ledger=[],
             scenarios=self.SCENARIOS,
             judge_records=build_judge_records(scores),
-            question_resolution={},
         )
 
-    def test_every_row_failing_relevancy_leaves_the_golden_set_passing(self):
-        golden = self._result(relevancy=0.01).datasets["golden"]
-
-        assert (golden.scored, golden.scenarios_passed, golden.scenarios_failed) == (4, 4, 0)
-        assert golden.scenarios_unmeasured == 0
-
-    def test_the_golden_rule_reaches_no_reason_over_those_rows(self):
+    def test_a_passing_golden_set_reaches_no_reason(self):
         from app.domain.calibration_status import CalibrationStatus
         from app.domain.verdict import _rule_golden_failure
 
         reasons = _rule_golden_failure(
-            self._result(relevancy=0.01),
+            self._result(faithfulness=0.95),
             None,
             CalibrationStatus.absent("no_artifact"),
             True,
@@ -2821,25 +2204,12 @@ class TestARelevancyFailureNeverReachesGoldenFailure:
 
         assert reasons == ()
 
-    def test_the_relevancy_number_is_still_on_the_record(self):
-        """The half that stops this reading as a deletion.
-
-        The console draws this channel and `get_eval_results` reports it. What
-        went is the verdict, not the measurement.
-        """
-        golden = self._result(relevancy=0.01).datasets["golden"]
-
-        assert golden.metrics["answer_relevancy"].measured is True
-        assert golden.metrics["answer_relevancy"].value == pytest.approx(0.01)
-        assert golden.metrics["answer_relevancy"].observations == 4
-
-    def test_a_failed_faithfulness_row_still_blocks(self):
-        """The gate that remains, over the same four rows."""
+    def test_a_failed_faithfulness_row_blocks(self):
         from app.domain.calibration_status import CalibrationStatus
         from app.domain.verdict import _rule_golden_failure
 
         reasons = _rule_golden_failure(
-            self._result(relevancy=0.99, faithfulness=0.10),
+            self._result(faithfulness=0.10),
             None,
             CalibrationStatus.absent("no_artifact"),
             True,
@@ -2848,92 +2218,14 @@ class TestARelevancyFailureNeverReachesGoldenFailure:
         assert [r.rule for r in reasons] == ["golden_failure"]
 
 
-class TestQuestionResolutionOnTheRecord:
-    """The record carries which question relevancy was scored against (#235).
+class TestNoQuestionIsResolved:
+    """ADR 0015 removed the resolver, so a new record carries the default counts."""
 
-    The counts are HANDED OVER, never recomputed here. The task stamps the same
-    patch on `eval_runs.config`, so a test that let this function derive its own
-    would stop the two homes from being provably one derivation.
-    """
+    def test_a_new_record_carries_no_question_resolution(self):
+        from app.domain.eval_result import NO_QUESTION_RESOLUTION, EvalResult
 
-    def test_the_patch_reaches_the_record_unchanged(self):
-        record = _built(
-            question_resolution={
-                "question_resolution": {
-                    "relevancy_scored": 12,
-                    "multi_turn": 4,
-                    "rewritten": 3,
-                    "raw_question_fallback": 1,
-                }
-            }
-        )
-        assert record.question_resolution.relevancy_scored == 12
-        assert record.question_resolution.multi_turn == 4
-        assert record.question_resolution.rewritten == 3
-        assert record.question_resolution.raw_question_fallback == 1
-
-    def test_an_empty_patch_is_four_zeros(self):
-        """The single-turn run, and the run that scored nothing at all."""
-        from app.domain.eval_result import NO_QUESTION_RESOLUTION
-
-        assert _built().question_resolution == NO_QUESTION_RESOLUTION
-
-    def test_the_counts_are_not_recomputed_from_the_scenarios(self):
-        """The record reports what it was handed, so the config and the record
-        cannot drift. A function deriving its own numbers here would reintroduce
-        the second derivation `build_eval_result` exists to remove."""
-        record = _built(
-            question_resolution={
-                "question_resolution": {
-                    "relevancy_scored": 999,
-                    "multi_turn": 0,
-                    "rewritten": 0,
-                    "raw_question_fallback": 0,
-                }
-            }
-        )
-        assert record.question_resolution.relevancy_scored == 999
-
-    def test_handing_over_the_counts_instead_of_the_envelope_is_refused(self):
-        """The one mistake this parameter's shape invites, made loud.
-
-        `build_eval_result` takes the CONFIG PATCH, the
-        `{"question_resolution": {...}}` envelope, not the four counts. Passing
-        the counts used to cost nothing: the key lookup missed, `from_payload`
-        read four zeros, and the record shipped saying the run resolved no
-        question, which is the reading the deploy gate treats as nothing to
-        distrust.
-        """
-        from app.domain.eval_result import InvalidEvalResult
-
-        with pytest.raises(InvalidEvalResult) as exc:
-            _built(
-                question_resolution={
-                    "relevancy_scored": 12,
-                    "multi_turn": 4,
-                    "rewritten": 3,
-                    "raw_question_fallback": 1,
-                }
-            )
-        assert "envelope" in str(exc.value)
-
-    def test_an_empty_patch_is_still_accepted(self):
-        """The run that scored nothing passes `{}`, and that is not the mistake."""
-        _built(question_resolution={})
-
-    def test_the_record_round_trips_with_the_counts(self):
-        from app.domain.eval_result import EvalResult
-
-        record = _built(
-            question_resolution={
-                "question_resolution": {
-                    "relevancy_scored": 8,
-                    "multi_turn": 5,
-                    "rewritten": 1,
-                    "raw_question_fallback": 4,
-                }
-            }
-        )
+        record = _built()
+        assert record.question_resolution == NO_QUESTION_RESOLUTION
         assert EvalResult.from_payload(record.payload) == record
 
 
@@ -2947,11 +2239,9 @@ class TestRunJudgeIdentity:
     """
 
     def _identity(self, model="gpt-5.6-luna", effort="none"):
-        from app.domain.judge_identity import JUDGE_PROMPT_VERSION, JudgeIdentity
+        from app.domain.judge_identity import JudgeIdentity
 
-        return JudgeIdentity(
-            model=model, reasoning_effort=effort, prompt_version=JUDGE_PROMPT_VERSION
-        )
+        return JudgeIdentity(model=model, reasoning_effort=effort, prompt_version="prompt-v1")
 
     def _records(self, *identities):
         """One record per identity, on the golden rows `_RECORD_SCENARIOS` names.
@@ -3192,96 +2482,6 @@ class TestReadRunLedger:
         assert eval_service.read_run_ledger("run-1", "postgresql://production") == []
 
 
-class TestTheRewritesReachTheScoringLoop:
-    """The one line that hands the rewrites to the Judge, and nothing else pins it.
-
-    `_resolved_inputs` has a single caller, inside `run_ragas_eval`. Every other
-    test either calls `_score_samples` directly or doubles `run_ragas_eval`
-    whole, so setting that keyword to `None` at the call site left 853 tests
-    green while every rewrite was computed, written, counted and shown on the
-    sheet, then discarded before the Judge saw it. Observed 2026-09-12 by
-    mutation. This test drives the real producer and reads what the loop was
-    handed.
-
-    The run asks for the two relevancy keys, the relevance Judge and ragas'
-    relevancy, because they are the dimensions that read the rewrite. The
-    default run scores faithfulness by the grounding rule and never enters the
-    scoring loop (ADR 0015).
-    """
-
-    def test_run_ragas_eval_hands_the_scoring_loop_one_rewrite_per_sample(
-        self, monkeypatch
-    ):
-        scenarios = [
-            {
-                "id": "s0",
-                "question": "how do I start the dev server?",
-                "reference_answer": "pnpm dev",
-                "retrieved_contexts": [],
-                "agent_response": "pnpm dev",
-                "dataset": "golden",
-                "turns": [{"role": "user", "content": "I'm setting up Mellow locally."}],
-                "resolved_question": "How do I start Mellow's dev server?",
-            },
-            {
-                "id": "s1",
-                "question": "what is the refund window?",
-                "reference_answer": "30 days",
-                "retrieved_contexts": [],
-                "agent_response": "30 days",
-                "dataset": "exploratory",
-                "turns": [],
-                "resolved_question": None,
-            },
-            {
-                "id": "s2",
-                "question": "and the second one?",
-                "reference_answer": "14 days",
-                "retrieved_contexts": [],
-                "agent_response": "14 days",
-                "dataset": "exploratory",
-                "turns": [{"role": "user", "content": "Tell me about the two plans."}],
-                "resolved_question": "   ",
-            },
-        ]
-        handed = {}
-
-        async def _capture_score_samples(
-            metrics, samples, resolved_inputs=None, relevance_ledger=None  # noqa: ARG001
-        ):
-            handed["resolved_inputs"] = resolved_inputs
-            handed["sample_count"] = len(samples)
-            handed["relevance_ledger"] = relevance_ledger
-            return []
-
-        monkeypatch.setattr(
-            eval_service, "_build_instructor_llm", _fake_ragas_instructor_llm
-        )
-        monkeypatch.setattr(eval_service, "_VoyageRagasEmbedding", _FakeRagasEmbedding)
-        monkeypatch.setattr(eval_service, "judge_relevance", _fake_relevance_judge)
-        monkeypatch.setattr(eval_service, "_score_samples", _capture_score_samples)
-
-        eval_service.run_ragas_eval(
-            scenarios,
-            ledger(),
-            metric_keys=("answer_relevancy", "ragas_answer_relevancy"),
-        )
-
-        assert handed["sample_count"] == 3
-        assert handed["relevance_ledger"] is not None, (
-            "the relevance Judge was not given a ledger, so the gated column "
-            "would have been left unscored (#274)"
-        )
-        assert handed["resolved_inputs"] == [
-            "How do I start Mellow's dev server?",
-            None,
-            None,
-        ], (
-            "the scoring loop was not handed one rewrite per sample in sample "
-            "order, with None for a scenario that has no usable rewrite"
-        )
-
-
 class TestTheRuleVerdictsCountAsScoredAndAsVerdicts:
     """#226: an ambiguous row is scored by the rule and its verdict is counted.
 
@@ -3337,7 +2537,6 @@ class TestTheRuleVerdictsCountAsScoredAndAsVerdicts:
             ledger=[],
             scenarios=scenarios,
             judge_records=[],
-            question_resolution={},
         )
 
         golden = result.datasets["golden"]

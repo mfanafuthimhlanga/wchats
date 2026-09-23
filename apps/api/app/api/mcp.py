@@ -298,8 +298,8 @@ TOOLS: tuple[_Tool, ...] = (
         "Rescore a finished eval run's stored answers with today's grounding rule. No "
         "agent turn runs and the source run is never written: the gated "
         "metric is scored over the answers that run recorded, into a new run "
-        "that names it as its source. Re-running it with the same Judge returns "
-        "the run that already exists rather than paying again." + _POLL_EVAL,
+        "that names it as its source. Re-running it with the same instrument "
+        "returns the run that already exists rather than writing a second one." + _POLL_EVAL,
         "POST",
         "/api/v1/agents/{agent_id}/eval-runs/{run_id}/rejudge",
         ("agent_id", "run_id"),

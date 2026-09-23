@@ -60,7 +60,7 @@ What the response says when a number does not exist:
         different questions and one number over both moves whenever the
         exploratory draw moves. So a run-level reading exists only when exactly
         one dataset scored anything. When both did, `metrics_dataset` is null,
-        the four metrics read unmeasured, and the numbers are under `datasets`,
+        the run-level metrics read unmeasured, and the numbers are under `datasets`,
         where the record keeps them apart.
     aggregate_scores / scores: NUMERIC COMPATIBILITY PROJECTION. Unmeasured
         reads 0.0 here, and it is a lie, retained for exactly one reason:
@@ -234,11 +234,10 @@ EVAL_RUN_KINDS: tuple[str, ...] = ("eval", "rejudge")
 
 _KIND_PREFIX = {"eval": "m6:", "rejudge": EVAL_REJUDGE_KIND_PREFIX}
 
-# The four M6 metrics, in the order the UI channels read them (D-04). Imported
-# from eval_service rather than restated: audit D3 was one call site's copy of a
-# column name drifting from the schema's, and four metric names duplicated
-# across the writer, the scorer and this reader is the same shape of defect
-# waiting to happen.
+# The metrics a run reports, faithfulness alone since ADR 0015. Imported from
+# eval_service rather than restated: audit D3 was one call site's copy of a
+# column name drifting from the schema's. A row a run wrote under a retired
+# metric name is history, and this reader skips it.
 METRIC_KEYS = EVAL_METRIC_KEYS
 
 # The metrics the promotion gate is defined over. Faithfulness alone since ADR
@@ -300,12 +299,12 @@ def _rendered(metrics: dict) -> dict:
 
 
 def _unmeasured_metrics() -> dict:
-    """Four metrics, none of them read."""
+    """Every metric in METRIC_KEYS, none of them read."""
     return _rendered(unmeasured_metrics())
 
 
 def _metrics_of(outcome: DatasetOutcome) -> dict:
-    """One dataset's four metrics, copied out of the record unchanged."""
+    """One dataset's metrics, copied out of the record unchanged."""
     return _rendered(metrics_of(outcome))
 
 
@@ -351,7 +350,7 @@ def _dataset_block(record: EvalResult | None) -> dict:
 
 
 def _run_level_metrics(record: EvalResult | None) -> tuple[dict, str | None]:
-    """The run's four metrics as JSON, and the dataset they were lifted from.
+    """The run's metrics as JSON, and the dataset they were lifted from.
 
     `app.domain.eval_result.run_level_metrics` is the rule and carries the
     reasoning: a run-level reading exists only when exactly one dataset scored a
@@ -639,10 +638,9 @@ _NO_JUDGE_ROW = {"score": None, "measured": False, "verdict": None, "threshold":
 def _judge_reading(score, verdict, threshold) -> dict:
     """One stored judge row, rendered without deciding anything.
 
-    `verdict` is None for an ungated metric (`threshold_for` gives
-    `answer_relevancy`, `context_precision` and `context_recall` no gate, so
-    their rows carry none) and None for a gated metric the judge produced no
-    score for. Both mean the same thing to a reader of `passed`: there is no
+    `verdict` is None for a row with no gate (a row a run wrote under a retired
+    metric before ADR 0015 carries none) and None for a gated metric that got
+    no score. Both mean the same thing to a reader of `passed`: there is no
     decision here.
     """
     return {

@@ -252,23 +252,6 @@ class Settings(BaseSettings):
     # which refuses an empty key at construction, so the failure lands where the
     # key is used. Make it required once those nine sites speak OpenAI too.
     OPENAI_API_KEY: str = ""
-    # One key per judge purpose, each optional and falling back to OPENAI_API_KEY
-    # (#213, ADR 0009 option A). The judge path is rate-bound: 31 scenarios
-    # scored in the same 2680 s at four and at eight in flight because every
-    # call shared one rate. OpenAI meters that rate PER PROJECT, not per key, so
-    # each of these must come from its own OpenAI project; four keys minted in
-    # one project share one budget and spread nothing. A scenario costs the four
-    # judges 2, 3, 5 and 1 calls, so a project per purpose spreads the load
-    # 5:3:2:1 and the busiest carries under half of it. Only the runtime worker
-    # scores evals, so only it needs these set. The ledger keeps them separable
-    # because each is its own purpose already.
-    OPENAI_API_KEY_JUDGE_FAITHFULNESS: str = ""
-    OPENAI_API_KEY_JUDGE_ANSWER_RELEVANCY: str = ""
-    OPENAI_API_KEY_JUDGE_CONTEXT_PRECISION: str = ""
-    OPENAI_API_KEY_JUDGE_CONTEXT_RECALL: str = ""
-    # Added by #274. One call per scored row, the same batch shape the four
-    # above have.
-    OPENAI_API_KEY_JUDGE_RELEVANCE: str = ""
     VOYAGE_API_KEY: str
     # M3: Cohere reranker fallback (RET-05); optional so existing envs are not broken
     COHERE_API_KEY: str | None = None
@@ -390,12 +373,6 @@ class Settings(BaseSettings):
     # retry burst and the generation step a small tenant pays before its eval
     # selects. The constant stays as the floor for a small golden set.
     CHECKLIST_WAIT_PER_SCENARIO_S: int = 120
-
-    # Samples an eval scores at once. OBSERVED 2026-09-06 (#205): one at a time,
-    # 31 scenarios by four metrics did not finish inside the ceiling above. Then
-    # OBSERVED 2026-09-07 (#213): eight in flight scored no faster than four, so
-    # the judge path is rate-bound and this number buys nothing above 4.
-    EVAL_SCORING_CONCURRENCY: int = 4
 
     # The countdown between one poll of the tenant DB and the next. Each poll
     # opens one short psycopg2 connection per job still in flight and costs one
@@ -616,7 +593,7 @@ class Settings(BaseSettings):
     # Set AGENT_MAX_BUDGET_USD in .env to override, tighter in production.
     AGENT_MAX_BUDGET_USD: float = 0.40
 
-    # Phase 21 (OPS-07): sampled Ragas 0.4.x faithfulness + citation-coverage rate.
+    # Phase 21 (OPS-07): sampled faithfulness (grounding rule) + citation-coverage rate.
     # Online-scoring norm is 1-10% of live traffic (DOMAIN-NOTES §2) + 100% of
     # Auditor-flagged ungrounded/partial turns (gated inside run_retrieval_faithfulness,
     # not at dispatch time — see 21-04-SUMMARY.md). 0.1 = 10%, the top of that range,

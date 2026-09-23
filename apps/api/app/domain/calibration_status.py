@@ -130,11 +130,11 @@ ABSENT_REASONS = (
 #: Which construction rules built the record. Bumped when a stored artifact from
 #: an older build would be read wrongly rather than refused.
 #:
-#: 1 to 2 at #274. A run is scored by two instruments now, ragas faithfulness and
-#: `relevance-judge-v1`, so one record over one Judge cannot describe it. The
-#: record became an ENVELOPE carrying one record per gated dimension, and a
-#: version 1 artifact read as version 2 would claim a figure over both dimensions
-#: that was measured over the pooled rows of neither.
+#: 1 to 2 at #274. The record is an ENVELOPE carrying one record per gated
+#: dimension, because a run's record carries an identity per dimension. A run's
+#: gated metric is scored by the grounding rule (ADR 0015). A version 1 artifact
+#: is one record over one Judge, and read as version 2 it would claim a figure
+#: per dimension that was measured over the pooled rows of all of them.
 ARTIFACT_VERSION = 2
 
 

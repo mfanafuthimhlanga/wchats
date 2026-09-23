@@ -78,14 +78,19 @@ function CrossGlyph(props: SVGProps<SVGSVGElement>) {
 const evidenceRows: Array<{
   scenario: string
   faithfulness: string
-  relevancy: string
+  claims: string
   verdict: 'pass' | 'fail'
 }> = [
-  { scenario: 'Refund window for a damaged item', faithfulness: '0.96', relevancy: '0.94', verdict: 'pass' },
-  { scenario: 'Price for a service not in the catalogue', faithfulness: '0.41', relevancy: '0.88', verdict: 'fail' },
-  { scenario: 'Booking a slot on a public holiday', faithfulness: '0.93', relevancy: '0.91', verdict: 'pass' },
-  { scenario: 'Trading hours during load shedding', faithfulness: '0.95', relevancy: '0.97', verdict: 'pass' },
-  { scenario: 'Handing an angry customer to a human', faithfulness: '0.89', relevancy: '0.92', verdict: 'pass' },
+  { scenario: 'Refund window for a damaged item', faithfulness: '0.96', claims: 'None', verdict: 'pass' },
+  {
+    scenario: 'Price for a service not in the catalogue',
+    faithfulness: '0.41',
+    claims: '"This service costs R450 a session"',
+    verdict: 'fail',
+  },
+  { scenario: 'Booking a slot on a public holiday', faithfulness: '0.93', claims: 'None', verdict: 'pass' },
+  { scenario: 'Trading hours during load shedding', faithfulness: '0.95', claims: 'None', verdict: 'pass' },
+  { scenario: 'Handing an angry customer to a human', faithfulness: '0.89', claims: 'None', verdict: 'pass' },
 ]
 
 function GateDemo() {
@@ -283,12 +288,12 @@ export default function LandingPage() {
 
           <h2>Every scenario is filed, including the ones that fail.</h2>
 
-          <Ledger caption="Five eval scenarios from the latest run, with faithfulness, relevancy and verdict.">
+          <Ledger caption="Five eval scenarios from the latest run, with faithfulness and the claims the retrieved text does not carry.">
             <thead>
               <tr>
                 <LedgerColHead>Scenario</LedgerColHead>
                 <LedgerColHead numeric>Faithfulness</LedgerColHead>
-                <LedgerColHead numeric>Relevancy</LedgerColHead>
+                <LedgerColHead>Claims flagged</LedgerColHead>
                 <LedgerColHead className="vd">Verdict</LedgerColHead>
               </tr>
             </thead>
@@ -297,7 +302,7 @@ export default function LandingPage() {
                 <tr key={row.scenario}>
                   <LedgerCell>{row.scenario}</LedgerCell>
                   <LedgerCell numeric>{row.faithfulness}</LedgerCell>
-                  <LedgerCell numeric>{row.relevancy}</LedgerCell>
+                  <LedgerCell>{row.claims}</LedgerCell>
                   <LedgerCell className="vd">
                     <Chip verdict={row.verdict}>{row.verdict === 'pass' ? 'Pass' : 'Fail'}</Chip>
                   </LedgerCell>
@@ -336,8 +341,8 @@ export default function LandingPage() {
               <span className="step-n mono">02</span>
               <h3>Evaluate</h3>
               <p>
-                Sixty four scenarios are put to the agent. Faithfulness, relevancy, recall and precision, each
-                scored on its own line.
+                Sixty four scenarios are put to the agent. Faithfulness is scored by a rule anyone can
+                read, and every claim it flags is filed on its own line.
               </p>
             </div>
             <div className="step">

@@ -1,6 +1,6 @@
 """
-run_retrieval_faithfulness — Celery task (runtime queue): sampled Ragas 0.4.x
-faithfulness + per-turn citation coverage (OPS-07).
+run_retrieval_faithfulness: Celery task (runtime queue), sampled faithfulness
+scored by the grounding rule, + per-turn citation coverage (OPS-07).
 
 Position in the post-turn chain (agent.py):
     celery_chain(run_gatekeeper.si(...), run_auditor.si(...), run_strategist.si(...),
@@ -19,17 +19,17 @@ dispatch time in agent.py:
     This is a sequencing decision documented as a deviation in 21-04-SUMMARY.md,
     not a re-interpretation of the sampling policy itself.
 
-Idempotency (CLAUDE.md rule 5): re-running this task for the same job_id is a
+Idempotency (CLAUDE.md rule 2): re-running this task for the same job_id is a
 no-op once retrieval_metrics.faithfulness is non-NULL for that row.
 
-The Judge names itself (ticket #47, AC3):
-    A faithfulness score nobody can attribute cannot be calibrated against, so
-    the row carries the model, the reasoning effort and the prompt version that
-    produced it, in `retrieval_metrics.judge_identity` (tenant migration 0020).
-    `eval_service` does the same for its four offline metrics, in
-    `eval_results.judge_identity` (tenant migration 0023; the four-score blob in
-    `detail` stopped being written with it). Each lands beside its own verdict,
-    so a calibration figure reads one place per verdict and joins nothing.
+The instrument names itself (ticket #47, AC3):
+    A faithfulness score nobody can attribute cannot be compared, so the row
+    carries the instrument that produced it in `retrieval_metrics.judge_identity`
+    (tenant migration 0020). Since ADR 0015 that is the grounding rule in
+    `app.domain.grounding`, `GROUNDING_IDENTITY`, the same identity
+    `eval_service` writes to `eval_results.judge_identity` for the offline
+    faithfulness score. The rule makes no model call, so this task bills nothing
+    to the ledger.
 
 What "retrieved context" means here (#81, #84):
     The chunks the retrieve tool handed the agent, read back from the tenant's
@@ -48,36 +48,19 @@ What "retrieved context" means here (#81, #84):
     `run_eval_suite` already scores the real chunks, and
     `app.domain.eval_result.CONTEXT_PROXY_VERSION` names that shape
     `agent_retrieve_chunks/1`. This task now reads the same one, so the offline
-    Judge and the live one score the same kind of thing.
+    score and the live one read the same kind of thing.
 
-Security (CLAUDE.md rule 4): task args are (agent_id, job_id) ONLY. conn_str
+Security (CLAUDE.md rule 1): task args are (agent_id, job_id) ONLY. conn_str
 is decrypted at runtime from the control DB, never in task args/logs.
 
-Ragas import:
-    `import ragas` pulls langchain, datasets and pandas — seconds of import
-    time. To keep THIS module cheap at Celery worker startup (celery_app.py's
-    `include=[...]` list imports every task module eagerly), the ragas imports
-    here are LAZY, confined inside `_build_instructor_llm()` /
-    `_build_faithfulness_metrics()`, never at module top-level. The provider SDKs
-    are no longer imported here at all: `app.core.model_client` owns them, and
-    the worker already pays for that module through `celery_app`.
-
-Ragas 0.4.x scoring shape (7.18 — this task returned faithfulness=None on the
-first live turn ever sampled):
-    `ragas.metrics.collections.Faithfulness` descends from SimpleBaseMetric,
-    NOT from `ragas.metrics.base.Metric`, so `ragas.evaluate()` rejects it at
-    evaluation.py:133 with "All metrics must be initialised metric objects" —
-    a message about the class hierarchy, not about instantiation. Collections
-    metrics are scored directly: `await metric.ascore(...) -> MetricResult`,
-    which is the API CLAUDE.md rule 4 names. The LLM must wrap an ASYNC
-    client: collections metrics only ever call `llm.agenerate()`, and
-    InstructorLLM.agenerate raises TypeError on a sync one. `make_async_client`
-    is the factory's answer to that.
+How faithfulness is scored (ADR 0015):
+    `ground(response_text, contexts).score`, the share of the answer's sentences
+    the retrieved chunks carry. None where there is no response or no context,
+    and None where the answer has no scoreable sentence: unknown, never zero.
 """
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import json
 import random
@@ -89,64 +72,13 @@ from sqlalchemy import text as sa_text
 from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.log_bounds import log_failure
-from app.core.model_client import (
-    LedgerContext,
-    ledger_recorder,
-    route_for,
-)
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.domain.eval_result import CONTEXT_PROXY_VERSION
-from app.domain.judge_identity import JUDGE_PROMPT_VERSION, JudgeIdentity
+from app.domain.grounding import GROUNDING_IDENTITY, ground
 from app.models.agent import Agent
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
-
-#: The routing-table key this task's judge calls bill under.
-JUDGE_PURPOSE = "judge_retrieval_faithfulness"
-
-
-def judge_identity() -> JudgeIdentity | None:
-    """Which Judge scored this turn, at the grain calibration compares on.
-
-    The fifth Judge. `eval_service.judge_identity_for` answers the same question
-    for the four offline metrics, and this answers it for the one that scores
-    live traffic. Both read the model and the effort off `PURPOSE_ROUTES`, the
-    table the request itself was built from, so neither record can name a Judge
-    the run did not use.
-
-    Returns None when the route names no reasoning effort. Decision #34 priced
-    the Judge floor at effort `none` and this route carries it today; a route
-    that dropped it would leave the identity a field short, and a key with a hole
-    in it groups two different Judges together. An absent identity says the Judge
-    is unknown, which is what it would be.
-    """
-    route = route_for(JUDGE_PURPOSE)
-    if route.reasoning_effort is None:
-        log.error(
-            "judge_identity.no_reasoning_effort",
-            purpose=JUDGE_PURPOSE,
-            model=route.model,
-            detail=(
-                "the route names no effort, so the Judge cannot be identified "
-                "and its verdicts cannot be calibrated against"
-            ),
-        )
-        return None
-    return JudgeIdentity(
-        model=route.model,
-        reasoning_effort=route.reasoning_effort,
-        prompt_version=JUDGE_PROMPT_VERSION,
-    )
-
-
-def _turn_ledger(tenant_id: str, agent_id: str, job_id: str, conn_str: str) -> LedgerContext:
-    """Who this sampled turn's judge call is billed to, and where its row goes."""
-    return LedgerContext(
-        tenant_id=tenant_id, agent_id=agent_id, job_id=job_id,
-        recorder=ledger_recorder(conn_str),
-    )
-
 
 # ---------------------------------------------------------------------------
 # Tenant-DB helpers (psycopg2 connect/try/finally/close idiom, per convention)
@@ -176,46 +108,15 @@ def _check_existing_score(conn_str: str, job_id: str) -> tuple[bool, bool]:
     return row[0] is not None, True
 
 
-def _fetch_last_user_message(conn_str: str, conversation_id: str) -> str | None:
-    """Best-effort question proxy for the Ragas call.
-
-    The user's question text is intentionally NEVER persisted to control-DB
-    job_events (T-04-03-05 — message text must never be logged). The tenant-DB
-    `messages` table IS the durable transcript (written by _persist_messages
-    in agent.py), so the most recent role='user' row for this conversation is
-    used as the question for this turn. This is a best-effort correlation by
-    recency, not by job_id (messages has no job_id column) — acceptable for a
-    sampled, non-blocking analytics task; documented as a known limitation.
-    """
-    try:
-        conn = psycopg2.connect(conn_str, connect_timeout=5)
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT content FROM messages WHERE conversation_id = %s"
-                    " AND role = 'user' ORDER BY seq DESC LIMIT 1",
-                    (conversation_id,),
-                )
-                row = cur.fetchone()
-        finally:
-            conn.close()
-    except Exception as exc:  # noqa: BLE001 — best-effort, never fails the task
-        log_failure(log, "run_retrieval_faithfulness.question_fetch_failed", exc)
-        return None
-    return row[0] if row else None
-
-
 def _identity_row(faithfulness: float | None) -> dict | None:
-    """The Judge that produced this verdict, in the shape the row stores, or None.
+    """The grounding rule's identity in the shape the row stores, or None.
 
-    None where there is no verdict to attribute, and None again where the route
-    could not name a complete Judge. Both are unknown, and unknown is what the
-    column then holds.
+    None where there is no verdict to attribute, which is unknown, and unknown is
+    what the column then holds.
     """
     if faithfulness is None:
         return None
-    identity = judge_identity()
-    return dataclasses.asdict(identity) if identity else None
+    return dataclasses.asdict(GROUNDING_IDENTITY)
 
 
 def _update_retrieval_metrics(
@@ -225,20 +126,19 @@ def _update_retrieval_metrics(
     faithfulness: float | None,
     identity: dict | None,
 ) -> None:
-    """Write this turn's two signals, and the Judge that produced the second one.
+    """Write this turn's two signals, and the instrument that produced the second one.
 
     `identity` belongs to `faithfulness` and to nothing else on the row.
     citation_coverage is arithmetic this task does itself, so a row carrying only
-    that one gets NULL here rather than the name of a Judge that did no work
-    (tenant migration 0020). It is named `identity` rather than `judge_identity`
-    so it cannot be read as the module function of that name.
+    that one gets NULL here rather than the name of an instrument that did no
+    work (tenant migration 0020).
 
     `context_source` follows the same rule and answers the other half of the
     question (issue #120, tenant migration 0026). `judge_identity` says which
-    model produced the verdict; this says what shape of text the model was shown,
-    and one column held three of those shapes with nothing to tell them apart.
-    The value is the constant the offline eval record stamps, so the live Judge
-    and the offline one name one shape with one string.
+    instrument produced the verdict; this says what shape of text it read, and
+    one column held three of those shapes with nothing to tell them apart. The
+    value is the constant the offline eval record stamps, so the live score and
+    the offline one name one shape with one string.
     """
     context_source = CONTEXT_PROXY_VERSION if faithfulness is not None else None
     conn = psycopg2.connect(conn_str, connect_timeout=5)
@@ -273,7 +173,7 @@ def _is_auditor_flagged(db, job_id: str) -> bool:
     if the Auditor step succeeded. If the Auditor step failed/exhausted
     retries (no auditor.complete row), this returns False — the sample-rate
     gate is the only signal in that case, which is the safe default (never
-    force-run the expensive Ragas call on missing data).
+    force-score a turn on missing data).
     """
     flagged_row = db.execute(
         sa_text(
@@ -286,8 +186,8 @@ def _is_auditor_flagged(db, job_id: str) -> bool:
     return flagged_row is not None
 
 
-def _fetch_turn_context(db, job_id: str) -> tuple[str, list, str | None, str | None] | None:
-    """Return (response_text, citations_list, conversation_id, message_id) or None.
+def _fetch_turn_context(db, job_id: str) -> tuple[str, list, str | None] | None:
+    """Return (response_text, citations_list, message_id) or None.
 
     `message_id` is the assistant message this turn wrote, off the terminal
     `agent.response` payload (WIRE-05). It is the join key for the turn's
@@ -312,9 +212,8 @@ def _fetch_turn_context(db, job_id: str) -> tuple[str, list, str | None, str | N
     response_payload = response_row[0]
     response_text = response_payload.get("text", "") or ""
     citations_list = response_payload.get("citations") or []
-    conversation_id = response_payload.get("conversation_id")
 
-    return response_text, citations_list, conversation_id, response_payload.get("message_id")
+    return response_text, citations_list, response_payload.get("message_id")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -360,7 +259,7 @@ def _read_retrieved_rows(rows) -> _TurnRetrieval:
     """Fold one turn's `retrieved_chunks` rows into its context and its two counts.
 
     THE UNMEASURED COUNT IS THE POINT (#81). An unmeasured call must not reach
-    Ragas as an empty context: an empty context makes every claim unsupported, so
+    the rule as an empty context: an empty context makes every claim unsupported, so
     the score would describe the DoS guard or the decoder rather than the answer.
     It contributes nothing and is counted instead, and the count travels with the
     verdict so a turn whose every retrieve errored reads as unknown.
@@ -384,7 +283,7 @@ def _read_retrieved_rows(rows) -> _TurnRetrieval:
 #: `now()`, which is the TRANSACTION's clock in Postgres, so every row a turn
 #: writes in one transaction carries the same timestamp and the sort falls
 #: through to whatever the heap hands back. Two reads of one turn could then
-#: assemble the contexts in two orders and hand Ragas two different documents.
+#: assemble the contexts in two orders and hand the rule two different documents.
 #: `id` breaks the tie. It is a random uuid (alembic_tenant 0001), so it is a
 #: stable order rather than the call order, which is what a set of contexts
 #: needs: nothing downstream reads position, and everything downstream needs the
@@ -429,80 +328,24 @@ def _citation_coverage(citations: list, measured_calls: int) -> float | None:
 
 
 # ---------------------------------------------------------------------------
-# Ragas 0.4.x faithfulness — LAZY import (see module docstring)
+# Faithfulness, by the grounding rule (ADR 0015)
 # ---------------------------------------------------------------------------
 
 
-def _build_instructor_llm(purpose: str, ledger: LedgerContext):
-    """The InstructorLLM this task's Faithfulness metric scores through.
+def _compute_faithfulness(response_text: str, contexts: list[str]) -> float | None:
+    """This turn's faithfulness: the share of its sentences the retrieved chunks carry.
 
-    Built by `app.services.judge_llm.build_judge_llm`, the same builder
-    `eval_service` uses, so the nightly judge and the sampled live-turn judge are
-    one Judge: same client, same route, same temperature, same
-    `max_completion_tokens` rename (#198). The import stays inside the function
-    so importing this module alone stays cheap (see the module docstring); at a
-    real worker boot the eval and deployment tasks import ragas at module level
-    anyway, so this buys nothing there.
-
-    Args:
-        purpose: the routing-table key this judge call bills under. Passed in
-            rather than read off the module constant, so this builder has the
-            same shape as eval_service's and one test drives both.
-        ledger: the ids this judge call is billed to and where its row goes.
+    None when there is no context or no response, and None when the rule finds
+    no scoreable sentence. Never raises: a scoring failure is logged
+    and yields None, because it must never fail or retry the sampled analytics
+    task's other work (citation_coverage still writes).
     """
-    from app.services.judge_llm import build_judge_llm  # noqa: PLC0415
-
-    return build_judge_llm(purpose, ledger)
-
-
-def _build_faithfulness_metrics(llm) -> list:
-    """The metric list this task scores through: constructed INSTANCES.
-
-    Unlike eval_service's offline harness, no ground-truth `reference` is
-    available for live traffic, so only the reference-free Faithfulness metric
-    is computed — it checks response claims against retrieved_contexts, not
-    against a ground-truth answer.
-    """
-    from ragas.metrics.collections import Faithfulness
-
-    return [Faithfulness(llm=llm)]
-
-
-def _compute_ragas_faithfulness(
-    question: str, response_text: str, contexts: list[str], ledger: LedgerContext
-) -> float | None:
-    """Compute a single-turn Ragas 0.4.x Faithfulness score.
-
-    Scores through `metric.ascore(...) -> MetricResult` rather than
-    `ragas.evaluate()`; see the module docstring for why evaluate() cannot take
-    a collections metric.
-
-    Never raises: any failure (import, API, parsing) is caught, logged, and
-    returns None — a faithfulness-scoring failure must never fail or retry
-    the sampled analytics task's other work (citation_coverage still writes).
-    """
-    if not contexts or not response_text or not question:
+    if not contexts or not response_text:
         return None
-
     try:
-        llm = _build_instructor_llm(JUDGE_PURPOSE, ledger)
-        metrics = _build_faithfulness_metrics(llm)
-    except Exception as exc:  # noqa: BLE001 — import or client construction
-        log_failure(log, "run_retrieval_faithfulness.ragas_import_failed", exc)
-        return None
-
-    try:
-        result = asyncio.run(
-            metrics[0].ascore(
-                user_input=question,
-                response=response_text,
-                retrieved_contexts=contexts,
-            )
-        )
-        raw = result.value
-        return float(raw) if raw is not None and raw == raw else None  # raw == raw: NaN check
-    except Exception as exc:  # noqa: BLE001 — never fail the task on a Ragas/API error
-        log_failure(log, "run_retrieval_faithfulness.ragas_call_failed", exc)
+        return ground(response_text, contexts).score
+    except Exception as exc:  # noqa: BLE001, never fail the task on a scoring defect
+        log_failure(log, "run_retrieval_faithfulness.scoring_failed", exc)
         return None
 
 
@@ -513,7 +356,7 @@ def _scored_report(
     faithfulness: float | None,
     counts: dict,
 ) -> dict:
-    """Write this turn's two signals, name the Judge, and report the lot.
+    """Write this turn's two signals, name the instrument, and report the lot.
 
     `counts` rides on both the log line and the return, so the number of retrieve
     calls nobody could read is beside the score rather than inferable from it
@@ -563,11 +406,11 @@ def _scored_report(
     name="app.worker.tasks.runtime.retrieval_eval.run_retrieval_faithfulness",
 )
 def run_retrieval_faithfulness(self, agent_id: str, job_id: str) -> dict:  # noqa: ARG001
-    """Sampled Ragas faithfulness + citation-coverage UPDATE (OPS-07).
+    """Sampled faithfulness, by the grounding rule, + citation-coverage UPDATE (OPS-07).
 
     Args:
         agent_id: UUID string. conn_str is decrypted at runtime from the
-                  control DB — NEVER an argument (CLAUDE.md rule 4).
+                  control DB, NEVER an argument (CLAUDE.md rule 1).
         job_id:   UUID string of the runtime chat job this scores.
 
     Returns:
@@ -587,7 +430,6 @@ def run_retrieval_faithfulness(self, agent_id: str, job_id: str) -> dict:  # noq
             log.error("run_retrieval_faithfulness.agent_not_found", job_id=job_id, agent_id=agent_id)
             return {}
         conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
-        tenant_id = str(agent.tenant_id)  # read while the session is open
 
         # Idempotency guard (T-21-04-01 adjacent): skip the recompute if already
         # scored, and skip entirely if no retrieval_metrics row exists.
@@ -600,9 +442,11 @@ def run_retrieval_faithfulness(self, agent_id: str, job_id: str) -> dict:  # noq
             return {"status": "already_scored"}
 
         # ------------------------------------------------------------------
-        # Gating (T-21-04-01: DoS/cost mitigation) is sampled OR 100% of the
-        # Auditor-flagged ungrounded and partial turns. The module docstring says
-        # why it lives here, post-Auditor, rather than at dispatch.
+        # Gating is sampled OR 100% of the Auditor-flagged ungrounded and
+        # partial turns. It bounds the per-turn work past this point: the
+        # agent.response read, the tool_calls read for the chunks, and the
+        # retrieval_metrics UPDATE. The module docstring says why it lives here,
+        # post-Auditor, rather than at dispatch.
         # ------------------------------------------------------------------
         sampled = random.random() < settings.RETRIEVAL_FAITHFULNESS_SAMPLE_RATE
         auditor_flagged = False if sampled else _is_auditor_flagged(db, job_id)
@@ -615,7 +459,7 @@ def run_retrieval_faithfulness(self, agent_id: str, job_id: str) -> dict:  # noq
             log.warning("run_retrieval_faithfulness.no_agent_response_event", job_id=job_id)
             return {"status": "no_agent_response_event"}
 
-    response_text, citations_list, conversation_id, message_id = turn_context
+    response_text, citations_list, message_id = turn_context
 
     # The chunks the retrieve tool handed the agent, not a summary of them
     # (#81, #84, and the module docstring). The two counts beside them say how
@@ -632,11 +476,8 @@ def run_retrieval_faithfulness(self, agent_id: str, job_id: str) -> dict:  # noq
     # cited claim, not exact chunk-level coverage.
     citation_coverage = _citation_coverage(citations_list, retrieval.measured)
 
-    question = _fetch_last_user_message(conn_str, conversation_id) if conversation_id else None
-    faithfulness = _compute_ragas_faithfulness(
-        question=question or "", response_text=response_text,
-        contexts=list(retrieval.contexts),
-        ledger=_turn_ledger(tenant_id, agent_id, job_id, conn_str))
+    faithfulness = _compute_faithfulness(
+        response_text=response_text, contexts=list(retrieval.contexts))
 
     if citation_coverage is None and faithfulness is None:
         log.info("run_retrieval_faithfulness.no_signal", job_id=job_id,

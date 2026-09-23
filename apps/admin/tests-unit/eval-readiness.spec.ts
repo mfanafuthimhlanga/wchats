@@ -57,7 +57,7 @@ function summaryWith(
 test.describe('a run whose two datasets both scored', () => {
   // The shape #175 is about. `pass_rates` is null, so the old average was
   // computed over nothing and rendered as "not yet run" beside a run that
-  // measured eight numbers.
+  // measured two numbers.
   const twoDatasets = summaryWith(
     { golden: 0.94, exploratory: 0.62 },
     { pass_rates: null, pass_rates_dataset: null, failing_scenarios: 3, unmeasured_scenarios: 0 },
@@ -84,11 +84,12 @@ test.describe('a run whose two datasets both scored', () => {
     expect(readiness.value).toContain('exploratory sample')
   })
 
-  test('quotes the metric count each average came off', () => {
+  test('the average is the one channel, faithfulness, and the count says so', () => {
     const readiness = readEvalReadiness(twoDatasets)
 
     expect(readiness.readings[0].metricCount).toBe(CHANNEL_KEYS.length)
-    expect(readiness.value).toContain(`over ${CHANNEL_KEYS.length} metrics`)
+    expect(CHANNEL_KEYS).toEqual(['faithfulness'])
+    expect(readiness.value).toContain('over 1 metric on')
   })
 
   test('the failing count the judge reached still decides the chip', () => {
@@ -132,7 +133,7 @@ test.describe('a null the collector wrote is never a zero', () => {
 
     expect(readiness.verdict).toBe('pass')
     expect(readiness.chipLabel).toBe('Pass')
-    expect(readiness.value).toBe('0.90 over 4 metrics on the exploratory sample')
+    expect(readiness.value).toBe('0.90 over 1 metric on the exploratory sample')
   })
 })
 

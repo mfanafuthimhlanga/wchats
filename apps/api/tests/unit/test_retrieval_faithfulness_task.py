@@ -2,7 +2,7 @@
 Unit tests for OPS-07: run_retrieval_faithfulness sampled Celery task.
 
 Tests:
-    1. Signature — task takes only (agent_id, job_id), no conn_str (CLAUDE.md rule 4).
+    1. Signature: task takes only (agent_id, job_id), no conn_str (CLAUDE.md rule 1).
     2. Idempotent — already-scored job_id returns without recompute.
     3. No retrieval_metrics row — returns early, no UPDATE attempted.
     4. Sampling gate — random < rate dispatches the compute path.
@@ -11,10 +11,10 @@ Tests:
     7. citation_coverage computed from citations over the retrieve calls that
        actually retrieved something; None when none did (honest-empty-state,
        never fabricated 0.0).
-    8. Task-level tests stub _compute_ragas_faithfulness so the gating and
-       write logic is tested without a judge call.
-    9. The Ragas 0.4.x scoring path itself, against the REAL ragas package
-       with a canned InstructorBaseRagasLLM in place of the network hop (7.18).
+    8. Task-level tests stub _compute_faithfulness so the gating and
+       write logic is tested on its own.
+    9. The scoring path itself: the grounding rule, with no model call
+       (ADR 0015).
 
 Patch targets are symbols imported into app.worker.tasks.runtime.retrieval_eval:
     - app.worker.tasks.runtime.retrieval_eval.get_sync_db
@@ -23,8 +23,7 @@ Patch targets are symbols imported into app.worker.tasks.runtime.retrieval_eval:
     - app.worker.tasks.runtime.retrieval_eval._is_auditor_flagged
     - app.worker.tasks.runtime.retrieval_eval._fetch_turn_context
     - app.worker.tasks.runtime.retrieval_eval._fetch_retrieved_contexts
-    - app.worker.tasks.runtime.retrieval_eval._fetch_last_user_message
-    - app.worker.tasks.runtime.retrieval_eval._compute_ragas_faithfulness
+    - app.worker.tasks.runtime.retrieval_eval._compute_faithfulness
     - app.worker.tasks.runtime.retrieval_eval._update_retrieval_metrics
     - app.worker.tasks.runtime.retrieval_eval.random.random
 """
@@ -39,7 +38,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.worker.tasks.runtime import retrieval_eval as mod
-from tests.model_doubles import ledger
 
 _AGENT_ID = "agent-uuid"
 _JOB_ID = "job-uuid"
@@ -89,7 +87,7 @@ def _patch_common(monkeypatch, mock_db, conn_str="postgresql://fake/tenant"):
 
 
 # ---------------------------------------------------------------------------
-# Test 1: signature — no conn_str in task args (CLAUDE.md rule 4)
+# Test 1: signature, no conn_str in task args (CLAUDE.md rule 1)
 # ---------------------------------------------------------------------------
 
 
@@ -117,7 +115,7 @@ def test_already_scored_returns_without_recompute(monkeypatch):
     monkeypatch.setattr(mod, "_check_existing_score", lambda conn_str, job_id: (True, True))
     compute_called = []
     monkeypatch.setattr(
-        mod, "_compute_ragas_faithfulness",
+        mod, "_compute_faithfulness",
         lambda **kw: compute_called.append(kw) or 0.9,
     )
     update_called = []
@@ -174,7 +172,6 @@ def _patch_scoreable_turn(
         lambda db, job_id: (
             "response text with [CITATIONS] block",
             citations if citations is not None else [_CITATION],
-            "conv-1",
             _MESSAGE_ID,
         ),
     )
@@ -185,8 +182,7 @@ def _patch_scoreable_turn(
             tuple(chunks), len(chunks) if measured is None else measured, unmeasured
         ),
     )
-    monkeypatch.setattr(mod, "_fetch_last_user_message", lambda conn_str, conv_id: "the question")
-    monkeypatch.setattr(mod, "_compute_ragas_faithfulness", lambda **kw: 0.87)
+    monkeypatch.setattr(mod, "_compute_faithfulness", lambda **kw: 0.87)
     updates = []
     monkeypatch.setattr(mod, "_update_retrieval_metrics", lambda *a: updates.append(a))
     return updates
@@ -256,7 +252,7 @@ def test_citation_coverage_none_when_nothing_retrieved(monkeypatch):
     # Force the sampled path so we reach the compute stage.
     monkeypatch.setattr(mod.settings, "RETRIEVAL_FAITHFULNESS_SAMPLE_RATE", 1.0)
     monkeypatch.setattr(mod.random, "random", lambda: 0.0)
-    monkeypatch.setattr(mod, "_compute_ragas_faithfulness", lambda **kw: None)
+    monkeypatch.setattr(mod, "_compute_faithfulness", lambda **kw: None)
 
     result = mod.run_retrieval_faithfulness.run(_AGENT_ID, _JOB_ID)
 
@@ -281,7 +277,7 @@ def test_citation_coverage_ratio_capped_at_one(monkeypatch):
     )
     monkeypatch.setattr(mod.settings, "RETRIEVAL_FAITHFULNESS_SAMPLE_RATE", 1.0)
     monkeypatch.setattr(mod.random, "random", lambda: 0.0)
-    monkeypatch.setattr(mod, "_compute_ragas_faithfulness", lambda **kw: None)
+    monkeypatch.setattr(mod, "_compute_faithfulness", lambda **kw: None)
 
     result = mod.run_retrieval_faithfulness.run(_AGENT_ID, _JOB_ID)
 
@@ -294,79 +290,57 @@ def test_citation_coverage_ratio_capped_at_one(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# The fifth Judge names itself (ticket #47, AC3)
+# The instrument names itself (ticket #47, AC3)
 # ---------------------------------------------------------------------------
 
 
-class TestTheFifthJudgeIsIdentified:
-    """A faithfulness score nobody can attribute cannot be calibrated against.
+class TestTheRuleIsIdentified:
+    """A faithfulness score nobody can attribute cannot be compared.
 
-    `eval_service` stamps its four Judges on the `eval_results.detail` of every
-    row they score. This Judge scores live traffic, so its verdict lands on the
-    `retrieval_metrics` row for the turn, and the identity lands beside it in the
-    same UPDATE. The three fields are the grain a calibration figure compares on,
-    which is why an incomplete one is written as NULL rather than partially.
+    This task scores live traffic, so its verdict lands on the
+    `retrieval_metrics` row for the turn, and the identity of the instrument
+    lands beside it in the same UPDATE. Since ADR 0015 that instrument is the
+    grounding rule.
     """
 
     def _scored(self, monkeypatch, faithfulness=0.87):
         mock_db = _make_mock_db(_make_mock_agent())
         _patch_common(monkeypatch, mock_db)
         updates = _patch_scoreable_turn(monkeypatch)
-        monkeypatch.setattr(mod, "_compute_ragas_faithfulness", lambda **kw: faithfulness)
+        monkeypatch.setattr(mod, "_compute_faithfulness", lambda **kw: faithfulness)
         monkeypatch.setattr(mod.settings, "RETRIEVAL_FAITHFULNESS_SAMPLE_RATE", 1.0)
         monkeypatch.setattr(mod.random, "random", lambda: 0.0)
 
         result = mod.run_retrieval_faithfulness.run(_AGENT_ID, _JOB_ID)
         return result, updates
 
-    def test_the_update_carries_the_judge_that_produced_the_verdict(self, monkeypatch):
-        """Literals, not a read of the same table the code reads.
-
-        Comparing against `PURPOSE_ROUTES` here would pass unchanged the day the
-        route moves, which is exactly the day a stored identity stops matching
-        the Judge that ran.
-        """
-        import importlib.metadata
-
+    def test_the_update_names_the_grounding_rule(self, monkeypatch):
+        """Literals, so a renamed or re-versioned rule goes red here."""
         _result, updates = self._scored(monkeypatch)
 
         # (conn_str, job_id, citation_coverage, faithfulness, judge_identity)
         assert updates[0][4] == {
-            "model": "gpt-5.6-luna",
+            "model": "rule:grounding",
             "reasoning_effort": "none",
-            "prompt_version": f"ragas-{importlib.metadata.version('ragas')}",
+            "prompt_version": "grounding-v1",
         }
 
     def test_the_identity_is_absent_when_no_verdict_was_produced(self, monkeypatch):
-        """citation_coverage is arithmetic this task does itself. No Judge ran."""
+        """citation_coverage is arithmetic this task does itself. The rule scored nothing."""
         _result, updates = self._scored(monkeypatch, faithfulness=None)
 
         assert updates[0][3] is None
         assert updates[0][4] is None, (
-            "a turn the Judge never scored names a Judge anyway, which files "
-            "arithmetic under a model that did no work"
+            "a turn the rule never scored names an instrument anyway, which files "
+            "arithmetic under an instrument that did no work"
         )
 
-    def test_the_prompt_version_names_the_artifact_the_prompt_ships_in(self):
-        """No judge prompt in this repo carries a version. Ragas authors this one,
-        the same package that authors eval_service's four, so the installed
-        distribution is the identifier both read."""
-        import importlib.metadata
+    def test_the_live_and_the_offline_score_name_one_instrument(self):
+        import dataclasses
 
-        from app.services.eval_service import JUDGE_PROMPT_VERSION as offline
+        from app.services.eval_service import judge_identity_for
 
-        assert mod.judge_identity().prompt_version == offline
-        assert offline == f"ragas-{importlib.metadata.version('ragas')}"
-
-    def test_a_route_naming_no_effort_yields_no_identity_at_all(self, monkeypatch):
-        """A key with a hole in it groups two different Judges together."""
-        from app.core.model_client import ModelRoute
-
-        monkeypatch.setattr(
-            mod, "route_for", lambda purpose: ModelRoute("openai", "gpt-5.6-luna")
-        )
-
-        assert mod.judge_identity() is None
+        assert mod._identity_row(0.5) == dataclasses.asdict(judge_identity_for("faithfulness"))
 
 
 # ---------------------------------------------------------------------------
@@ -381,141 +355,59 @@ def test_sample_rate_default_is_point_one():
 
 
 # ---------------------------------------------------------------------------
-# Test 9: the Ragas 0.4.x scoring path, against the REAL library (7.18)
-#
-# Everything above stubs _compute_ragas_faithfulness, which is why the scoring
-# path shipped broken: the first live sampled turn logged
-#   ragas_call_failed error='All metrics must be initialised metric objects'
-# and wrote faithfulness=None. The tests below import real ragas and run real
-# metric code; only the network hop (the LLM) is replaced.
+# Test 9: the scoring path, the grounding rule (ADR 0015)
 # ---------------------------------------------------------------------------
 
+_ANSWER = "Unopened bags may be returned within 14 days of delivery."
 
-def _fake_instructor_llm(statements: list[str], verdicts: list[int]):
-    """An LLM that IS an InstructorBaseRagasLLM and answers from canned outputs.
 
-    Subclassing the real base matters: collections' BaseMetric rejects anything
-    that is not an InstructorBaseRagasLLM at construction time, so a MagicMock
-    would never get far enough to exercise the bug this file is about.
-    """
-    from ragas.llms.base import InstructorBaseRagasLLM
-    from ragas.metrics.collections.faithfulness.util import (
-        NLIStatementOutput,
-        StatementFaithfulnessAnswer,
-        StatementGeneratorOutput,
+def test_compute_faithfulness_is_the_rules_score():
+    from app.domain.grounding import ground
+
+    score = mod._compute_faithfulness(
+        response_text=_ANSWER, contexts=[_CHUNK_A, _CHUNK_B]
     )
 
-    class _FakeInstructorLLM(InstructorBaseRagasLLM):
-        def generate(self, prompt, response_model):
-            raise AssertionError(
-                "collections metrics must reach the LLM through agenerate()"
-            )
-
-        async def agenerate(self, prompt, response_model):
-            if response_model is StatementGeneratorOutput:
-                return StatementGeneratorOutput(statements=statements)
-            if response_model is NLIStatementOutput:
-                return NLIStatementOutput(
-                    statements=[
-                        StatementFaithfulnessAnswer(
-                            statement=statement, reason="canned", verdict=verdict
-                        )
-                        for statement, verdict in zip(statements, verdicts)
-                    ]
-                )
-            raise AssertionError(f"unexpected response_model: {response_model}")
-
-    return _FakeInstructorLLM()
+    assert score is not None
+    assert score == ground(_ANSWER, [_CHUNK_A, _CHUNK_B]).score
 
 
-def _build_metrics():
-    return mod._build_faithfulness_metrics(_fake_instructor_llm(["s"], [1]))
+def test_compute_faithfulness_opens_no_client(monkeypatch):
+    """The rule reads strings. Any http client built while it scores is a model call."""
+    import httpx
+
+    def _refuse(*args, **kwargs):
+        raise AssertionError("the scoring path built an http client")
+
+    monkeypatch.setattr(httpx, "Client", _refuse)
+    monkeypatch.setattr(httpx, "AsyncClient", _refuse)
+
+    assert mod._compute_faithfulness(
+        response_text=_ANSWER, contexts=[_CHUNK_A]
+    ) is not None
 
 
-def test_built_metrics_are_instances_not_classes():
-    """Every element of the metrics list is a constructed metric object."""
-    from ragas.metrics.base import SimpleBaseMetric
-
-    metrics = _build_metrics()
-
-    assert metrics, "no metrics were built"
-    for metric in metrics:
-        assert not isinstance(metric, type), (
-            f"{metric!r} is a class, not an instance"
-        )
-        assert isinstance(metric, SimpleBaseMetric), (
-            f"{metric!r} is not a Ragas metric object"
-        )
+@pytest.mark.parametrize(
+    "response_text,contexts",
+    [
+        ("", [_CHUNK_A]),
+        (_ANSWER, []),
+    ],
+    ids=["no response", "no context"],
+)
+def test_compute_faithfulness_is_unknown_without_both_inputs(response_text, contexts):
+    assert mod._compute_faithfulness(response_text=response_text, contexts=contexts) is None
 
 
-def test_built_metrics_are_not_legacy_metrics_so_evaluate_is_the_wrong_door():
-    """Names the hierarchy fact that made the error message misleading.
+def test_a_scoring_defect_is_unknown_and_never_fails_the_task(monkeypatch):
+    def _broken(*args, **kwargs):
+        raise RuntimeError("a defect in the rule")
 
-    ragas/evaluation.py:133 raises "All metrics must be initialised metric
-    objects" for anything that fails `isinstance(m, ragas.metrics.base.Metric)`.
-    A collections metric fails it while being a perfectly initialised object, so
-    this task must score through ascore(), not evaluate(). If a future ragas
-    makes collections metrics legacy Metrics too, this test goes red and
-    evaluate() becomes available again.
-    """
-    from ragas.metrics.base import Metric
+    monkeypatch.setattr(mod, "ground", _broken)
 
-    for metric in _build_metrics():
-        assert not isinstance(metric, Metric), (
-            f"{type(metric).__name__} is now a legacy ragas Metric"
-        )
-
-
-def test_compute_ragas_faithfulness_scores_through_real_ragas(monkeypatch):
-    """The whole point: a real Faithfulness metric returns a real score.
-
-    Two statements, one supported by the context: 1/2 = 0.5. Pre-fix this
-    returned None, because evaluate() rejected the metric before any scoring
-    happened.
-    """
-    monkeypatch.setattr(
-        mod,
-        "_build_instructor_llm",
-        lambda purpose, led: _fake_instructor_llm(["claim A", "claim B"], [1, 0]),
-    )
-
-    score = mod._compute_ragas_faithfulness(
-        question="what is the refund window?",
-        response_text="Refunds run 30 days. Shipping is free.",
-        contexts=["Refunds are accepted within 30 days of delivery."],
-        ledger=ledger(),
-    )
-
-    assert score == pytest.approx(0.5)
-
-
-def test_instructor_llm_wraps_an_async_client():
-    """A sync client makes agenerate() raise, which is the second half of the
-    same outage: collections metrics never call generate()."""
-    llm = mod._build_instructor_llm(mod.JUDGE_PURPOSE, ledger())
-
-    assert llm.is_async is True, (
-        "InstructorLLM wraps a sync client; agenerate() will raise TypeError"
-    )
-
-
-def test_the_judge_carries_no_thinking_parameter():
-    """`thinking` left with the provider that needed it (ticket #47).
-
-    It cleared a DeepSeek 400 on the forced tool_choice instructor puts on every
-    structured call. This judge is on OpenAI now, ragas splats every extra kwarg
-    straight into `client.chat.completions.create()`, and an unknown field on
-    that wire is a 400 of its own.
-    """
-    llm = mod._build_instructor_llm(mod.JUDGE_PURPOSE, ledger())
-
-    assert "thinking" not in llm._map_provider_params(), (
-        "the judge still carries a thinking parameter, which OpenAI does not "
-        "take; ragas passes it through to the request unchanged"
-    )
-    assert llm.model == "gpt-5.6-luna", (
-        f"the judge names model={llm.model!r} rather than the routed one"
-    )
+    assert mod._compute_faithfulness(
+        response_text=_ANSWER, contexts=[_CHUNK_A]
+    ) is None
 
 
 # ---------------------------------------------------------------------------
@@ -544,9 +436,9 @@ def test_the_turn_context_carries_the_message_id_to_join_on():
         "message_id": "assistant-msg-1",
     })
 
-    text, citations, conversation_id, message_id = mod._fetch_turn_context(db, _JOB_ID)
+    text, citations, message_id = mod._fetch_turn_context(db, _JOB_ID)
 
-    assert (text, citations, conversation_id) == ("answer", [_CITATION], "conv-1")
+    assert (text, citations) == ("answer", [_CITATION])
     assert message_id == "assistant-msg-1"
     assert db.execute.call_count == 1, (
         "a second query is the agent.tool_result summary proxy still being read"
@@ -615,7 +507,7 @@ def test_an_errored_retrieve_reaches_this_reader_as_unmeasured():
 
     assert stored is None
     out = mod._read_retrieved_rows([(stored,)])
-    assert out.contexts == (), "the refusal text reached the Judge as context"
+    assert out.contexts == (), "the refusal text reached the rule as context"
     assert (out.measured, out.unmeasured) == (0, 1)
 
 
@@ -655,7 +547,7 @@ def test_the_retrieve_rows_are_read_in_one_order_for_every_reader(monkeypatch):
 
     Postgres gives every row inserted in a transaction the same `now()`, and a
     turn writes its retrieve calls together, so the sort fell through to the
-    heap's order and two reads of one turn could hand Ragas two different
+    heap's order and two reads of one turn could hand the rule two different
     documents. The row id breaks the tie.
     """
     conn = _tool_calls_conn([([_CHUNK_A],), ([_CHUNK_B],)])
@@ -710,14 +602,14 @@ def _run_sampled(monkeypatch):
     return mod.run_retrieval_faithfulness.run(_AGENT_ID, _JOB_ID)
 
 
-def test_ragas_is_handed_the_persisted_chunks(monkeypatch):
+def test_the_rule_is_handed_the_persisted_chunks(monkeypatch):
     """One string per chunk, the rendering the column stores."""
     seen = {}
     mock_db = _make_mock_db(_make_mock_agent())
     _patch_common(monkeypatch, mock_db)
     _patch_scoreable_turn(monkeypatch, contexts=[_CHUNK_A, _CHUNK_B], measured=1)
     monkeypatch.setattr(
-        mod, "_compute_ragas_faithfulness", lambda **kw: seen.update(kw) or 0.5
+        mod, "_compute_faithfulness", lambda **kw: seen.update(kw) or 0.5
     )
 
     result = _run_sampled(monkeypatch)
@@ -752,7 +644,7 @@ def test_a_turn_whose_retrieves_all_errored_reads_unknown_not_clean(monkeypatch)
     updates = _patch_scoreable_turn(
         monkeypatch, citations=[], contexts=[], measured=0, unmeasured=3
     )
-    monkeypatch.setattr(mod, "_compute_ragas_faithfulness", lambda **kw: None)
+    monkeypatch.setattr(mod, "_compute_faithfulness", lambda **kw: None)
 
     result = _run_sampled(monkeypatch)
 
@@ -775,7 +667,7 @@ def test_citation_coverage_denominator_excludes_the_unreadable_calls(monkeypatch
         measured=2,
         unmeasured=2,
     )
-    monkeypatch.setattr(mod, "_compute_ragas_faithfulness", lambda **kw: None)
+    monkeypatch.setattr(mod, "_compute_faithfulness", lambda **kw: None)
 
     result = _run_sampled(monkeypatch)
 

@@ -29,8 +29,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 from tests.model_doubles import completion, factory, ledger, openai_client, tool_call
 
 #: The one value a verdict may be sampled at.
@@ -138,36 +136,6 @@ class TestAVerdictSamplesAtZero:
         )
         assert captured.get("temperature") == JUDGEMENT_TEMPERATURE, (
             f"run_strategist sent temperature={captured.get('temperature')!r}"
-        )
-
-    @pytest.mark.parametrize(
-        ("module_path", "purpose"),
-        [
-            ("app.services.eval_service", "judge_faithfulness"),
-            (
-                "app.worker.tasks.runtime.retrieval_eval",
-                "judge_retrieval_faithfulness",
-            ),
-        ],
-    )
-    def test_the_ragas_judges_carry_temperature_zero(self, module_path, purpose):
-        """Ragas metrics are judges, and reach the client through `**kwargs`.
-
-        The seam is InstructorLLM's kwargs: merged into `model_args`
-        (ragas/llms/base.py:772) and splatted into the client call by `agenerate`
-        (:1109). `thinking={"type": "disabled"}` used to ride the same seam and
-        left with the provider that needed it.
-        """
-        import importlib
-
-        module = importlib.import_module(module_path)
-        llm = module._build_instructor_llm(purpose, ledger())
-
-        kwargs = getattr(llm, "model_args", None) or getattr(llm, "kwargs", None) or {}
-        temperature = kwargs.get("temperature", getattr(llm, "temperature", None))
-        assert temperature == JUDGEMENT_TEMPERATURE, (
-            f"{module_path}'s InstructorLLM carries temperature={temperature!r}; the "
-            f"kwargs seen were {kwargs!r}"
         )
 
 
