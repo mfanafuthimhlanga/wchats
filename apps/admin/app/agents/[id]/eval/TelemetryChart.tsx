@@ -40,11 +40,6 @@ const GATE_VALUE = 0.9
 const PIN_GAP_TWO_LINE = 44
 const PIN_GAP_THREE_LINE = 58
 const PIN_GUTTER = 148
-// The gutter holds four leader lines. A tenant with a designated golden set has
-// eight series, and stacking those in a 200px-tall gutter slides the last of
-// them off the bottom of the chart, so above four the pins become the legend
-// grid the narrow breakpoint already uses and the trace takes the full width.
-const MAX_GUTTER_PINS = 4
 
 // The dataset's secondary encoding. Colour belongs to the channel (--ch-1..4,
 // bone luminance, read by weight), so the two halves of one metric share a hue
@@ -76,10 +71,9 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
   // One series per channel per dataset that actually measured something. Nothing
   // below reads `aggregate_scores`, where an unmeasured metric reads 0.0 (#119).
   const series = buildEvalSeries(runs)
-  const stacked = series.length > MAX_GUTTER_PINS
   // The dataset is named on the pin only when there is more than one of them.
-  // Printing "exploratory sample" four times on a tenant with no golden set
-  // distinguishes nothing and costs the pin a third line.
+  // Printing "exploratory sample" on a pin when there is no golden set to
+  // contrast it against distinguishes nothing and costs the pin a third line.
   const showDataset = datasetsCovered(series).length > 1
   const pinGap = showDataset ? PIN_GAP_THREE_LINE : PIN_GAP_TWO_LINE
 
@@ -132,8 +126,8 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
     // place, so the gutter's min-height, written onto it in pixels below,
     // outlives the gutter unless something clears it. Moving between two
     // agents' eval pages is a re-render rather than a fresh mount, and a chart
-    // with four three-line pins left the next agent's "nothing measured"
-    // sentence, 20px of it, inside a 236px box. Nothing else in here runs in
+    // with two three-line pins left the next agent's "nothing measured"
+    // sentence, 20px of it, inside a 118px box. Nothing else in here runs in
     // that branch: the trace and the leaders are not rendered, so their refs
     // are null and the layout below has nothing to lay out.
     if (!trace || !leaders || n === 0) {
@@ -145,7 +139,7 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
     const narrow = window.matchMedia('(max-width: 900px)')
 
     function layout() {
-      if (narrow.matches || stacked) {
+      if (narrow.matches) {
         while (leaders!.firstChild) leaders!.removeChild(leaders!.firstChild)
         // The gutter's min-height goes with the gutter. Left behind, it holds a
         // legend grid open to the height of a stack that is no longer drawn.
@@ -213,7 +207,7 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
       // bottom of the same column and the clamp has to move all of it. Clamped
       // apart, the led stack was pulled back inside the chart and these were
       // then laid out from where it used to end, so a run that measured one of
-      // four series put three pins through the floor and onto the judge.
+      // two series put the other pin through the floor and onto the judge.
       const unledTop =
         (led.length > 0 ? led[led.length - 1].slotY : CHART_Y_TOP * scale + top) + gap
       const unled = series
@@ -226,11 +220,11 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
         // The gutter is as tall as the column it holds, because a column taller
         // than the chart cannot be clamped into it: shifting it up by the whole
         // headroom still leaves the last pin outside, and every pixel of that
-        // shift is taken off the top instead. Four three-line pins want 236px
+        // shift is taken off the top instead. Two three-line pins want 118px
         // of column and the drawing is 221px tall at 910px, the narrow end of
         // the band where a gutter exists at all.
         wrap!.style.minHeight = `${Math.ceil((column.length - 1) * gap + pinHeight)}px`
-        // The push above only ever moves a pin down, so three channels within a
+        // The push above only ever moves a pin down, so two series within a
         // pixel of each other near the floor walk the last pin out of the chart
         // and onto the judge underneath. tests/overflow.spec.ts watches the
         // horizontal axis only, and its narrowest project is 900px, exactly where
@@ -328,11 +322,11 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
       else window.removeEventListener('resize', layout)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runs, colors, n, stacked, pinGap])
+  }, [runs, colors, n, pinGap])
 
   // The label names the picture; the sentences describing each series are a
-  // list beside it. Eight of them inside one aria-label is a block a listener
-  // cannot interrupt or re-read.
+  // list beside it. More than one of them inside one aria-label is a block a
+  // listener cannot interrupt or re-read.
   const chartLabel = `${describeChart(series, n)}${
     n > 0 && series.length > 0 ? ` The gate is set at ${GATE_VALUE.toFixed(2)}.` : ''
   }`
@@ -356,7 +350,7 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
   }
 
   return (
-    <div className={stacked ? 'telemetry stacked' : 'telemetry'} id="telemetry" ref={wrapRef}>
+    <div className="telemetry" id="telemetry" ref={wrapRef}>
       <svg
         className="trace"
         ref={traceRef}
@@ -404,13 +398,13 @@ export function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: stri
         </g>
 
         {/* The gate, the line the suite has to clear. Neutral, because a
-            threshold is not an accent and not one of the four channels. Its
-            colours were a literal #74837F, a green-cast hex belonging to no
-            token, close enough to --ch-4 to be read as a fifth channel; the
-            line and the label are both --ink-3 now, applied through .gate and
-            .gate-label because a CSS variable does not resolve inside an SVG
-            presentation attribute. The label carries a --bg halo, since eight
-            traces cross where it sits. */}
+            threshold is not an accent and not the channel. Its colours were a
+            literal #74837F, a green-cast hex belonging to no token, close
+            enough to --ch-4 to be read as a fifth channel; the line and the
+            label are both --ink-3 now, applied through .gate and .gate-label
+            because a CSS variable does not resolve inside an SVG
+            presentation attribute. The label carries a --bg halo, since a
+            trace can cross where it sits. */}
         {gateVisible && (
           <>
             <line className="gate" x1={CHART_X0} y1={gateY} x2={CHART_X1} y2={gateY} />
@@ -553,32 +547,6 @@ export const TELEMETRY_CSS = `
   .pin-name { color: var(--ink-2); white-space: nowrap; }
   .pin-set { font-size: 10.5px; line-height: 1.35; color: var(--ink-3); }
 
-  /* Legend mode. The gutter holds four leader lines; a tenant with a designated
-     golden set has eight series, and under 900px there is no gutter at all.
-     Both land on the same static grid, and the pin's left edge becomes the
-     swatch — 2px of the same stroke the trace draws. */
-  .telemetry.stacked .trace { width: 100%; }
-  .telemetry.stacked .leaders { display: none; }
-  .telemetry.stacked .pins {
-    position: static; display: grid; gap: 14px 20px;
-    /* One column per channel, one row per dataset, and the row is assigned
-       explicitly rather than left to fill order. Filling four columns row by
-       row happened to pair the two halves of a metric at exactly eight series
-       and stopped doing so at seven, which is an ordinary outcome when one
-       metric goes unmeasured. With the row pinned, golden is always the top
-       band and exploratory the bottom one however many series there are. */
-    grid-auto-flow: column;
-    grid-template-rows: repeat(2, auto);
-    grid-auto-columns: minmax(0, 1fr);
-    margin-top: 18px;
-  }
-  .telemetry.stacked .pin[data-dataset="golden"] { grid-row: 1; }
-  .telemetry.stacked .pin[data-dataset="exploratory"] { grid-row: 2; }
-  .telemetry.stacked .pin {
-    position: static; transform: none; width: auto;
-    padding-left: 11px; border-left: 2px solid var(--c);
-  }
-
   @media (max-width: 900px) {
     .leaders { display: none; }
     .pins {
@@ -586,21 +554,13 @@ export const TELEMETRY_CSS = `
       grid-template-columns: repeat(2, minmax(0, 1fr));
       margin-top: 18px;
     }
-    /* the stacked rule above is three classes and would otherwise hold four
-       columns down here, where there is no room for them. Two columns, filled
-       in order, and the dataset rows are released. */
-    .telemetry.stacked .pins {
-      grid-auto-flow: row;
-      grid-template-rows: none;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-    .telemetry.stacked .pin[data-dataset="golden"],
-    .telemetry.stacked .pin[data-dataset="exploratory"] { grid-row: auto; }
+    /* Under 900px there is no gutter, so the pins move into a static grid
+       and the pin's left edge becomes the swatch: 2px of the same stroke
+       the trace draws. */
     .pin { position: static; transform: none; width: auto; padding-left: 11px; border-left: 2px solid var(--c); }
   }
 
   /* The same encoding the trace uses: exploratory solid, golden dotted. Written
-     to out-specify the .telemetry.stacked .pin rule, which sets the shorthand. */
-  .telemetry .pin[data-dataset="golden"],
-  .telemetry.stacked .pin[data-dataset="golden"] { border-left-style: dotted; }
+     to out-specify the .pin rule under 900px, which sets the shorthand. */
+  .telemetry .pin[data-dataset="golden"] { border-left-style: dotted; }
 `

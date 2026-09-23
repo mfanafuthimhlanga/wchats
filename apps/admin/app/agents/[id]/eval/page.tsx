@@ -26,10 +26,10 @@ import { buildVerdict, formatStamp, readCurrentRun, stampLabel } from './current
  * set"): eval.html hardcodes the four ragas channel traces + dot/pin
  * swatches to four literal brand hues (retired gold, blue, green, purple
  * hex literals). This port resolves the CURRENT
- * `--ch-1..4` bone-luminance values via `getComputedStyle` at draw time
+ * `--ch-1` bone-luminance value via `getComputedStyle` at draw time
  * instead (same technique as the ingest swarm colour fix) — see
  * `useChannelColors` below. Nothing on this page reaches for a hue; the
- * channels are read by weight, not colour.
+ * channel is read by weight, not colour.
  *
  * The judge's verdict sentence is generated from real run/scenario data (no
  * judge-summary endpoint exists on the backend — see apps/api/app/api/v1/
@@ -55,9 +55,6 @@ interface ScenarioResult {
   source: 'generated' | 'mined'
   scores: {
     faithfulness: number
-    answer_relevancy: number
-    context_precision: number
-    context_recall: number
   }
   passed: boolean
 }
@@ -95,12 +92,12 @@ function useReducedMotion(): boolean {
   return reduced
 }
 
-// Colour fix (must-fix 1): resolve the CURRENT --ch-1..4 bone-luminance
-// values at draw time. CSS custom properties do not resolve inside raw SVG
+// Colour fix (must-fix 1): resolve the CURRENT --ch-1 bone-luminance
+// value at draw time. CSS custom properties do not resolve inside raw SVG
 // presentation attributes, so a JS read is required either way; the fix is
-// which values get read (the channel tokens), not the technique.
-const CH_FALLBACK = ['#E7E5E1', '#A9AFB1', '#7C8386', '#565C5F']
-const CH_VARS = ['--ch-1', '--ch-2', '--ch-3', '--ch-4']
+// which value gets read (the channel token), not the technique.
+const CH_FALLBACK = ['#E7E5E1']
+const CH_VARS = ['--ch-1']
 
 function useChannelColors(): string[] {
   const [colors, setColors] = useState<string[]>(CH_FALLBACK)
@@ -376,7 +373,7 @@ export default function EvalPage({
 
       {!isLoading && hasRuns && (
         <>
-          {/* ── the four channels ────────────────────────────────────────── */}
+          {/* ── the channel ──────────────────────────────────────────────── */}
           <h2 className="vh">
             Channel telemetry, last {chronologicalRuns.length} run{chronologicalRuns.length === 1 ? '' : 's'}
           </h2>
@@ -461,7 +458,7 @@ export default function EvalPage({
             ) : scenarios.length === 0 ? (
               <EmptyState heading="No scenario results" body="This run has no scenario-level results yet." />
             ) : (
-              <Ledger caption="Scenario results: question, source, faithfulness, relevancy, verdict, and run time">
+              <Ledger caption="Scenario results: question, source, faithfulness, verdict, and run time">
                 <thead>
                   <tr>
                     <LedgerColHead>Scenario</LedgerColHead>
@@ -469,10 +466,6 @@ export default function EvalPage({
                     <LedgerColHead numeric>
                       <i className="dot" style={{ background: channelColors[0] }} aria-hidden="true" />
                       Faithfulness
-                    </LedgerColHead>
-                    <LedgerColHead numeric>
-                      <i className="dot" style={{ background: channelColors[1] }} aria-hidden="true" />
-                      Relevancy
                     </LedgerColHead>
                     <LedgerColHead>Verdict</LedgerColHead>
                     <LedgerColHead className="col-ran">Ran</LedgerColHead>
@@ -486,7 +479,6 @@ export default function EvalPage({
                         <span className="chip chip-mute">{s.source}</span>
                       </td>
                       <td className="num">{s.scores.faithfulness.toFixed(2)}</td>
-                      <td className="num">{s.scores.answer_relevancy.toFixed(2)}</td>
                       <td>
                         <Chip verdict={s.passed ? 'pass' : 'fail'}>{s.passed ? 'Pass' : 'Fail'}</Chip>
                       </td>
