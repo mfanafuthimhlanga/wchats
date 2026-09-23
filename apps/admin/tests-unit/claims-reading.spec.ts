@@ -1,4 +1,6 @@
 import { expect, test } from '@playwright/test'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   analyse,
   bestPassage,
@@ -8,6 +10,7 @@ import {
   responseUnits,
   segments,
   splitSentences,
+  stem,
   tintOf,
   tokensOf,
 } from '../app/agents/[id]/eval/[runId]/claims/reading'
@@ -22,7 +25,7 @@ import {
 
 test('tokensOf drops stop words and short words, keeps numbers and identifiers', () => {
   const t = tokensOf('The refund takes 14 days via app.config and the API')
-  expect([...t].sort()).toEqual(['14', 'app.config', 'days', 'refund', 'takes'])
+  expect([...t].sort()).toEqual(['14', 'app.config', 'days', 'refund', 'take'])
 })
 
 test('splitSentences cuts at sentence ends and rides a short fragment with its neighbour', () => {
@@ -58,7 +61,7 @@ test('bestPassage picks the passage sharing most words, not the first with any, 
   const passages = [tokensOf('a refund of shipping costs'), tokensOf('a refund arrives within fourteen working days')]
   const m = bestPassage(tokens, passages)
   expect(m.passage).toBe(1)
-  expect([...m.shared].sort()).toEqual(['arrives', 'days', 'fourteen', 'refund'])
+  expect([...m.shared].sort()).toEqual(['arrive', 'days', 'fourteen', 'refund'])
   // and with the decoy last, so "last with any overlap" loses too
   expect(bestPassage(tokens, [passages[1], passages[0]]).passage).toBe(0)
   expect(bestPassage(tokens, [tokensOf('nothing here')]).passage).toBe(-1)
@@ -90,7 +93,7 @@ test('carryingUnit finds the response sentence sharing most of the claim, not th
 })
 
 test('segments marks only the shared words and keeps every character', () => {
-  const s = segments('Refunds arrive in 14 days.', new Set(['refunds', '14']))
+  const s = segments('Refunds arrive in 14 days.', new Set(['refund', '14']))
   expect(s.map((x) => x.text).join('')).toBe('Refunds arrive in 14 days.')
   expect(s.filter((x) => x.hit).map((x) => x.text)).toEqual(['Refunds', '14'])
 })
@@ -101,4 +104,22 @@ test('inlineParts lifts backtick spans and drops bold markers', () => {
     { text: 'pnpm dev', code: true },
     { text: ' and wait.', code: false },
   ])
+})
+
+// The case that fooled the aid on 2026-09-23, real data from staging run 09941b0f: the
+// claim says "deployed", the passage says "Deploy", and a long overview passage shares
+// two other words. Without stemming and the density tie-break the overview lights.
+test('the widget claim lights the Deploy passage, not the overview that shares two words', () => {
+  const fx = JSON.parse(readFileSync(join(__dirname, 'fixtures-widget-claim.json'), 'utf-8'))
+  const r = analyse(fx.response, fx.retrieved_contexts)
+  const m = bestPassage(tokensOf(fx.claims[0].statement), r.passages.map((p) => tokensOf(p.text)))
+  expect(m.passage).toBeGreaterThanOrEqual(0)
+  expect(r.passages[m.passage].text).toContain(fx.expect_passage_contains)
+})
+
+test('stem folds inflections and never cuts below four letters', () => {
+  expect(['deployed', 'deploys', 'deploying', 'deploy'].map(stem)).toEqual(['deploy', 'deploy', 'deploy', 'deploy'])
+  expect(stem('policies')).toBe('policy')
+  expect(stem('arrives')).toBe('arrive')
+  expect(stem('fees')).toBe('fees') // "fee" would be three letters
 })
