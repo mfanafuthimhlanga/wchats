@@ -18,8 +18,8 @@ a negated claim about the system, a doing verb or a second clause is scored on i
 the grounded share, the claims column carries one row per sentence with a reason a person
 can read, and `eval_results.judge_identity` names the rule (`rule:grounding`, `grounding-v1`).
 
-The eval task scores nothing else. The other four `METRIC_KEYS` still get their unscored row,
-because an unmeasured dimension is a row that says so. The question resolver is not called.
+The eval task scores nothing else. `METRIC_KEYS` is faithfulness alone since #296, so a run
+writes one `eval_results` row per scenario. The question resolver is gone.
 The rejudge task scores faithfulness alone. A run whose every gated identity is a rule reads
 as calibrated by construction, status `rule`, because its calibration is the test that pins
 its numbers and not a labeller's sheet.
@@ -82,8 +82,11 @@ benchmark are unlabelled.
 ## What follows
 
 - The judge modules (`judge_llm`, `relevance_judge`, `question_resolution`,
-  `faithfulness_metric`), the ragas plumbing and the four unscored columns are deleted in
-  #296 with a migration note. Until then they are on disk and not called.
+  `faithfulness_metric`), the ragas plumbing and the four unscored columns were deleted in
+  #296. The sampled live-turn faithfulness in `retrieval_eval` moved onto the same rule. Rows
+  in `eval_results` carrying `answer_relevancy`, `context_precision`, `context_recall` or
+  `ragas_answer_relevancy` stay as history; `RETIRED_METRIC_KEYS` in `app/domain/eval_result.py`
+  names them and the reader drops them.
 - `classify_severity` in the red team is a model call whose `critical` the gate reads. It
   moves to a table keyed by vector and verdict tag in #297.
 - The reading aids take the number rule and the decline rule (#298), so what the owner
