@@ -822,39 +822,46 @@ class TestTheScenarioRowBecomesAScenario:
         assert mod._scenario_dict(self._row(turns=None))["turns"] == []
 
 
-class TestTheRewriteReachesTheJudgeAndTheSampleRow:
-    """The wiring, not the parts (#227 PR 2).
+class TestTheRunResolvesNoQuestion:
+    """No rewrite is asked for, so none reaches the scorer or the sample row (ADR 0015).
 
-    `annotate_resolved_questions` annotates in place and hands the same list back,
-    and `run_eval_suite` folds it into the `write_eval_samples(...)` call so the
-    rows the sheet records are the rows the Judge scores. Both halves had unit
-    tests and the SEAM between them had none: replacing the argument with
-    `[dict(s) for s in scored_scenarios]` disabled the whole feature, left the
-    calibration sheet showing a rewrite the Judge never used, and 307 tests stayed
-    green. Deleting the call outright was caught only by ruff noticing an unused
-    import, which is an accident rather than a gate.
+    The rewrite existed to feed answer relevancy (#227 PR 2). Relevancy gates
+    nothing since ADR 0014 and an eval run no longer scores it since ADR 0015, so
+    a resolver call would be a model call bought for a column nobody reads. The
+    task drops the resolver outright rather than keeping it wired to nothing.
     """
 
     LEAD_IN = [{"role": "user", "content": "I'm setting up Earth Elements locally."}]
-    REWRITE = "How do I start the dev server for Earth Elements?"
+    FOLLOW_UP = "f0000000-0000-0000-0000-00000000000f"
 
     def _run_with_a_follow_up(self, wired, monkeypatch):
-        """One multi-turn scenario through the task, with the model call doubled.
+        """One multi-turn scenario through the task, with the resolver counting its calls.
 
-        `resolve_question` is the seam, not `annotate_resolved_questions`: doubling
-        the annotator would double the thing under test.
+        `resolve_question` is the model call a rewrite would cost. Doubling it
+        with a counter is what shows the task never asks, rather than asking and
+        dropping the answer. The rows handed to `write_eval_samples` are kept, so
+        the columns the sample table would receive can be read off them.
         """
         from app.services import question_resolution
 
+        self.resolver_calls: list = []
         monkeypatch.setattr(
             question_resolution,
             "resolve_question",
-            lambda question, turns, **kw: self.REWRITE,
+            lambda question, turns, **kw: (
+                self.resolver_calls.append(question) or "a rewrite nobody asked for"
+            ),
+        )
+        self.sample_rows: list = []
+        monkeypatch.setattr(
+            mod,
+            "write_eval_samples",
+            lambda run_id, rows, conn_str: self.sample_rows.extend(rows) or len(rows),
         )
         conn = MagicMock()
         conn.cursor.return_value = _Cursor(
             golden_rows=[
-                scenario_row("f0000000-0000-0000-0000-00000000000f", "how do I start it?",
+                scenario_row(self.FOLLOW_UP, "how do I start it?",
                              "Run pnpm dev.", dataset="golden", turns=self.LEAD_IN),
                 *wired["cursor"].golden_rows[:1],
             ],
@@ -865,26 +872,24 @@ class TestTheRewriteReachesTheJudgeAndTheSampleRow:
         [(args, _kwargs)] = wired["ragas"]
         return {row["id"]: row for row in args[0]}
 
-    def test_the_rows_the_judge_scores_carry_the_rewrite(self, wired, monkeypatch):
+    def test_the_task_calls_no_resolver_and_writes_no_rewrite(self, wired, monkeypatch):
+        from app.services.eval_service import _sample_row_params
+
         scored = self._run_with_a_follow_up(wired, monkeypatch)
 
-        assert scored["f0000000-0000-0000-0000-00000000000f"]["resolved_question"] == (
-            self.REWRITE
-        ), (
-            "the scenarios handed to run_ragas_eval carry no rewrite, so relevancy "
-            "scored the raw follow-up and #227 is not fixed"
+        assert not hasattr(mod, "annotate_resolved_questions"), (
+            "the eval task imports the question resolver again"
         )
-
-    def test_a_single_turn_row_in_the_same_run_is_left_alone(self, wired, monkeypatch):
-        """The rewrite reaches the row that needed it and no other."""
-        scored = self._run_with_a_follow_up(wired, monkeypatch)
-
-        others = [
-            row for key, row in scored.items()
-            if key != "f0000000-0000-0000-0000-00000000000f"
-        ]
-        assert others, "the run scored only the multi-turn row, so this proves nothing"
-        assert all("resolved_question" not in row for row in others)
+        assert self.resolver_calls == [], (
+            f"the run asked for {len(self.resolver_calls)} rewrite(s) that nothing scores"
+        )
+        assert self.FOLLOW_UP in scored, "the multi-turn row never reached the scorer"
+        assert all(row.get("resolved_question") is None for row in scored.values())
+        written = {row["id"]: _sample_row_params("run-1", row) for row in self.sample_rows}
+        assert self.FOLLOW_UP in written, "the multi-turn row was never written"
+        assert {params["resolved_question"] for params in written.values()} == {None}, (
+            "a sample row carries a rewrite the run never asked for"
+        )
 
 
 class TestTheRunRecordsWhichQuestionRelevancyScored:
@@ -895,15 +900,15 @@ class TestTheRunRecordsWhichQuestionRelevancyScored:
     build this wrong:
 
     - that `run_eval_suite` calls `update_eval_run_config` a SECOND time at all,
-    - that it hands the deriver `scored_scenarios`, the list the annotator wrote
-      the rewrites into, rather than `valid_scenarios`, which are the rows before
-      the agent turn and carry no `resolved_question` at all,
+    - that it hands the deriver the judged rows, the ones carrying `turns`,
+      rather than a list that would count no conversation at all,
     - that the patch names only its own key, so the observed `agent_invocation`
       object the first patch wrote survives the second one.
 
-    The counts asserted here come out of a run whose rewrites were doubled one
-    success and one failure, so a stamp derived from anything but those rows
-    reports a different pair of numbers.
+    Since ADR 0015 the task resolves no question, so every multi-turn row the
+    judge double scores is a raw-question fallback. The resolver double below
+    would rewrite one of the two if it were ever called, so a run that started
+    asking again reports `rewritten` 1 and fails here.
     """
 
     FOLLOW_UP = "f0000000-0000-0000-0000-00000000000f"
@@ -911,11 +916,11 @@ class TestTheRunRecordsWhichQuestionRelevancyScored:
     LEAD_IN = [{"role": "user", "content": "I'm setting up Earth Elements locally."}]
 
     def _run_a_mixed_conversation(self, wired, monkeypatch, *, relevancy=0.9):
-        """Two multi-turn rows, one rewritten and one that fell back, plus singles.
+        """Two multi-turn rows plus singles, with a resolver that would rewrite one.
 
-        `resolve_question` is doubled rather than the annotator, and the judge
-        double scores the rows it was handed rather than a fixed id, so the
-        record has something to be derived FROM.
+        `resolve_question` is doubled so a run that called it would record a
+        rewrite, and the judge double scores the rows it was handed rather than
+        a fixed id, so the record has something to be derived FROM.
         """
         from app.services import question_resolution
 
@@ -951,7 +956,7 @@ class TestTheRunRecordsWhichQuestionRelevancyScored:
         self.report = _run()
         return [patch for _run_id, patch, _conn in wired["config_patched"]]
 
-    def test_the_run_config_carries_what_relevancy_was_measured_against(
+    def test_the_run_config_records_every_multi_turn_row_as_a_raw_question_fallback(
         self, wired, monkeypatch
     ):
         patches = self._run_a_mixed_conversation(wired, monkeypatch)
@@ -960,12 +965,12 @@ class TestTheRunRecordsWhichQuestionRelevancyScored:
         assert counts == {
             "relevancy_scored": 4,
             "multi_turn": 2,
-            "rewritten": 1,
-            "raw_question_fallback": 1,
+            "rewritten": 0,
+            "raw_question_fallback": 2,
         }, (
-            "the run does not record which question its gated relevancy column "
-            "was scored against, so a collector cannot tell a rewrite from a "
-            "fallback (#233)"
+            "the run does not record that relevancy read the raw question on "
+            "every conversation, so a collector cannot tell the run resolved "
+            "nothing (#233, ADR 0015)"
         )
 
     def test_the_stamp_does_not_disturb_the_invocation_provenance(
@@ -1009,7 +1014,8 @@ class TestTheRunRecordsWhichQuestionRelevancyScored:
             "the record and the config describe one measurement; a record "
             "reading zeros here ships a run whose relevancy was never checked"
         )
-        assert self.report["question_resolution"]["raw_question_fallback"] == 1
+        assert self.report["question_resolution"]["raw_question_fallback"] == 2
+        assert self.report["question_resolution"]["rewritten"] == 0
 
     def test_a_row_the_judge_scored_no_relevancy_for_is_not_counted(
         self, wired, monkeypatch
@@ -1280,8 +1286,8 @@ class TestValidityDenominators:
 # The judge calls a run pays for (ticket #47)
 # ---------------------------------------------------------------------------
 
-#: The tool `relevance_judge` forces, read off the module rather than typed, so a
-#: rename there fails this pairing instead of silently dropping four calls.
+#: The tool `relevance_judge` forces. The transport below answers it, so a stray
+#: relevance call is counted as a request rather than failing on an unknown name.
 RELEVANCE_TOOL = "submit_relevance_verdict"
 
 
@@ -1345,47 +1351,27 @@ def _luna_judge_transport(seen: list[str]) -> httpx.MockTransport:
     return httpx.MockTransport(_handler)
 
 
-#: Which purpose each ragas response model belongs to. Instructor names the
-#: response model as the tool it forces, so this is what pairs one request with
-#: the dimension that made it. Faithfulness asks twice under one purpose, first
-#: for the statements and then for a verdict on each.
-_PURPOSE_BY_TOOL = {
-    "StatementGeneratorOutput": "judge_faithfulness",
-    "NLIStatementOutput": "judge_faithfulness",
-    "AnswerRelevanceOutput": "judge_answer_relevancy",
-    "ContextPrecisionOutput": "judge_context_precision",
-    "ContextRecallOutput": "judge_context_recall",
-    RELEVANCE_TOOL: "judge_relevance",
-}
+class TestAFullRunBuysNoJudgeCall:
+    """A whole run's judge calls, counted where the bill is read: none (ADR 0015).
 
-#: 4 scenarios x (2 faithfulness + 3 ragas relevancy + 1 context_precision +
-#: 1 context_recall + 1 relevance Judge) = 32. The eighth call per scenario is
-#: #274's, and it is one call where the instrument it replaced on the gate takes
-#: three plus four embeddings.
-EXPECTED_JUDGE_CALLS = 32
-
-
-class TestJudgeCallsReachTheLedger:
-    """A whole run's judge calls, counted where the bill is read.
-
-    Everything between the task and the wire is real: the scorer, the four ragas
-    metrics, instructor, the OpenAI SDK, the response hook and
-    `record_model_call`'s own INSERT. Only the two network hops are canned, and
-    the database is the double every test in this module writes through. A test
-    that patched the recorder would prove the recorder was called and nothing
-    about whether a row exists.
+    The run scores faithfulness by the grounding rule and nothing else, so every
+    `model_calls` row under a `judge_*` purpose would be a bill nobody planned.
+    Everything between the task and the wire is real: the scorer, instructor,
+    the OpenAI SDK, the response hook and `record_model_call`'s own INSERT. Only
+    the network hops are canned, so a Judge call that came back would be counted
+    here rather than failing on the fixture key and vanishing into `unknown`.
     """
 
-    def test_a_full_run_bills_every_judge_call_to_the_ledger(
+    def test_a_full_run_makes_no_judge_call_and_bills_no_judge_purpose(
         self, wired, monkeypatch
     ):
-        """One row per judge request, on the four dimensions, for this run."""
-        from app.domain.model_call import ModelSource
+        """No judge request on the wire, no judge row in the ledger, and the ledger still wired."""
         from app.services import eval_service
         from app.services.eval_service import JUDGE_PURPOSES
 
         rows: list = []
         seen: list[str] = []
+        bound: list = []
         real_recorder = mod.ledger_recorder
 
         def _recording_recorder(conn_str):
@@ -1396,13 +1382,20 @@ class TestJudgeCallsReachTheLedger:
                 rows.append((conn_str, call))
                 write(call)
 
+            bound.append((conn_str, record))
             return record
+
+        handed: list = []
+
+        def _real_scorer_keeping_its_ledger(scenarios, ledger, **kwargs):
+            handed.append(ledger)
+            return eval_service.run_ragas_eval(scenarios, ledger, **kwargs)
 
         monkeypatch.setattr(mod, "ledger_recorder", _recording_recorder)
         # `wired` doubles the scorer, because every other test in this module is
         # about which connection string a write opens. This one is about the
         # calls scoring makes, so the real scorer goes back.
-        monkeypatch.setattr(mod, "run_ragas_eval", eval_service.run_ragas_eval)
+        monkeypatch.setattr(mod, "run_ragas_eval", _real_scorer_keeping_its_ledger)
         monkeypatch.setattr(
             eval_service, "_VoyageRagasEmbedding", _FakeRagasEmbedding
         )
@@ -1435,49 +1428,32 @@ class TestJudgeCallsReachTheLedger:
         with patch("httpx.AsyncClient", _Pinned), patch("httpx.Client", _PinnedSync):
             result = _run()
 
-        assert len(seen) == EXPECTED_JUDGE_CALLS, (
-            f"the run made {len(seen)} judge requests where {EXPECTED_JUDGE_CALLS} "
-            "is the arithmetic above. A drop is a dimension that stopped asking, "
-            "a rise is a bill nobody planned, and both are invisible to a count "
-            "compared against itself"
+        assert seen == [], (
+            f"the run made {len(seen)} judge requests ({sorted(set(seen))}) where "
+            "the grounding rule makes none; each one is a bill nobody planned"
         )
-        assert len(rows) == len(seen), (
-            f"{len(seen)} judge requests left {len(rows)} ledger rows, so this "
-            "tenant's judge spend is under-reported by the difference"
-        )
-        assert sorted(JUDGE_PURPOSES) == sorted(set(_PURPOSE_BY_TOOL.values())), (
-            "a purpose was added to eval_service without a tool to pair it with, "
-            "so the pairing below would never see it"
-        )
-        # Pairing, not set equality. Every purpose being present says nothing
-        # about whether a context_recall request was billed to context_recall,
-        # and a rollup built on a mislabelled row prices the wrong dimension.
-        mispaired = [
-            (tool, call.purpose)
-            for tool, (_dsn, call) in zip(seen, rows, strict=True)
-            if call.purpose != _PURPOSE_BY_TOOL[tool]
+        judge_rows = [
+            call.purpose for _dsn, call in rows
+            if call.purpose in JUDGE_PURPOSES or call.purpose.startswith("judge_")
         ]
-        assert mispaired == [], (
-            f"{len(mispaired)} requests were billed to another dimension: {mispaired[:4]}"
+        assert judge_rows == [], (
+            f"{len(judge_rows)} model_calls rows were billed to a Judge: {judge_rows[:4]}"
         )
-        assert {call.served_model for _dsn, call in rows} == {"gpt-5.6-luna"}
-        assert {call.model_source for _dsn, call in rows} == {ModelSource.REPORTED}, (
-            "the served model was not read off the body the provider sent"
-        )
-        assert {call.job_id for _dsn, call in rows} == {result["run_id"]}
-        assert {call.tenant_id for _dsn, call in rows} == {TENANT_ID}
-        assert {call.agent_id for _dsn, call in rows} == {"agent-1"}, (
-            "a judge call billed to no agent cannot be charged back to the "
-            "agent whose eval bought it"
-        )
-        assert {dsn for dsn, _call in rows} == {PRODUCTION}
         inserts = [
             sql for sql in wired["cursor"].executed if "INSERT INTO model_calls" in sql
         ]
-        assert len(inserts) == EXPECTED_JUDGE_CALLS, (
-            f"{len(inserts)} of {EXPECTED_JUDGE_CALLS} rows reached the database "
-            "the recorder was bound to, and a recorder that writes some of them "
-            "reads as a working ledger"
+        assert len(inserts) == len(rows), (
+            f"{len(rows)} ledger rows were recorded and {len(inserts)} reached the database"
+        )
+        # THE LEDGER IS STILL WIRED, so the zeros above are an absence of calls
+        # and not a recorder nobody bound. The scorer was handed a ledger billed
+        # to this run, whose recorder is the one bound to production.
+        [ledger] = handed
+        assert (ledger.job_id, ledger.tenant_id, ledger.agent_id) == (
+            result["run_id"], TENANT_ID, "agent-1"
+        )
+        assert (PRODUCTION, ledger.recorder) in bound, (
+            "the scorer's ledger records to no recorder bound on production"
         )
 
 
@@ -2013,9 +1989,9 @@ class TestTheCheckedRowsNeverReachTheJudge:
             {"id": "s2", "question": "q2", "agent_response": "pnpm dev", "retrieved_contexts": [], "reference_answer": "Which one?", "turns": [], "ambiguous": True, "clarifying_check": False},
         ]
 
-    def test_the_judge_gets_the_judged_rows_and_the_samples_table_gets_all(self, monkeypatch):
+    def test_the_scorer_gets_the_judged_rows_and_the_samples_table_gets_all(self, monkeypatch):
+        """The grounding rule scores the judged row alone; the samples table holds all three."""
         handed = {}
-        monkeypatch.setattr(mod, "annotate_resolved_questions", lambda rows, *, ledger: rows)
         monkeypatch.setattr(mod, "write_eval_samples", lambda run_id, rows, conn_str: handed.setdefault("samples", rows))
         monkeypatch.setattr(mod, "run_ragas_eval", lambda rows, ledger: handed.setdefault("ragas", rows) and {"scores": [], "judge_records": []})
 
@@ -2069,7 +2045,6 @@ class TestTheRuleVerdictsReachTheRecordThroughTheTask:
             return [judged, asked, answered], summary
 
         monkeypatch.setattr(mod, "_invoke_agent_for_scenarios", _invoke)
-        monkeypatch.setattr(mod, "annotate_resolved_questions", lambda rows, *, ledger: rows)
         monkeypatch.setattr(mod, "write_eval_samples", lambda run_id, rows, conn_str: len(rows))
 
         def _ragas(rows, ledger):

@@ -936,7 +936,7 @@ async def rejudge_eval_run_route(
     """Rescore a finished run's stored answers with today's Judges (#274).
 
     No agent turn runs. The run's `eval_samples` rows hold the answers the agent
-    gave, the two gated metrics are scored over those into a NEW run naming this
+    gave, the gated metric is scored over those into a NEW run naming this
     one in `source_run_id`, and this run's rows are never written.
 
     Security. Agent ownership verified, 404 on a mismatch, matching every other

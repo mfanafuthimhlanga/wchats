@@ -147,7 +147,6 @@ from app.services.eval_service import (
     write_eval_results,
     write_eval_samples,
 )
-from app.services.question_resolution import annotate_resolved_questions
 from app.services.scenario_service import (
     generate_eval_suite_for_agent,
     mine_production_scenarios,
@@ -1183,8 +1182,11 @@ def _record_and_judge(
     Returns (run_ragas_eval's payload, the rows it was handed).
     """
     judged, checked = split_checked_rows(scored_scenarios)
-    annotated = annotate_resolved_questions(judged, ledger=ledger)
-    write_eval_samples(run_id, [*annotated, *checked], conn_str)
+    # NO QUESTION RESOLVER (ADR 0015). The rewrite fed relevancy, which gates
+    # nothing since ADR 0014 and is not scored since ADR 0015; the sample row
+    # keeps `resolved_question` NULL. The provenance stamp counts rows that
+    # carry a relevancy score, so on a run that scores none it stamps zeros.
+    write_eval_samples(run_id, [*judged, *checked], conn_str)
     results = run_ragas_eval(judged, ledger)
     results["clarifying_verdicts"] = clarifying_verdicts(checked)
     return results, judged
@@ -1207,9 +1209,8 @@ def _score_run(
     THE ORDER IS THE POINT, and each step is placed against a death in the middle
     of it:
 
-      1. `write_eval_samples` first, so the scored text outlives a Ragas outage
-         (#58). The questions are resolved before it writes, so the samples table
-         and the Judge hold one string rather than two (#227 PR 2).
+      1. `write_eval_samples` first, so the scored text outlives a scoring
+         failure (#58). No question is resolved before it writes (ADR 0015).
       2. `run_ragas_eval`, the expensive half.
       3. `write_eval_results` on PRODUCTION, because the eval branch is about to
          be destroyed. It is the JUDGE RECORDS that go there, not `scores`.

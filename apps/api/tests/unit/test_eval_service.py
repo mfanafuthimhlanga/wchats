@@ -249,22 +249,14 @@ def _recording_connect(cursor, conn_strings: list[str]):
 class TestRunRagasEval:
     """Tests for the Ragas 0.4.x harness (run_ragas_eval)."""
 
-    def test_run_ragas_eval_builds_dataset(self, monkeypatch):
-        """EvaluationDataset.from_list is called with 'reference' key (D-02 LOCKED),
-        and the four metrics (D-04 LOCKED) each produce a real score.
-
-        This test used to mock `evaluate`, `EvaluationDataset` and all four
-        metric classes, which is exactly how the harness shipped with a scoring
-        call ragas rejects (7.18). Nothing in ragas is mocked here: the real
-        EvaluationDataset validates the samples, the real metrics run, and only
-        the two network hops — the judge LLM and Voyage — are canned.
-        """
+    @staticmethod
+    def _spy_on_from_list(monkeypatch) -> list:
+        """Record every `EvaluationDataset.from_list` call, and still build the real dataset."""
         from ragas import EvaluationDataset
 
         from app.services import eval_service
-        from app.services.eval_service import run_ragas_eval
 
-        from_list_calls = []
+        from_list_calls: list = []
         real_from_list = EvaluationDataset.from_list
 
         class _SpyDataset:
@@ -274,25 +266,88 @@ class TestRunRagasEval:
                 return real_from_list(samples)
 
         monkeypatch.setattr(eval_service, "EvaluationDataset", _SpyDataset)
+        return from_list_calls
+
+    _SCENARIOS = (
+        {
+            "id": "s-return",
+            "question": "What is the return policy?",
+            "reference_answer": "Items can be returned within 30 days.",
+            "retrieved_contexts": ["Our return policy allows 30-day returns."],
+            "agent_response": "You can return items within 30 days.",
+        },
+        {
+            "id": "s-hours",
+            "question": "When are you open?",
+            "reference_answer": "Weekdays from 9 to 17.",
+            "retrieved_contexts": ["The store opens weekdays from 9 until 17 o'clock."],
+            "agent_response": "The store opens weekdays from 9 until 17.",
+        },
+    )
+
+    def test_the_default_run_grounds_every_sample_and_builds_no_ragas_dataset(
+        self, monkeypatch
+    ):
+        """The default path scores faithfulness by the rule, with no dataset and no Judge (ADR 0015).
+
+        `EvaluationDataset.from_list` is ragas' schema check for a scoring loop
+        that the default run no longer enters, so a call to it here means the run
+        built the judged path it no longer pays for. The judge client builder
+        raises, so a default run that reached for a Judge fails here rather than
+        passing on a canned answer. The score each sample carries is the one
+        `ground` gives its own response and contexts, so a column filled by
+        anything else, or left empty, fails.
+        """
+        from app.domain.grounding import ground
+        from app.services import eval_service
+        from app.services.eval_service import run_ragas_eval
+
+        from_list_calls = self._spy_on_from_list(monkeypatch)
+
+        def _no_judge(purpose, ledger):  # noqa: ARG001
+            raise AssertionError(f"the default run built a Judge client for {purpose}")
+
+        monkeypatch.setattr(eval_service, "_build_instructor_llm", _no_judge)
+        monkeypatch.setattr(eval_service, "judge_relevance", _no_judge)
+
+        result = run_ragas_eval([dict(s) for s in self._SCENARIOS], ledger())
+
+        assert from_list_calls == [], "the default run built a ragas EvaluationDataset"
+        by_id = {row["scenario_id"]: row for row in result["scores"]}
+        assert sorted(by_id) == sorted(s["id"] for s in self._SCENARIOS), (
+            "a sample went unscored"
+        )
+        for scenario in self._SCENARIOS:
+            expected = ground(scenario["agent_response"], scenario["retrieved_contexts"]).score
+            assert expected is not None
+            assert by_id[scenario["id"]]["faithfulness"] == expected, scenario["id"]
+            for metric in ("answer_relevancy", "context_precision", "context_recall"):
+                assert by_id[scenario["id"]][metric] is None, (
+                    f"{metric} was scored on a run that asked only for faithfulness"
+                )
+
+    def test_a_judged_key_builds_the_dataset_with_the_reference_field(self, monkeypatch):
+        """Asking for a ragas metric builds the dataset, keyed 'reference' (D-02 LOCKED).
+
+        This test used to mock `evaluate`, `EvaluationDataset` and all four
+        metric classes, which is exactly how the harness shipped with a scoring
+        call ragas rejects (7.18). Nothing in ragas is mocked here: the real
+        EvaluationDataset validates the samples, the real metric runs, and only
+        the two network hops, the judge LLM and Voyage, are canned.
+        """
+        from app.services import eval_service
+        from app.services.eval_service import run_ragas_eval
+
+        from_list_calls = self._spy_on_from_list(monkeypatch)
         monkeypatch.setattr(
             eval_service, "_build_instructor_llm", _fake_ragas_instructor_llm
         )
         monkeypatch.setattr(eval_service, "_VoyageRagasEmbedding", _FakeRagasEmbedding)
-        monkeypatch.setattr(eval_service, "judge_relevance", _fake_relevance_judge)
 
-        scenarios = [
-            {
-                "id": str(uuid.uuid4()),
-                "question": "What is the return policy?",
-                "reference_answer": "Items can be returned within 30 days.",
-                "retrieved_contexts": ["Our return policy allows 30-day returns."],
-                "agent_response": "You can return items within 30 days.",
-            }
-        ]
+        result = run_ragas_eval(
+            [dict(self._SCENARIOS[0])], ledger(), metric_keys=("context_precision",)
+        )
 
-        result = run_ragas_eval(scenarios, ledger())
-
-        # D-02 LOCKED: from_list must receive 'reference' key (not 'ground_truths')
         assert from_list_calls, "EvaluationDataset.from_list was not called"
         samples_list = from_list_calls[0]
         assert len(samples_list) == 1
@@ -300,17 +355,12 @@ class TestRunRagasEval:
             "D-02 violation: EvaluationDataset.from_list sample missing 'reference' key"
         )
         assert "ground_truths" not in samples_list[0], (
-            "D-02 violation: 'ground_truths' key present — must be 'reference' in Ragas 0.4.x"
+            "D-02 violation: 'ground_truths' key present, must be 'reference' in Ragas 0.4.x"
         )
         assert samples_list[0]["reference"] == "Items can be returned within 30 days."
-
-        # D-04 LOCKED: all four metrics scored, none of them unknown.
-        assert result["scores"], "no scenario was scored"
-        for metric in ("faithfulness", "answer_relevancy", "context_precision",
-                       "context_recall"):
-            assert result["scores"][0][metric] is not None, (
-                f"{metric} came back unknown against a metric that cannot fail here"
-            )
+        assert result["scores"][0]["context_precision"] is not None, (
+            "context_precision came back unknown against a metric that cannot fail here"
+        )
 
     def test_built_metrics_are_instances_not_classes(self):
         """Every element of the metrics list is a constructed metric object,
@@ -329,9 +379,12 @@ class TestRunRagasEval:
         pairs = _build_ragas_metrics(ledger(), _FakeRagasEmbedding(), METRIC_KEYS)
         metrics = [metric for _column, metric in pairs]
 
-        assert len(metrics) == 4, (
-            "four of the five METRIC_KEYS are ragas metrics; answer_relevancy is "
-            "the relevance Judge and has no instance here (#274)"
+        assert sorted(column for column, _metric in pairs) == [
+            "context_precision", "context_recall", "ragas_answer_relevancy"
+        ], (
+            "three METRIC_KEYS are ragas metrics. answer_relevancy is the "
+            "relevance Judge (#274) and faithfulness is the grounding rule "
+            "(ADR 0015), so neither has an instance here"
         )
         for metric in metrics:
             assert not isinstance(metric, type), f"{metric!r} is a class, not an instance"
@@ -737,8 +790,10 @@ class TestTheJudgeRowCarriesItsOwnDecision:
                 "model", "prompt_version", "reasoning_effort"
             ], f"the {metric} row's identity is {identity!r}"
 
-    def test_every_dimension_records_luna_at_effort_none(self, monkeypatch):
-        """The two figures decision #34 priced, written out.
+    def test_faithfulness_records_the_rule_and_every_model_dimension_luna_at_effort_none(
+        self, monkeypatch
+    ):
+        """The two figures decision #34 priced, written out, and the rule where it scores.
 
         This compared the record against `PURPOSE_ROUTES` until it was noticed
         that the record is BUILT from `PURPOSE_ROUTES`, so both sides moved
@@ -746,12 +801,22 @@ class TestTheJudgeRowCarriesItsOwnDecision:
         The day a judge route moves off Luna or off effort none, this file goes
         red and somebody re-measures the calibration figure instead of inheriting
         it.
+
+        Faithfulness is scored by the grounding rule since ADR 0015, so its row
+        names the rule. A row that still named Luna would put rule verdicts into
+        the Judge's calibration population.
         """
+        from app.domain.grounding import GROUNDING_IDENTITY
         from app.services.eval_service import METRIC_KEYS
 
         rows = self._rows(monkeypatch)
 
+        assert json.loads(rows["faithfulness"]["judge_identity"]) == dataclasses.asdict(
+            GROUNDING_IDENTITY
+        )
         for metric in METRIC_KEYS:
+            if metric == "faithfulness":
+                continue
             identity = json.loads(rows[metric]["judge_identity"])
             assert identity["model"] == "gpt-5.6-luna", (
                 f"the {metric} row records model {identity['model']!r}"
@@ -764,28 +829,37 @@ class TestTheJudgeRowCarriesItsOwnDecision:
     def test_the_prompt_version_names_the_artifact_the_prompt_ships_in(
         self, monkeypatch
     ):
-        """Each row names the artifact ITS OWN prompt ships in.
+        """Each row names the artifact ITS OWN prompt, or rule, ships in.
 
-        Four of the five prompts belong to ragas, which carries them inside the
-        installed distribution, so the distribution is the identifier. The fifth
-        is `relevance_judge`, the first judge prompt written in this repo (#274),
-        and it carries its own version. One key over both would put the old
-        relevancy verdicts and the new ones in one calibration population.
+        Three of the five prompts belong to ragas, which carries them inside the
+        installed distribution, so the distribution is the identifier. The
+        fourth is `relevance_judge`, the first judge prompt written in this repo
+        (#274), and it carries its own version. Faithfulness is the grounding
+        rule (ADR 0015), versioned whenever one of its numbers moves. One key
+        over two instruments would put both sets of verdicts in one calibration
+        population.
         """
         import importlib.metadata
 
+        from app.domain.grounding import GROUNDING_RULE_VERSION
         from app.services.eval_service import METRIC_KEYS, RELEVANCE_METRIC
         from app.services.relevance_judge import RELEVANCE_PROMPT_VERSION
 
         rows = self._rows(monkeypatch)
         ragas_version = f"ragas-{importlib.metadata.version('ragas')}"
+        own_version = {
+            RELEVANCE_METRIC: RELEVANCE_PROMPT_VERSION,
+            "faithfulness": GROUNDING_RULE_VERSION,
+        }
 
         for metric in METRIC_KEYS:
             identity = json.loads(rows[metric]["judge_identity"])
-            expected = (
-                RELEVANCE_PROMPT_VERSION if metric == RELEVANCE_METRIC else ragas_version
-            )
+            expected = own_version.get(metric, ragas_version)
             assert identity["prompt_version"] == expected, metric
+        assert sum(
+            json.loads(rows[m]["judge_identity"])["prompt_version"].startswith("ragas-")
+            for m in METRIC_KEYS
+        ) == 3, "the three ragas dimensions stopped naming the ragas distribution"
 
     def test_a_route_with_no_effort_writes_no_judge_rather_than_a_partial_one(
         self, monkeypatch
@@ -797,10 +871,14 @@ class TestTheJudgeRowCarriesItsOwnDecision:
         table. It exists because a route that dropped the effort would leave the
         identity a field short, and two efforts filed under one key average two
         populations. Writing NULL says the Judge is unknown, which is what it
-        would be, and it costs no scored run: the score, the verdict and the
-        threshold all still land.
+        would be, and it costs no scored run: the score and the row still land.
+
+        Exercised on context_precision, a ragas dimension whose identity comes
+        off the route. Faithfulness is the grounding rule (ADR 0015) and reads no
+        route, so the same broken route leaves its identity whole.
         """
         from app.core.model_client import ModelRoute
+        from app.domain.grounding import GROUNDING_IDENTITY
         from app.services import eval_service
 
         monkeypatch.setattr(
@@ -809,12 +887,16 @@ class TestTheJudgeRowCarriesItsOwnDecision:
             lambda _purpose: ModelRoute("openai", "gpt-5.6-luna"),
         )
 
-        assert eval_service.judge_identity_for("faithfulness") is None
+        assert eval_service.judge_identity_for("context_precision") is None
 
-        row = self._rows(monkeypatch)["faithfulness"]
+        rows = self._rows(monkeypatch)
+        row = rows["context_precision"]
         assert row["judge_identity"] is None
-        assert row["score"] == 0.95, "the score was lost along with the identity"
-        assert row["binary_verdict"] is True, "the verdict was lost with the identity"
+        assert row["score"] == 0.7, "the score was lost along with the identity"
+        assert eval_service.judge_identity_for("faithfulness") == GROUNDING_IDENTITY
+        assert json.loads(rows["faithfulness"]["judge_identity"]) == dataclasses.asdict(
+            GROUNDING_IDENTITY
+        ), "a route with no effort erased the rule's identity"
 
     # -- the verdict and its gate -----------------------------------------
 
@@ -1181,18 +1263,19 @@ class TestBuildEvalRunConfig:
             "AGENT_TURN_MODEL — eval_runs.config.model_id would drift from it"
         )
 
-    def test_judge_model_is_recorded_separately_from_the_agent_model(self, config_env):
-        """A judge change moves every score without the agent changing at all,
-        so the two model ids are separate keys — collapsing them into one would
-        make a judge upgrade indistinguishable from an agent regression."""
-        from app.core.model_client import route_for
-        from app.services.eval_service import JUDGE_PURPOSES, build_eval_run_config
+    def test_the_instrument_is_recorded_separately_from_the_agent_model(self, config_env):
+        """A change of instrument moves every score without the agent changing at
+        all, so the two ids are separate keys. Since ADR 0015 the instrument behind
+        the gated dimension is the grounding rule, and the record names it rather
+        than a judge model that made no call."""
+        from app.domain.grounding import GROUNDING_IDENTITY
+        from app.services.eval_service import build_eval_run_config
 
-        route = route_for(JUDGE_PURPOSES[0])
         config = build_eval_run_config("agent-1", "postgresql://production")["config"]
-        assert config["judge_model_id"] == route.model
-        assert config["judge_reasoning_effort"] == route.reasoning_effort
+        assert config["judge_model_id"] == GROUNDING_IDENTITY.model
+        assert config["judge_reasoning_effort"] == GROUNDING_IDENTITY.reasoning_effort
         assert "model_id" in config and "judge_model_id" in config
+        assert config["model_id"] != config["judge_model_id"]
 
     def test_absent_prompt_version_is_not_reported_as_unavailable(
         self, monkeypatch, config_env
@@ -2117,6 +2200,10 @@ class TestRunRagasEvalAttribution:
         The seam is the scoring loop rather than the judge client, because a
         partial return is a shortfall of ROWS: these tests exist to drive
         attribution when the judge answers for fewer samples than were sent.
+
+        The run asks for context_precision because the default run, faithfulness
+        alone, is scored by the grounding rule and never enters the scoring loop
+        (ADR 0015). A judged key is what makes the stubbed loop the path taken.
         """
 
         # `resolved_inputs` since #227 PR 2: relevancy is scored against the
@@ -2134,7 +2221,9 @@ class TestRunRagasEvalAttribution:
         monkeypatch.setattr(eval_service, "_VoyageRagasEmbedding", _FakeRagasEmbedding)
         monkeypatch.setattr(eval_service, "judge_relevance", _fake_relevance_judge)
         monkeypatch.setattr(eval_service, "_score_samples", _fake_score_samples)
-        return eval_service.run_ragas_eval(scenarios, ledger())
+        return eval_service.run_ragas_eval(
+            scenarios, ledger(), metric_keys=("context_precision",)
+        )
 
     def test_a_partial_return_does_not_hand_the_golden_row_a_foreign_score(
         self, monkeypatch
@@ -2536,7 +2625,11 @@ class TestBuildEvalResult:
         dimension to be matched against it. Neither refuses a deploy: the
         calibration key is reported and not gated (#54,
         `deployment_service._calibration_block`).
+
+        Since ADR 0015 the two instruments are the grounding rule behind
+        faithfulness and the Luna Judge behind every model dimension.
         """
+        from app.domain.grounding import GROUNDING_IDENTITY
         from app.services.eval_service import GATED_METRIC_KEYS, judge_identity_for
 
         built = _built()
@@ -2548,7 +2641,7 @@ class TestBuildEvalResult:
             "one identity per gated dimension; relevancy's Judge is reported on its "
             "rows and names nothing a deploy reads (ADR 0014)"
         )
-        assert built.judge_identities["faithfulness"].prompt_version.startswith("ragas-")
+        assert built.judge_identities["faithfulness"] == GROUNDING_IDENTITY
 
     def test_the_verdict_counts_reach_the_record_per_dataset(self):
         """Both golden rows scored 0.79 against the 0.80 gate, so both failed."""
@@ -3109,6 +3202,11 @@ class TestTheRewritesReachTheScoringLoop:
     sheet, then discarded before the Judge saw it. Observed 2026-09-12 by
     mutation. This test drives the real producer and reads what the loop was
     handed.
+
+    The run asks for the two relevancy keys, the relevance Judge and ragas'
+    relevancy, because they are the dimensions that read the rewrite. The
+    default run scores faithfulness by the grounding rule and never enters the
+    scoring loop (ADR 0015).
     """
 
     def test_run_ragas_eval_hands_the_scoring_loop_one_rewrite_per_sample(
@@ -3163,7 +3261,11 @@ class TestTheRewritesReachTheScoringLoop:
         monkeypatch.setattr(eval_service, "judge_relevance", _fake_relevance_judge)
         monkeypatch.setattr(eval_service, "_score_samples", _capture_score_samples)
 
-        eval_service.run_ragas_eval(scenarios, ledger())
+        eval_service.run_ragas_eval(
+            scenarios,
+            ledger(),
+            metric_keys=("answer_relevancy", "ragas_answer_relevancy"),
+        )
 
         assert handed["sample_count"] == 3
         assert handed["relevance_ledger"] is not None, (

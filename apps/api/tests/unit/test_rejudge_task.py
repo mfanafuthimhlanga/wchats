@@ -439,18 +439,25 @@ class TestTheKeyIsEveryJudgeAndEveryGate:
     key that ignored it would hand back a run scored against the old number.
     """
 
-    def test_the_key_names_every_judge_the_rejudge_pays_for(self):
+    def test_the_key_names_the_grounding_rule_and_no_paid_judge(self):
+        """A rejudge scores faithfulness alone, by the grounding rule, and pays for no Judge (ADR 0015).
+
+        The key still names the instrument, so a rule version bump is a
+        different instrument and the next rejudge scores again rather than
+        returning a run the old rule wrote.
+        """
+        from app.domain.grounding import GROUNDING_IDENTITY
+
         instrument = eval_service.rejudge_instrument()
 
-        assert set(instrument["judge_identities"]) == set(
-            eval_service.REJUDGE_METRIC_KEYS
-        )
-        assert instrument["judge_identities"]["answer_relevancy"]["prompt_version"] == (
-            "relevance-judge-v1"
-        )
-        assert instrument["judge_identities"]["faithfulness"]["prompt_version"].startswith(
-            "ragas-"
-        )
+        assert tuple(eval_service.REJUDGE_METRIC_KEYS) == ("faithfulness",)
+        assert instrument["judge_identities"] == {
+            "faithfulness": dataclasses.asdict(GROUNDING_IDENTITY)
+        }
+        assert all(
+            identity["model"].startswith("rule:")
+            for identity in instrument["judge_identities"].values()
+        ), "the rejudge key names a model Judge, which is a call the rejudge pays for"
 
     def test_the_key_carries_the_gate_each_dimension_writes_against(self):
         instrument = eval_service.rejudge_instrument()

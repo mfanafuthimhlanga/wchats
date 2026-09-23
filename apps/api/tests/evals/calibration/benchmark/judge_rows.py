@@ -30,12 +30,12 @@ import sys
 
 os.environ.setdefault("ENVIRONMENT", "development")
 
-from app.core.model_client import LedgerContext  # noqa: E402
+from app.core.model_client import LedgerContext, route_for  # noqa: E402
+from app.domain.judge_identity import JUDGE_PROMPT_VERSION, JudgeIdentity  # noqa: E402
 from app.services.eval_service import (  # noqa: E402
     CLAIMS_COLUMN,
     _build_instructor_llm,
     _score_samples,
-    judge_identity_for,
 )
 from app.services.faithfulness_metric import FaithfulnessWithClaims  # noqa: E402
 
@@ -74,9 +74,13 @@ def main(argv: list[str]) -> int:
         print(__doc__)
         return 2
     bench = pathlib.Path(opts["--benchmark"])
-    identity = judge_identity_for("faithfulness")
-    if identity is None:
-        raise SystemExit("the faithfulness judge has no complete identity; nothing to name the files after")
+    # THE RAGAS JUDGE'S OWN IDENTITY, not `judge_identity_for("faithfulness")`,
+    # which names the grounding rule since ADR 0015. This script still scores
+    # with the judge so the benchmark keeps a judge column beside the rule's.
+    route = route_for("judge_faithfulness")
+    if route.reasoning_effort is None:
+        raise SystemExit("the faithfulness judge route names no effort; nothing to name the files after")
+    identity = JudgeIdentity(model=route.model, reasoning_effort=route.reasoning_effort, prompt_version=JUDGE_PROMPT_VERSION)
     slug = f"{identity.model}-{identity.reasoning_effort}-{identity.prompt_version}".replace("/", "_")
     claims_path, scores_path = bench / f"claims_{slug}.csv", bench / f"scores_{slug}.csv"
 
