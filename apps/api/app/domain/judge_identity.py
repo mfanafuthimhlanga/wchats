@@ -73,6 +73,12 @@ def _require_text(name: str, value: Any) -> None:
         raise InvalidJudgeIdentity(f"JudgeIdentity needs a {name}, got {value!r}")
 
 
+#: A `model` with this prefix names a rule, not a model (ADR 0015). A rule's
+#: calibration is the test that pins it, so a calibration artifact never
+#: measures one and `load_calibration_status` answers for it without a file.
+RULE_MODEL_PREFIX = "rule:"
+
+
 @dataclass(frozen=True)
 class JudgeIdentity:
     """Which Judge produced a verdict, at the grain calibration compares on.

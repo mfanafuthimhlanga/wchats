@@ -81,17 +81,23 @@ from typing import Any
 from app.domain.judge_identity import JudgeIdentity
 
 #: The harness's four statuses, spelled as `compute_correlation.py:262-276` spells
-#: them. A fifth name here would be a status no exit code covers.
+#: them, and `rule` (ADR 0015), which no harness run produces: it is the app's
+#: own answer for a gated dimension a rule scores.
 STATUS_CALIBRATED = "calibrated"
 STATUS_NOT_CALIBRATED = "not_calibrated"
 STATUS_SETUP_ERROR = "setup_error"
 STATUS_NOT_CALIBRATED_YET = "not_calibrated_yet"
+#: The gated dimension is scored by a rule, and a rule is pinned by a test rather
+#: than measured against a labeller (ADR 0015). A reader acts on it as it acts on
+#: `calibrated`; the status says why nobody labelled anything.
+STATUS_RULE = "rule"
 
 CALIBRATION_STATUSES = (
     STATUS_CALIBRATED,
     STATUS_NOT_CALIBRATED,
     STATUS_SETUP_ERROR,
     STATUS_NOT_CALIBRATED_YET,
+    STATUS_RULE,
 )
 
 #: The reasons the loader may stamp, and the closed set a block message can switch
@@ -610,13 +616,18 @@ class CalibrationStatus:
 
     @property
     def calibrated(self) -> bool:
-        """True for exactly one of the four statuses.
+        """True for `calibrated` and for `rule` (ADR 0015), and for nothing else.
 
-        `TRUSTWORTHY_STATUS` in the harness is the same single name. Everything
-        else, `not_calibrated_yet` included, means this Judge may not be trusted
-        at scale yet.
+        `TRUSTWORTHY_STATUS` in the harness is `calibrated`; `rule` is the app's
+        own. Everything else, `not_calibrated_yet` included, means this Judge may
+        not be trusted at scale yet.
         """
-        return self.status == STATUS_CALIBRATED
+        return self.status in (STATUS_CALIBRATED, STATUS_RULE)
+
+    @classmethod
+    def rule(cls, reason: str) -> CalibrationStatus:
+        """Every gated dimension is scored by a rule; `reason` names the test that pins it."""
+        return cls(status=STATUS_RULE, reason=reason)
 
     @classmethod
     def absent(cls, reason: str) -> CalibrationStatus:

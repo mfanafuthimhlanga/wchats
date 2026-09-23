@@ -18,10 +18,9 @@ WHAT IT DOES NOT DO
     and the labels would be about a different answer.
 
     It resolves no question. The source run's `resolved_question` is on the row
-    and is reused, so the Judge reads the string the labeller was shown (ADR
-    0010) and the run pays for no rewrites.
+    and is copied as it was, and the run pays for no rewrites (ADR 0010, 0015).
 
-    It scores the two GATED metrics and no others (`REJUDGE_METRIC_KEYS`).
+    It scores the one GATED metric, by the grounding rule, and no others (`REJUDGE_METRIC_KEYS`).
     Context precision and recall gate nothing, and ragas relevancy costs three
     judge calls and four embeddings per row for a number that is now reported
     rather than read. The three it skips still get an `eval_results` row carrying
@@ -263,8 +262,8 @@ def rejudge_eval_run(self, agent_id: str, source_run_id: str) -> dict:
         3. Read the source run's `eval_samples`. An empty read is reported, not
            retried: a run with no samples has nothing to rescore, and retrying
            would spend three attempts discovering that again.
-        4. Insert the new run, copy the samples onto it, score the two gated
-           metrics, write the results, mark it complete.
+        4. Insert the new run, copy the samples onto it, score the gated
+           metric, write the results, mark it complete.
 
     Args:
         agent_id:      UUID string of the agent whose tenant database holds the run.

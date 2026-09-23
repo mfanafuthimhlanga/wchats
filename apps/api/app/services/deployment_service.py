@@ -279,7 +279,8 @@ decide at all.
 
 eval_summary.calibration says whether the judge behind those scores has itself
 been measured against human labels. Its status is one of 'calibrated',
-'not_calibrated', 'not_calibrated_yet' and 'setup_error', and `reason` names
+'not_calibrated', 'not_calibrated_yet', 'setup_error' and 'rule' (every gated
+dimension scored by a rule pinned in a test, ADR 0015), and `reason` names
 which absence it is when there is one: 'no_artifact' (nobody has written a
 calibration figure yet), 'no_single_judge_identity' (this run's metrics came
 from more than one judge), 'artifact_names_no_judge' (a figure exists and names
@@ -722,7 +723,9 @@ def _calibration_block(record: EvalResult | None) -> dict:
     prose. A sentence anywhere claiming the calibration gate blocks a deploy is
     wrong about this code.
 
-    THE EXPECTED VALUE TODAY IS `not_calibrated_yet`. `calibrate_run.py` scores
+    THE EXPECTED VALUE TODAY IS `rule` (ADR 0015): the gated dimension is scored
+    by the grounding rule and no artifact is read. What follows describes a run
+    whose gated dimension a Judge scored. `calibrate_run.py` scores
     the two gated dimensions with the verdicts the platform's own Judges wrote,
     so an artifact it writes CAN be about the Judges an eval run stamps, which is
     what #58 was waiting for. Until a rejudge of run 0a99f7ab is scored, the

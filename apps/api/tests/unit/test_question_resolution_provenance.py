@@ -254,18 +254,24 @@ def test_the_config_and_the_record_get_the_same_object():
     two walks are free to disagree the moment one of them changes. The deploy
     gate reads the record and a human reads the config, and they may never
     describe different measurements.
+
+    The rows carry no `resolved_question` key at all, the state the task hands
+    them over in since it stopped resolving questions (ADR 0015), so the one
+    conversation among them is counted as a raw-question fallback.
     """
     from unittest.mock import MagicMock, patch
 
     from app.worker.tasks.runtime import eval as eval_task
 
-    scored_scenarios = [scenario("s1")]
-    scores = [score("s1")]
+    scored_scenarios = [
+        {"id": "s1", "question": "and to Durban?", "turns": []},
+        {"id": "s2", "question": "and to Durban?", "turns": list(TURNS)},
+    ]
+    scores = [score("s1"), score("s2")]
 
     with patch.multiple(
         eval_task,
         write_eval_samples=MagicMock(),
-        annotate_resolved_questions=MagicMock(return_value=scored_scenarios),
         _run_ledger=MagicMock(return_value=[]),
         run_ragas_eval=MagicMock(
             return_value={"scores": scores, "judge_records": []}
@@ -288,7 +294,12 @@ def test_the_config_and_the_record_get_the_same_object():
         "one object, or the record and the row are two derivations"
     )
     assert list(returned) == ["question_resolution"]
-    assert returned["question_resolution"]["relevancy_scored"] == 1
+    assert returned["question_resolution"] == {
+        "relevancy_scored": 2,
+        "multi_turn": 1,
+        "rewritten": 0,
+        "raw_question_fallback": 1,
+    }
 
 
 def test_the_producers_key_names_are_the_ones_the_record_reads():

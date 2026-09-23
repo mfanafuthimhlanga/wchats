@@ -67,7 +67,7 @@ from app.domain.calibration_status import (
     CalibrationStatus,
     InvalidCalibrationStatus,
 )
-from app.domain.judge_identity import JudgeIdentity
+from app.domain.judge_identity import RULE_MODEL_PREFIX, JudgeIdentity
 
 log = structlog.get_logger(__name__)
 
@@ -106,6 +106,12 @@ def load_calibration_status(
     """
     if not identities:
         return CalibrationStatus.absent("no_single_judge_identity")
+    if all(identity.model.startswith(RULE_MODEL_PREFIX) for identity in identities.values()):
+        # A RULE IS NOT A JUDGE (ADR 0015). Its calibration is the test that pins
+        # its numbers, not a labeller's sheet, so no artifact is asked for.
+        return CalibrationStatus.rule(
+            "every gated dimension is scored by a rule pinned in tests/unit/test_grounding.py"
+        )
 
     artifact = Path(path)
     refused = _refused_before_reading(artifact)

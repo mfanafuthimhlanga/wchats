@@ -42,6 +42,7 @@ from app.domain.calibration_status import (
     CALIBRATION_STATUSES,
     STATUS_CALIBRATED,
     STATUS_NOT_CALIBRATED_YET,
+    STATUS_RULE,
     CalibrationStatus,
     Interval,
     InvalidCalibrationStatus,
@@ -127,15 +128,19 @@ class TestConstruction:
         with pytest.raises(dataclasses.FrozenInstanceError):
             interval.low = 0.9
 
-    def test_exactly_one_of_the_four_statuses_is_calibrated(self):
-        """Iterated, not spot-checked. `not_calibrated_yet` is an absence, never a pass."""
+    def test_exactly_two_of_the_five_statuses_are_calibrated(self):
+        """Iterated, not spot-checked. `not_calibrated_yet` is an absence, never a pass.
+
+        `rule` counts (ADR 0015): a gated dimension scored by a rule is pinned by
+        a test rather than measured against a labeller, and a reader acts on it.
+        """
         calibrated = [
             status
             for status in CALIBRATION_STATUSES
             if _record_for(status).calibrated
         ]
 
-        assert calibrated == [STATUS_CALIBRATED]
+        assert calibrated == [STATUS_CALIBRATED, STATUS_RULE]
 
     def test_an_unknown_status_is_refused(self):
         with pytest.raises(InvalidCalibrationStatus, match="pending"):

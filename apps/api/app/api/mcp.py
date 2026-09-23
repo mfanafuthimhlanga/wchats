@@ -295,9 +295,9 @@ TOOLS: tuple[_Tool, ...] = (
     ),
     _Tool(
         "rejudge_eval_run",
-        "Rescore a finished eval run's stored answers with today's Judges. No "
-        "agent turn runs and the source run is never written: the two gated "
-        "metrics are scored over the answers that run recorded, into a new run "
+        "Rescore a finished eval run's stored answers with today's grounding rule. No "
+        "agent turn runs and the source run is never written: the gated "
+        "metric is scored over the answers that run recorded, into a new run "
         "that names it as its source. Re-running it with the same Judge returns "
         "the run that already exists rather than paying again." + _POLL_EVAL,
         "POST",
