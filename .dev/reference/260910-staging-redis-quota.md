@@ -138,3 +138,17 @@ about twenty minutes of uptime across four deploys, which is roughly 5,000 of th
 `INFO stats` `total_commands_processed` is per node, not an account figure. Three reads on
 2026-09-14 gave 455803, 455805, then 507159 from a different node, so the number can go
 down between probes. `PING` succeeding or raising is the only quota reading the probe has.
+
+## A parked service carries no record of the deploy that parking removed
+
+`railway down` deletes the deployment, and `railway status --json` then shows the last
+deployment that survived, or `latestDeployment: null`. After a merge and a park the status
+read shows nothing newer than the merge, which looks like the merge never deployed.
+
+Observed 2026-09-23: PR #294 merged on 2026-09-22 and was parked the same evening; the
+next morning `railway status --json` showed `api-service` at a 2026-09-15 deployment and
+`beat` and `worker-runtime` at none. Merging #299 on that reading redeployed all four
+services within a minute.
+
+Every merge deploys. When a status read seems to say otherwise, `railway deployment list
+-s <service> -e staging --json` shows the `REMOVED` entries the status read omits.
