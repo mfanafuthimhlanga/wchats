@@ -54,6 +54,15 @@ const WORD_RE = () => /[A-Za-z0-9][A-Za-z0-9._/-]*/g
 const SENT_RE = () => /(?<=[.!?]["')\]]?)\s+(?=[*`"'([A-Z0-9])/g
 const NO_MATCH: Match = { passage: -1, shared: new Set(), score: 0 }
 
+/** "deployed", "deploys" and "deploy" are one word to the overlap. Suffixes only, never below four letters. */
+export function stem(t: string): string {
+  // no 'es' rule: it would cut 'arrives' to 'arriv' while 'arrive' stays whole
+  for (const suf of ['ies', 'ing', 'ed', 's']) {
+    if (t.endsWith(suf) && t.length - suf.length >= 4) return suf === 'ies' ? t.slice(0, -3) + 'y' : t.slice(0, -suf.length)
+  }
+  return t
+}
+
 /** A word normalised for overlap, or "" when it carries no weight. */
 export function normWord(raw: string): string {
   const t = raw.toLowerCase().replace(/[._/-]+$/, '')
@@ -61,7 +70,7 @@ export function normWord(raw: string): string {
   if (/^[0-9]/.test(t)) return t // numbers and versions carry weight at any length
   if (/[._/-]/.test(t)) return t // a command, path or dotted identifier
   if (t.length < 4 || STOP.has(t)) return ''
-  return t
+  return stem(t)
 }
 
 export function tokensOf(text: string): Set<string> {
@@ -163,15 +172,25 @@ export function passagesOf(contexts: readonly string[]): Passage[] {
   return passages
 }
 
-/** The passage sharing the most of these tokens. */
+/**
+ * The passage sharing the most of these tokens. A tie goes to the denser passage,
+ * the one where the shared words are a larger share of its own, so a long
+ * overview that happens to mention two of the words loses to the short passage
+ * that is about them.
+ */
 export function bestPassage(tokens: Set<string>, passageTokens: readonly Set<string>[]): Match {
   let best: Match = NO_MATCH
+  let bestDensity = 0
   if (!tokens.size) return best
   passageTokens.forEach((pt, i) => {
     const shared = new Set<string>()
     for (const t of tokens) if (pt.has(t)) shared.add(t)
     const score = shared.size / tokens.size
-    if (score > best.score) best = { passage: i, shared, score }
+    const density = pt.size ? shared.size / pt.size : 0
+    if (score > best.score || (score === best.score && score > 0 && density > bestDensity)) {
+      best = { passage: i, shared, score }
+      bestDensity = density
+    }
   })
   return best
 }
