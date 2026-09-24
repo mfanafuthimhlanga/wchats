@@ -30,6 +30,7 @@ os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_secret")
 import re
 import uuid
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -352,6 +353,7 @@ class TestReadProgrammeService:
         mock_cursor.fetchall = MagicMock(
             side_effect=[strategy_rows, probe_rows, coverage_rows, []]
         )
+        mock_cursor.fetchone = MagicMock(return_value=None)
 
         mock_conn = MagicMock()
         mock_conn.cursor = MagicMock(return_value=mock_cursor)
@@ -384,6 +386,7 @@ class TestReadProgrammeService:
         mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
         mock_cursor.__exit__ = MagicMock(return_value=False)
         mock_cursor.fetchall = MagicMock(side_effect=[[], [], coverage_rows, []])
+        mock_cursor.fetchone = MagicMock(return_value=None)
 
         mock_conn = MagicMock()
         mock_conn.cursor = MagicMock(return_value=mock_cursor)
@@ -404,6 +407,7 @@ class TestReadProgrammeService:
         mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
         mock_cursor.__exit__ = MagicMock(return_value=False)
         mock_cursor.fetchall = MagicMock(side_effect=[[], [], [], []])
+        mock_cursor.fetchone = MagicMock(return_value=None)
 
         mock_conn = MagicMock()
         mock_conn.cursor = MagicMock(return_value=mock_cursor)
@@ -412,7 +416,13 @@ class TestReadProgrammeService:
         with patch.object(redteam_programme_service.psycopg2, "connect", return_value=mock_conn):
             result = redteam_programme_service.read_programme("postgresql://fake/tenantdb", "agent-3")
 
-        assert result == {"strategies": [], "probes": [], "coverage": [], "open_findings": []}
+        assert result == {
+            "strategies": [],
+            "probes": [],
+            "coverage": [],
+            "open_findings": [],
+            "latest_run": None,
+        }
 
 
 # ===========================================================================
@@ -421,9 +431,9 @@ class TestReadProgrammeService:
 
 
 def _make_programme_cursor(
-    strategy_rows=None, probe_rows=None, coverage_rows=None, open_finding_rows=None
+    strategy_rows=None, probe_rows=None, coverage_rows=None, open_finding_rows=None, latest_run_row=None
 ):
-    """Wire a mocked cursor scripted with all four read_programme result sets.
+    """Wire a mocked cursor scripted with all five read_programme result sets.
 
     Unlike _make_psycopg2_conn (which sets a single fetchall return value and
     cannot script four different result sets), this mirrors the explicit
@@ -442,6 +452,7 @@ def _make_programme_cursor(
             open_finding_rows or [],
         ]
     )
+    mock_cursor.fetchone = MagicMock(return_value=latest_run_row)
     mock_conn = MagicMock()
     mock_conn.cursor = MagicMock(return_value=mock_cursor)
     mock_conn.close = MagicMock()
@@ -760,6 +771,130 @@ class TestOpenFindings:
             )
 
         assert result["open_findings"] == []
+
+
+# ===========================================================================
+# #310: read_programme's latest_run, the newest complete run's report counters
+# ===========================================================================
+
+
+class TestLatestRun:
+    """latest_run reads the agent's newest run whatever its status. A complete
+    run sums each per-vector report counter from its coverage JSON; a failed or
+    running one reports its status with null counters; a pre-counter run reads
+    null."""
+
+    @staticmethod
+    def _read(latest_run_row):
+        from app.services import redteam_programme_service
+
+        mock_conn, mock_cursor = _make_programme_cursor(latest_run_row=latest_run_row)
+        with patch.object(redteam_programme_service.psycopg2, "connect", return_value=mock_conn):
+            result = redteam_programme_service.read_programme("postgresql://fake/tenantdb", "agent-lr")
+        return result, mock_cursor
+
+    @staticmethod
+    def _counters(latest):
+        return (latest["reports_no_attack"], latest["reports_dropped"], latest["reports_on_attackers_word"])
+
+    def test_the_three_counters_are_summed_over_vectors(self):
+        run_id = uuid4()
+        finished = datetime(2026, 9, 24, 14, 5, tzinfo=UTC)
+        coverage = {
+            "complete": True,
+            "reports_no_attack": {"prompt_injection": 20, "pii_extraction": 15},
+            "reports_dropped": {"jailbreak": 2},
+            "reports_on_attackers_word": {"prompt_injection": 1, "jailbreak": 3},
+        }
+
+        result, _ = self._read((run_id, finished, "complete", coverage))
+
+        assert result["latest_run"] == {
+            "run_id": str(run_id),
+            "finished_at": finished.isoformat(),
+            "status": "complete",
+            "reports_no_attack": 35,
+            "reports_dropped": 2,
+            "reports_on_attackers_word": 4,
+        }
+
+    def test_a_coverage_from_before_the_counters_reads_null(self):
+        coverage = {"vectors_attempted": 5, "vectors_valid": 5, "complete": True}
+
+        result, _ = self._read((uuid4(), datetime(2026, 9, 1, tzinfo=UTC), "complete", coverage))
+
+        assert result["latest_run"] is None
+
+    def test_a_complete_run_with_no_coverage_at_all_reads_null(self):
+        result, _ = self._read((uuid4(), datetime(2026, 9, 1, tzinfo=UTC), "complete", None))
+
+        assert result["latest_run"] is None
+
+    def test_no_run_reads_null(self):
+        result, _ = self._read(None)
+
+        assert result["latest_run"] is None
+
+    def test_counters_present_and_empty_read_zeros_not_null(self):
+        """run_coverage leaves zero counts out, so a clean run stores empty maps.
+        That run took the reading, so it shows zeros, never null."""
+        coverage = {"reports_no_attack": {}, "reports_dropped": {}, "reports_on_attackers_word": {}}
+
+        result, _ = self._read((uuid4(), datetime(2026, 9, 24, tzinfo=UTC), "complete", coverage))
+
+        assert self._counters(result["latest_run"]) == (0, 0, 0)
+        assert result["open_findings"] == []
+
+    @pytest.mark.parametrize("bad", ["3", 3.0, True], ids=["string", "float", "bool"])
+    def test_a_non_integer_count_makes_that_counter_null(self, bad):
+        coverage = {
+            "reports_no_attack": {"jailbreak": 4},
+            "reports_dropped": {"jailbreak": bad, "prompt_injection": 2},
+            "reports_on_attackers_word": {},
+        }
+
+        result, _ = self._read((uuid4(), None, "complete", coverage))
+
+        assert self._counters(result["latest_run"]) == (4, None, 0)
+        assert result["latest_run"]["finished_at"] is None
+
+    def test_a_missing_key_beside_a_present_one_reads_null_not_zero(self):
+        coverage = {"reports_no_attack": {"jailbreak": 4}, "reports_on_attackers_word": {"jailbreak": 1}}
+
+        result, _ = self._read((uuid4(), None, "complete", coverage))
+
+        assert self._counters(result["latest_run"]) == (4, None, 1)
+
+    @pytest.mark.parametrize("status", ["failed", "running"])
+    def test_a_newest_run_that_did_not_complete_reports_its_status_and_no_counters(self, status):
+        """The newest run failed or is still running. Its coverage may hold stale
+        or partial keys; none of it is read, and nothing older stands in."""
+        run_id = uuid4()
+        coverage = {"reports_no_attack": {"jailbreak": 9}}
+
+        result, _ = self._read((run_id, None, status, coverage))
+
+        assert result["latest_run"] == {
+            "run_id": str(run_id),
+            "finished_at": None,
+            "status": status,
+            "reports_no_attack": None,
+            "reports_dropped": None,
+            "reports_on_attackers_word": None,
+        }
+
+    def test_the_statement_picks_the_newest_run_of_this_agent_whatever_its_status(self):
+        """No status filter, so a newer failed run wins over an older complete
+        one, and id breaks a tie on started_at."""
+        _, mock_cursor = self._read(None)
+
+        executed = [c.args for c in mock_cursor.execute.call_args_list]
+        sql, params = next(a for a in executed if "LIMIT 1" in a[0])
+        flat = " ".join(sql.split())
+        assert "FROM red_team_runs WHERE kind = %s ORDER BY" in flat
+        assert "status =" not in flat and "status <>" not in flat
+        assert "ORDER BY started_at DESC, id DESC LIMIT 1" in flat
+        assert params == ("m7:agent-lr",)
 
 
 # ===========================================================================

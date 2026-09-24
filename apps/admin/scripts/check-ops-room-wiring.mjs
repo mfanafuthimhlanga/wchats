@@ -232,7 +232,7 @@ function runHonestyChecks() {
 // §4.4 point 4). So this check does not search for that phrase at all.
 // Instead it asserts two things: the two WIRE-02 tiles reference the real
 // ledger counts, and the CSS class that styles the two hardcoded "not
-// tracked yet" tiles (`chan-untracked`, PAGE_CSS in page.tsx) has zero
+// tracked yet" tiles (`chan-untracked`, PAGE_CSS in opsCss.ts, imported by page.tsx) has zero
 // remaining usages anywhere in the app. That class has exactly one
 // legitimate consumer today — the two WIRE-02 tiles — and no other region
 // uses it (each region's own honest-empty copy uses its own class or plain
