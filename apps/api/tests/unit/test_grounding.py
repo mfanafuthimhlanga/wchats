@@ -154,7 +154,14 @@ def _measure():
 
 
 class TestTheBenchmark:
-    """PUBLISHED for grounding-v1, measured 2026-09-23. A moved number is a moved rule."""
+    """PUBLISHED for grounding-v2, measured 2026-09-24 (#306). A moved number is a moved rule.
+
+    grounding-v1, 2026-09-23, read 8 of 30 passing and 103 of 260 sentences flagged. v2 reads a
+    sentence under the floor once more against its best passage joined with the passage that
+    adds the most words the best lacks, two at least, and never for a sentence that asserts a
+    reason or a consequence. The planted recall held at 9 of 10, eight of them by words as
+    before, and 20 sentences stopped being flagged.
+    """
 
     def test_nine_of_ten_planted_sentences_are_flagged_each_scored_on_its_own(self):
         # the tenth, the 4b0b3432 plant, shares half its words with a passage and passes
@@ -164,7 +171,7 @@ class TestTheBenchmark:
 
     def test_the_real_answers_read_as_measured_on_the_day(self):
         m = _measure()
-        assert (m["real_answers"], m["pass_at_threshold"], m["sentences"], m["sentences_flagged"]) == (30, 8, 260, 103)
+        assert (m["real_answers"], m["pass_at_threshold"], m["sentences"], m["sentences_flagged"]) == (30, 10, 260, 83)
 
     def test_every_truth_claim_sits_in_its_answer(self):
         rows = {r["scenario_id"]: r for r in csv.DictReader((BENCH / "rows.csv").open(encoding="utf-8", newline=""))}
@@ -176,3 +183,80 @@ class TestTheBenchmark:
 def test_the_floor_is_the_only_knob_and_it_moves_the_verdict(floor):
     g = ground("Refunds arrive within fourteen days of the return.", [RETURNS], carried_floor=floor)
     assert g.sentences[0].supported is (floor == 0.0 or g.sentences[0].carried >= 1.0)
+
+
+class TestTwoPassages:
+    """A sentence that joins two facts from two chunks is true to the documents (#306)."""
+
+    A = "The storefront runs React Router for the catalog, the product pages and the cart."
+    B = "Orders are never sent to a server; the app reads and writes no database at all."
+    C = "The Fastify server broadcasts every event over a WebSocket to the dashboard."
+
+    def test_a_sentence_joining_two_passages_is_carried_by_both_together(self):
+        # A and B each carry 4 of the 13 content words, both under the floor; together 8
+        sentence = (
+            "React Router handles the catalog and the cart, the audit log keeps every step, "
+            "nothing is sent to a server, and the app writes no database."
+        )
+        g = ground(sentence, [self.A, self.B, self.C])
+        (s,) = g.sentences
+        assert s.supported
+        assert s.spanned_with >= 0 and s.spanned_with != s.passage
+        assert "together carry" in s.reason
+
+    def test_a_sentence_one_passage_carries_is_not_read_against_two(self):
+        g = ground("React Router handles the catalog, the product pages and the cart.", [self.A, self.B])
+        (s,) = g.sentences
+        assert s.supported and s.spanned_with == -1
+        assert "together" not in s.reason
+
+    def test_words_spread_thin_over_three_passages_stay_flagged(self):
+        # A carries one word, B one and C two; no second passage adds two new words
+        sentence = "The router, the server and the dashboard were rewritten in Rust last quarter."
+        g = ground(sentence, [self.A, self.B, self.C])
+        (s,) = g.sentences
+        assert not s.supported
+
+    def test_the_floor_is_the_same_floor(self):
+        sentence = (
+            "React Router handles the catalog and the cart, the audit log keeps every step, "
+            "nothing is sent to a server, and the app writes no database."
+        )
+        assert ground(sentence, [self.A, self.B], carried_floor=0.95).sentences[0].supported is False
+
+    def test_a_missing_number_still_flags_a_spanned_sentence(self):
+        sentence = "React Router handles the catalog and the cart, and 42 orders are sent to a server."
+        (s,) = ground(sentence, [self.A, self.B]).sentences
+        assert not s.supported and s.missing_numbers == ("42",)
+
+    def test_the_reason_names_both_passages(self):
+        sentence = (
+            "React Router handles the catalog and the cart, the audit log keeps every step, "
+            "nothing is sent to a server, and the app writes no database."
+        )
+        (s,) = ground(sentence, [self.A, self.B]).sentences
+        assert s.reason.startswith(f"passages {s.passage + 1} and {s.spanned_with + 1} together carry")
+
+    def test_a_reason_or_a_consequence_gets_no_second_reading(self):
+        # two passages carry the facts; neither carries the "because" between them
+        sentence = (
+            "React Router handles the catalog and the cart because the audit log keeps every "
+            "step, nothing is sent to a server, and the app writes no database."
+        )
+        (s,) = ground(sentence, [self.A, self.B]).sentences
+        assert not s.supported and s.spanned_with == -1
+
+    def test_a_second_passage_adding_one_word_does_not_count(self):
+        # C shares only "server" with the sentence beyond what A carries
+        sentence = "React Router handles the catalog, the cart and the server that lists them."
+        (s,) = ground(sentence, [self.A, self.C]).sentences
+        assert s.spanned_with == -1
+
+    def test_a_union_under_the_floor_leaves_the_single_reading(self):
+        sentence = (
+            "React Router handles the catalog, the audit log keeps every step and the ledger, "
+            "the dashboard shows the map, nothing is sent to a server."
+        )
+        (s,) = ground(sentence, [self.A, self.B]).sentences
+        single = ground(sentence, [self.A]).sentences[0]
+        assert s.spanned_with == -1 and s.carried == single.carried and not s.supported
