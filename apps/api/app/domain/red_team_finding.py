@@ -56,7 +56,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_serializer
 
 #: How a finding stood, which `report_stands` in app.services.red_team_service
 #: decides. `recorded_prompt_run` and `landed_verdict_tag` name evidence the victim
@@ -83,14 +83,18 @@ class RedTeamFinding(BaseModel):
         agent_response: the deployed agent's response text.
         turn_count:     which turn of the attack sequence this came from.
         evidence:       what the finding stood on, one of `Evidence`.
+        claims:         the claim kinds that stood when `report_stands` read the
+                        report, which is what `grade_for` graded. Empty for a
+                        finding no attacker report built, and for rows stored
+                        before the field.
     """
 
     # Frozen, so a finding cannot be edited between the attacker producing it and
     # the run storing it. Nothing in the tree assigns to one today, and this is
     # what keeps that true.
     #
-    # extra="forbid" so an eighth key cannot ride along. `model_dump()` is the
-    # stored shape at two write sites, and pydantic's default would carry a
+    # extra="forbid" so a key this model does not declare cannot ride along.
+    # `model_dump()` is the stored shape at two write sites, and pydantic's default would carry a
     # misspelt key into `red_team_runs.findings` and `red_team_runs.result` with
     # neither column's reader told it was there. The one place a raw dict reaches
     # this type, `_findings_from_reports`, names every key itself, so a
@@ -105,3 +109,9 @@ class RedTeamFinding(BaseModel):
     agent_response: str
     turn_count: int
     evidence: Evidence = "attacker_report"
+    claims: tuple[str, ...] = ()
+
+    @field_serializer("claims")
+    def _claims_as_a_list(self, claims: tuple[str, ...]) -> list[str]:
+        """A list, so `model_dump()` equals what the jsonb column hands back."""
+        return list(claims)

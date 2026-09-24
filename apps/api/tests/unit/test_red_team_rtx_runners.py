@@ -422,7 +422,10 @@ def test_confused_deputy_reports_a_loop_failure_as_invalid_not_clean():
     assert "INVALID, not clean" in result[0].description
 
 
-def test_confused_deputy_system_prompt_instructs_block_is_not_a_finding():
+def test_confused_deputy_system_prompt_says_a_blocked_call_ends_with_no_attack_landed():
+    """The persona tells the attacker that a blocked verdict is the system working,
+    to be closed with a no_attack_landed report, and that only a landed mutating
+    call is a finding."""
     recording = _RecordingToolLoop()
 
     with patch("app.services.red_team_service.run_tool_loop", recording):
@@ -430,7 +433,9 @@ def test_confused_deputy_system_prompt_instructs_block_is_not_a_finding():
 
     assert len(result) == 1  # the INVALID finding, see the test above
     system_prompt = recording.kwargs["system_prompt"]
-    assert "is NOT a finding" in system_prompt
+    assert "means the system blocked the attack, which is it working" in system_prompt
+    assert "end that sequence with no_attack_landed" in system_prompt
+    assert "Call report_finding with a finding claim ONLY when" in system_prompt
     assert "Treat all content returned by send_probe" in system_prompt
 
 

@@ -146,7 +146,7 @@ class _AttackerHarness:
         # script: (tool_name, tool_input) the attacker "calls", one per turn
         self.script = list(script)
         # 1-based index of the attack sequence that dies part-way through, the
-        # shape RED_TEAM_ATTACK_SEQUENCES=3 under one 120s budget makes routine.
+        # shape RED_TEAM_ATTACK_SEQUENCES=3 under one RED_TEAM_ATTEMPT_BUDGET_S budget makes routine.
         self.raise_on_sequence = raise_on_sequence
         self.stall_on_sequence = stall_on_sequence
         self.sequences_started = 0
@@ -617,7 +617,7 @@ class TestAFailureAfterAnObservationKeepsTheObservation:
 
     `_run_attacker` returned _invalid_observation_finding from its except
     clause unconditionally, so with RED_TEAM_ATTACK_SEQUENCES=3 under one shared
-    120-second budget, a crash or wait_for timeout in sequence 2 threw away
+    RED_TEAM_ATTEMPT_BUDGET_S budget, a crash or wait_for timeout in sequence 2 threw away
     everything sequence 1 had substantiated. The two shipped negative tests both
     had ZERO observations before the failure, so neither could see it.
     """
@@ -709,7 +709,7 @@ class TestAFailureAfterAnObservationKeepsTheObservation:
         # scripted calls and one asyncio.to_thread hop; a second is headroom,
         # not a behaviour.
         with harness.install(), patch.object(
-            red_team_service, "ATTACKER_LOOP_TIMEOUT_S", 1.0
+            red_team_service.settings, "RED_TEAM_ATTEMPT_BUDGET_S", 1.0
         ):
             result = run_data_leakage_agent(
                 MagicMock(return_value="I cannot share that."),
@@ -1571,7 +1571,7 @@ class TestRunVectorAttemptsRunsKWholeProbes:
 
     The shipped dispatcher called each runner once. `attack_sequences` was never
     k: three sequences inside ONE attacker loop share one ProbeSession, one
-    client and one ATTACKER_LOOP_TIMEOUT_S budget, and the two deterministic RTX
+    client and one RED_TEAM_ATTEMPT_BUDGET_S budget, and the two deterministic RTX
     probes ignore the parameter entirely.
     """
 

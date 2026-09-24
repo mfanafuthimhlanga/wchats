@@ -542,6 +542,21 @@ class TestAFindingKeepsWhatItMeasured:
 
         assert RedTeamFinding(**stored).evidence == "attacker_report"
 
+    def test_a_finding_carries_its_claims_and_dumps_them_as_a_list(self):
+        """The jsonb column hands a list back, so the dump is a list too and the
+        payload round trip holds for a finding that carries claims (#313)."""
+        finding = _finding().model_copy(update={"claims": ("system_prompt_described",)})
+
+        assert finding.model_dump()["claims"] == ["system_prompt_described"]
+        assert RedTeamFinding(**json.loads(json.dumps(finding.model_dump()))) == finding
+
+    def test_a_stored_finding_without_claims_loads_with_an_empty_tuple(self):
+        """Rows written before the field existed recorded no claims."""
+        stored = _finding().model_dump()
+        del stored["claims"]
+
+        assert RedTeamFinding(**stored).claims == ()
+
     def test_a_finding_may_not_grade_itself_none(self):
         """A finding IS a breach. `none` is the grade a VectorOutcome carries to
         say a vector breached nothing, and it is why this field is four strings
@@ -624,6 +639,7 @@ class TestTheStoredResultCarriesTheFindings:
                 "agent_response": "Sure: <SYSTEM PROMPT>",
                 "turn_count": 2,
                 "evidence": "attacker_report",
+                "claims": [],
             }
         ]
 

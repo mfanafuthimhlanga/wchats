@@ -26,7 +26,8 @@ Flow (run_red_team):
        RED_TEAM_ATTEMPTS_PER_VECTOR times from the top with nothing carried
        between attempts (ticket 15)
     6. Build the run's RedTeamResult; max_severity and deployment_blocked come
-       off it. Each finding arrives graded by red_team_service.SEVERITY_BY_VECTOR
+       off it. Each finding arrives graded by red_team_service.SEVERITY_BY_VECTOR,
+       or by CLAIM_GRADES when the claims that stood have a grade of their own
     7. Update red_team_run row to 'complete' with findings JSONB, the run's own
        coverage (migration 0015) and its RedTeamResult (0021) — an empty findings
        list is unreadable without the denominator that says how many vectors
@@ -63,7 +64,6 @@ from app.services.red_team_probe import (
     build_victim_probe_fn,
 )
 from app.services.red_team_service import (
-    ATTACKER_LOOP_TIMEOUT_S,
     INVALID_MARKER_PROBE_MESSAGE_PATTERN,
     VectorObservation,
     run_confused_deputy_agent,
@@ -84,20 +84,22 @@ log = structlog.get_logger(__name__)
 #: How far back Step 2's guard looks for a `running` row before deciding a
 #: second run for this agent would be a duplicate.
 #:
-#: THIRTY MINUTES WAS SOUND UNTIL k. One pass of the seven vectors is bounded by
-#: seven ATTACKER_LOOP_TIMEOUT_S budgets, so the worst case was about fifteen
-#: minutes and a run comfortably finished inside the window. Ticket 15 (#52) runs
-#: each vector k times: at k=3 the same bound is about forty-five minutes, and a
-#: run that used it would sit OUTSIDE a thirty-minute window while still running
-#: — so a second trigger would find no recent row, skip nothing, and put two
-#: red-team runs on one agent, double-billing the tenant and racing the RTX
-#: probes over one Redis rate counter.
+#: The window has to outlast the longest run a healthy worker can make, or a
+#: second trigger finds no recent row, skips nothing, and puts two red-team runs
+#: on one agent: double-billing the tenant and racing the RTX probes over one
+#: Redis rate counter. It also has to expire before BROKER_VISIBILITY_TIMEOUT_S,
+#: or a message the broker genuinely redelivers after two hours is refused by a
+#: guard still holding a dead run's row.
 #:
-#: Ninety leaves headroom above that bound and stays under
-#: BROKER_VISIBILITY_TIMEOUT_S, so a message the broker genuinely redelivers
-#: after two hours is not refused by a guard still holding a dead run's row.
-#: tests/unit/test_red_team_task.py pins both relations rather than the number.
-RUN_IDEMPOTENCY_WINDOW_MINUTES = 90
+#: The longest run: seven vectors, k attempts each, every attempt spending its
+#: whole settings.RED_TEAM_ATTEMPT_BUDGET_S, plus one probe already in flight
+#: when the budget fires on each of the four attacker-loop attempts (the probe's
+#: own 120 second wait and up to 20 seconds of close_turn), which the budget
+#: cannot stop. At k=3 and 240 seconds that is 5040 + 12 x 140 = 6720 seconds,
+#: 112 minutes (#313). 115 minutes sits above it and under the two hour
+#: visibility timeout. tests/unit/test_red_team_task.py pins both relations
+#: against that arithmetic rather than the number.
+RUN_IDEMPOTENCY_WINDOW_MINUTES = 115
 
 
 def _run_ledger(tenant_id: str, agent_id: str, run_id: str, conn_str: str) -> LedgerContext:
@@ -217,7 +219,7 @@ def red_team_run_bound_s() -> float:
     chain is still alive has to outlast this.
     """
     plan = _vector_plan(probe_fn=None, transactional_probe_fn=None, conn_str="")
-    return len(plan) * settings.RED_TEAM_ATTEMPTS_PER_VECTOR * ATTACKER_LOOP_TIMEOUT_S
+    return len(plan) * settings.RED_TEAM_ATTEMPTS_PER_VECTOR * settings.RED_TEAM_ATTEMPT_BUDGET_S
 
 
 def _attempt_every_vector(

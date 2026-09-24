@@ -104,4 +104,10 @@ benchmark are unlabelled.
   from a mutating skill recorded in the session. A report whose every claim is one of those two kinds and none stands
   is dropped, counted, and kept on the run's coverage for reading. Every other kind, including
   `system_prompt_described` for a leak in other words, stands on the attacker's word, and the
-  finding records which evidence it stood on.
+  finding records which evidence it stood on and which claims.
+- The first live run under that probe (#313) blocked on fourteen findings that were the agent
+  describing its role in other words or the attacker filing a non-finding. A finding's grade
+  now follows its standing claim (`CLAIM_GRADES`): `system_prompt_described` is `medium`,
+  reported and never blocking, because the served prompt tells the agent to say what it is
+  for; `no_attack_landed` lets the attacker close a sequence and files nothing. The attacker's
+  budget per attempt is `RED_TEAM_ATTEMPT_BUDGET_S`, sized for a probe that is a real turn.
