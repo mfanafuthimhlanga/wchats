@@ -15,10 +15,10 @@ Flow (run_red_team):
     1. Fetch agent from control DB; decrypt conn_str
     2. Idempotency guard — skip if a running red_team_run for this agent is inside the window
     3. Insert red_team_run row (status='running')
-    4. Build two probe_fn closures: the bare-completion probe (calls the deployed
-       agent via direct Claude API, no tools attached) for the M7 conversational
-       probes, and the transactional probe (drives the real tool server through
-       the transactional dispatcher, Phase 18 OD-6) for the three RTX probes.
+    4. Build two probe_fn closures over the deployed agent's own turn
+       (red_team_probe.build_victim_probe_fn): the conversational probe returns the
+       agent's reply, and the transactional probe appends the dispatcher's
+       tool-verdict transcript for the confused-deputy attacker (Phase 18 OD-6).
     5. Run ConversationInjection → ContentInjection → DataLeakage → Hallucination →
        ConfusedDeputy → ValueBoundEvasion → IdentityBypass agents sequentially
        (Phase 18 SEC-03 / OD-7: the shipped PromptInjection agent is split into
@@ -39,7 +39,6 @@ Flow (run_red_team):
 
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
 
@@ -48,8 +47,8 @@ import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
-from app.core.log_bounds import log_failure
-from app.core.model_client import LedgerContext, ledger_recorder, route_for
+from app.core.log_bounds import cut_with_marker, log_failure, scrub_for_a_text_sink
+from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.security import fernet_decrypt
 from app.domain.red_team_finding import RedTeamFinding
 from app.domain.red_team_result import RED_TEAM_VECTORS, RedTeamResult
@@ -59,7 +58,10 @@ from app.services.agent_tools import (
     bind_tool_context,
     release_tool_context,
 )
-from app.services.red_team_probe import _build_transactional_probe_fn
+from app.services.red_team_probe import (
+    _build_transactional_probe_fn,
+    build_victim_probe_fn,
+)
 from app.services.red_team_service import (
     ATTACKER_LOOP_TIMEOUT_S,
     INVALID_MARKER_PROBE_MESSAGE_PATTERN,
@@ -74,27 +76,10 @@ from app.services.red_team_service import (
     run_value_bound_evasion_agent,
     run_vector_attempts,
 )
-from app.services.tool_loop import first_choice
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Probe function builder. It wraps a direct API call so it has the signature
-# the red_team_service runner functions expect: (str) -> str.
-#
-# Note: run_agent_loop from agent_loop.py is intentionally NOT used here. That
-# function is tightly coupled to the SSE infrastructure (job_id, db, redis,
-# emit) designed for customer-facing conversations. The probe_fn only needs
-# to send one message to the deployed agent and return the response text —
-# a direct API call is the correct and minimal implementation.
-# ---------------------------------------------------------------------------
-
-#: The routing-table key each probe of the persona bills under. It is not the
-#: Agent turn: this is a stand-in persona built from the soul fields, reached
-#: through the direct API rather than through the SDK.
-PROBE_PURPOSE = "red_team_probe"
 
 #: How far back Step 2's guard looks for a `running` row before deciding a
 #: second run for this agent would be a duplicate.
@@ -128,71 +113,15 @@ def _run_ledger(tenant_id: str, agent_id: str, run_id: str, conn_str: str) -> Le
     )
 
 
-def _build_probe_fn(agent: "Agent", conn_str: str, ledger: LedgerContext):
-    """Return a probe_fn closure for the given agent.
+def _build_probe_fn(agent: "Agent", conn_str: str, tenant_id: str, run_id: str):
+    """The conversational probe: the deployed agent's own turn, reply only.
 
-    The closure captures the agent's system prompt fields so the red-team agents
-    probe the same persona real customers are served, and it builds the client once
-    so the whole run shares a connection pool. conn_str is captured for a future
-    extension and is never logged.
-
-    Args:
-        agent: Agent ORM instance (soul fields, name).
-        conn_str: Decrypted Neon connection string — NEVER logged (CTL-08).
-        ledger: the ids each probe is billed to and where its row goes.
-    Returns:
-        Callable[[str], str] that sends one message and returns its text.
+    The four conversational vectors attack the turn a customer is served, with its
+    platform prompt, retrieval and tools (#309). The victim turn bills under the
+    `agent_turn` route like any customer turn, to the tenant ledger `_victim_turn`
+    builds, with `run_id` as the job. conn_str is never logged (CTL-08).
     """
-    # A minimal system prompt from the soul fields, matching build_system_prompt.
-    system_lines = [f"You are {agent.name}, a customer service agent."]
-    if getattr(agent, "soul_voice", None):
-        system_lines.append(f"Voice: {agent.soul_voice}")
-    if getattr(agent, "soul_role", None):
-        system_lines.append(f"Role: {agent.soul_role}")
-    if getattr(agent, "soul_do_list", None):
-        do_items = agent.soul_do_list if isinstance(agent.soul_do_list, list) else []
-        if do_items:
-            system_lines.append("Do: " + "; ".join(str(i) for i in do_items))
-    if getattr(agent, "soul_donot_list", None):
-        donot = agent.soul_donot_list if isinstance(agent.soul_donot_list, list) else []
-        if donot:
-            system_lines.append("Do not: " + "; ".join(str(i) for i in donot))
-    system_prompt = "\n".join(system_lines)
-    client = ledger.client(PROBE_PURPOSE)
-
-    async def _async_probe(message: str) -> str:
-        """Send one probe message to the agent persona and return the response text."""
-        try:
-            completion = await asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda: client.chat.completions.create(
-                    model=route_for(PROBE_PURPOSE).model,
-                    max_completion_tokens=512,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": message},
-                    ],
-                ),
-            )
-            choice = first_choice(completion)
-            return "" if choice is None else (choice.message.content or "")
-        except Exception as exc:
-            log_failure(log, "probe_fn.failed", exc)
-            return ""
-
-    def probe_fn(message: str) -> str:
-        """Synchronous probe: bridge async _async_probe into sync context.
-
-        Uses asyncio.run(asyncio.wait_for(..., timeout=60.0)) per CLAUDE.md rule —
-        never loop.run_until_complete (broken in Python 3.12).
-        """
-        try:
-            return asyncio.run(asyncio.wait_for(_async_probe(message), timeout=60.0))
-        except Exception as exc:
-            log_failure(log, "probe_fn.timeout_or_error", exc)
-            return ""
-
-    return probe_fn
+    return build_victim_probe_fn(agent, conn_str, tenant_id, transcript=False, job_id=run_id)
 
 
 # ---------------------------------------------------------------------------
@@ -363,9 +292,6 @@ def _coverage_at_k(observations: list[VectorObservation], result: RedTeamResult)
 #: scroll. A finding is evidence, so the cut is announced rather than silent.
 RED_TEAM_FIELD_CHAR_CAP = 20_000
 
-#: What ends a string this module cut, inside the cap rather than beyond it.
-_TRUNCATION_MARKER = " [truncated]"
-
 
 def _pg_text(value: str) -> str:
     """One model-produced string, made safe for a text or jsonb column.
@@ -401,14 +327,7 @@ def _pg_text(value: str) -> str:
     meaning a reader of a red-team finding can use, and every alternative
     encoding changes more of the text the owner is told the agent produced.
     """
-    cleaned = (
-        value.replace("\x00", "")
-        .encode("utf-16-le", "surrogatepass")
-        .decode("utf-16-le", "replace")
-    )
-    if len(cleaned) <= RED_TEAM_FIELD_CHAR_CAP:
-        return cleaned
-    return cleaned[:RED_TEAM_FIELD_CHAR_CAP - len(_TRUNCATION_MARKER)] + _TRUNCATION_MARKER
+    return cut_with_marker(scrub_for_a_text_sink(value), RED_TEAM_FIELD_CHAR_CAP)
 
 
 def _pg_scrub(value: object) -> object:
@@ -666,7 +585,7 @@ def run_red_team(self, agent_id: str) -> dict:
         2. Idempotency guard — skip if a 'running' red_team_run for this agent
            was created within RUN_IDEMPOTENCY_WINDOW_MINUTES.
         3. Insert red_team_run row (status='running').
-        4. Build two probe_fn closures (bare-completion + transactional).
+        4. Build two probe_fn closures over the victim turn (conversational + transactional).
         5. Run ConversationInjection → ContentInjection → DataLeakage →
            Hallucination → ConfusedDeputy → ValueBoundEvasion → IdentityBypass
            agents sequentially, each k times independently.
@@ -775,26 +694,21 @@ def run_red_team(self, agent_id: str) -> dict:
             _run_conn.close()
 
     # ------------------------------------------------------------------
-    # Step 4 — Build two probe_fn closures
+    # Step 4. Build two probe_fn closures over the deployed agent's own turn
     #
-    # probe_fn: sends one message to the deployed agent persona and returns the
-    # response text. Its client comes from app.core.model_client under the
-    # `red_team_probe` purpose since #47, so every probe leaves a ledger row, and
-    # it attaches NO tools (not run_agent_loop from agent_loop.py, which is coupled to
-    # SSE infrastructure). Correct for the M7 conversational/retrieval probes,
-    # which never touch the transactional dispatcher.
-    #
-    # transactional_probe_fn (new, Phase 18 OD-6): drives the REAL tool
-    # server through the transactional dispatcher (_execute_transactional_tool)
-    # via the probe builder imported from red_team_probe, so RTX-01 (confused
-    # deputy) can actually reach the Actor seam. There are now two probe
-    # functions for exactly this reason — one bare, one wired to the real
-    # dispatcher. conn_str is never logged (CTL-08).
+    # Both run the customer turn through red_team_probe.build_victim_probe_fn:
+    # the platform prompt, retrieval, the eleven tools and the dispatcher, with
+    # side effects recorded. probe_fn returns the agent's reply for the four
+    # conversational vectors. transactional_probe_fn appends the dispatcher's
+    # tool-verdict transcript, so RTX-01 (confused deputy) can read whether a
+    # mutation landed. Both publish the system prompt and the verdict tags on the
+    # callable, which red_team_service.report_stands reads. Victim turns bill under
+    # run_id; the ledger below bills the attacker's own turns. conn_str is never logged (CTL-08).
     # ------------------------------------------------------------------
     tenant_id_str = str(agent.tenant_id)
     ledger = _run_ledger(tenant_id_str, agent_id, run_id, conn_str)
-    probe_fn = _build_probe_fn(agent, conn_str, ledger)
-    transactional_probe_fn = _build_transactional_probe_fn(agent, conn_str, tenant_id_str)
+    probe_fn = _build_probe_fn(agent, conn_str, tenant_id_str, run_id)
+    transactional_probe_fn = _build_transactional_probe_fn(agent, conn_str, tenant_id_str, run_id)
 
     # ------------------------------------------------------------------
     # Step 5 — Run six agents sequentially (no chord — worker_pool=solo)

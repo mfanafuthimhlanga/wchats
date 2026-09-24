@@ -431,12 +431,10 @@ PURPOSE_ROUTES: Mapping[str, ModelRoute] = MappingProxyType({
     "golden_draft": _LUNA,
     "metadata_enrichment": _LUNA,
     "actor_gate": _LUNA,
+    # The Attacker's own turn. The agent under attack answers each probe on its
+    # own `agent_turn` route, through the customer turn (#309), and a finding's
+    # severity is a table lookup in `red_team_service.SEVERITY_BY_VECTOR` (#297).
     "red_team_prompt": _LUNA,
-    # Added by ticket #47. `red_team_probe` is the persona under attack
-    # answering a probe, billed once per probe, apart from `red_team_prompt`,
-    # the Attacker's own turn. A finding's severity is a table lookup in
-    # `red_team_service.SEVERITY_BY_VECTOR` and calls no model (#297).
-    "red_team_probe": _LUNA,
     # Added by ticket #49. The deployment Orchestrator's prose turn ran on the
     # Agent SDK against `claude-sonnet-4-6` and so had no row at all, which is
     # why a checklist run could not report what its own assessment cost.

@@ -58,6 +58,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+#: How a finding stood, which `report_stands` in app.services.red_team_service
+#: decides. `recorded_prompt_run` and `landed_verdict_tag` name evidence the victim
+#: probe recorded; `attacker_report` means the finding rests on the attacker
+#: model's word, and it is the default so rows stored before the field load.
+Evidence = Literal["recorded_prompt_run", "landed_verdict_tag", "attacker_report"]
+
 
 class RedTeamFinding(BaseModel):
     """One security finding a red-team attacker produced, frozen on construction.
@@ -76,17 +82,18 @@ class RedTeamFinding(BaseModel):
         probe_message:  the exact probe text that triggered the finding.
         agent_response: the deployed agent's response text.
         turn_count:     which turn of the attack sequence this came from.
+        evidence:       what the finding stood on, one of `Evidence`.
     """
 
     # Frozen, so a finding cannot be edited between the attacker producing it and
     # the run storing it. Nothing in the tree assigns to one today, and this is
     # what keeps that true.
     #
-    # extra="forbid" so a seventh key cannot ride along. `model_dump()` is the
+    # extra="forbid" so an eighth key cannot ride along. `model_dump()` is the
     # stored shape at two write sites, and pydantic's default would carry a
     # misspelt key into `red_team_runs.findings` and `red_team_runs.result` with
     # neither column's reader told it was there. The one place a raw dict reaches
-    # this type, `_findings_from_reports`, names all six keys itself, so a
+    # this type, `_findings_from_reports`, names every key itself, so a
     # key the attacker model invented is dropped at that boundary and never
     # reaches this refusal.
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -97,3 +104,4 @@ class RedTeamFinding(BaseModel):
     probe_message: str
     agent_response: str
     turn_count: int
+    evidence: Evidence = "attacker_report"

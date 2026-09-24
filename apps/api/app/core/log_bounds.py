@@ -70,6 +70,21 @@ def scrub_for_a_text_sink(value: str) -> str:
     )
 
 
+#: What ends a string `cut_with_marker` cut, inside the cap rather than beyond it.
+TRUNCATION_MARKER = " [truncated]"
+
+
+def cut_with_marker(value: str, cap: int) -> str:
+    """`value` when it fits in `cap` characters, else its head ending in TRUNCATION_MARKER.
+
+    The result is never longer than `cap`, and a reader sees that the text was cut
+    rather than taking the head for the whole.
+    """
+    if len(value) <= cap:
+        return value
+    return value[:cap - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
+
+
 def bounded_error_detail(exc: BaseException) -> str:
     """The one line an exception is allowed to contribute to a log record.
 

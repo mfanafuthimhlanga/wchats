@@ -234,9 +234,11 @@ def _finding_from_payload(stored: Any) -> RedTeamFinding:
     """One stored finding, with pydantic doing the checking.
 
     `RedTeamFinding.model_dump()` is what `payload` wrote, so this is its inverse
-    and nothing here restates the six fields. A missing field and a seventh key
-    are both refusals, which is the model's required fields plus its
-    `extra="forbid"`, and both arrive as ValidationError.
+    and nothing here restates the model's fields. A missing required field and a
+    key the model does not declare are both refusals, which is the model's
+    required fields plus its `extra="forbid"`, and both arrive as ValidationError.
+    `evidence` has a default, so a finding stored before the field existed loads
+    as `attacker_report`.
 
     Raises:
         InvalidRedTeamResult: the stored finding is not a mapping, or pydantic
@@ -586,7 +588,7 @@ class RedTeamResult:
         Returns:
             {"k", "vectors": [{"vector", "attempts", "breaches", "max_severity"}],
              "findings": [{"severity", "description", "attack_vector",
-             "probe_message", "agent_response", "turn_count"}], "breaches",
+             "probe_message", "agent_response", "turn_count", "evidence"}], "breaches",
              "max_severity", "coverage"}.
         """
         return {
@@ -611,8 +613,10 @@ class RedTeamResult:
         """Rebuild the record from a stored `red_team_runs.result`.
 
         The round trip is the contract: `RedTeamResult.from_payload(r.payload) == r`,
-        and `from_payload(p).payload == p` back the other way. A stored row is
-        validated on the way out as it was on the way in.
+        and `from_payload(p).payload == p` back the other way for any `p` this
+        build wrote. A row stored before findings carried `evidence` reads back
+        with `evidence="attacker_report"` on each finding, so its payload gains
+        that key. A stored row is validated on the way out as it was on the way in.
 
         EVERY WAY A STORED SHAPE CAN BE WRONG LEAVES HERE AS InvalidRedTeamResult.
         A reader that catches this module's refusal alone would otherwise take a

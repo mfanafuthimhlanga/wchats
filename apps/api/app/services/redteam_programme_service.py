@@ -112,27 +112,26 @@ _OPEN_FINDINGS_SQL = """
 """
 
 
-def _correlate_description(
+def _correlate_entry(
     run_findings: object,
     attack_vector: str | None,
     probe_message: str | None,
     turn_count: int | None,
-) -> str | None:
-    """Recover a finding's description from its own run's findings JSONB snapshot.
+) -> dict | None:
+    """The finding's own entry in its run's findings JSONB snapshot, or None.
 
-    red_team_findings has no description column (0012_red_team_programme.py)
-    — the only place a human-readable description exists is the per-run
-    JSONB snapshot on red_team_runs.findings, written once when the run
-    completed. Matching is scoped to the finding's OWN run (via the SQL
+    red_team_findings has no description or evidence column
+    (0012_red_team_programme.py), so the per-run JSONB snapshot on
+    red_team_runs.findings, written once when the run completed, is the only
+    place either exists. Matching is scoped to the finding's OWN run (via the SQL
     join in _OPEN_FINDINGS_SQL, never the latest run) on the (attack_vector,
-    probe_message, turn_count) triple — the only fields both sides carry.
-    The first matching entry's description wins when it is a non-empty
-    string; otherwise the finding still returns with description=None.
+    probe_message, turn_count) triple, the only fields both sides carry. The
+    first matching entry wins.
 
     Never raises. A malformed or absent snapshot (wrong type, missing keys,
     non-dict entries) degrades to "no match" rather than taking the whole
-    programme read down with it — the coverage table is served from the
-    same read and must not fail because one finding's snapshot is odd.
+    programme read down with it: the coverage table is served from the same read
+    and must not fail because one finding's snapshot is odd.
     """
     try:
         if not isinstance(run_findings, list):
@@ -145,15 +144,40 @@ def _correlate_description(
                 and entry.get("probe_message") == probe_message
                 and entry.get("turn_count") == turn_count
             ):
-                description = entry.get("description")
-                return description if isinstance(description, str) and description else None
+                return entry
         return None
     except Exception:
         # Defensive: correlation must never sink the programme read. Only
-        # attack_vector is logged — probe_message/agent_response/conn_str
+        # attack_vector is logged; probe_message, agent_response and conn_str
         # never belong in a log line (T-23-GB-01).
         log.warning("redteam_programme.correlation_failed", attack_vector=attack_vector)
         return None
+
+
+def _correlated_text(entry: dict | None, key: str) -> str | None:
+    """`entry[key]` when it is a non-empty string, else None."""
+    value = entry.get(key) if entry is not None else None
+    return value if isinstance(value, str) and value else None
+
+
+def _open_finding(row: tuple) -> dict:
+    """One open red_team_findings row, with what its run's snapshot adds."""
+    entry = _correlate_entry(row[9], row[4], row[5], row[7])
+    return {
+        "id": str(row[0]),
+        "run_id": str(row[1]) if row[1] else None,
+        "strategy_id": str(row[2]) if row[2] else None,
+        "severity": row[3],
+        "attack_vector": row[4],
+        "probe_message": row[5],
+        "agent_response": row[6],
+        "turn_count": row[7],
+        "created_at": row[8].isoformat() if row[8] else None,
+        "description": _correlated_text(entry, "description"),
+        # What the finding stood on (RedTeamFinding.evidence). None when the
+        # snapshot has no matching entry or predates the field.
+        "evidence": _correlated_text(entry, "evidence"),
+    }
 
 
 def read_programme(conn_str: str, agent_id: str) -> dict:
@@ -223,21 +247,7 @@ def read_programme(conn_str: str, agent_id: str) -> dict:
             }
         )
 
-    open_findings = [
-        {
-            "id": str(row[0]),
-            "run_id": str(row[1]) if row[1] else None,
-            "strategy_id": str(row[2]) if row[2] else None,
-            "severity": row[3],
-            "attack_vector": row[4],
-            "probe_message": row[5],
-            "agent_response": row[6],
-            "turn_count": row[7],
-            "created_at": row[8].isoformat() if row[8] else None,
-            "description": _correlate_description(row[9], row[4], row[5], row[7]),
-        }
-        for row in open_finding_rows
-    ]
+    open_findings = [_open_finding(row) for row in open_finding_rows]
 
     log.info(
         "redteam_programme.read",

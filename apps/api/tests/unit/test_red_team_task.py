@@ -1340,17 +1340,6 @@ def _two_line_exc(exc_type=None):
     )
 
 
-def _probe_agent():
-    """The soul fields `_build_probe_fn` reads, every one of them empty."""
-    agent = MagicMock()
-    agent.name = "Probe Agent"
-    agent.soul_voice = None
-    agent.soul_role = None
-    agent.soul_do_list = None
-    agent.soul_donot_list = None
-    return agent
-
-
 def _raising_runner_for(exc):
     """A `runner_for` whose stand-in runners raise instead of observing."""
     def _runner_for(vector, findings):
@@ -1360,40 +1349,6 @@ def _raising_runner_for(exc):
         return _runner
 
     return _runner_for
-
-
-def _drive_probe_fn_failed(monkeypatch):
-    """The API call inside the probe raises. That is the whole of this site."""
-    from app.worker.tasks.runtime import red_team
-
-    ledger = MagicMock()
-    ledger.client.return_value.chat.completions.create.side_effect = _two_line_exc(
-        RuntimeError
-    )
-    probe = red_team._build_probe_fn(_probe_agent(), "postgresql://never-logged", ledger)
-    assert probe("what is the vault code") == ""
-
-
-def _drive_probe_fn_timeout_or_error(monkeypatch):
-    """`asyncio.wait_for` raises TimeoutError, which is what this handler is named for.
-
-    `_async_probe` catches every Exception itself, so the outer handler only
-    ever sees a failure of the bridge around it. Sitting out the real sixty
-    second budget is not a unit test, so `wait_for` raises the timeout straight
-    away instead. It closes the coroutine it was handed first, because a
-    coroutine that is never awaited warns in whichever test runs next.
-    """
-    from app.worker.tasks.runtime import red_team
-
-    def _times_out(coro, timeout=None):
-        coro.close()
-        raise _two_line_exc(TimeoutError)
-
-    monkeypatch.setattr(red_team.asyncio, "wait_for", _times_out)
-    probe = red_team._build_probe_fn(
-        _probe_agent(), "postgresql://never-logged", MagicMock()
-    )
-    assert probe("what is the vault code") == ""
 
 
 def _drive_update_complete_failed(monkeypatch):
@@ -1482,12 +1437,10 @@ def _drive_update_failed_status_error(monkeypatch):
 
 
 #: Every event in the module that logs an exception, paired with the failure
-#: that reaches it. Ten of them, and the count is the point. The bound went in
+#: that reaches it. Eight of them, and the count is the point. The bound went in
 #: three handlers at a time, and a handler with no case here is one nobody
 #: notices going back to `str(exc)`.
 BOUNDED_LOG_SITES = [
-    ("probe_fn.failed", _drive_probe_fn_failed),
-    ("probe_fn.timeout_or_error", _drive_probe_fn_timeout_or_error),
     ("run_red_team.update_complete_failed", _drive_update_complete_failed),
     ("run_red_team.idempotency_check_failed", _drive_idempotency_check_failed),
     ("run_red_team.insert_run_failed", _drive_insert_run_failed),

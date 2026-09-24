@@ -848,7 +848,6 @@ EVERY_PURPOSE = [
     "metadata_enrichment",
     "actor_gate",
     "red_team_prompt",
-    "red_team_probe",
     "query_expansion",
     "retrieval_strategist",
     "strategist",
@@ -886,7 +885,7 @@ class TestTheRoutingTable:
         """ADR 0015 took every judge off the eval path; the grounding rule bills nothing.
 
         The red team grades a finding by table since #297, so it routes only
-        its Attacker and its probe. `calibration_judge` is the M4 harness under
+        its Attacker; the probe runs the agent turn (#309). `calibration_judge` is the M4 harness under
         `tests/`, not an eval judge.
         The table is pinned whole, so a new route under any name fails here
         until someone adds it to this tuple on purpose.
@@ -898,7 +897,6 @@ class TestTheRoutingTable:
             "metadata_enrichment",
             "actor_gate",
             "red_team_prompt",
-            "red_team_probe",
             "deployment_orchestrator",
             "query_expansion",
             "retrieval_strategist",

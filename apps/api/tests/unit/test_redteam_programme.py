@@ -538,6 +538,7 @@ class TestOpenFindings:
         assert len(result["open_findings"]) == 1
         description = result["open_findings"][0]["description"]
         assert description is not None
+        assert result["open_findings"][0]["evidence"] == finding.evidence == "attacker_report"
         assert "INVALID, not clean" in description
 
     def test_correlation_miss_on_turn_count_returns_finding_with_null_description(self):
