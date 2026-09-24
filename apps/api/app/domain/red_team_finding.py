@@ -29,7 +29,7 @@ WHY severity IS FOUR STRINGS AND NOT THE Severity ENUM
 WHY attack_vector IS FREE TEXT AND NOT A RED_TEAM_VECTORS MEMBER
     The attacker model picks it. `_TOOL_REPORT_FINDING`
     (`app/services/red_team_service.py:245`) declares `attack_vector` as a bare string
-    with no enum beside it, and `_classify_reported_findings` (`:1115`) reads
+    with no enum beside it, and `_findings_from_reports` reads
     `raw.get("attack_vector")` ahead of `session.attack_vector`, so the finding carries
     whatever the model typed. A roster check here would throw away the probe and the
     response over one word the model chose, which costs more than an unmatchable name.
@@ -86,7 +86,7 @@ class RedTeamFinding(BaseModel):
     # stored shape at two write sites, and pydantic's default would carry a
     # misspelt key into `red_team_runs.findings` and `red_team_runs.result` with
     # neither column's reader told it was there. The one place a raw dict reaches
-    # this type, `_classify_reported_findings`, names all six keys itself, so a
+    # this type, `_findings_from_reports`, names all six keys itself, so a
     # key the attacker model invented is dropped at that boundary and never
     # reaches this refusal.
     model_config = ConfigDict(frozen=True, extra="forbid")

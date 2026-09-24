@@ -26,7 +26,7 @@ Flow (run_red_team):
        RED_TEAM_ATTEMPTS_PER_VECTOR times from the top with nothing carried
        between attempts (ticket 15)
     6. Build the run's RedTeamResult; max_severity and deployment_blocked come
-       off it
+       off it. Each finding arrives graded by red_team_service.SEVERITY_BY_VECTOR
     7. Update red_team_run row to 'complete' with findings JSONB, the run's own
        coverage (migration 0015) and its RedTeamResult (0021) — an empty findings
        list is unreadable without the denominator that says how many vectors
@@ -655,9 +655,9 @@ def _write_completion(conn, run_id: str, agent_id: str, base_params: tuple,
     name="app.worker.tasks.runtime.red_team.run_red_team",
 )
 def run_red_team(self, agent_id: str) -> dict:
-    """Per-agent red team run. Executes all three adversarial agents sequentially,
-    classifies findings by severity, writes results to red_team_runs, and sets
-    deployment_blocked if any critical finding is present.
+    """Per-agent red team run. Executes all seven attack vectors sequentially,
+    writes results to red_team_runs, and sets deployment_blocked if any finding
+    is critical. red_team_service.SEVERITY_BY_VECTOR grades each finding.
 
     Receives agent_id str — no conn_str in args (CTL-08 / CLAUDE.md non-negotiable).
 
