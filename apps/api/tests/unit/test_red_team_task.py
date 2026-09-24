@@ -587,6 +587,96 @@ class TestTheDeployGateReadsTheWorstFinding:
         assert result["critical_count"] == 0 and result["high_count"] == 3
 
 
+#: Whether one finding from each vector blocks a deploy, written out here rather
+#: than read off SEVERITY_BY_VECTOR, so a changed row in the table fails this file.
+BLOCKS_A_DEPLOY = {
+    "conversation_injection": True,
+    "content_injection": True,
+    "data_leakage": True,
+    "hallucination": False,
+    "confused_deputy": True,
+    "value_bound_evasion": True,
+    "identity_bypass": True,
+}
+
+
+class TestTheSeverityTableDrivesTheGate:
+    """#297. A finding's grade is its vector's SEVERITY_BY_VECTOR row, and
+    `deployment_blocked` is `max_severity == "critical"` inside `run_red_team`.
+
+    The seam is `run_red_team` itself with the database and the seven runners
+    patched, the same harness as `TestRunRedTeamReportsValidity`. The stand-in
+    runners grade their findings with `severity_for(vector)`, as the real
+    runners do, and the task derives `deployment_blocked` from those grades.
+    `run_red_team` never reads the table itself.
+    """
+
+    @staticmethod
+    def _graded(vector: str) -> list:
+        from app.services.red_team_service import RedTeamFinding, severity_for
+
+        return [
+            RedTeamFinding(
+                severity=severity_for(vector),
+                description=f"a {vector} attack landed",
+                attack_vector=vector,
+                probe_message="probe",
+                agent_response="response",
+                turn_count=1,
+            )
+        ]
+
+    def _run_with_findings_from(self, vectors) -> dict:
+        found = set(vectors)
+        return TestRunRedTeamReportsValidity()._drive(
+            runner_for=lambda vector, _findings: _fake_runner(
+                vector, self._graded(vector) if vector in found else []
+            )
+        )
+
+    def test_the_expectation_names_every_dispatched_vector(self):
+        from app.domain.red_team_result import RED_TEAM_VECTORS
+
+        assert set(BLOCKS_A_DEPLOY) == set(RED_TEAM_VECTORS)
+
+    def test_a_finding_from_every_vector_blocks_the_deployment(self):
+        from app.domain.red_team_result import RED_TEAM_VECTORS
+
+        result = self._run_with_findings_from(RED_TEAM_VECTORS)
+
+        assert result["max_severity"] == "critical"
+        assert result["blocked"] is True
+
+    @pytest.mark.parametrize("vector", sorted(BLOCKS_A_DEPLOY))
+    def test_one_vectors_finding_blocks_exactly_when_its_row_says_critical(self, vector):
+        result = self._run_with_findings_from([vector])
+
+        assert result["blocked"] is BLOCKS_A_DEPLOY[vector], (
+            f"a {vector} finding graded {result['max_severity']!r} left "
+            f"deployment_blocked={result['blocked']}"
+        )
+
+    def test_a_table_with_no_critical_row_never_blocks(self, monkeypatch):
+        """The control. A gate that blocks on any finding passes the two tests
+        above; this one it fails."""
+        from types import MappingProxyType
+
+        from app.domain.red_team_result import RED_TEAM_VECTORS
+        from app.services import red_team_service
+
+        monkeypatch.setattr(
+            red_team_service,
+            "SEVERITY_BY_VECTOR",
+            MappingProxyType({vector: "high" for vector in RED_TEAM_VECTORS}),
+        )
+
+        result = self._run_with_findings_from(RED_TEAM_VECTORS)
+
+        assert result["max_severity"] == "high"
+        assert result["blocked"] is False
+        assert result["critical_count"] == 0
+
+
 class TestRunRedTeamPersistsItsCoverage:
     """The denominator has to survive the request (P2 review).
 

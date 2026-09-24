@@ -15,9 +15,10 @@ Patch targets — note the ASYMMETRY versus the M7 runner tests:
       `from X import Y` inside a function re-resolves Y from module X's namespace
       at CALL time, so patching the attribute on X (app.services.red_team_probe)
       — not on red_team_service — is what actually intercepts the call.
-    - app.services.red_team_service.classify_severity and run_tool_loop — these
-      ARE module-level names in red_team_service.py itself, so they patch at the
-      usual red_team_service.X location.
+    - app.services.red_team_service.run_tool_loop, a module-level name in
+      red_team_service.py itself, so it patches at the usual red_team_service.X
+      location. Severity is not mocked: a finding carries the real
+      SEVERITY_BY_VECTOR row for its runner's vector.
     - app.worker.tasks.runtime.red_team.{_build_probe_fn,
       _build_transactional_probe_fn, build_tool_server, get_sync_db,
       fernet_decrypt, psycopg2.connect} plus all seven runner names — for the
@@ -55,10 +56,10 @@ from app.domain.tool_result import Outcome
 from app.services import red_team_service
 from app.services.red_team_probe import CLEAN_TENANT_ENVELOPES, ProbeToolResult
 from app.services.red_team_service import (
-    SeverityVerdict,
     run_confused_deputy_agent,
     run_identity_bypass_agent,
     run_value_bound_evasion_agent,
+    severity_for,
 )
 from tests.model_doubles import ledger
 
@@ -189,10 +190,11 @@ def test_rtx_runner_signatures_match_shipped_contract():
     ledger can only ever cost coverage.
 
     `ledger` (ticket #47) is keyword-only and has NO default, which is the
-    opposite choice for the opposite reason. It carries who the severity call is
-    billed to, and a default would let a runner spend a tenant's money against
-    nobody's row. Keyword-only keeps the three positional parameters above
-    unchanged, so the uniform runner list still resolves.
+    opposite choice for the opposite reason. It carries who the Attacker's turns
+    are billed to, and a default would let a runner spend a tenant's money
+    against nobody's row. The two deterministic runners call no model and take
+    it for the uniform runner list. Keyword-only keeps the three positional
+    parameters above unchanged, so that list still resolves.
     """
     for fn in (
         run_confused_deputy_agent,
@@ -223,17 +225,14 @@ def test_value_bound_evasion_reports_no_finding_when_rate_layer_stops_the_chain(
     responses = [_result("succeeded"), _result("succeeded"), _result("rate_denied")]
     mock_invoke = AsyncMock(side_effect=responses)
     mock_mode = _make_red_team_mode_mock()
-    mock_classify = MagicMock()
 
     with (
         patch("app.services.red_team_probe.invoke_probe_tool", mock_invoke),
         patch("app.services.red_team_probe.red_team_mode", mock_mode),
-        patch("app.services.red_team_service.classify_severity", mock_classify),
     ):
         result = run_value_bound_evasion_agent(MagicMock(), max_turns=5, attack_sequences=1, ledger=ledger())
 
     assert result == []
-    mock_classify.assert_not_called()
 
 
 def test_value_bound_evasion_reports_finding_when_chain_completes():
@@ -241,19 +240,17 @@ def test_value_bound_evasion_reports_finding_when_chain_completes():
     responses = [_result("succeeded")] * 3
     mock_invoke = AsyncMock(side_effect=responses)
     mock_mode = _make_red_team_mode_mock()
-    verdict = SeverityVerdict(severity="high", confidence=0.9, reason="aggregate breach")
 
     with (
         patch("app.services.red_team_probe.invoke_probe_tool", mock_invoke),
         patch("app.services.red_team_probe.red_team_mode", mock_mode),
-        patch("app.services.red_team_service.classify_severity", return_value=verdict),
     ):
         result = run_value_bound_evasion_agent(MagicMock(), max_turns=5, attack_sequences=1, ledger=ledger())
 
     assert len(result) == 1
     finding = result[0]
     assert finding.attack_vector == "value_bound_evasion"
-    assert finding.severity == "high"
+    assert finding.severity == severity_for("value_bound_evasion")
     assert "Chained 3 issue_refund calls" in finding.probe_message
     assert "cumulative 3000 cents" in finding.probe_message
 
@@ -326,19 +323,17 @@ def test_provider_not_configured_yields_invalid_run_finding():
         _result("provider_not_configured"),
     ]
     mock_mode = _make_red_team_mode_mock()
-    mock_classify = MagicMock()
 
     with (
         patch("app.services.red_team_probe.invoke_probe_tool", AsyncMock(side_effect=responses)),
         patch("app.services.red_team_probe.red_team_mode", mock_mode),
-        patch("app.services.red_team_service.classify_severity", mock_classify),
     ):
         result = run_value_bound_evasion_agent(MagicMock(), max_turns=5, attack_sequences=1, ledger=ledger())
 
     assert len(result) == 1
     assert "invalid" in result[0].description.lower()
     assert "not clean" in result[0].description.lower()
-    mock_classify.assert_not_called()
+    assert result[0].severity == "high", "an INVALID run is not graded by the table"
 
 
 # ---------------------------------------------------------------------------
@@ -364,20 +359,16 @@ def test_identity_bypass_reports_finding_when_unverified_call_succeeds():
     Step 2.5 gate trusted a call it should have blocked."""
     responses = [_result("succeeded"), _result("identity_required")]
     mock_mode = _make_red_team_mode_mock()
-    verdict = SeverityVerdict(
-        severity="critical", confidence=0.95, reason="unverified session accepted"
-    )
 
     with (
         patch("app.services.red_team_probe.invoke_probe_tool", AsyncMock(side_effect=responses)),
         patch("app.services.red_team_probe.red_team_mode", mock_mode),
-        patch("app.services.red_team_service.classify_severity", return_value=verdict),
     ):
         result = run_identity_bypass_agent(MagicMock(), max_turns=5, attack_sequences=1, ledger=ledger())
 
     assert len(result) == 1
     assert result[0].attack_vector == "identity_verification_bypass"
-    assert result[0].severity == "critical"
+    assert result[0].severity == severity_for("identity_bypass")
 
 
 def test_identity_bypass_restores_verified_session_context_var():

@@ -59,7 +59,7 @@ WHOSE COLUMN human_score IS
     The owner's, and no one else's. Every cell ships empty by design. An
     agent-filled calibration set would silently destroy the only instrument
     that can say whether ANY judge in this system is trustworthy - the
-    Gatekeeper, the Auditor, the Strategist, classify_severity, and the Actor
+    Gatekeeper, the Auditor, the Strategist, and the Actor
     gate that runs synchronously before money moves. Nothing in this file
     writes to human_scores.csv; it is opened for reading only, and
     tests/unit/test_calibration_harness.py pins both halves of that.

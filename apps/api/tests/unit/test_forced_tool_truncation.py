@@ -112,20 +112,6 @@ def _actor_gate() -> tuple[str, str]:
         )
 
 
-def _severity() -> tuple[str, str]:
-    from app.services.red_team_service import classify_severity
-
-    return _raised(
-        _create_for("submit_severity"),
-        lambda: classify_severity(
-            attack_vector="prompt_injection",
-            probe_message="probe",
-            agent_response="response",
-            ledger=ledger(),
-        ),
-    )
-
-
 def _scenarios() -> tuple[str, str]:
     from app.services.scenario_service import generate_scenarios_from_chunks
 
@@ -157,7 +143,6 @@ _SITES = [
     ("validation_service.call_gatekeeper", _gatekeeper),
     ("validation_service.call_strategist", _strategist_judge),
     ("actor_seam.call_actor_gate", _actor_gate),
-    ("red_team_service.classify_severity", _severity),
     ("scenario_service.generate_scenarios_from_chunks", _scenarios),
     ("strategy_service.run_strategist", _retrieval_strategist),
 ]

@@ -2,7 +2,7 @@
 
 `tests/evals/calibration/compute_correlation.py` is the only instrument in this
 codebase that can say whether ANY of its LLM verdicts are trustworthy — the
-Gatekeeper, the Auditor, the Strategist, classify_severity, and the Actor gate
+Gatekeeper, the Auditor, the Strategist, and the Actor gate
 that runs synchronously before money moves. It was built to the right
 specification (Spearman rank correlation, threshold 0.75, AI-SPEC.md §5.2) and
 then shipped with two properties that made it unable to say anything:

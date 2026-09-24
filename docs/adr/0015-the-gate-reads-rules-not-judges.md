@@ -87,7 +87,10 @@ benchmark are unlabelled.
   in `eval_results` carrying `answer_relevancy`, `context_precision`, `context_recall` or
   `ragas_answer_relevancy` stay as history; `RETIRED_METRIC_KEYS` in `app/domain/eval_result.py`
   names them and the reader drops them.
-- `classify_severity` in the red team is a model call whose `critical` the gate reads. It
-  moves to a table keyed by vector and verdict tag in #297.
+- `classify_severity` in the red team was a model call whose `critical` the gate read. #297
+  replaced it with `SEVERITY_BY_VECTOR` in `red_team_service.py`: one severity per attack
+  vector, the classifier's rubric kept as the table's comment, the deterministic runners
+  building a finding only on a landed verdict tag. Whether a conversational finding exists is
+  still the attacker model's report; its severity is not.
 - The reading aids take the number rule and the decline rule (#298), so what the owner
   sees lit is what the gate scored.

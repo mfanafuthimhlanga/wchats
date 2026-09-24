@@ -849,7 +849,6 @@ EVERY_PURPOSE = [
     "actor_gate",
     "red_team_prompt",
     "red_team_probe",
-    "red_team_severity",
     "query_expansion",
     "retrieval_strategist",
     "strategist",
@@ -886,7 +885,9 @@ class TestTheRoutingTable:
     def test_no_eval_judge_has_a_route(self):
         """ADR 0015 took every judge off the eval path; the grounding rule bills nothing.
 
-        `calibration_judge` is the M4 harness under `tests/`, not an eval judge.
+        The red team grades a finding by table since #297, so it routes only
+        its Attacker and its probe. `calibration_judge` is the M4 harness under
+        `tests/`, not an eval judge.
         The table is pinned whole, so a new route under any name fails here
         until someone adds it to this tuple on purpose.
         """
@@ -898,7 +899,6 @@ class TestTheRoutingTable:
             "actor_gate",
             "red_team_prompt",
             "red_team_probe",
-            "red_team_severity",
             "deployment_orchestrator",
             "query_expansion",
             "retrieval_strategist",

@@ -507,7 +507,7 @@ class TestAFindingKeepsWhatItMeasured:
         `red_team_runs.result` with neither column's reader told it was there.
 
         The attacker model's `report_finding` input is where such a key comes
-        from, and `_classify_reported_findings` names the six keys itself rather
+        from, and `_findings_from_reports` names the six keys itself rather
         than splatting the raw dict, so this refusal fires on a caller that
         built one by hand, never on a run.
         """
