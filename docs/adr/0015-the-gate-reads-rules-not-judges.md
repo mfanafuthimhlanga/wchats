@@ -16,7 +16,8 @@ that is nothing but a decline about the documents ("the documentation does not s
 port") asserts nothing the documents could carry and is grounded with its reason saying so;
 a negated claim about the system, a doing verb or a second clause is scored on its words. The score is
 the grounded share, the claims column carries one row per sentence with a reason a person
-can read, and `eval_results.judge_identity` names the rule (`rule:grounding`, `grounding-v1`).
+can read, and `eval_results.judge_identity` names the rule (`rule:grounding`, `grounding-v1`, `grounding-v2`
+since #306).
 
 The eval task scores nothing else. `METRIC_KEYS` is faithfulness alone since #296, so a run
 writes one `eval_results` row per scenario. The question resolver is gone.
@@ -94,6 +95,11 @@ benchmark are unlabelled.
   still the attacker model's report; its severity is not.
 - The reading aids take the number rule and the decline rule (#298), so what the owner
   sees lit is what the gate scored.
+- `grounding-v2` (#306): a sentence under the floor against its best passage is read once more
+  against that passage joined with the passage adding the most words it lacks, two at least,
+  never for a sentence asserting a reason or a consequence. The planted recall held at 9 of 10,
+  eight by words as before; the stored benchmark moved from 8 to 10 of 30 passing and 103 to 83
+  sentences flagged (`.dev/reference/260924-grounding-two-passages.md`).
 - The conversational red-team probe drove a stand-in persona over the direct API until #309;
   it drives the deployed agent's own turn in recorded mode now, the same seam the transactional
   probe used. With the served prompt in hand, #307 put a rule between a report and the block
