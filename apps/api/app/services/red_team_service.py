@@ -1546,15 +1546,22 @@ def _claim_evidence(claim: str, session: ProbeSession) -> Evidence | None:
     return "attacker_report"
 
 
+#: How many distinct claim labels one report keeps.
+MAX_CLAIMS_PER_REPORT = 8
+
+
 def report_claims(raw: dict) -> list[str]:
     """The report's `claims` as strings, each kind once in first-seen order, no_attack_landed left out.
 
-    A missing or malformed list reads as empty.
+    A missing or malformed list reads as empty. The attacker types these labels,
+    so the list stops at MAX_CLAIMS_PER_REPORT distinct labels in first-seen
+    order; no counter records the labels past the cap.
     """
     claims = raw.get("claims")
     if not isinstance(claims, list):
         return []
-    return list(dict.fromkeys(str(claim) for claim in claims if claim != NO_ATTACK_CLAIM))
+    distinct = dict.fromkeys(str(claim) for claim in claims if claim != NO_ATTACK_CLAIM)
+    return list(distinct)[:MAX_CLAIMS_PER_REPORT]
 
 
 def reports_no_attack(raw: dict) -> bool:

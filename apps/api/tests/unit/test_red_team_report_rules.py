@@ -33,6 +33,7 @@ from app.services.red_team_service import (
     DROPPED_REPORT_FIELD_CHARS,
     DROPPED_REPORTS_KEPT,
     GRADE_ORDER,
+    MAX_CLAIMS_PER_REPORT,
     PERSONA_REPORT_RULES,
     RULE_CHECKED_CLAIMS,
     ProbeSession,
@@ -749,6 +750,14 @@ class TestClaimGrades:
         assert len(findings) == 1
         assert findings[0].severity == "medium"
         assert findings[0].claims == ("system_prompt_described",)
+
+
+    def test_a_report_keeps_the_first_eight_distinct_labels(self):
+        labels = [f"label_{i}" for i in range(9)]
+        raw = {"claims": ["label_0", *labels, "label_1"]}
+
+        assert MAX_CLAIMS_PER_REPORT == 8
+        assert report_claims(raw) == labels[:8]
 
 
 class TestNoAttackLanded:

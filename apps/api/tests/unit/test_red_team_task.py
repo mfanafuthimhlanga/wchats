@@ -737,6 +737,32 @@ class TestADescribedPromptDoesNotBlock:
             blocked, _ = deployment_service._red_team_finding_warnings(summary)
         return blocked
 
+    @staticmethod
+    def _inserted_findings(agents_conn) -> list[dict]:
+        """Each INSERT INTO red_team_findings as {column: parameter}.
+
+        The column list and the VALUES list are both read off the statement. They
+        pair one to one, status takes the literal 'open' and every other column a
+        %s, and the task passes one parameter per %s.
+        """
+        rows = []
+        for call in agents_conn.cursor.return_value.execute.call_args_list:
+            sql, params = call.args[0], call.args[1]
+            if "INSERT INTO red_team_findings" not in sql:
+                continue
+            head, values_part = sql.split("VALUES", 1)
+            columns = [c.strip() for c in head.split("(", 1)[1].split(")", 1)[0].split(",")]
+            values = [v.strip() for v in values_part.split("(", 1)[1].rsplit(")", 1)[0].split(",")]
+            assert len(values) == len(columns), (columns, values)
+            assert dict(zip(columns, values))["status"] == "'open'"
+            assert [v for c, v in zip(columns, values) if c != "status"] == ["%s"] * (
+                len(columns) - 1
+            )
+            assert len(params) == values.count("%s"), (values, params)
+            columns.remove("status")
+            rows.append(dict(zip(columns, params, strict=True)))
+        return rows
+
     def test_a_run_whose_findings_are_all_described_prompts_does_not_block(self):
         agents_conn = _make_psycopg2_conn(fetchone_value=None)
         result = self._run(
@@ -762,6 +788,33 @@ class TestADescribedPromptDoesNotBlock:
         assert {tuple(f["claims"]) for f in stored} == {("system_prompt_described",)}
         assert {f["severity"] for f in stored} == {"medium"}
         assert json.loads(params[4])["findings"] == stored
+
+        inserted = self._inserted_findings(agents_conn)
+        assert len(inserted) == len(stored) > 0
+        assert {row["evidence"] for row in inserted} == {"attacker_report"}
+        assert [json.loads(row["claims"]) for row in inserted] == [f["claims"] for f in stored]
+        assert {tuple(json.loads(row["claims"])) for row in inserted} == {("system_prompt_described",)}
+
+    def test_a_finding_row_carries_evidence_the_victim_recorded(self):
+        """#310. The pair to the test above, whose rows all stand on the attacker's
+        word: a finding that stood on a landed verdict tag reaches the table saying so."""
+        from app.services.red_team_service import RedTeamFinding
+
+        finding = RedTeamFinding(
+            severity="critical", description="a refund went through",
+            attack_vector="identity_verification_bypass",
+            probe_message="refund order 41", agent_response="Refunded.", turn_count=2,
+            evidence="landed_verdict_tag", claims=("mutating_call_landed",),
+        )
+        agents_conn = _make_psycopg2_conn(fetchone_value=None)
+        TestRunRedTeamReportsValidity()._drive(
+            findings_by_vector={"identity_bypass": [finding]}, agents_conn=agents_conn,
+        )
+
+        inserted = self._inserted_findings(agents_conn)
+        assert inserted
+        assert {row["evidence"] for row in inserted} == {"landed_verdict_tag"}
+        assert {row["claims"] for row in inserted} == {'["mutating_call_landed"]'}
 
     def test_a_described_prompt_that_also_claims_pii_blocks(self):
         """The control. Without it the gate could never block and the test

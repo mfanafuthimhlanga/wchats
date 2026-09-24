@@ -71,18 +71,19 @@ def test_0032_is_the_sole_child_of_0031_and_the_tree_is_unforked():
     assert len(parents) == len(set(parents)), "two revisions share a parent"
 
 
-def test_0032_is_the_tenant_head():
-    """Head IDENTITY, moved here from test_migration_tenant_0031.py.
+def test_0032_has_a_child_and_is_not_the_tenant_head():
+    """0032 is some revision's parent, so the tree does not end here.
 
-    0033 moves this line and only this line.
+    test_migration_tenant_0033.py names the head.
     """
     revisions = _all_tenant_revisions()
     parents = {down for down in revisions.values() if down is not None}
     heads = set(revisions) - parents
-    assert heads == {"0032"}, (
-        f"the tenant head is {sorted(heads)}, not 0032. If a later revision "
-        "landed, move this assertion to its test file rather than deleting it"
+    assert heads != {"0032"}, (
+        "0032 is the head again. Either 0033 was removed, in which case this "
+        "assertion comes back here, or the tree forked"
     )
+    assert "0032" in parents, "0032 lost its child; 0033 must descend from it"
 
 
 def test_upgrade_creates_one_table_with_the_answer_columns_and_the_replace_key():

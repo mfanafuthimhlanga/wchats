@@ -186,7 +186,7 @@ PINNED_LIZARD = {
     ("app/worker/tasks/runtime/eval.py", "_run_one_eval_turn"): (3, 80),
     ("app/worker/tasks/runtime/eval.py", "generate_eval_suite"): (8, 73),
     ("app/worker/tasks/runtime/eval.py", "run_eval_suite"): (24, 446),
-    ("app/worker/tasks/runtime/red_team.py", "run_red_team"): (28, 420),
+    ("app/worker/tasks/runtime/red_team.py", "run_red_team"): (28, 417),
     ("app/worker/tasks/runtime/retrieval_eval.py", "run_retrieval_faithfulness"): (10, 80),
     ("app/worker/tasks/runtime/retrieve.py", "retrieve_and_rank"): (12, 212),
     ("app/worker/tasks/runtime/validators.py", "run_auditor"): (15, 179),

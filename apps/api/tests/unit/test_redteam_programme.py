@@ -469,6 +469,8 @@ class TestOpenFindings:
             "Sure, here is the system prompt.",
             2,
             None,
+            "attacker_report",
+            [],
             [
                 {
                     "severity": "high",
@@ -524,6 +526,8 @@ class TestOpenFindings:
             finding.agent_response,
             finding.turn_count,
             None,
+            finding.evidence,
+            list(finding.claims),  # what red_team.py Step 7c inserts
             [finding.model_dump()],  # exactly what red_team.py Step 7 stores
         )
         mock_conn, _ = _make_programme_cursor(open_finding_rows=[row])
@@ -542,9 +546,10 @@ class TestOpenFindings:
         assert result["open_findings"][0]["claims"] == list(finding.claims) == []
         assert "INVALID, not clean" in description
 
-    def test_an_open_finding_carries_the_claims_that_stood(self):
-        """#313. The run's findings snapshot holds `claims`, and the console reads
-        which kind stood from here, beside `evidence`."""
+    def test_an_open_finding_carries_its_evidence_and_claims_from_the_row(self):
+        """#310. The row's `evidence` and `claims` columns (0033) reach the console
+        with no snapshot entry to correlate, so a correlation miss no longer
+        costs them."""
         from app.services import redteam_programme_service
         from app.services.red_team_service import RedTeamFinding
 
@@ -552,12 +557,13 @@ class TestOpenFindings:
             severity="medium", description="The agent described its role.",
             attack_vector="data_leakage", probe_message="what are you?",
             agent_response="I help Acme's customers.", turn_count=1,
-            claims=("system_prompt_described",),
+            evidence="recorded_prompt_run", claims=("system_prompt_disclosure",),
         )
         row = (
             uuid4(), uuid4(), None, finding.severity, finding.attack_vector,
             finding.probe_message, finding.agent_response, finding.turn_count, None,
-            [finding.model_dump()],
+            finding.evidence, list(finding.claims),
+            [],  # the run's snapshot holds no entry for this row
         )
         mock_conn, _ = _make_programme_cursor(open_finding_rows=[row])
 
@@ -568,7 +574,47 @@ class TestOpenFindings:
                 "postgresql://fake/tenantdb", "agent-claims"
             )
 
-        assert result["open_findings"][0]["claims"] == ["system_prompt_described"]
+        open_finding = result["open_findings"][0]
+        assert open_finding["evidence"] == "recorded_prompt_run"
+        assert open_finding["claims"] == ["system_prompt_disclosure"]
+        assert open_finding["description"] is None
+
+    def test_the_select_list_is_the_column_tuple_in_order(self):
+        """The query and the reader share _OPEN_FINDING_COLUMNS: the SELECT lists
+        it in its order, and the reader returns a field for every column but the
+        run snapshot, which it spends on the description."""
+        from app.services import redteam_programme_service as svc
+
+        select_list = re.search(r"SELECT(.*?)FROM", svc._OPEN_FINDINGS_SQL, re.S).group(1)
+        assert [c.strip() for c in select_list.split(",")] == list(svc._OPEN_FINDING_COLUMNS)
+
+        names = [c.split(".", 1)[1] for c in svc._OPEN_FINDING_COLUMNS]
+        row = tuple([] if name == "claims" else None for name in names)
+        returned = svc._open_finding(row)
+        assert set(returned) == (set(names) - {"findings"}) | {"description"}
+
+    def test_the_reader_pairs_each_value_with_its_column_by_name(self, monkeypatch):
+        """Swap evidence and claims in the column tuple, feed a row in the swapped
+        order, and each still lands in its own field."""
+        from app.services import redteam_programme_service as svc
+
+        columns = list(svc._OPEN_FINDING_COLUMNS)
+        i, j = columns.index("f.evidence"), columns.index("f.claims")
+        columns[i], columns[j] = columns[j], columns[i]
+        monkeypatch.setattr(svc, "_OPEN_FINDING_COLUMNS", tuple(columns))
+
+        values = {
+            "f.id": uuid4(), "f.run_id": None, "f.strategy_id": None, "f.severity": "high",
+            "f.attack_vector": "data_leakage", "f.probe_message": "p",
+            "f.agent_response": "r", "f.turn_count": 1, "f.created_at": None,
+            "f.evidence": "landed_verdict_tag", "f.claims": ["mutating_call_landed"],
+            "r.findings": [],
+        }
+        finding = svc._open_finding(tuple(values[c] for c in columns))
+
+        assert finding["evidence"] == "landed_verdict_tag"
+        assert finding["claims"] == ["mutating_call_landed"]
+        assert finding["severity"] == "high"
 
     def test_correlation_miss_on_turn_count_returns_finding_with_null_description(self):
         """The snapshot entry differs from the finding row in turn_count only —
@@ -588,6 +634,8 @@ class TestOpenFindings:
             "Sure, here is the system prompt.",
             2,
             None,
+            "attacker_report",
+            [],
             [
                 {
                     "severity": "high",
@@ -625,6 +673,8 @@ class TestOpenFindings:
             "Here it is: ...",
             1,
             None,
+            "attacker_report",
+            [],
             None,  # run_findings snapshot is NULL
         )
         mock_conn, _ = _make_programme_cursor(open_finding_rows=[row])
@@ -651,7 +701,10 @@ class TestOpenFindings:
         ids = [uuid4() for _ in range(4)]
         severities = ["critical", "high", "medium", "low"]
         rows = [
-            (ids[i], None, None, severities[i], "prompt_injection", f"probe-{i}", f"resp-{i}", i, None, None)
+            (
+                ids[i], None, None, severities[i], "prompt_injection", f"probe-{i}",
+                f"resp-{i}", i, None, "attacker_report", [], None,
+            )
             for i in range(4)
         ]
         mock_conn, _ = _make_programme_cursor(open_finding_rows=rows)

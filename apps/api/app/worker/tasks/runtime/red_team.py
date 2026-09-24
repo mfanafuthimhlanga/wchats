@@ -489,6 +489,18 @@ _RETIRE_INVALID_MARKERS_SQL = (
 )
 
 
+#: One open red_team_findings row per finding (Step 7c). `evidence` and `claims`
+#: arrived with alembic_tenant 0033; the deploy migrates every tenant to head
+#: before this code serves, so the insert names them unconditionally.
+_INSERT_FINDING_SQL = """
+    INSERT INTO red_team_findings
+      (run_id, strategy_id, probe_id, severity, status,
+       attack_vector, probe_message, agent_response, turn_count,
+       evidence, claims)
+    VALUES (%s, %s, %s, %s, 'open', %s, %s, %s, %s, %s, %s)
+"""
+
+
 def _vectors_observed(coverage_json: str) -> list[str]:
     """The vectors this run observed: every vector run_coverage did not call invalid.
 
@@ -905,12 +917,7 @@ def run_red_team(self, agent_id: str) -> dict:
             with _agents_conn.cursor() as _cur:
                 for _finding, _probe_id in zip(run_result.findings, finding_probe_ids):
                     _cur.execute(
-                        """
-                        INSERT INTO red_team_findings
-                          (run_id, strategy_id, probe_id, severity, status,
-                           attack_vector, probe_message, agent_response, turn_count)
-                        VALUES (%s, %s, %s, %s, 'open', %s, %s, %s, %s)
-                        """,
+                        _INSERT_FINDING_SQL,
                         (
                             run_id,
                             strategy_ids.get(_pg_text(_finding.attack_vector)),
@@ -920,6 +927,8 @@ def run_red_team(self, agent_id: str) -> dict:
                             _pg_text(_finding.probe_message),
                             _pg_text(_finding.agent_response),
                             _finding.turn_count,
+                            _finding.evidence,
+                            _pg_json(list(_finding.claims)),
                         ),
                     )
             _agents_conn.commit()
