@@ -3,9 +3,12 @@
 WHAT IT MEASURES
     An answer is split into sentences. Each sentence is scored against the
     passages the agent retrieved: the share of the sentence's content words that
-    the best passage also carries, plus every number in the sentence having to
-    appear somewhere in the retrieved text. A sentence at or above the carried
-    floor with no missing number is grounded. The answer's score is the grounded
+    the best passage carries, or, when that falls under the floor, that the best
+    passage and the passage adding the most words it lacks carry together (two
+    words at least, and never for a sentence asserting a reason or a
+    consequence), plus every number in the sentence having to appear somewhere
+    in the retrieved text. A sentence at or above the carried floor with no
+    missing number is grounded. The answer's score is the grounded
     share of its scoreable sentences, and that share is what `eval_results`
     stores under `faithfulness` (ADR 0015): the column keeps its name and its
     gate, the instrument behind it is this rule.
@@ -23,8 +26,9 @@ THE RULE IS THE READING AID, PROMOTED
     Word overlap with suffix stemming to a four-letter floor, a tie between
     passages broken by density, the passage cut at sentence ends to about 300
     characters: the overlap rule the claims bench and the console's reading aid
-    use to light a passage. The aids tint at 0.4 and carry no number rule and no
-    decline rule yet; until they do (#298) a sentence can show bone and fail here.
+    use to light a passage. The aids tint at 0.4 against one passage and carry no
+    number rule, no decline rule and no second reading yet; until they do (#298)
+    a sentence can show bone and fail here, or show grey and pass.
 
 A DECLINE ASSERTS NOTHING
     "The documentation does not specify the port" carries no claim the
@@ -52,17 +56,31 @@ from app.domain.judge_identity import JudgeIdentity
 #: the rule so a calibration reader can tell it from a Judge; the version moves
 #: whenever a number below moves, so rows scored under two rules never share a
 #: calibration population.
-GROUNDING_RULE_VERSION = "grounding-v1"
+GROUNDING_RULE_VERSION = "grounding-v2"
 GROUNDING_MODEL = "rule:grounding"
 GROUNDING_IDENTITY = JudgeIdentity(
     model=GROUNDING_MODEL, reasoning_effort="none", prompt_version=GROUNDING_RULE_VERSION
 )
 
 #: A sentence is carried when at least this share of its content words appear in
-#: the best passage. Measured on the planted benchmark (tests/unit/test_grounding.py):
+#: the best passage, or in the best two together. Measured on the planted benchmark (tests/unit/test_grounding.py):
 #: 0.4 and 0.5 flag the same nine of ten plants and 0.4 flags fewer real sentences,
 #: and 0.4 is where the reading aids already tint a sentence bone.
 CARRIED_FLOOR = 0.4
+
+#: A sentence that asserts a relation between facts: a reason, a consequence, a
+#: purpose. Two passages can carry the facts and neither the relation, so such a
+#: sentence gets no second reading; it stands or falls on one passage.
+_INFERENCE_RE = re.compile(
+    r"\b(because|therefore|thus|hence|consequently|so that|which means|this means|"
+    r"that means|as a result|in order to|favou?rs?|why)\b",
+    re.IGNORECASE,
+)
+
+#: How many of a sentence's content words the second passage has to add beyond
+#: the best one before the two are read together. One shared word is what any
+#: passage on the same subject offers by accident.
+SECOND_PASSAGE_MIN_WORDS = 2
 
 #: A passage is a run of the retrieved chunk cut at sentence ends, at least this long.
 PASSAGE_MIN_CHARS = 300
@@ -202,6 +220,9 @@ class SentenceGrounding:
     missing_numbers: tuple[str, ...]
     supported: bool
     decline: bool = False
+    #: The second passage the words were read against when the best alone fell
+    #: below the floor, or -1 when one passage decided it.
+    spanned_with: int = -1
 
     @property
     def reason(self) -> str:
@@ -209,7 +230,13 @@ class SentenceGrounding:
             return "a decline asserts nothing the documents would carry"
         if self.passage < 0:
             return "no passage shares a word with it"
-        parts = [f"passage {self.passage + 1} carries {self.carried:.0%} of its words"]
+        if self.spanned_with >= 0:
+            parts = [
+                f"passages {self.passage + 1} and {self.spanned_with + 1} together carry "
+                f"{self.carried:.0%} of its words"
+            ]
+        else:
+            parts = [f"passage {self.passage + 1} carries {self.carried:.0%} of its words"]
         if self.missing_numbers:
             parts.append("number " + ", ".join(self.missing_numbers) + " appears in no passage")
         return "; ".join(parts)
@@ -234,17 +261,64 @@ class Grounding:
         return [{"statement": s.statement, "supported": s.supported, "reason": s.reason} for s in self.sentences]
 
 
-def _best_passage(tokens: frozenset[str], passage_tokens: Sequence[frozenset[str]]) -> tuple[int, float]:
-    """(index, carried share) of the passage sharing most of the tokens, or (-1, 0.0)."""
-    best, best_carried, best_density = -1, 0.0, 0.0
+def _ranked_passages(
+    tokens: frozenset[str], passage_tokens: Sequence[frozenset[str]]
+) -> list[tuple[int, float, float]]:
+    """(index, carried share, density) per passage, best first.
+
+    Ordered by carried share, then density: a tie goes to the denser passage,
+    the one about these words rather than the overview that mentions them.
+    """
+    ranked = []
     for i, ptokens in enumerate(passage_tokens):
         shared = len(tokens & ptokens)
         carried = shared / len(tokens)
         density = shared / len(ptokens) if ptokens else 0.0
-        # a tie goes to the denser passage: the one about these words, not the overview that mentions them
-        if carried > best_carried or (carried == best_carried and carried > 0 and density > best_density):
-            best, best_carried, best_density = i, carried, density
-    return best, best_carried
+        ranked.append((i, carried, density))
+    ranked.sort(key=lambda r: (r[1], r[2]), reverse=True)
+    return ranked
+
+
+def _best_passage(tokens: frozenset[str], passage_tokens: Sequence[frozenset[str]]) -> tuple[int, float]:
+    """(index, carried share) of the passage sharing most of the tokens, or (-1, 0.0)."""
+    ranked = _ranked_passages(tokens, passage_tokens)
+    if not ranked or ranked[0][1] == 0.0:
+        return -1, 0.0
+    return ranked[0][0], ranked[0][1]
+
+
+def _second_reading(
+    tokens: frozenset[str],
+    best: int,
+    carried: float,
+    passage_tokens: Sequence[frozenset[str]],
+    carried_floor: float,
+) -> tuple[float, int]:
+    """(carried share, second passage) after reading the sentence against two passages.
+
+    A sentence that draws on two passages can be carried by neither alone. It is
+    read once more against the best passage joined with the passage that adds
+    the most words the best one lacks, and only when that passage adds at least
+    SECOND_PASSAGE_MIN_WORDS of them: one shared word from an unrelated passage
+    is what any passage offers by accident. The floor is the same floor. Returns
+    the single reading and -1 when no second passage qualifies or the two
+    together still fall under the floor; the caller decided the sentence is a
+    statement of facts, not a reason or a consequence (_INFERENCE_RE).
+    """
+    best_tokens = passage_tokens[best]
+    second, added = -1, 0
+    for i, ptokens in enumerate(passage_tokens):
+        if i == best:
+            continue
+        new_words = len((tokens & ptokens) - best_tokens)
+        if new_words > added:
+            second, added = i, new_words
+    if second < 0 or added < SECOND_PASSAGE_MIN_WORDS:
+        return carried, -1
+    together = len(tokens & (best_tokens | passage_tokens[second])) / len(tokens)
+    if together < carried_floor:
+        return carried, -1
+    return together, second
 
 
 def _ground_sentence(
@@ -261,8 +335,11 @@ def _ground_sentence(
     if is_decline(statement):
         return SentenceGrounding(statement, best, carried, (), True, decline=True)
     missing = tuple(n for n in _NUMBER_RE.findall(statement) if _number_key(n) not in all_numbers)
+    spanned_with = -1
+    if 0 <= best and carried < carried_floor and not _INFERENCE_RE.search(statement):
+        carried, spanned_with = _second_reading(tokens, best, carried, passage_tokens, carried_floor)
     supported = best >= 0 and carried >= carried_floor and not missing
-    return SentenceGrounding(statement, best, carried, missing, supported)
+    return SentenceGrounding(statement, best, carried, missing, supported, spanned_with=spanned_with)
 
 
 def ground(response: str, contexts: Sequence[str], *, carried_floor: float = CARRIED_FLOOR) -> Grounding:
@@ -271,8 +348,8 @@ def ground(response: str, contexts: Sequence[str], *, carried_floor: float = CAR
     Args:
         response: the agent's answer, as it was sent.
         contexts: the retrieved chunks the agent was given for that turn.
-        carried_floor: the share of a sentence's content words the best passage
-            must carry. `CARRIED_FLOOR` unless a benchmark run is exploring it.
+        carried_floor: the share of a sentence's content words the best passage,
+            or the best two together, must carry. `CARRIED_FLOOR` unless a benchmark run is exploring it.
     """
     passages = passages_of(contexts)
     passage_tokens = [tokens_of(p) for p in passages]
