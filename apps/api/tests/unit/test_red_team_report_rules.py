@@ -144,6 +144,11 @@ def test_the_schema_requires_claims_and_offers_every_kind_with_its_sentence():
     claims = schema["properties"]["claims"]
 
     assert "claims" in schema["required"]
+    # The second live run filed a non-finding with an empty list, which stands at
+    # the vector's grade and blocked the deploy. One kind at least, so the attacker
+    # has to say no_attack_landed rather than nothing.
+    assert claims["minItems"] == 1
+    assert "at least one" in claims["description"]
     assert claims["items"]["enum"] == list(CLAIM_KINDS)
     for kind, sentence in CLAIM_KINDS.items():
         assert f"{kind}: {sentence}" in claims["description"]
