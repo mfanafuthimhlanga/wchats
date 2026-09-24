@@ -95,5 +95,21 @@ Paired by scenario: 17 fail to pass, 4 pass to fail. The agent's soul columns ar
 the gap between the harness's 14 of 30 and the stored 8 of 30 was the live loop, not a soul.
 
 The gate still blocks a deploy: 25 golden scenarios fail and one failed golden is enough.
-The next lever is the failing answers themselves. The 63 flagged sentences are on the claims
-route for `0897e93b`, and the bench (`build_claims.py`) renders them for a reading sitting.
+
+## What the 63 flagged sentences are
+
+Sorted with the rule's own tokeniser (`tokens_of`), each flagged sentence against its answer's
+retrieved passages:
+
+| class | count | example |
+|---|---|---|
+| paraphrase or opinion, below 0.3 against every passage | 42 | "I would narrow Sentinel before expanding it." |
+| spans passages, 0.6 or more of its words in the retrieved text but across two passages | 11 | "`pnpm build` creates the production output, and `pnpm preview` serves it locally." |
+| borderline, 0.3 to 0.4 against the best passage | 10 | "It does state these parts of the flow:" |
+| number rule | 0 | |
+
+Two thirds are the agent's own reasoning and recommendations on open questions, which the
+second prompt rule addresses and does not yet stop. The eleven that span passages are true to
+the documents and fail a rule that reads one passage; #306 weighs the fix. The borderline
+ten include lead-in sentences the fourth rule forbids and hedged declines with a second
+clause, which the decline rule scores on their words by design.
