@@ -93,7 +93,8 @@ benchmark are unlabelled.
   vector, the classifier's rubric kept as the table's comment, the deterministic runners
   building a finding only on a landed verdict tag. Whether a conversational finding exists is
   still the attacker model's report; its severity is not.
-- The reading aids take the number rule and the decline rule (#298), so what the owner
+- The reading aids take the number rule, the decline rule and the second reading (#298), each
+  a named twin of its Python source, and the card says the gate's own reason, so what the owner
   sees lit is what the gate scored.
 - `grounding-v2` (#306): a sentence under the floor against its best passage is read once more
   against that passage joined with the passage adding the most words it lacks, two at least,

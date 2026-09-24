@@ -17,8 +17,21 @@ file beside it.
 
 ```bash
 cd apps/admin
-NEXT_PUBLIC_DEMO=true corepack pnpm exec next dev -p 3100     # background, about 40s to first 200
+NEXT_PUBLIC_DEMO=true corepack pnpm exec next dev --webpack -p 3100   # background, about 100s to first 200
 ```
+
+`--webpack`, because under Turbopack (the default since the 2026-09 Next) the dynamic claims
+route `/agents/demo/eval/demo-run/claims` answers 404 while `/agents/demo/eval` answers 200,
+observed 2026-09-24 from both shells. Webpack serves it after about 99 seconds of compile.
+A dev server left running from an earlier session holds the port and answers 500 with EPIPE
+in its log; `tasklist //FI "PID eq <pid>"` names it and `taskkill //PID <pid> //F` clears it.
+The demo fixture (`demoFixture.ts`) is what the page renders; adding a scenario to it for a
+screenshot and restoring it byte-identical afterwards is the way to put a test fixture on
+screen.
+
+A class name is an intention and the cascade decides the colour (FM-037): sample the rendered
+colour of each tinted element from the PNG or read `getComputedStyle(...).color`, never the
+class.
 
 A Playwright script must live under `apps/admin/` to resolve `@playwright/test`; a script
 in the scratchpad fails with `ERR_MODULE_NOT_FOUND`. Copy it to `apps/admin/scripts/_x.tmp.mjs`,
