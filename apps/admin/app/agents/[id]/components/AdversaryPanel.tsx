@@ -7,13 +7,16 @@ import Chip from '../../../components/gotham/Chip'
 import EmptyState from '../../../components/gotham/EmptyState'
 import Ledger, { LedgerCell, LedgerColHead, LedgerRowHead } from '../../../components/gotham/Ledger'
 import {
+  type LatestRun,
   type OpenFinding,
   computeSeverityCounts,
   firstCriticalFinding,
   formatInteger,
   formatPercent,
   gateMessage,
+  latestRunLine,
 } from './opsFormat'
+import FindingMeta from './FindingMeta'
 
 /**
  * The Adversary region (WIRE-01, WIRE-03, WIRE-04, 23-06) —
@@ -50,6 +53,7 @@ interface CoverageRow {
 interface RedTeamProgrammeResponse {
   coverage: CoverageRow[]
   open_findings: OpenFinding[]
+  latest_run: LatestRun | null
 }
 
 // Stable reference so the lift effect below does not re-fire on every
@@ -232,6 +236,7 @@ export default function AdversaryPanel({
   }
 
   const coverage = data.coverage
+  const latestRun = latestRunLine(data.latest_run)
 
   if (coverage.length === 0) {
     return (
@@ -262,6 +267,11 @@ export default function AdversaryPanel({
           <span className="label">Low</span>
         </div>
       </div>
+      {latestRun && (
+        <p className="foot-note" style={{ margin: '-8px 0 18px' }}>
+          {latestRun}
+        </p>
+      )}
 
       <div className="scroll-x">
         <Ledger caption="Per-strategy red-team coverage. Findings are all-time across every run and are not filtered to open status.">
@@ -322,11 +332,7 @@ export default function AdversaryPanel({
                 below, which already guarded it; turn_count's clause is
                 omitted entirely rather than rendered empty. */}
             {gateMessage(critical)}
-            <span className="mono">
-              {' '}
-              {critical.attack_vector ?? 'unrecorded attack vector'}
-              {critical.turn_count != null ? ` · turn ${critical.turn_count}` : ''}
-            </span>
+            <FindingMeta finding={critical} />
           </p>
           <FindingContain
             finding={critical}
@@ -362,11 +368,7 @@ export default function AdversaryPanel({
                     gateMessage()'s "a blocking signal is open" text would be
                     inaccurate here — a plain, honest fallback instead. */}
                 {f.description || 'No description recorded.'}
-                <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
-                  {' '}
-                  {f.attack_vector ?? 'unrecorded attack vector'}
-                  {f.turn_count != null ? ` · turn ${f.turn_count}` : ''}
-                </span>
+                <FindingMeta finding={f} />
               </p>
               <FindingContain
                 finding={f}

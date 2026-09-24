@@ -22,7 +22,12 @@ import {
   judgeVerdictToChip,
   gradeToChip,
   renderCanaryPercent,
+  evidenceLabel,
+  evidenceSentence,
+  claimLabels,
+  latestRunLine,
   type OpenFinding,
+  type LatestRun,
 } from '../app/agents/[id]/components/opsFormat'
 
 // ops-format.spec.ts — the browserless proof for opsFormat.ts (23-03, Phase
@@ -71,6 +76,8 @@ function makeFinding(
     turn_count: 2,
     created_at: '2026-08-02T00:00:00Z',
     description,
+    evidence: 'recorded_prompt_run',
+    claims: ['system_prompt_disclosure'],
   }
 }
 
@@ -425,5 +432,175 @@ test.describe('renderFaithfulnessCell and renderFaithfulnessCoverage (issue #120
   test('a real average renders as the number, whatever the other count says', () => {
     expect(renderFaithfulnessCell(0.87, 12)).toBe(formatRetrievalScore(0.87))
     expect(renderFaithfulnessCell(0.87, 0)).toBe(formatRetrievalScore(0.87))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// What put a finding there, and the latest run's report counters (#310)
+// ---------------------------------------------------------------------------
+
+test.describe('evidenceLabel', () => {
+  test('opens the evidence sentence for each of the three evidence values', () => {
+    expect(evidenceLabel(makeFinding('critical').evidence)).toBe("Recorded from the agent's reply")
+    expect(evidenceLabel('landed_verdict_tag')).toBe('Recorded from the dispatcher')
+    expect(evidenceLabel('attacker_report')).toBe("On the attacker's word")
+  })
+
+  test('null reads as Evidence unrecorded', () => {
+    expect(evidenceLabel(null)).toBe('Evidence unrecorded')
+  })
+
+  test('a value outside the three never renders raw', () => {
+    expect(evidenceLabel('model_said_so' as never)).toBe('Evidence unrecorded')
+  })
+
+  test('names on Object.prototype are unknown, not inherited', () => {
+    for (const name of ['__proto__', 'constructor', 'toString']) {
+      expect(evidenceLabel(name as never), name).toBe('Evidence unrecorded')
+    }
+  })
+})
+
+test.describe('claimLabels', () => {
+  test('maps every known kind to its plain phrase, in order', () => {
+    expect(
+      claimLabels([
+        'system_prompt_disclosure',
+        'system_prompt_described',
+        'injected_instruction_followed',
+        'pii_or_customer_data',
+        'cross_tenant_data',
+        'confident_false_claims',
+        'mutating_call_landed',
+      ]),
+    ).toEqual([
+      'quoted its system prompt',
+      'described its setup',
+      'followed an injected instruction',
+      'gave out customer data',
+      "gave out another business's data",
+      'asserted false claims',
+      'a mutating call landed',
+    ])
+  })
+
+  test('an unknown kind reads unknown claim and the raw string never appears', () => {
+    const labels = claimLabels(['<img src=x onerror=alert(1)>', 'described_its_setup'])
+    expect(labels).toEqual(['unknown claim', 'unknown claim'])
+    expect(labels.join(' ')).not.toContain('onerror')
+  })
+
+  test('names on Object.prototype are unknown, not inherited', () => {
+    expect(claimLabels(['__proto__', 'constructor', 'toString'])).toEqual([
+      'unknown claim',
+      'unknown claim',
+      'unknown claim',
+    ])
+  })
+
+  test('no_attack_landed never files a finding, so it reads as unknown here', () => {
+    expect(claimLabels(['no_attack_landed'])).toEqual(['unknown claim'])
+  })
+
+  test('an empty list and null both give an empty list', () => {
+    expect(claimLabels([])).toEqual([])
+    expect(claimLabels(null)).toEqual([])
+  })
+})
+
+test.describe('evidenceSentence', () => {
+  const sentence = (evidence: OpenFinding['evidence'], claims: string[] | null) =>
+    evidenceSentence({ evidence, claims })
+
+  test('each evidence value opens its own provenance sentence', () => {
+    expect(sentence('recorded_prompt_run', ['system_prompt_disclosure'])).toBe(
+      "Recorded from the agent's reply: it quoted its system prompt.",
+    )
+    expect(sentence('landed_verdict_tag', ['mutating_call_landed'])).toBe(
+      'Recorded from the dispatcher: a mutating call landed.',
+    )
+    expect(sentence('attacker_report', ['system_prompt_described'])).toBe(
+      "On the attacker's word: it described its setup.",
+    )
+  })
+
+  test('a row from before #317 reads Evidence unrecorded', () => {
+    expect(sentence(null, null)).toBe('Evidence unrecorded.')
+  })
+
+  test('no claims closes the sentence after the opening', () => {
+    expect(sentence('attacker_report', [])).toBe("On the attacker's word.")
+  })
+
+  test('two claims join with and, sharing one it', () => {
+    expect(sentence('attacker_report', ['system_prompt_disclosure', 'system_prompt_described'])).toBe(
+      "On the attacker's word: it quoted its system prompt and described its setup.",
+    )
+  })
+
+  test('three or more join with commas and a final and', () => {
+    expect(
+      sentence('recorded_prompt_run', ['system_prompt_disclosure', 'system_prompt_described', 'pii_or_customer_data']),
+    ).toBe("Recorded from the agent's reply: it quoted its system prompt, described its setup and gave out customer data.")
+  })
+
+  test('a verb phrase after a phrase with its own subject takes it again', () => {
+    expect(sentence('landed_verdict_tag', ['mutating_call_landed', 'confident_false_claims'])).toBe(
+      'Recorded from the dispatcher: a mutating call landed and it asserted false claims.',
+    )
+  })
+
+  test('an unknown kind reads unknown claim, never the raw string', () => {
+    const text = sentence('attacker_report', ['system_prompt_described', '<b>rm -rf</b>', 'toString'])
+    expect(text).toBe("On the attacker's word: it described its setup, unknown claim and unknown claim.")
+    expect(text).not.toContain('rm -rf')
+  })
+})
+
+test.describe('latestRunLine', () => {
+  const run: LatestRun = {
+    run_id: '3f2a9c1b-0d4e-4a6b-9c1d-2e3f4a5b6c7d',
+    finished_at: '2026-09-24T14:05:31+00:00',
+    status: 'complete',
+    reports_no_attack: 35,
+    reports_dropped: 0,
+    reports_on_attackers_word: 1,
+  }
+
+  test('a complete run reads as one sentence with its short id and finish time', () => {
+    expect(latestRunLine(run)).toBe(
+      "Latest run 3f2a9c1b, 2026-09-24 14:05 UTC: 35 sequences closed with nothing landed, 1 finding on the attacker's word, 0 reports dropped.",
+    )
+  })
+
+  test('no recorded counters gives null, so the line is absent', () => {
+    expect(latestRunLine(null)).toBeNull()
+    expect(latestRunLine(undefined)).toBeNull()
+  })
+
+  test('zeros read as zeros, singulars read singular, and no finish time drops the time', () => {
+    expect(
+      latestRunLine({ ...run, reports_no_attack: 0, reports_on_attackers_word: 0, reports_dropped: 1, finished_at: null }),
+    ).toBe(
+      "Latest run 3f2a9c1b: 0 sequences closed with nothing landed, 0 findings on the attacker's word, 1 report dropped.",
+    )
+    expect(latestRunLine({ ...run, reports_no_attack: 1 })).toContain('1 sequence closed')
+  })
+
+  test('a counter the backend could not read says unreadable, never zero', () => {
+    expect(latestRunLine({ ...run, reports_dropped: null })).toBe(
+      "Latest run 3f2a9c1b, 2026-09-24 14:05 UTC: 35 sequences closed with nothing landed, 1 finding on the attacker's word, reports dropped unreadable.",
+    )
+    expect(latestRunLine({ ...run, reports_no_attack: null, reports_on_attackers_word: null })).toBe(
+      "Latest run 3f2a9c1b, 2026-09-24 14:05 UTC: sequences closed with nothing landed unreadable, findings on the attacker's word unreadable, 0 reports dropped.",
+    )
+  })
+
+  test('a newest run that failed or is still running counts nothing', () => {
+    const unfinished = { ...run, reports_no_attack: null, reports_dropped: null, reports_on_attackers_word: null }
+    expect(latestRunLine({ ...unfinished, status: 'failed' })).toBe('Latest run 3f2a9c1b failed; nothing to count.')
+    expect(latestRunLine({ ...unfinished, status: 'running', finished_at: null })).toBe(
+      'Latest run 3f2a9c1b is still running; nothing to count.',
+    )
   })
 })

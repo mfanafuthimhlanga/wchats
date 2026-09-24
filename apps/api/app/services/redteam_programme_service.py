@@ -33,6 +33,16 @@ findings JSONB snapshot in Python, not stored as a column on
 red_team_findings — there has never been a description column on that
 table — and a correlation miss simply leaves description null rather than
 dropping the finding.
+
+latest_run reads the agent's newest run, whatever its status. A complete run
+carries its three report counters, each summed over vectors from its coverage
+JSON: sequences the attacker closed with nothing landed, findings built on the
+attacker's word, and reports the rules dropped. A failed or running run carries
+its status and null counters: it never reaches back to an older complete run,
+whose counters would then pose as the current reading (eval_service's
+_LATEST_RUN_SQL states the same rule). latest_run is null when there is no run,
+or when the newest run is complete and its coverage carries none of the three
+keys, which is every run written before the counters existed.
 """
 
 from __future__ import annotations
@@ -120,6 +130,67 @@ _OPEN_FINDINGS_SQL = f"""
         f.created_at DESC
 """
 
+# The agent's newest run for latest_run, whatever its status. No status filter:
+# filtering to complete runs reaches back past a failed latest run and reports an
+# older run's counters as current. id breaks a tie on started_at, so two runs
+# started in the same instant always resolve to the same one.
+_LATEST_RUN_SQL = """
+    SELECT id, finished_at, status, coverage
+    FROM red_team_runs
+    WHERE kind = %s
+    ORDER BY started_at DESC, id DESC
+    LIMIT 1
+"""
+
+#: The per-vector report counters run_coverage writes into
+#: red_team_runs.coverage, each a {vector: count} map with zero counts left out.
+_REPORT_COUNTERS: tuple[str, ...] = (
+    "reports_no_attack",
+    "reports_dropped",
+    "reports_on_attackers_word",
+)
+
+
+def _summed(coverage: dict, key: str) -> int | None:
+    """One counter's integer counts added up over vectors, or None when unreadable.
+
+    None when the key is missing, when its value is not a {vector: count} map, or
+    when any count is not an int (a string, a float and a bool all read None).
+    A reading with one bad count is not a reading, and a zero there would claim
+    one. An empty map is a clean run's zero: run_coverage leaves zero counts out.
+    """
+    per_vector = coverage.get(key)
+    if not isinstance(per_vector, dict):
+        return None
+    counts = list(per_vector.values())
+    if not all(isinstance(v, int) and not isinstance(v, bool) for v in counts):
+        return None
+    return sum(counts)
+
+
+def _latest_run(row: tuple | None) -> dict | None:
+    """The newest run's id, finish time, status and summed report counters, or None.
+
+    A run that is not complete returns its status with the three counters None:
+    it counted nothing, and an older run's counters are not this run's. None when
+    there is no run, or when the newest run is complete and its coverage carries
+    none of the three counter keys: a run from before the counters has no reading
+    to show, and zeros there would claim a reading it never took.
+    """
+    if row is None:
+        return None
+    run_id, finished_at, status, coverage = row
+    head = {
+        "run_id": str(run_id),
+        "finished_at": finished_at.isoformat() if finished_at else None,
+        "status": status,
+    }
+    if status != "complete":
+        return {**head, **dict.fromkeys(_REPORT_COUNTERS)}
+    if not isinstance(coverage, dict) or not any(key in coverage for key in _REPORT_COUNTERS):
+        return None
+    return {**head, **{key: _summed(coverage, key) for key in _REPORT_COUNTERS}}
+
 
 def _correlate_entry(
     run_findings: object,
@@ -195,8 +266,24 @@ def _open_finding(row: tuple) -> dict:
     }
 
 
+def _coverage_cell(row: tuple) -> dict:
+    """One strategy's coverage cell; ASR is 0.0 when no probes were tested, never a divide-by-zero."""
+    strategy_id, attack_vector, probes_tested, findings_count, high_severity_count = row
+    probes_tested = probes_tested or 0
+    findings_count = findings_count or 0
+    attack_success_rate = (findings_count / probes_tested) if probes_tested > 0 else 0.0
+    return {
+        "strategy_id": str(strategy_id),
+        "attack_vector": attack_vector,
+        "probes_tested": probes_tested,
+        "findings_count": findings_count,
+        "high_severity_count": high_severity_count or 0,
+        "attack_success_rate": round(attack_success_rate, 4),
+    }
+
+
 def read_programme(conn_str: str, agent_id: str) -> dict:
-    """Return {strategies, probes, coverage, open_findings} for the agent's tenant DB.
+    """Return {strategies, probes, coverage, open_findings, latest_run} for the agent's tenant DB.
 
     coverage is the harm-category x attack-strategy rollup: one cell per strategy
     with probes_tested and attack_success_rate (findings_count / probes_tested,
@@ -205,6 +292,7 @@ def read_programme(conn_str: str, agent_id: str) -> dict:
     (contained/closed never appear), ordered by real severity rank, each carrying
     its real primary key and a description recovered from its own run's findings
     snapshot (null on a miss). "The agent's" is true of both since #162.
+    latest_run is the newest run's status and report counters, or null (_latest_run).
     """
     kind = (f"m7:{agent_id}",)  # the agent, as red_team_runs spells it (#162)
     conn = psycopg2.connect(conn_str, connect_timeout=10)
@@ -221,6 +309,9 @@ def read_programme(conn_str: str, agent_id: str) -> dict:
 
             cur.execute(_OPEN_FINDINGS_SQL, kind)
             open_finding_rows = cur.fetchall()
+
+            cur.execute(_LATEST_RUN_SQL, kind)
+            latest_run_row = cur.fetchone()
     finally:
         conn.close()
 
@@ -245,24 +336,10 @@ def read_programme(conn_str: str, agent_id: str) -> dict:
         for row in probe_rows
     ]
 
-    coverage = []
-    for row in coverage_rows:
-        strategy_id, attack_vector, probes_tested, findings_count, high_severity_count = row
-        probes_tested = probes_tested or 0
-        findings_count = findings_count or 0
-        attack_success_rate = (findings_count / probes_tested) if probes_tested > 0 else 0.0
-        coverage.append(
-            {
-                "strategy_id": str(strategy_id),
-                "attack_vector": attack_vector,
-                "probes_tested": probes_tested,
-                "findings_count": findings_count,
-                "high_severity_count": high_severity_count or 0,
-                "attack_success_rate": round(attack_success_rate, 4),
-            }
-        )
+    coverage = [_coverage_cell(row) for row in coverage_rows]
 
     open_findings = [_open_finding(row) for row in open_finding_rows]
+    latest_run = _latest_run(latest_run_row)
 
     log.info(
         "redteam_programme.read",
@@ -271,6 +348,7 @@ def read_programme(conn_str: str, agent_id: str) -> dict:
         probe_count=len(probes),
         coverage_cells=len(coverage),
         open_finding_count=len(open_findings),
+        latest_run_counted=latest_run is not None,
     )
 
     return {
@@ -278,4 +356,5 @@ def read_programme(conn_str: str, agent_id: str) -> dict:
         "probes": probes,
         "coverage": coverage,
         "open_findings": open_findings,
+        "latest_run": latest_run,
     }

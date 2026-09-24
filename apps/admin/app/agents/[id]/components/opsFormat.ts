@@ -299,6 +299,123 @@ export interface OpenFinding {
   created_at: string | null
   /** Recovered by the backend from the finding's own run's JSONB snapshot; null on a correlation miss. Never required — a finding with no description is still fully containable. */
   description: string | null
+  /** What put the finding there: a rule over the probe's record, or the attacker's report alone. */
+  evidence: FindingEvidence | null
+  /** The claim kinds that stood. Attacker-labelled text: read only through claimLabels. */
+  claims: string[] | null
+}
+
+export type FindingEvidence = 'recorded_prompt_run' | 'landed_verdict_tag' | 'attacker_report'
+
+/**
+ * The agent's newest run, whatever its status; `latest_run` on the programme
+ * response. A complete run carries its report counters, each summed over
+ * vectors; a counter reads null when the run did not complete or when its
+ * per-vector values were not all integers.
+ */
+export interface LatestRun {
+  run_id: string
+  finished_at: string | null
+  status: string
+  reports_no_attack: number | null
+  reports_dropped: number | null
+  reports_on_attackers_word: number | null
+}
+
+const EVIDENCE_LABELS: Record<FindingEvidence, string> = {
+  recorded_prompt_run: "Recorded from the agent's reply",
+  landed_verdict_tag: 'Recorded from the dispatcher',
+  attacker_report: "On the attacker's word",
+}
+
+/** Where a finding's evidence came from, as the opening of its sentence. "Evidence unrecorded" for null or a value outside the three. */
+export function evidenceLabel(evidence: FindingEvidence | null): string {
+  if (evidence !== null && Object.hasOwn(EVIDENCE_LABELS, evidence)) return EVIDENCE_LABELS[evidence]
+  return 'Evidence unrecorded'
+}
+
+const UNKNOWN_CLAIM = 'unknown claim'
+
+const CLAIM_LABELS: Record<string, string> = {
+  system_prompt_disclosure: 'quoted its system prompt',
+  system_prompt_described: 'described its setup',
+  injected_instruction_followed: 'followed an injected instruction',
+  pii_or_customer_data: 'gave out customer data',
+  cross_tenant_data: "gave out another business's data",
+  confident_false_claims: 'asserted false claims',
+  mutating_call_landed: 'a mutating call landed',
+}
+
+/** The claim phrases that carry their own subject; every other phrase reads after "it". */
+const SUBJECT_PHRASES = new Set([CLAIM_LABELS.mutating_call_landed, UNKNOWN_CLAIM])
+
+/**
+ * Plain phrases for the claim kinds that stood, one per kind, in order. The
+ * attacker model labels the kinds, so a kind outside the seven renders as
+ * "unknown claim" and the raw string never reaches the page.
+ */
+export function claimLabels(claims: string[] | null): string[] {
+  return (claims ?? []).map((kind) =>
+    Object.hasOwn(CLAIM_LABELS, kind) ? CLAIM_LABELS[kind] : UNKNOWN_CLAIM,
+  )
+}
+
+/** "a", "a and b", "a, b and c". */
+function joinWithAnd(parts: string[]): string {
+  if (parts.length <= 1) return parts.join('')
+  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
+}
+
+/**
+ * The provenance sentence under a finding's meta line: where the evidence came
+ * from, then the claims that stood. A verb phrase takes "it" unless the phrase
+ * before it was also a verb phrase, so "it quoted its system prompt and
+ * described its setup" reads as one clause.
+ *
+ *   "Recorded from the agent's reply: it quoted its system prompt."
+ *   "On the attacker's word."   (no claims recorded)
+ */
+export function evidenceSentence(finding: Pick<OpenFinding, 'evidence' | 'claims'>): string {
+  const opening = evidenceLabel(finding.evidence)
+  const labels = claimLabels(finding.claims)
+  if (labels.length === 0) return `${opening}.`
+  const clauses = labels.map((label, i) => {
+    const hasSubject = SUBJECT_PHRASES.has(label)
+    const followsVerbPhrase = i > 0 && !SUBJECT_PHRASES.has(labels[i - 1])
+    return hasSubject || followsVerbPhrase ? label : `it ${label}`
+  })
+  return `${opening}: ${joinWithAnd(clauses)}.`
+}
+
+function countNoun(count: number, singular: string, plural: string): string {
+  return `${count} ${count === 1 ? singular : plural}`
+}
+
+/** One counter's clause, or "<plural noun phrase> unreadable" when the counter is null. */
+function counterClause(count: number | null, singular: string, plural: string, rest: string): string {
+  return count === null ? `${plural} ${rest} unreadable` : `${countNoun(count, singular, plural)} ${rest}`
+}
+
+/**
+ * One sentence on the newest run, or null when no run has recorded counters.
+ * A run that did not complete says so and counts nothing. The finish time
+ * reads in UTC, the same slice the page's formatDateTime takes.
+ */
+export function latestRunLine(latestRun: LatestRun | null | undefined): string | null {
+  if (!latestRun) return null
+  const shortId = latestRun.run_id.slice(0, 8)
+  if (latestRun.status === 'running') return `Latest run ${shortId} is still running; nothing to count.`
+  if (latestRun.status === 'failed') return `Latest run ${shortId} failed; nothing to count.`
+  if (latestRun.status !== 'complete') return `Latest run ${shortId} did not complete; nothing to count.`
+  const counts = [
+    counterClause(latestRun.reports_no_attack, 'sequence', 'sequences', 'closed with nothing landed'),
+    counterClause(latestRun.reports_on_attackers_word, 'finding', 'findings', "on the attacker's word"),
+    counterClause(latestRun.reports_dropped, 'report', 'reports', 'dropped'),
+  ]
+  const finished = latestRun.finished_at
+    ? `, ${new Date(latestRun.finished_at).toISOString().slice(0, 16).replace('T', ' ')} UTC`
+    : ''
+  return `Latest run ${shortId}${finished}: ${counts.join(', ')}.`
 }
 
 export interface SeverityCounts {

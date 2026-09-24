@@ -238,7 +238,7 @@ LIZARD_BASELINE = {
     ("app/services/red_team_service.py", "run_identity_bypass_agent"): (17, 161),
     ("app/services/red_team_service.py", "run_value_bound_evasion_agent"): (17, 148),
     ("app/services/red_team_service.py", "seed_poisoned_chunk"): (2, 75),
-    ("app/services/redteam_programme_service.py", "read_programme"): (13, 84),
+    ("app/services/redteam_programme_service.py", "read_programme"): (9, 76),
     ("app/services/retrieval_service.py", "rrf_fuse"): (3, 65),
     # 8/68 to 7/62: #265 replaced this function's copy of the provider branch
     # with the `embed_queries` seam, which is where the ledger row is written.
