@@ -42,9 +42,10 @@ from app.services.transactional.tools import (
 )
 
 
-def _dispatcher_response(text: str) -> dict:
-    """The exact shape every IDV return site produces."""
-    return {"content": [{"type": "text", "text": text}], "is_error": True}
+def _dispatcher_response(text: str, *, is_error: bool = True) -> dict:
+    """The exact shape every IDV return site produces: an error on the wire.
+    A completed call, the one case that is not an error, passes is_error=False."""
+    return {"content": [{"type": "text", "text": text}], "is_error": is_error}
 
 
 @pytest.mark.parametrize("message", IDV_BLOCK_MESSAGES, ids=lambda m: m[:40])
@@ -100,7 +101,9 @@ def test_a_non_idv_denial_still_tags_as_itself() -> None:
         ProbeToolResult.from_dispatcher_response("issue_refund", capability).verdict_tag
         == "capability_denied"
     )
-    succeeded = _dispatcher_response("Refund of R45.00 issued successfully.")
+    # A completed call arrives on the wire without is_error; since #311 the
+    # fallthrough reads `succeeded` only for that outcome.
+    succeeded = _dispatcher_response("Refund of R45.00 issued successfully.", is_error=False)
     assert (
         ProbeToolResult.from_dispatcher_response("issue_refund", succeeded).verdict_tag
         == "succeeded"
