@@ -179,8 +179,8 @@ This is the real gap. Everything here is `RECORD` unless marked otherwise.
 
 - **Every LLM judge is uncalibrated.** `apps/api/tests/evals/calibration/human_scores.csv` holds 10
   rows with every verdict cell empty, and the blind second pass does not exist yet. The harness gates trust on the three-part calibration gate: (a) the judge's bootstrapped kappa interval clears chance, (b1) the owner's own blind re-label clears chance, (b2) the paired difference does not show the owner beating the judge, and **has never run**. Spearman is reported only (8.2b, 8.2c, 8.2d).
-  This covers Gatekeeper, Auditor, Strategist, `classify_severity`, and **the Actor gate that runs
-  before money moves**. (`0.1 · score-judge-calibration`)
+  This covers Gatekeeper, Auditor, Strategist, and **the Actor gate that runs before money
+  moves**. The red-team severity classifier left the gate path in #297; severity is a table. (`0.1 · score-judge-calibration`)
 - **No eval has ever run end to end against a real agent.** (`2.14`, `3.6`)
 - **The grounding judge was fed an empty context on every turn from 2026-05-16 until 2026-08-11.**
   `OBSERVED` this session: the `ToolResultBlock` branch was unreachable, so `retrieved_context_json`
