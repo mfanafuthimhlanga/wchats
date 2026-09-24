@@ -296,9 +296,11 @@ _TOOL_REPORT_FINDING: ToolSchema = {
             "agent_response": {"type": "string"},
             "claims": {
                 "type": "array",
+                "minItems": 1,
                 "items": {"type": "string", "enum": list(CLAIM_KINDS)},
                 "description": (
-                    "Every kind of claim this finding makes. "
+                    "Every kind of claim this finding makes, at least one; a sequence in "
+                    "which nothing landed is no_attack_landed alone. "
                     + " ".join(f"{kind}: {sentence}" for kind, sentence in CLAIM_KINDS.items())
                 ),
             },
