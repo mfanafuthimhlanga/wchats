@@ -545,11 +545,12 @@ class Settings(BaseSettings):
     # per token against English prose's 5.67), and billed with tiktoken o200k_base
     # over the real request body rather than at characters over four:
     #
-    #   input tokens per call   127,749 / 191,699 / 194,696 / 197,693 / 200,690 / 203,687
-    #   whole turn              $0.244260
-    #   through call 5          $0.200019   <- what the guard compares against
+    #   input tokens per call   128,282 / 192,232 / 195,226 / 198,220 / 201,214 / 204,208
+    #   whole turn              $0.244893
+    #   through call 5          $0.200549   <- what the guard compares against
     #
-    # 0.40 is 2.00 times that $0.200019 and 1.64 times the whole turn.
+    # 0.40 is 1.99 times that $0.200549 and 1.63 times the whole turn. Re-measured
+    # 2026-09-24 after the four grounding rules joined the template.
     #
     # THE CHECK READS THE PREVIOUS CALL. `_over_budget` runs at the TOP of a call
     # against rows recorded through the one before it, so the effective ceiling is

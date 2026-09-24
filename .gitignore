@@ -114,3 +114,6 @@ apps/admin/verify_*.py
 # generated knowledge-graph cache
 .understand-anything/
 .railway-staging.env
+
+# Regenerated benchmark answers, model output written by regen_rows.py
+apps/api/tests/evals/calibration/benchmark/regen-*.csv

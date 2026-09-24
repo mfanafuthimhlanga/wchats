@@ -113,11 +113,11 @@ DENSEST = "CJK"
 #:
 #: Re-record it by driving `TestTheCeilingAgainstTheWorstPermittedTurn` and
 #: reading the failure message, which prints the figure it measured.
-WORST_TURN_SPEND_THROUGH_GUARD_USD = 0.200019
+WORST_TURN_SPEND_THROUGH_GUARD_USD = 0.200549
 
 #: Whole-turn spend for the same shape, all six calls. Larger than the figure
 #: above by exactly the last call, which is the "plus one full call" #82 recorded.
-WORST_TURN_SPEND_USD = 0.244260
+WORST_TURN_SPEND_USD = 0.244893
 
 #: The eleven shipped tool schemas measure 2,334 tokens through `tools_wire`, and
 #: they ride on every model call. The floor is under that so a schema edit does
