@@ -14,6 +14,7 @@ a tenant's; a tenant's yes or no on a flagged claim lands here as a labelled row
 | `claims_<identity>.csv` | claim the judge decided | `scenario_id, position, statement, supported, reason` |
 | `scores_<identity>.csv` | answer the judge scored | `scenario_id, dimension, verdict, score, claims` |
 | `ground_rows.py` | | scores `truth.csv` and `rows.csv` with the grounding rule and prints recall on the planted sentences and the real answers' scores at the gate; no model call |
+| `regen_rows.py` | | regenerates the real answers under the platform prompt with fixed retrieval and scores them with the rule; one model call per answer, behind `--spend`; `--without-rules` strips the four grounding rules for the before figure (`.dev/reference/260924-grounding-prompt-rules.md`) |
 | `score_claims.py` | | the scorer, vendored from `~/.claude/skills/calibrate-judge`; edits go to the skill first |
 | `import_reviews.py` | | turns a run's Tenant answers into the REVIEWED benchmark below; never writes here |
 | `reviewed/` | | a second benchmark of the same three file kinds, holding reviewed truth; absent until the first import |

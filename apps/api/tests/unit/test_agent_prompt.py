@@ -316,3 +316,30 @@ def test_the_prompt_tells_the_agent_a_clarify_call_ends_the_turn():
     assert "entire reply the \ncustomer sees" in prompt
     assert "nothing is added to it" in prompt
     assert "list \nof candidates" in prompt
+
+
+def test_the_prompt_tells_the_agent_to_answer_from_the_passages_words_alone():
+    """The four grounding rules the deploy gate depends on (ADR 0015).
+
+    The gate scores each sentence by the share of its words the best retrieved
+    passage carries, so an answer that paraphrases, reasons or opens with a
+    heading fails it. Measured on the benchmark's 30 real answers, regenerated
+    under this template with fixed retrieval: 14 of 30 passed 0.80 without these
+    lines, 22 and 27 with them across two seeds
+    (`.dev/reference/260924-grounding-prompt-rules.md`).
+    """
+    prompt = build_system_prompt(_make_agent())
+    # The template wraps long lines with a space and a newline, so match on one space.
+    must = " ".join(prompt[prompt.index("You MUST:") : prompt.index("You MUST NOT:")].split())
+    for rule in (
+        "Build each factual sentence from the words of the passage it comes from",
+        "keeping the passage's own terms rather than yours",
+        "State what the passages state.",
+        "a reason, a comparison or a recommendation the passages do not make",
+        "give what they do say and add \"I don't have that information in my knowledge base\"",
+        "Take every figure, price, date and name from the passages.",
+        "Repeat the customer's own details only as they gave them.",
+        "Write the answer as sentences, with a list only for list-shaped facts",
+        "Put nothing before the first sentence, and end with one CITATIONS block.",
+    ):
+        assert rule in must, rule
