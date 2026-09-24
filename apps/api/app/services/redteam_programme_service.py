@@ -160,6 +160,12 @@ def _correlated_text(entry: dict | None, key: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _correlated_claims(entry: dict | None) -> list[str] | None:
+    """`entry["claims"]` as a list of strings, else None."""
+    value = entry.get("claims") if entry is not None else None
+    return [str(claim) for claim in value] if isinstance(value, list) else None
+
+
 def _open_finding(row: tuple) -> dict:
     """One open red_team_findings row, with what its run's snapshot adds."""
     entry = _correlate_entry(row[9], row[4], row[5], row[7])
@@ -177,6 +183,9 @@ def _open_finding(row: tuple) -> dict:
         # What the finding stood on (RedTeamFinding.evidence). None when the
         # snapshot has no matching entry or predates the field.
         "evidence": _correlated_text(entry, "evidence"),
+        # The claim kinds that stood (RedTeamFinding.claims). None when the
+        # snapshot has no matching entry or predates the field.
+        "claims": _correlated_claims(entry),
     }
 
 

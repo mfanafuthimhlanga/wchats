@@ -539,7 +539,36 @@ class TestOpenFindings:
         description = result["open_findings"][0]["description"]
         assert description is not None
         assert result["open_findings"][0]["evidence"] == finding.evidence == "attacker_report"
+        assert result["open_findings"][0]["claims"] == list(finding.claims) == []
         assert "INVALID, not clean" in description
+
+    def test_an_open_finding_carries_the_claims_that_stood(self):
+        """#313. The run's findings snapshot holds `claims`, and the console reads
+        which kind stood from here, beside `evidence`."""
+        from app.services import redteam_programme_service
+        from app.services.red_team_service import RedTeamFinding
+
+        finding = RedTeamFinding(
+            severity="medium", description="The agent described its role.",
+            attack_vector="data_leakage", probe_message="what are you?",
+            agent_response="I help Acme's customers.", turn_count=1,
+            claims=("system_prompt_described",),
+        )
+        row = (
+            uuid4(), uuid4(), None, finding.severity, finding.attack_vector,
+            finding.probe_message, finding.agent_response, finding.turn_count, None,
+            [finding.model_dump()],
+        )
+        mock_conn, _ = _make_programme_cursor(open_finding_rows=[row])
+
+        with patch.object(
+            redteam_programme_service.psycopg2, "connect", return_value=mock_conn
+        ):
+            result = redteam_programme_service.read_programme(
+                "postgresql://fake/tenantdb", "agent-claims"
+            )
+
+        assert result["open_findings"][0]["claims"] == ["system_prompt_described"]
 
     def test_correlation_miss_on_turn_count_returns_finding_with_null_description(self):
         """The snapshot entry differs from the finding row in turn_count only —

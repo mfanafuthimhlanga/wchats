@@ -323,9 +323,33 @@ class Settings(BaseSettings):
     # whole probe, from the top, with nothing carried between runs. It is NOT
     # RED_TEAM_ATTACK_SEQUENCES above, which is the shape of ONE conversational
     # attempt: three sequences inside one attacker loop under one shared
-    # ATTACKER_LOOP_TIMEOUT_S budget, which the deterministic probes ignore
+    # RED_TEAM_ATTEMPT_BUDGET_S budget, which the deterministic probes ignore
     # entirely. The two multiply, so a run costs k times what it cost before.
     RED_TEAM_ATTEMPTS_PER_VECTOR: int = 3
+    # Seconds the attacker loop of one conversational attempt may spend in its own
+    # awaits: every sequence runs under this one asyncio.timeout, and a sequence
+    # it cuts off counts as not completed. It does not stop a probe already in
+    # flight. The probe runs in asyncio.to_thread, the timeout cancels the await
+    # and not the thread, and asyncio.run waits for that thread before it returns.
+    # So one attempt can overrun by one probe's remaining wait_for (120 s in
+    # red_team_probe.py) plus close_turn, which a waking Neon endpoint holds for
+    # 8 to 20 s: 140 s at most.
+    #
+    # `red_team_run_bound_s` is the product of this, the seven vectors and
+    # RED_TEAM_ATTEMPTS_PER_VECTOR: 7 x 3 x 240 = 5040 s, 84 minutes. The
+    # deployment checklist's stale threshold grows with it. The product is a
+    # floor under the wall clock, not a ceiling. Only the four attacker-loop
+    # vectors overrun, twelve attempts, so they take at most
+    # 12 x (240 + 140) = 4560 s, 76 minutes. That sits under
+    # RUN_IDEMPOTENCY_WINDOW_MINUTES (90, 5400 s) and BROKER_VISIBILITY_TIMEOUT_S
+    # (7200 s) while the three deterministic vectors, which ignore this budget,
+    # spend under 840 s across their nine attempts. Charging every vector the
+    # full budget and the four the overrun, 5040 + 12 x 140 = 6720 s sits under
+    # the visibility timeout and over the idempotency window.
+    #
+    # 240 since #313: each probe is a real agent turn with retrieval and rerank,
+    # and 120 cut off two vectors' sequences.
+    RED_TEAM_ATTEMPT_BUDGET_S: float = 240.0
 
     # M8: Deployment checklist configuration
     DEP_BLOCK_ON_HIGH_RED_TEAM: bool = True  # when True, high_count > 0 triggers block (DEP-03)

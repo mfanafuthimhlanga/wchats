@@ -3693,11 +3693,12 @@ class TestTheStaleThresholdOutlastsTheJobsTheChainWaitsBehind:
         """A moved bound has to move the threshold, or the two drift (1.33)."""
         from unittest.mock import patch as _patch
 
+        from app.core.config import settings
         from app.worker.tasks.runtime.deployment import _stale_after_s
 
         before = _stale_after_s()
-        with _patch(
-            "app.worker.tasks.runtime.red_team.ATTACKER_LOOP_TIMEOUT_S", 240.0
+        with _patch.object(
+            settings, "RED_TEAM_ATTEMPT_BUDGET_S", settings.RED_TEAM_ATTEMPT_BUDGET_S * 2
         ):
             after = _stale_after_s()
 
