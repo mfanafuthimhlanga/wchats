@@ -63,7 +63,7 @@
   .response code, .pw code { font-family: var(--mono); font-size: 0.88em; background: var(--surface-2); padding: 0 3px; border-radius: 2px; }
   .legend { font-size: 11px; line-height: 1.5; color: var(--ink-3); }
   .legend b { font-weight: 600; }
-  .k-bone { color: var(--live); } .k-grey { color: var(--ink-2); } .k-fail { color: var(--fail); }
+  .k-bone { color: var(--live); } .k-grey { color: var(--ink-2); } .k-fail { color: var(--fail); } .k-none { color: var(--ink-2); }
 
   .ctxcol { min-width: 0; display: flex; flex-direction: column; gap: 6px; padding-block: 18px 12px; }
   .ctxnote { font-size: 11.5px; color: var(--fail); }
@@ -157,14 +157,16 @@
   const TOTAL = items.length;
   const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  // ── the reading aid, word overlap only. It points at a passage; it never labels ──
+  // ── the reading aid: the faithfulness gate's rules (apps/api/app/domain/grounding.py, grounding-v2),
+  // each named for its Python twin. It lights the passages the gate read and says why; it never labels ──
   const STOP = new Set(("the and for that with this from are was were has have had not but all any can you your they them " +
     "their there then than when what which who whom how why into onto over under out off per via about after before " +
     "between during each every some such only also more most other same both been being does did doing done will would " +
     "should could may might must shall here where while because since though although upon among along around these " +
     "those very much many just like within without across toward towards doesn didn aren wasn weren hasn haven").split(" "));
   const WORD_RE = () => /[A-Za-z0-9][A-Za-z0-9._\/-]*/g;
-  const SENT_RE = () => /(?<=[.!?]["')\]]?)\s+(?=[*`"'(\[A-Z0-9])/g;
+  // _SENT_RE: a sentence end, an optional closing quote (straight or curly), then a capital, a digit or an opener
+  const SENT_RE = () => /(?<=[.!?]["')\]”’]?)\s+(?=[*`"'(\[A-Z0-9“‘])/g;
   const EMPTY = new Set();
   function esc(t) { return String(t ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
   // "deployed", "deploys" and "deploy" are one word to the overlap. Suffixes only, never below four letters
@@ -188,7 +190,74 @@
   }
   const inlineRich = html => html.replace(/`([^`]+)`/g, (_, c) => "<code>" + c + "</code>").replace(/\*\*([^*]+)\*\*/g, "$1");
   const inlineHtml = text => inlineRich(esc(text)).replace(/\*([^*]+)\*/g, "$1");
-  const scoreText = text => text.replace(/[*`]/g, " ");
+  // _score_text: a source marker names a document rather than asserting anything, so it stays out of the score
+  const scoreText = text => text.replace(/\*\(([^()]*)\)\*/g, " ").replace(/[*`]/g, " ");
+  const CARRIED_FLOOR = 0.4; // CARRIED_FLOOR
+  // Python's \d, \w and \b match Unicode in a str pattern; JavaScript's match ASCII, even with the u flag.
+  // \d is \p{Nd}, \w is [\p{L}\p{N}_], and \b beside a word character is a look-around on that class
+  const W = String.raw`[\p{L}\p{N}_]`, NOT_W = String.raw`[^\p{L}\p{N}_]`, B_BEFORE = `(?<!${W})`, B_AFTER = `(?!${W})`;
+  // _NUMBER_RE: a figure, 1,000,000 with its three-digit groups, 5.5, 20480, never "3,4" read as one. Any decimal digit
+  const NUMBER_RE = () => /\p{Nd}{1,3}(?:,\p{Nd}{3})+(?:\.\p{Nd}+)?|\p{Nd}+(?:\.\p{Nd}+)?/gu;
+  const numberKey = raw => raw.replace(/,/g, ""); // _number_key: 20,480 and 20480 are one number
+  const numbersIn = text => text.match(NUMBER_RE()) || [];
+  // _DECLINE_RE, _DOC_NOUN, _SAY_VERB: the documents, as subject, do not SAY something. Anchored, as re.match is
+  const DOC_NOUN = "(?:corpus|documentation|documents?|docs|material|knowledge base|sources?|readmes?|portfolio documentation|retrieved (?:text|material|documentation|context))";
+  const SAY_VERB = "(?:specify|specifies|say|says|state|states|mention|mentions|cover|covers|document|documents|describe|describes|address|addresses|provide|provides|name|names|list|lists|show|shows|explain|explains|detail|details|confirm|confirms|establish|establishes|define|defines|indicate|indicates|record|records|give|gives|include|includes|contain|contains)";
+  const DECLINE_RE = new RegExp(`^${NOT_W}*` + String.raw`(?:(?:however|but|also|note that|based on [^,;]{1,40}|according to [^,;]{1,40}),?\s*)?(?:\*\*[^*]+\*\*\s*)?(?:` +
+    String.raw`(?:the|this|our|my|that|these|its)\s+(?:${W}+\s+){0,2}?` + DOC_NOUN + String.raw`\s+(?:does not|doesn't|did not|didn't|do not|don't|never)\s+` + String.raw`(?:${W}+\s+)?` + SAY_VERB + B_AFTER +
+    String.raw`|i (?:don't|do not) have (?:[\p{L}\p{N}_-]+\s+){0,3}?(?:information|documentation|record|details?)` + B_AFTER +
+    String.raw`|(?:there is|there's) no (?:documented|recorded|stated|documentation|mention|information|record)` + B_AFTER +
+    String.raw`|no (?:information|documentation|record|mention) (?:is|was|exists|about|on|of|in)` + B_AFTER + ")", "iu");
+  // _SECOND_CLAUSE_RE
+  const SECOND_CLAUSE_RE = new RegExp(String.raw`;|\s(?:but|yet|although|though|whereas)\s|` + `${B_BEFORE}it does${B_AFTER}|${B_BEFORE}it is${B_AFTER}`, "iu");
+  const isDecline = t => DECLINE_RE.test(t) && !SECOND_CLAUSE_RE.test(t); // is_decline
+  // _INFERENCE_RE: a reason, a consequence or a purpose gets no second reading
+  const INFERENCE_RE = new RegExp(B_BEFORE + "(because|therefore|thus|hence|consequently|so that|which means|this means|that means|as a result|in order to|favou?rs?|why)" + B_AFTER, "iu");
+  const SECOND_PASSAGE_MIN_WORDS = 2; // SECOND_PASSAGE_MIN_WORDS
+  // _second_reading: the best passage joined with the one adding the most words it lacks, two at least, at the same floor
+  function secondReading(tokens, best, carried, ptokens) {
+    const bt = ptokens[best]; let second = -1, added = 0;
+    ptokens.forEach((pt, i) => { if (i === best) return; let n = 0; for (const t of tokens) if (pt.has(t) && !bt.has(t)) n++; if (n > added) { second = i; added = n; } });
+    if (second < 0 || added < SECOND_PASSAGE_MIN_WORDS) return { carried, second: -1 };
+    let both = 0; for (const t of tokens) if (bt.has(t) || ptokens[second].has(t)) both++;
+    const share = both / tokens.size;
+    return share < CARRIED_FLOOR ? { carried, second: -1 } : { carried: share, second };
+  }
+  // Python's format(x, ".0%"): the exact double times 100, a half rounded to even
+  function percent(x) { const v = x * 100, f = Math.floor(v), d = v - f; return (d > 0.5 || (d === 0.5 && f % 2 === 1) ? f + 1 : f) + "%"; }
+  // SentenceGrounding.reason, word for word
+  function reasonOf(g) {
+    if (g.decline) return "a decline asserts nothing the documents would carry";
+    if (g.pi < 0) return "no passage shares a word with it";
+    const parts = [g.span >= 0 ? `passages ${g.pi + 1} and ${g.span + 1} together carry ${percent(g.carried)} of its words` : `passage ${g.pi + 1} carries ${percent(g.carried)} of its words`];
+    if (g.missing.length) parts.push("number " + g.missing.join(", ") + " appears in no passage");
+    return parts.join("; ");
+  }
+  // _ground_sentence: the best passage (a tie to the denser one), the decline rule, the number rule, the second reading
+  function groundSentence(statement, tokens, ptokens, numbers) {
+    const g = { pi: -1, shared: EMPTY, score: 0, missing: [], decline: false, span: -1, spanShared: EMPTY, carried: 0, supported: false, reason: "", tint: "t-none" };
+    let dens = 0;
+    for (let i = 0; i < ptokens.length && tokens.size; i++) {
+      const sh = new Set(); for (const tk of tokens) if (ptokens[i].has(tk)) sh.add(tk);
+      const sc = sh.size / tokens.size, d = ptokens[i].size ? sh.size / ptokens[i].size : 0;
+      if (sc > g.score || (sc === g.score && sc > 0 && d > dens)) { g.score = sc; g.pi = i; g.shared = sh; dens = d; }
+    }
+    g.carried = g.score;
+    if (!tokens.size) return g;
+    if (isDecline(statement)) g.decline = true;
+    else {
+      g.missing = numbersIn(statement).filter(n => !numbers.has(numberKey(n)));
+      if (g.pi >= 0 && g.carried < CARRIED_FLOOR && !INFERENCE_RE.test(statement)) {
+        const r = secondReading(tokens, g.pi, g.carried, ptokens); g.carried = r.carried; g.span = r.second;
+        if (g.span >= 0) { const sh = new Set(); for (const tk of tokens) if (ptokens[g.span].has(tk)) sh.add(tk); g.spanShared = sh; }
+      }
+    }
+    g.supported = g.decline || (g.pi >= 0 && g.carried >= CARRIED_FLOOR && !g.missing.length);
+    g.reason = reasonOf(g);
+    // with no passages at all, a decline is bone and every other sentence red, as the gate flags it
+    g.tint = g.supported ? "t-bone" : (g.score > 0 && !g.missing.length ? "t-grey" : "t-fail");
+    return g;
+  }
   function splitSentences(text) {
     const re = SENT_RE(), parts = []; let m, start = 0;
     while ((m = re.exec(text))) { parts.push(text.slice(start, m.index)); start = m.index + m[0].length; }
@@ -241,21 +310,15 @@
     if (it.an) return it.an;
     const pane = panePassages(it.retrieved_contexts || []);
     const ptokens = pane.passages.map(p => tokensOf(p.text));
+    const numbers = new Set(pane.passages.flatMap(p => numbersIn(p.text).map(numberKey)));
     const units = responseUnits(it.response);
     for (const u of units) {
-      u.tokens = u.kind === "cite" ? EMPTY : tokensOf(scoreText(u.text));
-      u.pi = -1; u.shared = EMPTY; u.score = 0;
-      let dens = 0;
-      for (let i = 0; i < ptokens.length && u.tokens.size; i++) {
-        const sh = new Set(); for (const tk of u.tokens) if (ptokens[i].has(tk)) sh.add(tk);
-        const sc = sh.size / u.tokens.size, d = ptokens[i].size ? sh.size / ptokens[i].size : 0;
-        // a tie goes to the denser passage: the one that is about these words, not the overview that mentions them
-        if (sc > u.score || (sc === u.score && sc > 0 && d > dens)) { u.score = sc; u.pi = i; u.shared = sh; dens = d; }
-      }
-      u.tint = (!u.tokens.size || !ptokens.length) ? "t-none" : (u.score >= 0.4 ? "t-bone" : (u.score > 0 ? "t-grey" : "t-fail"));
+      // the gate scores prose only: a code fence and the CITATIONS block never reach it (response_sentences)
+      u.tokens = (u.kind === "cite" || u.kind === "code") ? EMPTY : tokensOf(scoreText(u.text));
+      Object.assign(u, groundSentence(u.text, u.tokens, ptokens, numbers));
     }
     const plain = pane.passages.map(p => windowHtml(p, null));
-    it.an = { units, passages: pane.passages, ptokens, plain, html: unitsHtml(units),
+    it.an = { units, passages: pane.passages, ptokens, numbers, plain, html: unitsHtml(units),
       paneHtml: pane.passages.length ? pane.groups.map(g => '<div class="ctxblock">' + g.map(i => `<p class="pw" data-i="${i}">${plain[i]}</p>`).join("") + "</div>").join("")
                                      : '<div class="ctxblock"><p class="pw">no retrieved text was stored for this answer</p></div>' };
     return it.an;
@@ -268,34 +331,29 @@
     return best;
   }
 
-  let sel = -1, lit = -1;
+  let sel = -1, lit = [];
   const sentEls = () => [...document.querySelectorAll(".sent[data-s]")];
-  function lightPassage(pi, shared, scroll, why) {
+  // lights the passages the gate read a grounding against: the best, and the second when it joined two
+  function lightPassage(g, scroll, why) {
     const an = items[current].an;
     const pane = document.getElementById("ctxpane"), note = document.getElementById("ctxnote");
-    if (lit >= 0) { const old = pane.querySelector(`.pw[data-i="${lit}"]`); if (old) { old.innerHTML = an.plain[lit]; old.classList.remove("lit"); } lit = -1; }
-    if (pi < 0) { note.textContent = why; note.hidden = !an.passages.length; return; }
+    for (const i of lit) { const old = pane.querySelector(`.pw[data-i="${i}"]`); if (old) { old.innerHTML = an.plain[i]; old.classList.remove("lit"); } }
+    lit = [];
+    if (g.pi < 0) { note.textContent = why; note.hidden = !an.passages.length; return; }
     note.hidden = true;
-    const pw = pane.querySelector(`.pw[data-i="${pi}"]`); if (!pw) return;
-    pw.innerHTML = windowHtml(an.passages[pi], shared); pw.classList.add("lit"); lit = pi;
-    if (scroll) { const top = pane.scrollTop + (pw.getBoundingClientRect().top - pane.getBoundingClientRect().top) - 10; pane.scrollTo({ top, behavior: REDUCED ? "auto" : "smooth" }); }
+    const on = [[g.pi, g.shared]]; if (g.span >= 0) on.push([g.span, g.spanShared]);
+    for (const [i, shared] of on) { const pw = pane.querySelector(`.pw[data-i="${i}"]`); if (!pw) continue; pw.innerHTML = windowHtml(an.passages[i], shared); pw.classList.add("lit"); lit.push(i); }
+    const pw = pane.querySelector(`.pw[data-i="${g.pi}"]`);
+    if (scroll && pw) { const top = pane.scrollTop + (pw.getBoundingClientRect().top - pane.getBoundingClientRect().top) - 10; pane.scrollTo({ top, behavior: REDUCED ? "auto" : "smooth" }); }
   }
   function selectSentence(n, scroll) {
     const an = items[current].an; const u = an && an.units[n]; if (!u) return;
     for (const s of sentEls()) { const on = Number(s.dataset.s) === n; s.classList.toggle("on", on); s.setAttribute("tabindex", on ? "0" : "-1"); }
     sel = n;
-    lightPassage(u.pi, u.shared, scroll, "no passage shares words with that sentence");
+    lightPassage(u, scroll, "no passage shares words with that sentence");
   }
-  // the passage sharing most of the CLAIM's words, one hop, with the count so the reader knows how far to trust it
-  function claimMatch(statement, an) {
-    const ct = tokensOf(statement); let best = { pi: -1, shared: EMPTY, n: ct.size }, dens = 0;
-    an.passages.forEach((p, i) => {
-      const pt = an.ptokens[i]; const sh = new Set(); for (const t of ct) if (pt.has(t)) sh.add(t);
-      const d = pt.size ? sh.size / pt.size : 0;
-      if (sh.size > best.shared.size || (sh.size === best.shared.size && sh.size > 0 && d > dens)) { best = { pi: i, shared: sh, n: ct.size }; dens = d; }
-    });
-    return best;
-  }
+  // the CLAIM's own grounding, by the gate's rules, so the card says what the gate would say of it
+  const claimGround = (statement, an) => groundSentence(statement, tokensOf(scoreText(statement)), an.ptokens, an.numbers);
   function moveSentence(d) {
     const els = sentEls(); if (!els.length) return;
     let i = els.findIndex(e => Number(e.dataset.s) === sel);
@@ -310,12 +368,14 @@
   const saveEl = document.getElementById("save");
   const pending = new Map(); const dirty = new Set();
   let flushTimer = null, flushing = false;
+  // with no artifact store, answers live in this tab only: expected for a local file, a fault on a published page
+  const NO_DB = location.protocol === "file:" ? "local file, answers stay in this tab" : "not saving";
   function setSave(text, warn) { saveEl.textContent = text; saveEl.classList.toggle("warn", !!warn); }
   function settle() { if (db && !pending.size && !flushing) setSave("saved"); }
   function queue(k, data) {
     dirty.add(k); answers.set(k, data); pending.set(k, data);
     paintControls(); renderProgress(); renderList();
-    if (!db) { setSave("not saving", true); return; }
+    if (!db) { setSave(NO_DB, true); return; }
     setSave("saving"); clearTimeout(flushTimer); flushTimer = setTimeout(flush, 500);
   }
   async function flush() {
@@ -347,10 +407,10 @@
     document.querySelectorAll(".card[data-i]").forEach(card => {
       const i = Number(card.dataset.i); const v = answerOf(it, it.claims[i]);
       card.classList.toggle("active", i === activeClaim);
-      const m = claimMatch(it.claims[i].statement, it.an);
+      const g = claimGround(it.claims[i].statement, it.an);
       const ov = card.querySelector(".overlap");
-      ov.textContent = m.pi < 0 ? (m.n ? "no passage shares a word with it" : "") : `passage ${m.pi + 1} of ${it.an.passages.length} carries ${m.shared.size} of its ${m.n} words`;
-      ov.className = "overlap " + (m.pi < 0 ? "k-fail" : (m.shared.size / Math.max(1, m.n) >= 0.6 ? "k-bone" : "k-grey"));
+      ov.textContent = g.reason;
+      ov.className = "overlap k-" + g.tint.slice(2);
       card.querySelector(".vbtn.yes").classList.toggle("on", v === true); card.querySelector(".vbtn.yes").setAttribute("aria-pressed", v === true);
       card.querySelector(".vbtn.no").classList.toggle("on", v === false); card.querySelector(".vbtn.no").setAttribute("aria-pressed", v === false);
     });
@@ -395,8 +455,7 @@
     const unit = carryingUnit(c.statement, it.an.units);
     for (const s of sentEls()) { const on = Number(s.dataset.s) === unit; s.classList.toggle("on", on); s.setAttribute("tabindex", on ? "0" : "-1"); }
     sel = unit;
-    const m = claimMatch(c.statement, it.an);
-    lightPassage(m.pi, m.shared, true, "no passage shares a word with this claim");
+    lightPassage(claimGround(c.statement, it.an), true, "no passage shares a word with this claim");
     paintControls();
     const card = document.querySelector(`.card[data-i="${activeClaim}"]`); if (card) card.scrollIntoView({ block: "nearest" });
   }
@@ -407,7 +466,7 @@
       <div class="block">
         <div class="eyebrow"><span>agent response</span></div>
         <div class="response">${A.html}</div>
-        <div class="legend">the lit passage is the one sharing most of the active claim's words, and the card says how many. <b class="k-bone">bone</b> most &middot; <b class="k-grey">grey</b> some &middot; <b class="k-fail">red</b> none.</div>
+        <div class="legend">left edge: what the grounding gate decided, and the card says why. The lit passages are the ones it read. <b class="k-bone">bone</b> grounded, by one passage, two together, or as a decline &middot; <b class="k-grey">grey</b> some words shared, too few &middot; <b class="k-fail">red</b> no word shared, or a number no passage states.</div>
       </div>`;
     document.getElementById("claims").innerHTML = `
       <div class="eyebrow"><span>flagged claims &middot; ${it.claims.length}</span></div>
@@ -428,7 +487,7 @@
         <button type="button" class="btn primary" data-nav="next" ${current === TOTAL - 1 ? "disabled" : ""}>Next</button>
       </div>`;
     const pane = document.getElementById("ctxpane"); pane.innerHTML = A.paneHtml; pane.scrollTop = 0;
-    document.getElementById("ctxnote").hidden = true; sel = -1; lit = -1;
+    document.getElementById("ctxnote").hidden = true; sel = -1; lit = [];
     activeClaim = 0; focusClaim(0);
     renderProgress(); renderList();
     const here = document.querySelector("nav .row.here"); if (here) here.scrollIntoView({ block: "nearest" });
@@ -464,7 +523,7 @@
 
   (async () => {
     db = window.claude && window.claude.use ? await window.claude.use("db") : null;
-    if (!db) { setSave("not saving", true); return; }
+    if (!db) { setSave(NO_DB, true); return; }
     try {
       const snap = await db.collection("reviews").get();
       for (const doc of snap.docs) {

@@ -2,7 +2,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import EmptyState from '../../../../../components/gotham/EmptyState'
-import { analyse, carryingUnit, inlineParts, segments, type ReadUnit } from './reading'
+import { analyse, claimFocus, groundClaim, inlineParts, litPassages, segments, type ReadUnit } from './reading'
+import { PAGE_CSS } from './reviewCss'
 import {
   isDone,
   keyOf,
@@ -19,8 +20,9 @@ import {
  * could not find beside it, a yes or no on each. Ported from the labelling
  * page (apps/api/tests/evals/calibration/page/template.html), the v1.
  *
- * The reading aid (sentence edges, the lit passage) measures word overlap and
- * nothing else; the legend says so. The claim statement is the judge's own
+ * The reading aid (sentence edges, the lit passages, the reason on each card)
+ * applies the faithfulness gate's rules from reading.ts; the legend says what
+ * each edge means. The claim statement is the judge's own
  * sentence and is set in the judge's voice. Answers are saved as a sitting:
  * every answer made since the last flush goes in one POST, 600ms after the
  * last keypress. A refused sitting (the run no longer flags a claim, or its
@@ -72,6 +74,8 @@ export default function ClaimsReview({ data, save, backHref }: Props) {
   const [current, setCurrent] = useState(() => resumeIndex(scenarios, answers))
   const [activeClaim, setActiveClaim] = useState(0)
   const [selected, setSelected] = useState(-1)
+  // true while the active claim, not a sentence the Tenant picked, decides the lit passages
+  const [claimLit, setClaimLit] = useState(false)
   const [saveState, setSaveState] = useState<SaveState>(canStore ? 'saved' : 'unavailable')
   // a refusal stays on the status line until the page is reloaded, whatever saves after it
   const [refusedOnce, setRefusedOnce] = useState(false)
@@ -100,7 +104,23 @@ export default function ClaimsReview({ data, save, backHref }: Props) {
     () => (scenario ? analyse(scenario.response, scenario.retrieved_contexts) : null),
     [scenario],
   )
-  const lit = selected >= 0 && reading ? reading.units[selected]?.match : undefined
+  const litUnit = selected >= 0 && reading ? reading.units[selected] : undefined
+  const litClaim = claimLit ? scenario?.claims[activeClaim] : undefined
+  // the passages the gate read: the active claim's own grounding, or the sentence the Tenant picked;
+  // the best passage, and a second when the gate joined two
+  const lit = useMemo(() => {
+    if (!reading) return []
+    if (litClaim) return claimFocus(litClaim.statement, reading).lit
+    return litUnit ? litPassages(litUnit, litUnit.tokens, reading.passageTokens) : []
+  }, [litClaim, litUnit, reading])
+  const ctxNote =
+    !reading || !reading.passages.length || lit.length
+      ? ''
+      : litClaim
+        ? 'no passage shares a word with this claim'
+        : litUnit
+          ? 'no passage shares words with that sentence'
+          : ''
 
   useEffect(() => {
     const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
@@ -214,18 +234,25 @@ export default function ClaimsReview({ data, save, backHref }: Props) {
   }, [])
 
   // ── the reading aid ─────────────────────────────────────────────────────
-  const selectSentence = useCallback(
-    (n: number) => {
-      setSelected(n)
-      const u = reading?.units[n]
-      if (!u || u.match.passage < 0) return
+  const scrollToPassage = useCallback(
+    (passage: number) => {
       const pane = paneRef.current
-      const pw = pane?.querySelector<HTMLElement>(`[data-i="${u.match.passage}"]`)
+      const pw = passage >= 0 ? pane?.querySelector<HTMLElement>(`[data-i="${passage}"]`) : null
       if (!pane || !pw) return
       const top = pane.scrollTop + (pw.getBoundingClientRect().top - pane.getBoundingClientRect().top) - 10
       pane.scrollTo({ top, behavior: reduced ? 'auto' : 'smooth' })
     },
-    [reading, reduced],
+    [reduced],
+  )
+
+  const selectSentence = useCallback(
+    (n: number) => {
+      setSelected(n)
+      setClaimLit(false)
+      const u = reading?.units[n]
+      if (u) scrollToPassage(u.match.passage)
+    },
+    [reading, scrollToPassage],
   )
 
   const sentenceIndexes = useMemo(
@@ -259,17 +286,19 @@ export default function ClaimsReview({ data, save, backHref }: Props) {
     [total],
   )
 
-  // the active claim lights the sentence that carries it, and that sentence lights its passage
+  // the active claim marks the sentence that carries it and lights the passages its own grounding read,
+  // the same reading its card's reason comes from
   const focusClaim = useCallback(
     (i: number) => {
       if (!scenario || !reading) return
       const n = Math.max(0, Math.min(scenario.claims.length - 1, i))
       setActiveClaim(n)
-      const unit = carryingUnit(scenario.claims[n].statement, reading.units)
-      if (unit >= 0) selectSentence(unit)
-      else setSelected(-1)
+      const f = claimFocus(scenario.claims[n].statement, reading)
+      setSelected(f.unit)
+      setClaimLit(true)
+      scrollToPassage(f.lit.length ? f.lit[0].passage : -1)
     },
-    [scenario, reading, selectSentence],
+    [scenario, reading, scrollToPassage],
   )
 
   useEffect(() => {
@@ -343,7 +372,8 @@ export default function ClaimsReview({ data, save, backHref }: Props) {
 
       <div className="bar">
         <span className="keys" aria-hidden="true">
-          <b>←</b> <b>→</b> answer · <b>j</b> <b>k</b> sentence{scenario.claims.length > 1 && <> · <b>1</b> <b>2</b> claim</>} · <b>y</b> yes · <b>n</b> no
+          <b>←</b> <b>→</b> answer · <b>j</b> <b>k</b> sentence
+          {scenario.claims.length > 1 && <> · <b>1</b>..<b>{Math.min(9, scenario.claims.length)}</b> claim</>} · <b>y</b> yes · <b>n</b> no
         </span>
         <div className="progress">
           <div className="cells" aria-hidden="true">
@@ -378,24 +408,24 @@ export default function ClaimsReview({ data, save, backHref }: Props) {
               ))}
             </div>
             <div className="legend">
-              left edge: how many of the sentence&apos;s words appear in some passage. <b className="k-bone">bone</b> most · <b className="k-grey">grey</b> some · <b className="k-fail">red</b> none. Shared words are not support; read the passage.
+              left edge: what the grounding gate decided. <b className="k-bone">bone</b> grounded, by one passage, two together, or as a decline · <b className="k-grey">grey</b> some words shared, too few · <b className="k-fail">red</b> no word shared, or a number no passage states. Shared words are not support; read the passage.
             </div>
           </div>
         </section>
 
         <aside className="ctxcol" aria-label="retrieved text">
           <div className="eyebrow">retrieved text</div>
-          {selected >= 0 && lit && lit.passage < 0 && reading && reading.passages.length > 0 && (
-            <div className="ctxnote" aria-live="polite">no passage shares words with that sentence</div>
+          {ctxNote && (
+            <div className="ctxnote" aria-live="polite">{ctxNote}</div>
           )}
           <div className="ctxpane" ref={paneRef}>
             {reading?.passages.length === 0 && <p className="pw empty">no retrieved text was stored for this answer</p>}
             {reading?.passages.map((p, i) => {
-              const isLit = lit?.passage === i
+              const on = lit.find((l) => l.passage === i)
               return (
-                <p key={`${scenario.scenario_id}:${i}`} className={`pw${isLit ? ' lit' : ''}`} data-i={i}>
-                  {isLit && lit
-                    ? segments(p.text, lit.shared).map((s, k) => (s.hit ? <mark key={k}>{s.text}</mark> : s.text))
+                <p key={`${scenario.scenario_id}:${i}`} className={`pw${on ? ' lit' : ''}`} data-i={i}>
+                  {on
+                    ? segments(p.text, on.shared).map((s, k) => (s.hit ? <mark key={k}>{s.text}</mark> : s.text))
                     : p.text}
                 </p>
               )
@@ -409,6 +439,7 @@ export default function ClaimsReview({ data, save, backHref }: Props) {
           {scenario.claims.map((c, i) => {
             const v = answers.get(keyOf(scenario.scenario_id, c.position))
             const on = i === activeClaim
+            const g = reading ? groundClaim(c.statement, reading) : null
             return (
               <div
                 key={`${scenario.scenario_id}:${c.position}`}
@@ -421,6 +452,7 @@ export default function ClaimsReview({ data, save, backHref }: Props) {
                   {scenario.claims.length > 1 && i < 9 && <span className="kbd">{i + 1}</span>}
                 </h3>
                 <p className="voice statement">{c.statement}</p>
+                {g && g.reason && <p className={`overlap mono k-${g.tint}`}>{g.reason}</p>}
                 <div className="seg">
                   <button type="button" className={`vbtn yes${v === true ? ' on' : ''}`} aria-pressed={v === true} aria-label={`claim ${i + 1} yes`} disabled={!canStore} onClick={() => answer(i, true)}>
                     Yes
@@ -497,98 +529,3 @@ function Sentence({ unit, index, on, onSelect }: { unit: ReadUnit; index: number
     </span>
   )
 }
-
-// Page-scoped CSS, the same dangerouslySetInnerHTML pattern as eval/page.tsx.
-// Every colour is a token from globals.css; the two hues are the two answers.
-const PAGE_CSS = `
-  .review .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; padding-bottom: 14px; border-bottom: 1px solid var(--hairline); margin-top: -12px; }
-  .review .keys { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
-  .review .keys b { display: inline-block; border: 1px solid var(--hairline-strong); padding: 0 5px; border-radius: 2px; color: var(--ink-2); font-weight: 400; }
-  .review .progress { margin-left: auto; display: flex; align-items: center; gap: 10px; }
-  .review .cells { display: flex; flex-wrap: wrap; gap: 2px; max-width: 366px; }
-  .review .cell { display: block; width: 6px; height: 10px; border: 1px solid var(--ink-3); border-radius: 1px; }
-  .review .cell.full { background: var(--live); border-color: transparent; }
-  .review .cell.full.yes { background: var(--pass); }
-  .review .cell.full.no { background: var(--fail); }
-  .review .cell.here { border-color: var(--live-hot); box-shadow: 0 0 0 1px var(--live-hot); }
-  .review .count { font-size: 12px; color: var(--ink-2); }
-  .review .save { font-size: 10.5px; color: var(--ink-3); min-width: 9ch; }
-  .review .save.warn { color: var(--fail); }
-  .review .note { margin-top: 14px; font-size: 13px; color: var(--ink-2); }
-  .review .note.warn { color: var(--fail); }
-
-  .review .bench { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 18px; }
-  .review .answer { padding-block: 18px 24px; display: flex; flex-direction: column; gap: 20px; min-width: 0; }
-  .review .block { display: flex; flex-direction: column; gap: 6px; }
-  .review .eyebrow { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); font-weight: 700; }
-  .review .question { font-family: var(--display); font-size: 18px; line-height: 1.4; letter-spacing: -0.01em; max-width: 68ch; text-wrap: balance; }
-  .review .question:focus { outline: none; }
-  .review .response { max-width: 78ch; font-size: 14px; line-height: 1.6; background: var(--surface); padding: 12px 16px; border-radius: var(--r-control); overflow-wrap: anywhere; }
-  .review .sent { display: block; border-left: 3px solid transparent; padding: 2px 0 2px 10px; }
-  .review .sent + .sent { margin-top: 2px; }
-  .review .sent.para { margin-top: 10px; }
-  .review .sent.li, .review .sent.cont { padding-left: 24px; }
-  .review .sent.li { text-indent: -14px; }
-  .review .sent .bu { color: var(--ink-3); }
-  .review .sent.t-bone { border-left-color: var(--live); }
-  .review .sent.t-grey { border-left-color: var(--ink-3); }
-  .review .sent.t-fail { border-left-color: var(--fail); }
-  .review .sent[data-s] { cursor: pointer; }
-  .review .sent[data-s]:hover, .review .sent.on { background: var(--surface-2); }
-  .review .sent.code { font-family: var(--mono); font-size: 11.5px; line-height: 1.6; white-space: pre-wrap; overflow-x: auto; background: var(--well); padding: 8px 0 8px 10px; margin-top: 8px; }
-  .review .sent.cite { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); white-space: pre-wrap; margin-top: 12px; }
-  .review .response code { font-family: var(--mono); font-size: 0.88em; background: var(--surface-2); padding: 0 3px; border-radius: 2px; }
-  .review .legend { font-size: 11px; line-height: 1.5; color: var(--ink-3); }
-  .review .legend b { font-weight: 600; }
-  .review .k-bone { color: var(--live); }
-  .review .k-grey { color: var(--ink-2); }
-  .review .k-fail { color: var(--fail); }
-
-  .review .ctxcol { min-width: 0; display: flex; flex-direction: column; gap: 6px; padding-block: 18px 12px; }
-  .review .ctxnote { font-size: 11.5px; color: var(--fail); }
-  .review .ctxpane { min-height: 0; max-height: 70vh; overflow-y: auto; background: var(--well); border: 1px solid var(--hairline); border-radius: var(--r-control); padding: 10px 14px 10px 8px; }
-  .review .pw { margin: 0 0 8px; padding-left: 9px; border-left: 3px solid transparent; font-size: 12.5px; line-height: 1.6; color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; }
-  .review .pw:last-child { margin-bottom: 0; }
-  .review .pw.lit { border-left-color: var(--live); color: var(--ink); }
-  .review .pw.empty { color: var(--ink-3); }
-  .review mark { background: var(--live-dim); color: var(--live-hot); border-radius: 1px; padding: 0 1px; }
-
-  .review .claims { display: flex; flex-direction: column; gap: 12px; padding-block: 18px 40px; }
-  .review .rubric { color: var(--ink-2); font-size: 12.5px; line-height: 1.5; }
-  .review .card { display: flex; flex-direction: column; gap: 10px; background: var(--surface); border: 1px solid var(--hairline-strong); border-radius: var(--r-panel); padding: 14px 16px; cursor: default; }
-  .review .card.active { border-color: var(--live-hot); box-shadow: inset 0 0 0 1px var(--live-hot); }
-  .review .card h3 { font-size: 13px; color: var(--ink-2); display: flex; align-items: center; gap: 8px; }
-  .review .statement { font-size: 15.5px; }
-  .review .seg { display: flex; gap: 6px; }
-  .review .vbtn { flex: 1; min-width: 0; font-family: var(--mono); font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; padding: 8px 0; background: transparent; border: 1px solid var(--hairline-strong); color: var(--ink-2); border-radius: var(--r-control); cursor: pointer; }
-  .review .vbtn:hover { color: var(--ink); background: var(--surface-2); }
-  .review .vbtn.yes.on, .review .vbtn.yes.on:hover { background: var(--pass); border-color: var(--pass); color: var(--live-ink); }
-  .review .vbtn.no.on, .review .vbtn.no.on:hover { background: var(--fail); border-color: var(--fail); color: var(--live-ink); }
-  .review .vbtn[disabled] { opacity: 0.35; cursor: default; }
-  .review .navbtns { display: flex; gap: 6px; }
-  .review .claims .navbtns .btn { flex: 1; justify-content: center; }
-  .review :focus-visible { outline: 2px solid var(--live-hot); outline-offset: 2px; }
-
-  .review .strip { display: none; position: sticky; bottom: 0; z-index: var(--z-strip); flex-direction: column; gap: 6px; margin: 0 -40px; padding: 8px 16px; background: var(--surface); border-top: 1px solid var(--hairline-strong); }
-  .review .strow { display: flex; align-items: center; gap: 6px; min-width: 0; }
-  .review .strip .slabel { font-size: 11px; font-weight: 700; color: var(--ink-2); flex: none; }
-  .review .sstatement { font-size: 13.5px; line-height: 1.35; min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-  .review .strip .vbtn { padding: 6px 0; font-size: 11px; }
-  .review .strip .navbtns { margin-left: 4px; gap: 4px; }
-  .review .strip .btn { padding: 6px 10px; }
-
-  @media (max-width: 860px) { .review .keys, .review .card .kbd { display: none; } }
-  @media (max-width: 1179px) {
-    .review.page { padding-bottom: 0; }
-    .review .strip { display: flex; }
-    .review .claims .navbtns { display: none; }
-  }
-  @media (max-width: 900px) { .review .strip { margin: 0 -20px; bottom: 56px; } }
-  @media (min-width: 1180px) {
-    .review .bench { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 300px; }
-    .review .ctxcol, .review .claims { position: sticky; top: 12px; align-self: start; max-height: calc(100vh - 24px); }
-    .review .claims { overflow-y: auto; }
-    .review .ctxpane { max-height: calc(100vh - 78px); }
-  }
-  @media (prefers-reduced-motion: no-preference) { .review .vbtn, .review .btn { transition: background 120ms, color 120ms; } }
-`

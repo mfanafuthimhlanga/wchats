@@ -26,9 +26,10 @@ THE RULE IS THE READING AID, PROMOTED
     Word overlap with suffix stemming to a four-letter floor, a tie between
     passages broken by density, the passage cut at sentence ends to about 300
     characters: the overlap rule the claims bench and the console's reading aid
-    use to light a passage. The aids tint at 0.4 against one passage and carry no
-    number rule, no decline rule and no second reading yet; until they do (#298)
-    a sentence can show bone and fail here, or show grey and pass.
+    use to light a passage. Since #298 both aids port every rule here as a named
+    twin and show this module's `reason` on the card, so what the owner sees lit
+    is what the gate scored; `tests/unit/test_claims_benchmark.py` runs the aids'
+    fixture through `ground()` to keep it so.
 
 A DECLINE ASSERTS NOTHING
     "The documentation does not specify the port" carries no claim the

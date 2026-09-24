@@ -1,7 +1,11 @@
 // reading.ts is the reading aid on the review page: the response split into
-// sentences, the retrieved text split into passages, and word overlap between
-// the two. It tints an edge and points at a passage. It never labels; the
-// Tenant does. Ported from the labelling page's template.html, the v1.
+// sentences, the retrieved text split into passages, and each sentence read by
+// the faithfulness gate's own rules (apps/api/app/domain/grounding.py,
+// grounding-v2): word overlap against the best passage, a second reading
+// against two, every number in the retrieved text, a decline grounded. It tints
+// an edge, lights the passages the gate read and says why in the gate's words.
+// It never labels; the Tenant does. Each rule names its Python twin, so an edit
+// to one has a named place to land in the other.
 
 export type UnitKind = 'p' | 'li' | 'cont' | 'code' | 'cite'
 
@@ -26,18 +30,36 @@ export interface Match {
   score: number
 }
 
-/** bone: carried. grey: partly. fail: no shared words. none: nothing to score. */
+/** bone: the gate grounds it. grey: some words shared, under the floor. fail: no shared word, or a number no passage has. none: nothing to score. */
 export type Tint = 'none' | 'bone' | 'grey' | 'fail'
 
-export interface ReadUnit extends Unit {
-  tokens: Set<string>
+/** What the gate decides about one sentence: SentenceGrounding in grounding.py. */
+export interface Grounding {
+  /** The best passage alone, as bestPassage ranks it. */
   match: Match
+  /** Every number in the sentence the retrieved text never states, as written, in order. */
+  missing: string[]
+  decline: boolean
+  /** The second passage read with the best one when the best alone fell under the floor, or -1. */
+  spannedWith: number
+  /** The share of the sentence's words the gate counted: the best passage's, or the two passages' together. */
+  carried: number
+  supported: boolean
+  /** The gate's reason string, word for word, or "" for a unit with nothing to score. */
+  reason: string
+}
+
+export interface ReadUnit extends Unit, Grounding {
+  tokens: Set<string>
   tint: Tint
 }
 
 export interface Reading {
   units: ReadUnit[]
   passages: Passage[]
+  passageTokens: Set<string>[]
+  /** Every number the passages state, keyed by numberKey. */
+  numbers: Set<string>
 }
 
 const STOP = new Set(
@@ -51,7 +73,8 @@ const STOP = new Set(
 )
 
 const WORD_RE = () => /[A-Za-z0-9][A-Za-z0-9._/-]*/g
-const SENT_RE = () => /(?<=[.!?]["')\]]?)\s+(?=[*`"'([A-Z0-9])/g
+// _SENT_RE in grounding.py: a sentence end, an optional closing quote (straight or curly), then a capital, a digit or an opener
+const SENT_RE = () => /(?<=[.!?]["')\]”’]?)\s+(?=[*`"'([A-Z0-9“‘])/g
 const NO_MATCH: Match = { passage: -1, shared: new Set(), score: 0 }
 
 /** "deployed", "deploys" and "deploy" are one word to the overlap. Suffixes only, never below four letters. */
@@ -176,9 +199,9 @@ export function passagesOf(contexts: readonly string[]): Passage[] {
  * The passage sharing the most of these tokens. A tie goes to the denser passage,
  * the one where the shared words are a larger share of its own, so a long
  * overview that happens to mention two of the words loses to the short passage
- * that is about them.
+ * that is about them. _best_passage in grounding.py.
  */
-export function bestPassage(tokens: Set<string>, passageTokens: readonly Set<string>[]): Match {
+export function bestPassage(tokens: ReadonlySet<string>, passageTokens: readonly ReadonlySet<string>[]): Match {
   let best: Match = NO_MATCH
   let bestDensity = 0
   if (!tokens.size) return best
@@ -195,26 +218,241 @@ export function bestPassage(tokens: Set<string>, passageTokens: readonly Set<str
   return best
 }
 
-/** Red is reserved for a sentence with words that no passage shares. With no passages at all there is nothing to say. */
-export function tintOf(tokenCount: number, score: number, passageCount: number): Tint {
-  if (!tokenCount || !passageCount) return 'none'
-  if (score >= 0.4) return 'bone'
+/** CARRIED_FLOOR in grounding.py: the share of a sentence's words one passage, or two together, must carry. */
+export const CARRIED_FLOOR = 0.4
+
+/**
+ * Red is reserved for a sentence with no word any passage shares, or a number
+ * no passage states; with no passages at all, every sentence but a decline is
+ * red, as the gate flags it. A unit with no content word is not scored. Given
+ * the gate's decision, bone means the gate grounds the sentence (a decline
+ * included); without it, the tint falls back to overlap against the floor.
+ */
+export function tintOf(
+  tokenCount: number,
+  score: number,
+  gate?: { supported: boolean; missing: readonly string[] },
+): Tint {
+  if (!tokenCount) return 'none'
+  if (gate) {
+    if (gate.supported) return 'bone'
+    return score > 0 && !gate.missing.length ? 'grey' : 'fail'
+  }
+  if (score >= CARRIED_FLOOR) return 'bone'
   if (score > 0) return 'grey'
   return 'fail'
 }
 
-// a source marker names a document rather than asserting anything, so it stays out of the score
-const scoreText = (text: string) => text.replace(/\*\(([^()]*)\)\*/g, ' ').replace(/[*`]/g, ' ')
+/** _score_text in grounding.py: a source marker names a document rather than asserting anything, so it stays out of the score. */
+export const scoreText = (text: string) => text.replace(/\*\(([^()]*)\)\*/g, ' ').replace(/[*`]/g, ' ')
+
+// Python's \d, \w and \b match Unicode in a str pattern; JavaScript's match ASCII, even with the u flag.
+// \d is \p{Nd}, \w is [\p{L}\p{N}_], and \b beside a word character is a look-around on that class.
+const W = String.raw`[\p{L}\p{N}_]`
+const NOT_W = String.raw`[^\p{L}\p{N}_]`
+const B_BEFORE = `(?<!${W})`
+const B_AFTER = `(?!${W})`
+
+/** _NUMBER_RE in grounding.py: a figure, 1,000,000 with its three-digit groups, 5.5, 20480, never "3,4" read as one. Any decimal digit, as Python's \d. */
+export const NUMBER_RE = () => /\p{Nd}{1,3}(?:,\p{Nd}{3})+(?:\.\p{Nd}+)?|\p{Nd}+(?:\.\p{Nd}+)?/gu
+
+/** _number_key in grounding.py: 20,480 and 20480 are one number; 5.5 stays 5.5. */
+export const numberKey = (raw: string) => raw.replace(/,/g, '')
+
+/** The numbers a text states, as written, in order: _NUMBER_RE.findall in grounding.py. */
+export const numbersIn = (text: string): string[] => text.match(NUMBER_RE()) ?? []
+
+/** The sentence's numbers the retrieved text never states, as written: `missing` in _ground_sentence. */
+export function missingNumbers(sentence: string, allNumbers: ReadonlySet<string>): string[] {
+  return numbersIn(sentence).filter((n) => !allNumbers.has(numberKey(n)))
+}
+
+// _DOC_NOUN and _SAY_VERB in grounding.py: the documents as subject, a verb of saying
+const DOC_NOUN =
+  '(?:corpus|documentation|documents?|docs|material|knowledge base|sources?|readmes?|portfolio documentation|retrieved (?:text|material|documentation|context))'
+const SAY_VERB =
+  '(?:specify|specifies|say|says|state|states|mention|mentions|cover|covers|document|documents|describe|describes|address|addresses|provide|provides|name|names|list|lists|show|shows|explain|explains|detail|details|confirm|confirms|establish|establishes|define|defines|indicate|indicates|record|records|give|gives|include|includes|contain|contains)'
+
+/** _DECLINE_RE in grounding.py: a sentence that opens by declining. Anchored at the start, as re.match is. */
+export const DECLINE_RE = new RegExp(
+  `^${NOT_W}*` + String.raw`(?:(?:however|but|also|note that|based on [^,;]{1,40}|according to [^,;]{1,40}),?\s*)?(?:\*\*[^*]+\*\*\s*)?(?:` +
+    String.raw`(?:the|this|our|my|that|these|its)\s+(?:${W}+\s+){0,2}?` + DOC_NOUN +
+    String.raw`\s+(?:does not|doesn't|did not|didn't|do not|don't|never)\s+` + String.raw`(?:${W}+\s+)?` + SAY_VERB + B_AFTER +
+    String.raw`|i (?:don't|do not) have (?:[\p{L}\p{N}_-]+\s+){0,3}?(?:information|documentation|record|details?)` + B_AFTER +
+    String.raw`|(?:there is|there's) no (?:documented|recorded|stated|documentation|mention|information|record)` + B_AFTER +
+    String.raw`|no (?:information|documentation|record|mention) (?:is|was|exists|about|on|of|in)` + B_AFTER +
+    ')',
+  'iu',
+)
+
+/** _SECOND_CLAUSE_RE in grounding.py: a second clause makes a decline a sentence like any other. */
+export const SECOND_CLAUSE_RE = new RegExp(
+  String.raw`;|\s(?:but|yet|although|though|whereas)\s|` + `${B_BEFORE}it does${B_AFTER}|${B_BEFORE}it is${B_AFTER}`,
+  'iu',
+)
+
+/** is_decline in grounding.py: true when the whole sentence says the documents do not say. */
+export function isDecline(sentence: string): boolean {
+  return DECLINE_RE.test(sentence) && !SECOND_CLAUSE_RE.test(sentence)
+}
+
+/** _INFERENCE_RE in grounding.py: a reason, a consequence or a purpose. Such a sentence gets no second reading. */
+export const INFERENCE_RE = new RegExp(
+  B_BEFORE +
+    '(because|therefore|thus|hence|consequently|so that|which means|this means|that means|as a result|in order to|favou?rs?|why)' +
+    B_AFTER,
+  'iu',
+)
+
+/** SECOND_PASSAGE_MIN_WORDS in grounding.py: the words a second passage must add beyond the best before the two are read together. */
+export const SECOND_PASSAGE_MIN_WORDS = 2
+
+/**
+ * _second_reading in grounding.py: the sentence read against the best passage
+ * joined with the passage adding the most words the best one lacks, and only
+ * when that passage adds at least SECOND_PASSAGE_MIN_WORDS. Returns the single
+ * reading and -1 when no second passage qualifies or the two together still
+ * fall under the floor.
+ */
+export function secondReading(
+  tokens: ReadonlySet<string>,
+  best: number,
+  carried: number,
+  passageTokens: readonly ReadonlySet<string>[],
+  floor: number = CARRIED_FLOOR,
+): { carried: number; second: number } {
+  const bestTokens = passageTokens[best]
+  let second = -1
+  let added = 0
+  passageTokens.forEach((pt, i) => {
+    if (i === best) return
+    let n = 0
+    for (const t of tokens) if (pt.has(t) && !bestTokens.has(t)) n++
+    if (n > added) {
+      second = i
+      added = n
+    }
+  })
+  if (second < 0 || added < SECOND_PASSAGE_MIN_WORDS) return { carried, second: -1 }
+  let together = 0
+  for (const t of tokens) if (bestTokens.has(t) || passageTokens[second].has(t)) together++
+  const share = together / tokens.size
+  if (share < floor) return { carried, second: -1 }
+  return { carried: share, second }
+}
+
+/** Python's format(x, ".0%"): the exact double times 100, a half rounded to even. */
+export function percent(share: number): string {
+  const v = share * 100
+  const f = Math.floor(v)
+  const d = v - f
+  const n = d > 0.5 || (d === 0.5 && f % 2 === 1) ? f + 1 : f
+  return `${n}%`
+}
+
+/** SentenceGrounding.reason in grounding.py, word for word. */
+export function reasonOf(g: Pick<Grounding, 'match' | 'missing' | 'decline' | 'spannedWith' | 'carried'>): string {
+  if (g.decline) return 'a decline asserts nothing the documents would carry'
+  if (g.match.passage < 0) return 'no passage shares a word with it'
+  const parts =
+    g.spannedWith >= 0
+      ? [`passages ${g.match.passage + 1} and ${g.spannedWith + 1} together carry ${percent(g.carried)} of its words`]
+      : [`passage ${g.match.passage + 1} carries ${percent(g.carried)} of its words`]
+  if (g.missing.length) parts.push('number ' + g.missing.join(', ') + ' appears in no passage')
+  return parts.join('; ')
+}
+
+/**
+ * _ground_sentence in grounding.py: one sentence's grounding. `tokens` are the
+ * sentence's words after scoreText; an empty set is a unit the gate never
+ * scores, and it comes back unsupported with no reason.
+ */
+export function groundSentence(
+  statement: string,
+  tokens: ReadonlySet<string>,
+  passageTokens: readonly ReadonlySet<string>[],
+  allNumbers: ReadonlySet<string>,
+): Grounding {
+  const match = bestPassage(tokens, passageTokens)
+  const base = { match, missing: [] as string[], decline: false, spannedWith: -1, carried: match.score }
+  if (!tokens.size) return { ...base, supported: false, reason: '' }
+  if (isDecline(statement)) {
+    const g = { ...base, decline: true }
+    return { ...g, supported: true, reason: reasonOf(g) }
+  }
+  const missing = missingNumbers(statement, allNumbers)
+  let carried = match.score
+  let spannedWith = -1
+  if (match.passage >= 0 && carried < CARRIED_FLOOR && !INFERENCE_RE.test(statement)) {
+    const r = secondReading(tokens, match.passage, carried, passageTokens)
+    carried = r.carried
+    spannedWith = r.second
+  }
+  const g = { match, missing, decline: false, spannedWith, carried }
+  return { ...g, supported: match.passage >= 0 && carried >= CARRIED_FLOOR && !missing.length, reason: reasonOf(g) }
+}
 
 export function analyse(response: string, contexts: readonly string[]): Reading {
   const passages = passagesOf(contexts)
   const passageTokens = passages.map((p) => tokensOf(p.text))
+  // ground() in grounding.py: every number any passage states
+  const numbers = new Set(passages.flatMap((p) => numbersIn(p.text).map(numberKey)))
   const units = responseUnits(response).map((u): ReadUnit => {
-    const tokens = u.kind === 'cite' ? new Set<string>() : tokensOf(scoreText(u.text))
-    const match = bestPassage(tokens, passageTokens)
-    return { ...u, tokens, match, tint: tintOf(tokens.size, match.score, passages.length) }
+    // the gate scores prose only: a code fence and the CITATIONS block never reach it (response_sentences)
+    const tokens = u.kind === 'cite' || u.kind === 'code' ? new Set<string>() : tokensOf(scoreText(u.text))
+    const g = groundSentence(u.text, tokens, passageTokens, numbers)
+    return { ...u, ...g, tokens, tint: tintOf(tokens.size, g.match.score, g) }
   })
-  return { units, passages }
+  return { units, passages, passageTokens, numbers }
+}
+
+/** A claim's own grounding against the reading's passages, with its tint and words: what the claim card says. */
+export function groundClaim(statement: string, reading: Reading): Grounding & { tint: Tint; tokens: Set<string> } {
+  const tokens = tokensOf(scoreText(statement))
+  const g = groundSentence(statement, tokens, reading.passageTokens, reading.numbers)
+  return { ...g, tokens, tint: tintOf(tokens.size, g.match.score, g) }
+}
+
+export interface LitPassage {
+  passage: number
+  /** The sentence's words this passage carries, marked when it is lit. */
+  shared: Set<string>
+}
+
+/** The passages the gate read a sentence against: the best, and the second when the gate joined two. */
+export function litPassages(
+  g: Pick<Grounding, 'match' | 'spannedWith'>,
+  tokens: ReadonlySet<string>,
+  passageTokens: readonly ReadonlySet<string>[],
+): LitPassage[] {
+  if (g.match.passage < 0) return []
+  const out: LitPassage[] = [{ passage: g.match.passage, shared: g.match.shared }]
+  const pt = passageTokens[g.spannedWith]
+  if (g.spannedWith >= 0 && pt) out.push({ passage: g.spannedWith, shared: new Set([...tokens].filter((t) => pt.has(t))) })
+  return out
+}
+
+export interface ClaimFocus {
+  /** The response sentence that carries the claim, marked as selected, or -1. */
+  unit: number
+  /** The claim's own grounding: what its card says. */
+  grounding: ReturnType<typeof groundClaim>
+  /** The passages that grounding read, lit while the claim is active. */
+  lit: LitPassage[]
+}
+
+/**
+ * What an active claim shows: its carrying sentence marked, and the passages
+ * its own grounding read lit, so the card's reason and the lit passages come
+ * from one reading of the claim statement, as the bench's focusClaim does.
+ */
+export function claimFocus(statement: string, reading: Reading): ClaimFocus {
+  const grounding = groundClaim(statement, reading)
+  return {
+    unit: carryingUnit(statement, reading.units),
+    grounding,
+    lit: litPassages(grounding, grounding.tokens, reading.passageTokens),
+  }
 }
 
 /** The response sentence that carries a claim: the one sharing most of the claim's words, or -1. */
