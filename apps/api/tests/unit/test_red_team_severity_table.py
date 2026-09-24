@@ -119,6 +119,9 @@ def _attacker_finding(vector: str):
     """The attacker types the finding's attack_vector and may still send a
     `severity`. Neither picks the grade; the loop's vector does."""
     session = ProbeSession(attack_vector=vector)
+    # One answered probe that published no evidence, so report_stands leaves
+    # every vector's report on the attacker's word and the grade is what is read.
+    session.record_answer("probe", "response", MagicMock())
     session.raw_findings.append({
         "severity": "low",
         "description": "the agent did what the attacker asked",

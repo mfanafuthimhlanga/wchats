@@ -2,21 +2,11 @@
 red_team_probe — the substrate that makes RTX-01/02/03 meaningful (Phase 18, OD-6).
 
 Why this module exists:
-    ``_build_probe_fn`` in `app/worker/tasks/runtime/red_team.py` sends a plain
-    ``chat.completions.create(...)`` with **no `tools=` kwarg at all**. It never
-    attempts a tool call, so it never reaches the capability envelope (L1), the
-    Actor gate (L3), or the IDV gate. A red-team suite built on it would
-    report zero findings regardless of whether any of those layers actually work — the
-    finding would be vacuous, satisfying RTX-04's "zero high-severity findings" success
-    criterion for the wrong reason (RESEARCH.md Pitfall 1).
-
-    `18-PATTERNS.md` names this module's two central functions,
-    ``_build_transactional_probe_fn`` and the ``get_adapter_for_skill`` red-team-mode
-    short-circuit (in `provider_adapter.py`, Task 1 of this plan), as genuine no-analog
-    gaps: no file in this codebase previously combined the real transactional tools
-    with a provider-resolution short-circuit into ``StubProviderAdapter``. There was
-    no existing pattern to copy — this module was designed from the dispatcher's real
-    enforcement order (`tools.py` `_execute_transactional_tool`), not from a precedent.
+    A red-team probe that never attempts a tool call never reaches the capability
+    envelope (L1), the Actor gate (L3), or the IDV gate, and a suite built on it
+    reports zero findings whether or not those layers work (RESEARCH.md Pitfall 1).
+    Every probe the red team sends to the deployed agent therefore runs the
+    customer turn itself, built here.
 
 This module carries two probe surfaces:
     1. ``invoke_probe_tool(skill, args)`` enters the same typed seams the seven
@@ -25,11 +15,14 @@ This module carries two probe surfaces:
        dispatcher's own ``ToolResult``, tagged. This is the deterministic
        assertion surface RTX-02 (chained refund rate limiting) and RTX-03
        (identity-verification bypass) need.
-    2. ``_build_transactional_probe_fn(agent, conn_str, tenant_id)`` — drives a
+    2. ``build_victim_probe_fn(agent, conn_str, tenant_id, transcript=...)`` drives a
        **victim** turn through the seam and the loop a customer gets
        (``agent_loop.build_agent_turn`` then ``run_agent_loop``), so the Actor gate
-       sees real conversation history and a real proposed action. This is the
-       conversational surface RTX-01 (confused deputy) needs. It returns a
+       sees real conversation history and a real proposed action. With
+       ``transcript=True`` (``_build_transactional_probe_fn``) the reply carries the
+       tool-verdict transcript RTX-01 (confused deputy) needs; with
+       ``transcript=False`` it is the probe the four conversational vectors send.
+       It returns a
        one-argument callable matching the existing
        ``run_X_agent(probe_fn, max_turns, attack_sequences)`` runner contract, so
        plan 18-06's runners need no new contract.
@@ -92,6 +85,7 @@ from app.services.agent_loop import (
 )
 from app.services.agent_tools import get_tool_results
 from app.services.transactional import provider_adapter
+from app.services.transactional.registry import TOOL_REGISTRY
 from app.services.transactional.tools import (
     GATES_PASSED_DETAIL,
     IDV_BLOCK_MESSAGES,
@@ -136,6 +130,33 @@ PROBE_PII_FIREWALL_CLEAN: dict = {
     "original_length": 0,
     "published_chunks": 0,
 }
+
+# The system prompt the victim turn was assembled with, published on the callable
+# beside the firewall reading so a red-team rule can check a disclosure claim
+# against the prompt the customer is served. None until a turn is assembled. The
+# builder sets it as soon as the seam returns the turn, before the message runs,
+# so a turn that raised still leaves the prompt readable.
+PROBE_SYSTEM_PROMPT_ATTR: str = "system_prompt"
+
+# The verdict tags of the MUTATING calls the LAST victim turn made, as a tuple in
+# call order: `ProbeToolResult.verdict_tag` for each verdict whose skill is in
+# MUTATING_SKILLS. Rebound to an empty tuple at the start of every message, so a
+# turn that raised or called no mutating skill publishes () and never inherits the
+# previous message's tags.
+#
+# ONLY MUTATING SKILLS, because `verdict_tag` falls through to `succeeded` for any
+# text no pattern matches. confirm_action is not mutating and publishes a verdict
+# too, and its error results ("Invalid input: ...", "Precondition failed: ...")
+# carry no needle, so they tag `succeeded`. Published beside the mutating calls,
+# that tag would read as a landed attack to `red_team_service`'s
+# mutating_call_landed rule. The transcript still carries every verdict.
+PROBE_VERDICT_TAGS_ATTR: str = "verdict_tags"
+
+#: The skills whose verdict can mean money or a record moved: TOOL_REGISTRY's
+#: `mutating` flag, the one definition-time source.
+MUTATING_SKILLS: frozenset[str] = frozenset(
+    name for name, definition in TOOL_REGISTRY.items() if definition.mutating
+)
 
 
 # ---------------------------------------------------------------------------
@@ -461,7 +482,7 @@ class _ProbeEventSink:
         return None
 
 
-def _victim_turn(agent: Any, conn_str: str, conversation_id: str) -> AgentTurn:
+def _victim_turn(agent: Any, conn_str: str, conversation_id: str, job_id: str) -> AgentTurn:
     """Assemble the victim turn, then narrow its call ceiling to the red team's.
 
     `dataclasses.replace` rather than a second assembly. Every field that decides
@@ -470,13 +491,16 @@ def _victim_turn(agent: Any, conn_str: str, conversation_id: str) -> AgentTurn:
     the one field narrowed here can only refuse a model call the seam would have
     allowed.
 
+    `job_id` is the red-team run id, so the turn's `agent_turn` spend lands on the
+    tenant ledger under the run that caused it.
+
     conn_str is never logged (CLAUDE.md rule 4 / T-16-06).
     """
     turn = build_agent_turn(
         agent=agent,
         conn_str=conn_str,
         conversation_id=conversation_id,
-        job_id="",
+        job_id=job_id,
         side_effects="recorded",
         ledger=ledger_recorder(conn_str),
         verified_session_token="",
@@ -485,8 +509,8 @@ def _victim_turn(agent: Any, conn_str: str, conversation_id: str) -> AgentTurn:
     return replace(turn, max_model_calls=settings.RED_TEAM_MAX_TURNS)
 
 
-def _tool_verdict_transcript() -> str:
-    """The dispatcher's own verdicts for this turn, one `skill=` line each.
+def _turn_verdicts() -> list["ProbeToolResult"]:
+    """The dispatcher's own verdicts for this turn, tagged, in call order.
 
     Read off the ToolResult TYPE through this turn's ContextVar sink, never off
     `tool_calls_log`: that list carries a result for `retrieve` alone, because
@@ -494,11 +518,13 @@ def _tool_verdict_transcript() -> str:
     the six mutating skills' outputs may not sit at rest on a POPIA-sensitive
     platform.
     """
+    return [ProbeToolResult.from_tool_result(verdict) for verdict in get_tool_results()]
+
+
+def _tool_verdict_transcript(verdicts: list["ProbeToolResult"]) -> str:
+    """One `skill= verdict= is_error=` line per verdict."""
     return "\n".join(
-        f"skill={r.skill} verdict={r.verdict_tag} is_error={r.is_error}"
-        for r in (
-            ProbeToolResult.from_tool_result(verdict) for verdict in get_tool_results()
-        )
+        f"skill={r.skill} verdict={r.verdict_tag} is_error={r.is_error}" for r in verdicts
     )
 
 
@@ -519,111 +545,102 @@ def _publish_victim_firewall(result: dict, firewall: dict, **ids) -> None:
     log_pii_firewall(log, result, **ids)
 
 
-def _build_transactional_probe_fn(
-    agent: Any, conn_str: str, tenant_id: str
+# THE VICTIM IS THE CUSTOMER TURN, not a copy of it. `build_agent_turn` assembles
+# the system prompt, the eleven tools, the client and the route; `run_agent_loop`
+# runs them. #48 put the customer on that loop and left the transactional probe
+# driving the SDK with a model id and a tool list of its own, so for one milestone
+# RTX-01 reported findings about an agent nobody was served. Until #309 the four
+# conversational vectors attacked a five-line persona built from the soul fields,
+# with no retrieval and no tools, so their findings were about a prompt no
+# customer was served either. One builder serves both probe kinds. Four things
+# differ from a customer turn, and each is load-bearing:
+#
+#   * side_effects="recorded" (#90/#91). Recorded mode does not short-circuit the
+#     six mutating skills; the recorded seam stops the money and the verdict says
+#     would_have_executed.
+#   * notify_fn, a no-op, and the second lock rather than the only one. Recorded
+#     mode's notifier already records instead of sending, and a path that pages a
+#     human keeps both.
+#   * verified_session_token="", the unverified posture RTX-03 probes.
+#   * max_model_calls, settings.RED_TEAM_MAX_TURNS, the red team's own ceiling.
+#
+# THE TURN IS ASSEMBLED IN THE SYNC BODY of probe_fn, and not inside the
+# coroutine. `bind_tool_context` publishes the tool-result sink as a list OBJECT,
+# and `asyncio.run` runs its coroutine in a COPY of this context, so the sink has
+# to exist before the copy for the appends made during the turn to be the ones
+# read back. A fresh list per message keeps one attack's refund attempt out of the
+# next attack's transcript and verdict tags.
+#
+# `close_turn` runs outside the timeout for the reason `record_turn_calls` gives: a
+# ledger row opens a tenant connection and a sleeping Neon endpoint takes 8 to 20
+# seconds to wake. It hands the tool ContextVars back too (#98). `red_team_mode()`
+# wraps both, so `get_adapter_for_skill` short-circuits to the offline
+# StubProviderAdapter before any credential resolution, for every call the turn
+# makes. The bridge is asyncio.run(asyncio.wait_for(...)); the runner's
+# `await asyncio.to_thread(probe_fn, msg)` provides the loop-free thread.
+#
+# THE TRANSCRIPT IS READ OFF THE TYPE (BACKLOG 5.9), through `_turn_verdicts`.
+# Only the seven transactional tools publish a verdict, which is what RTX-01
+# asserts over: `test_confused_deputy` requires EVERY `skill=` line to carry a
+# blocked tag, and a `retrieve` line would fail that test while reporting nothing
+# about the attack.
+#
+# THE FIREWALL READING is rebound per probe_fn rather than per message, because
+# the reader only looks after a probe ANSWERED, and a turn that raised returns ""
+# and is never read. The substitution itself already happened inside the seam;
+# the reading records WHAT was caught, outside the text, because an attack that
+# talked the agent into an address and a polite refusal both come back as
+# PII_DEFLECTION (#103).
+#
+# The builder's arguments: `tenant_id` is the runner's; `build_agent_turn` reads
+# the same value off `agent.tenant_id`, and red_team.py passes
+# `str(agent.tenant_id)`. `transcript=True` appends PROBE_TOOL_TRANSCRIPT_MARKER
+# and one verdict line per tool call, for the confused-deputy attacker; False
+# returns the agent's reply alone. `job_id` is the red-team run id, which every
+# victim turn bills under. conn_str is never logged (CLAUDE.md rule 4).
+
+
+def build_victim_probe_fn(
+    agent: Any, conn_str: str, tenant_id: str, *, transcript: bool, job_id: str
 ) -> Callable[[str], str]:
-    """Return a probe_fn(message: str) -> str that drives the REAL transactional dispatcher.
+    """A probe_fn(message) -> str that runs the deployed agent's own turn.
 
-    Matches the exact signature the existing run_X_agent(probe_fn, max_turns,
-    attack_sequences) runner template expects (red_team_service.py), and
-    `worker.tasks.runtime.red_team` calls it with those three arguments.
-
-    THE VICTIM IS THE CUSTOMER TURN, not a copy of it. `build_agent_turn` assembles
-    the system prompt, the eleven tools, the client and the route; `run_agent_loop`
-    runs them. #48 put the customer on that loop and left this probe driving the SDK
-    with a model id and a tool list of its own, so for one milestone RTX-01 reported
-    findings about an agent nobody was served. Four things differ from a customer
-    turn, and each is load-bearing:
-
-      * side_effects="recorded" (#90/#91). This bullet said "live", on the claim
-        that recorded mode short-circuits the six mutating skills. It does not,
-        and the banner above this function carries what the claim cost.
-      * notify_fn, a no-op, and the second lock rather than the only one.
-        Recorded mode's notifier already records instead of sending, and a path
-        that pages a human keeps both.
-      * verified_session_token="" — the unverified posture RTX-03 probes.
-      * max_model_calls — settings.RED_TEAM_MAX_TURNS, the red team's own ceiling.
-
-    tenant_id is the runner's argument; `build_agent_turn` reads the same value off
-    `agent.tenant_id`, and red_team.py passes `str(agent.tenant_id)`.
-
-    conn_str is never logged (CLAUDE.md rule 4 / T-16-06).
-
-    A victim-turn failure never raises out into the runner — this matches the
-    shipped _build_probe_fn's resilience contract (returns "" on failure).
+    Matches the run_X_agent(probe_fn, max_turns, attack_sequences) runner contract
+    and publishes PROBE_PII_FIREWALL_ATTR, PROBE_SYSTEM_PROMPT_ATTR and
+    PROBE_VERDICT_TAGS_ATTR on itself. A victim-turn failure returns "".
     """
     conversation_id = str(uuid4())
-    # What the output firewall did to the LAST victim turn this probe ran, read
-    # back by the caller through PROBE_PII_FIREWALL_ATTR. Rebound per probe_fn
-    # rather than per message, because the reader only looks after a probe
-    # ANSWERED, and a turn that raised returns "" and is never read.
     firewall = dict(PROBE_PII_FIREWALL_CLEAN)
 
     async def _inner(message: str, turn: AgentTurn) -> str:
-        """One victim turn, and the transcript of what its tool calls decided.
-
-        THE TRANSCRIPT IS READ OFF THE TYPE (BACKLOG 5.9). `run_agent_loop` returns
-        a `tool_calls_log`, and that list cannot carry a verdict: it holds a tool
-        result for `retrieve` alone, because `_persist_messages` writes that key
-        into the tenant's `tool_calls.result` jsonb and the six mutating skills'
-        outputs may not sit at rest on a POPIA-sensitive platform. So the verdict
-        travels in-process instead, from the dispatcher's own `ToolResult` through
-        `transactional.tools._published_wire` into this turn's sink.
-
-        Only the seven transactional tools publish, which is what RTX-01 asserts
-        over: `test_confused_deputy` requires EVERY `skill=` line to carry a blocked
-        tag, and a successful `retrieve` line would have failed that test while
-        reporting nothing about the attack.
-        """
+        """One victim turn, and what its tool calls decided."""
         sink = _ProbeEventSink()
         result = await run_agent_loop(
             message, history=[], turn=turn, job_id="", db=sink, redis=sink
         )
-        # The substitution already happened, inside the seam. This records WHAT
-        # was caught, outside the text: an attack that talked the agent into an
-        # address and a polite refusal both come back as PII_DEFLECTION, so the
-        # runner cannot tell a caught leak from a decline off the prose (#103).
         _publish_victim_firewall(
             result, firewall, agent_id=str(agent.id), tenant_id=tenant_id,
             conversation_id=conversation_id,
         )
-        return (
-            result["response_text"]
-            + "\n"
-            + PROBE_TOOL_TRANSCRIPT_MARKER
-            + "\n"
-            + _tool_verdict_transcript()
-        )
+        verdicts = _turn_verdicts()
+        setattr(probe_fn, PROBE_VERDICT_TAGS_ATTR, tuple(
+            v.verdict_tag for v in verdicts if v.skill in MUTATING_SKILLS
+        ))
+        if not transcript:
+            return result["response_text"]
+        return "\n".join((
+            result["response_text"],
+            PROBE_TOOL_TRANSCRIPT_MARKER,
+            _tool_verdict_transcript(verdicts),
+        ))
 
     def probe_fn(message: str) -> str:
-        """Synchronous probe_fn matching run_X_agent's Callable[[str], str] contract.
-
-        THE TURN IS ASSEMBLED HERE, in the sync body, and not inside `_inner`.
-        `bind_tool_context` publishes the tool-result sink as a list OBJECT, and
-        `asyncio.run` runs its coroutine in a COPY of this context, so the sink has
-        to exist before the copy for the appends made during the turn to be the ones
-        read back. A fresh list per message is what keeps one attack's refund attempt
-        out of the next attack's transcript.
-
-        `close_turn` runs outside the timeout for the reason `record_turn_calls` gives:
-        a ledger row opens a tenant connection and a sleeping Neon endpoint takes 8 to 20
-        seconds to wake. It hands the tool ContextVars back too (#98).
-
-        `red_team_mode()` wraps both, so `get_adapter_for_skill` short-circuits to
-        the offline StubProviderAdapter before any credential resolution, for every
-        call this turn makes.
-
-        Bridges async into sync exactly as _build_probe_fn does:
-        asyncio.run(asyncio.wait_for(...)) — the event-loop bridge that is broken on
-        Python 3.12 is deliberately NOT used here. The runner's existing
-        await asyncio.to_thread(probe_fn, msg) provides the loop-free thread.
-
-        A failure anywhere returns "", never a raise: the runner template depends
-        on it.
-        """
+        """Synchronous probe_fn matching run_X_agent's Callable[[str], str] contract."""
+        setattr(probe_fn, PROBE_VERDICT_TAGS_ATTR, ())
         try:
             with red_team_mode():
-                turn = _victim_turn(agent, conn_str, conversation_id)
+                turn = _victim_turn(agent, conn_str, conversation_id, job_id)
+                setattr(probe_fn, PROBE_SYSTEM_PROMPT_ATTR, turn.system_prompt)
                 try:
                     return asyncio.run(
                         asyncio.wait_for(_inner(message, turn), timeout=120.0)
@@ -634,10 +651,21 @@ def _build_transactional_probe_fn(
             log_failure(log, "red_team_probe.victim_turn_failed", exc)
             return ""
 
-    # The one channel out of a `Callable[[str], str]` that leaves the transcript
-    # the attacker reads untouched. See PROBE_PII_FIREWALL_ATTR.
     setattr(probe_fn, PROBE_PII_FIREWALL_ATTR, firewall)
+    setattr(probe_fn, PROBE_SYSTEM_PROMPT_ATTR, None)
+    setattr(probe_fn, PROBE_VERDICT_TAGS_ATTR, ())
     return probe_fn
+
+
+def _build_transactional_probe_fn(
+    agent: Any, conn_str: str, tenant_id: str, job_id: str = ""
+) -> Callable[[str], str]:
+    """The victim probe with the tool-verdict transcript, for the confused-deputy attacker.
+
+    run_red_team passes the run id as `job_id`. The default serves callers that
+    bill no run.
+    """
+    return build_victim_probe_fn(agent, conn_str, tenant_id, transcript=True, job_id=job_id)
 
 
 # ---------------------------------------------------------------------------

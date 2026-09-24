@@ -492,11 +492,11 @@ def test_run_red_team_calls_all_six_runners():
         patch(
             "app.worker.tasks.runtime.red_team._build_probe_fn",
             return_value=bare_probe_fn,
-        ),
+        ) as build_probe,
         patch(
             "app.worker.tasks.runtime.red_team._build_transactional_probe_fn",
             return_value=transactional_probe_fn,
-        ),
+        ) as build_transactional,
         patch(
             "app.worker.tasks.runtime.red_team.bind_tool_context",
             return_value=MagicMock(),
@@ -533,6 +533,9 @@ def test_run_red_team_calls_all_six_runners():
         result = run_red_team.run(agent_id=agent_id)
 
     assert "run_id" in result, f"run_id missing from result: {result}"
+    # Every victim turn bills agent_turn under the run it belongs to.
+    assert build_probe.call_args.args[3] == result["run_id"]
+    assert build_transactional.call_args.args[3] == result["run_id"]
     # Ticket 15 (#52): each vector makes k independent attempts, so the order is
     # seven blocks of k rather than one pass of seven. Still strictly sequential
     # either way — worker_pool=solo leaves no chord to fan out with.
