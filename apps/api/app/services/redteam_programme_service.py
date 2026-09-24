@@ -75,28 +75,37 @@ _COVERAGE_ROLLUP_SQL = """
 """
 
 # Open findings: the agent's currently-open red_team_findings rows, each with
-# its real primary key (the identifier the contain route needs) and its own
-# run's findings JSONB snapshot (r.findings), joined so the Python-side
-# description correlation below is scoped to the finding's OWN run rather
-# than the latest one. The join is what carries the agent too (#162): it was a
-# LEFT JOIN with no predicate on it, so this listed every agent's open findings
-# and the console offered a contain button for each of them. Severity orders by
-# an explicit rank, critical then high then medium then low, never a plain
-# descending sort on the severity column, which is TEXT and would sort
-# lexically (medium, low, high, critical), burying the one severity that
-# shuts the deploy gate at the end of the list.
-_OPEN_FINDINGS_SQL = """
+# its real primary key (the identifier the contain route needs), what it stood
+# on and the claim kinds that stood (0033), and its own run's findings JSONB
+# snapshot (r.findings), joined so the Python-side description correlation
+# below is scoped to the finding's OWN run rather than the latest one. The join
+# is what carries the agent too (#162): it was a LEFT JOIN with no predicate on
+# it, so this listed every agent's open findings and the console offered a
+# contain button for each of them. Severity orders by an explicit rank, critical
+# then high then medium then low, never a plain descending sort on the severity
+# column, which is TEXT and would sort lexically (medium, low, high, critical),
+# burying the one severity that shuts the deploy gate at the end of the list.
+#
+# _OPEN_FINDING_COLUMNS builds the SELECT list and names the fields
+# _open_finding reads, so the query and the reader cannot disagree on order.
+_OPEN_FINDING_COLUMNS: tuple[str, ...] = (
+    "f.id",
+    "f.run_id",
+    "f.strategy_id",
+    "f.severity",
+    "f.attack_vector",
+    "f.probe_message",
+    "f.agent_response",
+    "f.turn_count",
+    "f.created_at",
+    "f.evidence",
+    "f.claims",
+    "r.findings",
+)
+
+_OPEN_FINDINGS_SQL = f"""
     SELECT
-        f.id,
-        f.run_id,
-        f.strategy_id,
-        f.severity,
-        f.attack_vector,
-        f.probe_message,
-        f.agent_response,
-        f.turn_count,
-        f.created_at,
-        r.findings
+        {", ".join(_OPEN_FINDING_COLUMNS)}
     FROM red_team_findings f
     JOIN red_team_runs r ON r.id = f.run_id
     WHERE f.status = 'open' AND r.kind = %s
@@ -120,13 +129,12 @@ def _correlate_entry(
 ) -> dict | None:
     """The finding's own entry in its run's findings JSONB snapshot, or None.
 
-    red_team_findings has no description or evidence column
-    (0012_red_team_programme.py), so the per-run JSONB snapshot on
-    red_team_runs.findings, written once when the run completed, is the only
-    place either exists. Matching is scoped to the finding's OWN run (via the SQL
-    join in _OPEN_FINDINGS_SQL, never the latest run) on the (attack_vector,
-    probe_message, turn_count) triple, the only fields both sides carry. The
-    first matching entry wins.
+    red_team_findings has no description column (0012_red_team_programme.py),
+    so the per-run JSONB snapshot on red_team_runs.findings, written once when
+    the run completed, is the only place it exists. Matching is scoped to the
+    finding's OWN run (via the SQL join in _OPEN_FINDINGS_SQL, never the latest
+    run) on the (attack_vector, probe_message, turn_count) triple, the only
+    fields both sides carry. The first matching entry wins.
 
     Never raises. A malformed or absent snapshot (wrong type, missing keys,
     non-dict entries) degrades to "no match" rather than taking the whole
@@ -160,32 +168,30 @@ def _correlated_text(entry: dict | None, key: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _correlated_claims(entry: dict | None) -> list[str] | None:
-    """`entry["claims"]` as a list of strings, else None."""
-    value = entry.get("claims") if entry is not None else None
-    return [str(claim) for claim in value] if isinstance(value, list) else None
-
-
 def _open_finding(row: tuple) -> dict:
-    """One open red_team_findings row, with what its run's snapshot adds."""
-    entry = _correlate_entry(row[9], row[4], row[5], row[7])
+    """One open red_team_findings row, with the description its run's snapshot adds.
+
+    The row is read by name: each value pairs with the column name
+    _OPEN_FINDING_COLUMNS gives it, the alias prefix dropped.
+    """
+    names = [column.split(".", 1)[1] for column in _OPEN_FINDING_COLUMNS]
+    f = dict(zip(names, row, strict=True))
+    entry = _correlate_entry(f["findings"], f["attack_vector"], f["probe_message"], f["turn_count"])
     return {
-        "id": str(row[0]),
-        "run_id": str(row[1]) if row[1] else None,
-        "strategy_id": str(row[2]) if row[2] else None,
-        "severity": row[3],
-        "attack_vector": row[4],
-        "probe_message": row[5],
-        "agent_response": row[6],
-        "turn_count": row[7],
-        "created_at": row[8].isoformat() if row[8] else None,
+        "id": str(f["id"]),
+        "run_id": str(f["run_id"]) if f["run_id"] else None,
+        "strategy_id": str(f["strategy_id"]) if f["strategy_id"] else None,
+        "severity": f["severity"],
+        "attack_vector": f["attack_vector"],
+        "probe_message": f["probe_message"],
+        "agent_response": f["agent_response"],
+        "turn_count": f["turn_count"],
+        "created_at": f["created_at"].isoformat() if f["created_at"] else None,
         "description": _correlated_text(entry, "description"),
-        # What the finding stood on (RedTeamFinding.evidence). None when the
-        # snapshot has no matching entry or predates the field.
-        "evidence": _correlated_text(entry, "evidence"),
-        # The claim kinds that stood (RedTeamFinding.claims). None when the
-        # snapshot has no matching entry or predates the field.
-        "claims": _correlated_claims(entry),
+        # What the finding stood on and the claim kinds that stood, from the row
+        # (0033). A row from before 0033 reads attacker_report and [].
+        "evidence": f["evidence"],
+        "claims": list(f["claims"]),
     }
 
 
