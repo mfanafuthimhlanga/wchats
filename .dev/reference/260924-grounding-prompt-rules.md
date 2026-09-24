@@ -77,8 +77,23 @@ The worst permitted turn's spend, re-measured by `tests/unit/test_turn_budget_ce
 $0.200549 through the call the guard reads and $0.244893 for the whole turn, against
 $0.200019 and $0.244260 before. The $0.40 ceiling is 1.99 times the guard figure.
 
-## Next lever
+## On staging, the live loop
 
-The staging agent's soul. Its live answers pass 8 of 30 where the default soul passes 14.
-Read it over the MCP surface once staging is unparked, then run one eval there and read the
-pass count against 0.80 with this template in place.
+One eval run on the Bantuson agent (`ee8087ed`) with the template merged (`main` at
+`77bd663`), 2026-09-24, run `0897e93b`, 60 agent turns in 25 minutes. The before figure is a
+rejudge of the previous run `09941b0f` under the same rule (`ed6cb31d`, no model call), so
+both columns are the rule over the same 50 scenarios the results route returns.
+
+| | before, old template | after, new template |
+|---|---|---|
+| pass 0.80 of 50 | 17 | 30 |
+| median faithfulness | 0.708 | 0.866 |
+| flagged sentences | 175 | 63 |
+| golden dataset pass / fail / unmeasured | | 35 / 25 / 0 |
+
+Paired by scenario: 17 fail to pass, 4 pass to fail. The agent's soul columns are empty, so
+the gap between the harness's 14 of 30 and the stored 8 of 30 was the live loop, not a soul.
+
+The gate still blocks a deploy: 25 golden scenarios fail and one failed golden is enough.
+The next lever is the failing answers themselves. The 63 flagged sentences are on the claims
+route for `0897e93b`, and the bench (`build_claims.py`) renders them for a reading sitting.
