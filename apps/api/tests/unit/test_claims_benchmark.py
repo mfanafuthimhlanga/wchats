@@ -306,3 +306,45 @@ def test_every_shipped_claims_file_has_a_published_row():
     """Adding a judge identity means adding its numbers here, not only its CSV."""
     shipped = {p.stem.removeprefix("claims_") for p in BENCH.glob("claims_*.csv")}
     assert shipped == set(PUBLISHED)
+
+
+# ---------------------------------------------------------------------------
+# The reading aids carry the gate's rules (#298).
+# ---------------------------------------------------------------------------
+PAGE = BENCH.parent / "page"
+SKILL_COPY = pathlib.Path.home() / ".claude" / "skills" / "calibrate-judge" / "page" / "claims_template.html"
+GATE_TABLE = pathlib.Path(__file__).resolve().parents[4] / "apps" / "admin" / "tests-unit" / "fixtures-gate-rules.json"
+
+
+@pytest.mark.skipif(not SKILL_COPY.exists(), reason="the calibrate-judge skill is installed on the owner's machine only")
+def test_the_vendored_claims_bench_is_the_skill_copy_byte_for_byte():
+    assert (PAGE / "claims_template.html").read_bytes() == SKILL_COPY.read_bytes()
+
+
+def _tint(s) -> str:
+    """The edge an aid draws for the gate's verdict: bone when grounded, red on no passage or a
+    missing number, grey when some words are shared but too few."""
+    if s.supported:
+        return "bone"
+    if s.passage < 0 or s.missing_numbers:
+        return "fail"
+    return "grey"
+
+
+@pytest.mark.parametrize("scenario", ["with passages", "no_passages"])
+def test_the_table_both_reading_aids_are_held_to_is_what_the_gate_says(scenario):
+    """claims-reading.spec.ts and claims-bench.spec.ts assert this table against the console aid
+    and the bench; here the gate itself produces it, so all three say one thing per sentence."""
+    import json
+
+    from app.domain.grounding import ground
+
+    fx = json.loads(GATE_TABLE.read_text(encoding="utf-8"))
+    table = fx if scenario == "with passages" else fx[scenario]
+    got = ground(table["response"], table["retrieved_contexts"]).sentences
+    assert len(got) == len(table["expect"])
+    for s, want in zip(got, table["expect"], strict=True):
+        lit = [] if s.passage < 0 else [s.passage] + ([s.spanned_with] if s.spanned_with >= 0 else [])
+        assert (s.statement, _tint(s), s.reason, lit) == (
+            want["sentence"], want["tint"], want["reason"], want["lit"]
+        ), want["rule"]

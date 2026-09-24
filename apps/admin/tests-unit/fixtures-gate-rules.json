@@ -1,0 +1,158 @@
+{
+ "question": "How does the storefront serve the catalog and where do orders go?",
+ "response": "React Router handles the catalog, the product pages and the cart.\n\nReact Router handles the catalog and the cart, the audit log keeps every step, nothing is sent to a server, and the app writes no database.\n\nReact Router serves the catalog and the cart from port 4173 on every build.\n\nThe documentation does not specify which port the Fastify server listens on.\n\nReact Router handles the catalog and the cart because the audit log keeps every step, nothing is sent to a server, and the app writes no database.\n\nReact Router handles the catalog, and the ledger, the invoices, the refunds and the server all live elsewhere.\n\nPayments settle through Stripe within fourteen working days.\n\nThe café documentation does not specify the opening hours.\n\nReact Router handles the catalog and the cart in ٣ steps.",
+ "retrieved_contexts": [
+  "The storefront runs React Router for the catalog, the product pages and the cart.",
+  "Orders are never sent to a server; the app reads and writes no database at all.",
+  "The Fastify server broadcasts every event over a WebSocket to the dashboard."
+ ],
+ "claims": [
+  {
+   "position": 0,
+   "statement": "React Router handles the catalog, the product pages and the cart."
+  },
+  {
+   "position": 1,
+   "statement": "React Router handles the catalog and the cart, the audit log keeps every step, nothing is sent to a server, and the app writes no database."
+  },
+  {
+   "position": 2,
+   "statement": "React Router serves the catalog and the cart from port 4173 on every build."
+  },
+  {
+   "position": 3,
+   "statement": "The documentation does not specify which port the Fastify server listens on."
+  },
+  {
+   "position": 4,
+   "statement": "React Router handles the catalog and the cart because the audit log keeps every step, nothing is sent to a server, and the app writes no database."
+  },
+  {
+   "position": 5,
+   "statement": "React Router handles the catalog, and the ledger, the invoices, the refunds and the server all live elsewhere."
+  },
+  {
+   "position": 6,
+   "statement": "Payments settle through Stripe within fourteen working days."
+  },
+  {
+   "position": 7,
+   "statement": "The café documentation does not specify the opening hours."
+  },
+  {
+   "position": 8,
+   "statement": "React Router handles the catalog and the cart in ٣ steps."
+  }
+ ],
+ "expect": [
+  {
+   "rule": "one passage",
+   "sentence": "React Router handles the catalog, the product pages and the cart.",
+   "tint": "bone",
+   "reason": "passage 1 carries 86% of its words",
+   "lit": [
+    0
+   ]
+  },
+  {
+   "rule": "two passages",
+   "sentence": "React Router handles the catalog and the cart, the audit log keeps every step, nothing is sent to a server, and the app writes no database.",
+   "tint": "bone",
+   "reason": "passages 2 and 1 together carry 62% of its words",
+   "lit": [
+    1,
+    0
+   ]
+  },
+  {
+   "rule": "number",
+   "sentence": "React Router serves the catalog and the cart from port 4173 on every build.",
+   "tint": "fail",
+   "reason": "passage 1 carries 50% of its words; number 4173 appears in no passage",
+   "lit": [
+    0
+   ]
+  },
+  {
+   "rule": "decline",
+   "sentence": "The documentation does not specify which port the Fastify server listens on.",
+   "tint": "bone",
+   "reason": "a decline asserts nothing the documents would carry",
+   "lit": [
+    2
+   ]
+  },
+  {
+   "rule": "connective",
+   "sentence": "React Router handles the catalog and the cart because the audit log keeps every step, nothing is sent to a server, and the app writes no database.",
+   "tint": "grey",
+   "reason": "passage 2 carries 31% of its words",
+   "lit": [
+    1
+   ]
+  },
+  {
+   "rule": "one word added",
+   "sentence": "React Router handles the catalog, and the ledger, the invoices, the refunds and the server all live elsewhere.",
+   "tint": "grey",
+   "reason": "passage 1 carries 30% of its words",
+   "lit": [
+    0
+   ]
+  },
+  {
+   "rule": "no shared word",
+   "sentence": "Payments settle through Stripe within fourteen working days.",
+   "tint": "fail",
+   "reason": "no passage shares a word with it",
+   "lit": []
+  },
+  {
+   "rule": "unicode decline",
+   "sentence": "The café documentation does not specify the opening hours.",
+   "tint": "bone",
+   "reason": "a decline asserts nothing the documents would carry",
+   "lit": []
+  },
+  {
+   "rule": "unicode number",
+   "sentence": "React Router handles the catalog and the cart in ٣ steps.",
+   "tint": "fail",
+   "reason": "passage 1 carries 67% of its words; number ٣ appears in no passage",
+   "lit": [
+    0
+   ]
+  }
+ ],
+ "no_passages": {
+  "question": "Which port does the Fastify server listen on?",
+  "response": "The documentation does not specify which port the Fastify server listens on.\n\nReact Router handles the catalog, the product pages and the cart.",
+  "retrieved_contexts": [],
+  "claims": [
+   {
+    "position": 0,
+    "statement": "The documentation does not specify which port the Fastify server listens on."
+   },
+   {
+    "position": 1,
+    "statement": "React Router handles the catalog, the product pages and the cart."
+   }
+  ],
+  "expect": [
+   {
+    "rule": "decline, no passages",
+    "sentence": "The documentation does not specify which port the Fastify server listens on.",
+    "tint": "bone",
+    "reason": "a decline asserts nothing the documents would carry",
+    "lit": []
+   },
+   {
+    "rule": "no passages",
+    "sentence": "React Router handles the catalog, the product pages and the cart.",
+    "tint": "fail",
+    "reason": "no passage shares a word with it",
+    "lit": []
+   }
+  ]
+ }
+}
