@@ -31,10 +31,14 @@ from app.core.database import get_async_db
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.models.tenant import Tenant
+from app.services.red_team_service import INVALID_MARKER_PROBE_MESSAGE_PATTERN, POISONED_CHUNK_PROBE_QUESTION
 from app.services.redteam_programme_service import read_programme
 from app.services.scenario_service import insert_provenance_scenario
 from app.worker.tasks.runtime.red_team import run_red_team
-from app.worker.tasks.runtime.red_team_retest import retest_red_team_finding
+from app.worker.tasks.runtime.red_team_retest import (
+    RETEST_IDEMPOTENCY_WINDOW_MINUTES,
+    retest_red_team_finding,
+)
 
 router = APIRouter(tags=["red_team"])
 log = structlog.get_logger(__name__)
@@ -467,7 +471,7 @@ def _contain_finding_sync(conn_str: str, finding_id: str, agent_id: str) -> dict
             fid, severity, status, probe_message = row
 
             # Idempotent no-op — already contained/closed, no re-file.
-            if status in ("contained", "closed"):
+            if status in ("contained", "closed", "resolved"):
                 return {
                     "finding": {"id": str(fid), "severity": severity, "status": status},
                     "scenario_filed": False,
@@ -565,20 +569,32 @@ async def contain_red_team_finding(
 #: One finding of THIS agent's, by id, and its status (#162: a finding is scoped to
 #: the agent through its run's kind, never read by primary key alone).
 _RETEST_SELECT_SQL = (
-    "SELECT f.status FROM red_team_findings f "
+    "SELECT f.status, "
+    "f.retest->>'status' = 'running' AND (f.retest->>'started_at')::timestamptz "
+    "> now() - make_interval(mins => %s), "
+    "f.evidence = 'landed_verdict_tag' OR f.probe_message LIKE %s OR f.probe_message = %s "
+    "FROM red_team_findings f "
     "JOIN red_team_runs r ON r.id = f.run_id "
     "WHERE f.id = %s AND r.kind = %s"
 )
 
 
-def _finding_status_sync(conn_str: str, finding_id: str, agent_id: str) -> str | None:
-    """The finding's status, or None when this agent has no such finding."""
+def _finding_state_sync(conn_str: str, finding_id: str, agent_id: str) -> tuple | None:
+    """(status, a re-test is running, a conversation cannot reproduce it), or None when absent.
+
+    A finding a conversation cannot reproduce is one a run's own machinery filed: a
+    landed mutating call (the transactional vectors), an invalid-run marker (retired
+    by a run that observes its vector), or the poisoned-chunk canary (content
+    injection, which seeds the corpus). Those clear by re-running the red team.
+    """
     conn = psycopg2.connect(conn_str, connect_timeout=10)
     try:
         with conn.cursor() as cur:
-            cur.execute(_RETEST_SELECT_SQL, (finding_id, f"m7:{agent_id}"))
-            row = cur.fetchone()
-        return row[0] if row else None
+            cur.execute(_RETEST_SELECT_SQL, (
+                RETEST_IDEMPOTENCY_WINDOW_MINUTES, INVALID_MARKER_PROBE_MESSAGE_PATTERN,
+                POISONED_CHUNK_PROBE_QUESTION, finding_id, f"m7:{agent_id}",
+            ))
+            return cur.fetchone()
     finally:
         conn.close()
 
@@ -598,7 +614,8 @@ async def retest_red_team_finding_route(
     `retest` column; a resolved finding leaves every gate.
 
     Responses: 202 {"finding_id", "queued": true}; 404 for an agent or finding this
-    tenant does not own; 409 when the finding is not open.
+    tenant does not own; 409 when the finding is not open, a re-test is already running,
+    or a conversation cannot reproduce it.
     """
     agent = await db.get(Agent, agent_id)
     if agent is None or agent.tenant_id != tenant.id:
@@ -606,11 +623,19 @@ async def retest_red_team_finding_route(
     if not agent.neon_connection_string:
         raise HTTPException(status_code=404, detail="Agent database not provisioned")
     conn_str = fernet_decrypt(agent.neon_connection_string)
-    status = await asyncio.to_thread(_finding_status_sync, conn_str, str(finding_id), str(agent_id))
-    if status is None:
+    state = await asyncio.to_thread(_finding_state_sync, conn_str, str(finding_id), str(agent_id))
+    if state is None:
         raise HTTPException(status_code=404, detail="Finding not found")
+    status, running, run_only = state
     if status != "open":
         raise HTTPException(status_code=409, detail=f"Finding is {status}, not open")
+    if running:
+        raise HTTPException(status_code=409, detail="A re-test of this finding is already running")
+    if run_only:
+        raise HTTPException(
+            status_code=409,
+            detail="A conversation cannot reproduce this finding; re-run the red team to clear it",
+        )
     retest_red_team_finding.apply_async(
         kwargs={"agent_id": str(agent_id), "finding_id": str(finding_id)}, queue="runtime"
     )

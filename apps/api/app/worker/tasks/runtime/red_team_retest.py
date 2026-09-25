@@ -41,7 +41,7 @@ _CLAIM_SQL = """
     WHERE f.id = %s AND r.id = f.run_id AND r.kind = %s AND f.status = 'open'
       AND (f.retest IS NULL OR f.retest->>'status' <> 'running'
            OR (f.retest->>'started_at')::timestamptz < now() - make_interval(mins => %s))
-    RETURNING f.severity, f.probe_message, f.agent_response, f.attack_vector
+    RETURNING f.severity, f.probe_message, f.agent_response, f.attack_vector, f.claims
 """
 
 #: Writes the outcome. `resolved` closes the finding; `still_lands` re-grades it to
@@ -53,7 +53,7 @@ _FINISH_SQL = """
         retest = retest || %(payload)s::jsonb
             || jsonb_build_object('status', 'complete', 'finished_at', now(),
                                   'previous_severity', severity)
-    WHERE id = %(finding_id)s AND retest->>'id' = %(retest_id)s
+    WHERE id = %(finding_id)s AND retest->>'id' = %(retest_id)s AND status = 'open'
 """
 
 _FAIL_SQL = """
@@ -70,7 +70,7 @@ def _claim(conn, retest_id: str, finding_id: str, agent_id: str) -> dict | None:
     conn.commit()
     if row is None:
         return None
-    return dict(zip(("severity", "probe_message", "agent_response", "attack_vector"), row))
+    return dict(zip(("severity", "probe_message", "agent_response", "attack_vector", "claims"), row))
 
 
 @celery_app.task(
