@@ -1,7 +1,7 @@
 // reading.ts is the reading aid on the review page: the response split into
 // sentences, the retrieved text split into passages, and each sentence read by
 // the faithfulness gate's own rules (apps/api/app/domain/grounding.py,
-// grounding-v2): word overlap against the best passage, a second reading
+// grounding-v3): word overlap against the best passage, a second reading
 // against two, every number in the retrieved text, a decline grounded. It tints
 // an edge, lights the passages the gate read and says why in the gate's words.
 // It never labels; the Tenant does. Each rule names its Python twin, so an edit
@@ -291,9 +291,34 @@ export const SECOND_CLAUSE_RE = new RegExp(
   'iu',
 )
 
+/** _CLAUSE_COMMA_RE in grounding.py: a comma before "and" or "or" joins a clause, not a list item,
+ *  when a subject (a determiner and one to three words, or a capitalised word and up to two), an
+ *  auxiliary or a named verb, and a number or a capitalised name within three words follow.
+ *  Case-sensitive, as the gate is. */
+/** _PLAIN_WORD in grounding.py: a lowercase word that is no determiner, pronoun or relative pronoun. */
+const PLAIN_WORD = String.raw`(?!(?:the|a|an|this|that|these|those|its|our|my|their|your|which|who|whom|whose|where|when|it|they|we|each|every|all|and|or)` + B_AFTER + String.raw`)[a-z](?:${W}|-)*`
+const CLAUSE_SUBJECT =
+  String.raw`(?:the|this|that|these|those|a|an|its|our|my|their|your)\s+(?:[A-Z](?:${W}|-)*\s+){0,2}(?:` + PLAIN_WORD + String.raw`\s+){1,3}?` +
+  String.raw`|[A-Z](?:${W}|-)*\s+(?:` + PLAIN_WORD + String.raw`\s+){0,2}?`
+/** _CLAUSE_VERBS in grounding.py: the verb is named, never guessed from an s ending. */
+const CLAUSE_VERBS =
+  'listens|runs|expects|requires|serves|writes|sends|provides|includes|contains|allows|' +
+  'keeps|takes|makes|gives|says|specifies|describes|fails|starts|stops|opens|closes|' +
+  'connects|accepts|exposes|depends|refers|applies|exists|follows|holds|validates|deploys|' +
+  'migrates|publishes|subscribes|emits|waits|throws|raises|wraps|saves|adds|removes|deletes|' +
+  'creates|generates|produces|consumes|reaches|sits|lives|goes|comes|gets|becomes|belongs|' +
+  'behaves|responds'
+const FINITE_VERB =
+  '(?:is|are|was|were|has|have|had|does|do|did|will|would|can|cannot|could|should|must|may|might|shall|' +
+  CLAUSE_VERBS +
+  ')' +
+  B_AFTER +
+  String.raw`\s+(?:(?:${W}|-)+\s+){0,3}?(?:\p{Nd}|[A-HJ-Z]|I${W})`
+export const CLAUSE_COMMA_RE = new RegExp(String.raw`,\s*(?:and|or)\s+(?:` + CLAUSE_SUBJECT + ')' + FINITE_VERB, 'u')
+
 /** is_decline in grounding.py: true when the whole sentence says the documents do not say. */
 export function isDecline(sentence: string): boolean {
-  return DECLINE_RE.test(sentence) && !SECOND_CLAUSE_RE.test(sentence)
+  return DECLINE_RE.test(sentence) && !SECOND_CLAUSE_RE.test(sentence) && !CLAUSE_COMMA_RE.test(sentence)
 }
 
 /** _INFERENCE_RE in grounding.py: a reason, a consequence or a purpose. Such a sentence gets no second reading. */

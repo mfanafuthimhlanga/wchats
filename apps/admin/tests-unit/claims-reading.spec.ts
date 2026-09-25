@@ -131,8 +131,8 @@ test('stem folds inflections and never cuts below four letters', () => {
   expect(stem('fees')).toBe('fees') // "fee" would be three letters
 })
 
-// ── the gate's rules (grounding.py, grounding-v2), ported so the aid lights what the gate scored ──
-// fixtures-gate-rules.json holds nine sentences over three passages and two over none, each
+// ── the gate's rules (grounding.py, grounding-v3), ported so the aid lights what the gate scored ──
+// fixtures-gate-rules.json holds ten sentences over three passages and two over none, each
 // decided by one rule, and the table of what the gate says of each: ground() produced every
 // tint and reason in it, and test_claims_benchmark.py checks it against ground() still.
 // claims-bench.spec.ts reads the same table, so the console aid and the bench cannot drift
@@ -306,6 +306,38 @@ test('isDecline takes a decline about the documents and refuses a claim about th
     'The corpus does not specify the preview port.',
     'However, the documentation does not establish that every feature works offline.',
     "I don't have more specific post-launch information in my knowledge base.",
+    // a list comma, not a clause comma (#319)
+    'The corpus does not state who approves an answer, how provenance is stored, or how cache entries are invalidated.',
+    'The documentation does not include a measured performance, bundle-size, or maintenance comparison.',
+    'The corpus does not document the build, the tests, or the deployment steps.',
+    'The documentation does not name React, Vue, or Svelte as options.',
+    'The corpus does not document the build, the tests, or the deployment steps for staging.',
+    'The corpus does not document the build, or the deployment process for staging.',
+    'The corpus does not name the fixtures, or the tests themselves in detail.',
+    'The documentation does not name React, Vue, or Svelte plugins for this.',
+    'The corpus does not give the timeout, or the 3 retries per minute.',
+    'The documentation does not describe the owner, or the teams that are on call.',
+    'The documentation does not describe the port, or the host which is used in staging.',
+    'The documentation does not describe the queue, or the files it writes to.',
+    'The documentation does not describe the owner, or the keys the service requires for signing.',
+    'The documentation does not describe the port, or the settings Fastify expects in production.',
+    'The documentation does not describe the hosts, or the ports each service listens on.',
+    'The documentation does not describe the refunds, or the webhooks Stripe sends on failure.',
+    'The documentation does not describe the roles, or the files users can read.',
+    'The documentation does not describe the defaults, or the settings admins can change.',
+    'The documentation does not describe the tests, or the data nobody has checked.',
+    'The documentation does not describe the cache, or the way caching is configured.',
+    'The documentation does not describe the host, or the port traffic runs on.',
+    'The documentation does not describe the flow, or the sign-up steps users must complete.',
+    'The documentation does not describe the roles, or the files users can read in the workspace.',
+    'The documentation does not describe the defaults, or the settings admins can change at runtime.',
+    'The documentation does not describe the tests, or the data nobody has checked since the migration.',
+    'The documentation does not describe the cache, or the way caching is configured for staging.',
+    'The documentation does not describe the host, or the port traffic runs on in production.',
+    'The documentation does not describe the flow, or the sign-up steps users must complete before checkout.',
+    'The documentation does not describe the roles, or Postgres users can connect with.',
+    'The documentation does not describe the build, or the test runs for staging.',
+    'The documentation does not describe the roles, or the files users can see when I share them.',
   ])
     expect(isDecline(s), s).toBe(true)
   for (const s of [
@@ -314,6 +346,11 @@ test('isDecline takes a decline about the documents and refuses a claim about th
     'The deploy workflow does not roll the control database back when a tenant migration fails.',
     'The repository does not use Memgraph for the server tests.',
     'That means the repository cannot provide a reliable monthly order count.',
+    // a clause after the comma (#319)
+    'The documentation does not specify the port, and the Fastify server listens on 8080.',
+    'The documentation does not establish that all agent functionality works without network access, and the normal configuration still expects Anthropic credentials.',
+    'The corpus does not specify the port, and the server is 8080.',
+    'The corpus does not specify the port, and Fastify listens on 8080.',
   ])
     expect(isDecline(s), s).toBe(false)
 })

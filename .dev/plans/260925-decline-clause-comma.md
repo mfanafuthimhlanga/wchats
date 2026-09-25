@@ -1,0 +1,101 @@
+# A decline followed by a comma and a clause is scored on its words (#319)
+
+Branch `fix/decline-clause-comma` off `main` at `a0a5105`. `is_decline` in
+`app/domain/grounding.py` grounds a whole-sentence decline; `_SECOND_CLAUSE_RE` withdraws that
+for `;`, ` but `, ` yet `, `it does`, `it is`. A comma and `and` is not in the list, so "The
+documentation does not specify the port, and the Fastify server listens on 8080." is grounded
+as a decline and 8080 is never checked. A bare `,\s*(?:and|or)\s` rule was tried in #298 and
+reverted because it failed two real declines whose comma is a list comma.
+
+## The rule
+
+A comma before `and` or `or` joins a clause when what follows carries a subject, an auxiliary
+or a named verb, then a number or a name within three words. The rule prefers a missed clause, which is the behaviour
+before this change, to a decline wrongly withdrawn, which scores a true sentence on words the
+documents cannot carry.
+
+```
+subject      (the|this|that|these|those|a|an|its|our|my|their|your), up to two capitalised
+             names, then one to three plain words | a capitalised word + up to two plain words
+plain word   lowercase, and no determiner, pronoun or relative pronoun: "the teams that are on
+             call", "the keys the service requires", "the settings Fastify expects" are list
+             items carrying their own clause, not clauses
+finite verb  is|are|was|were|has|have|had|does|do|did|will|would|can|cannot|could|should|
+             must|may|might|shall, or one of sixty named verbs (listens, expects,
+             requires, serves, exposes, ...). Named rather than guessed from an s ending: a
+             list item after a determiner ("the deployment steps for staging") ends in s as
+             often as a verb does
+then         within three words, a number or a capitalised name ("listens on 8080", "is
+             8080", "expects Anthropic credentials"; a lone I is a pronoun, not a name). The gate exists to check figures and
+             names, so a clause carrying neither loses little by staying a decline, and a list
+             item's contact clause ("the files users can read in the workspace") is never
+             mistaken for one on its length
+```
+
+`_CLAUSE_COMMA_RE` in `grounding.py` is case-sensitive so the capitalised branch can tell a
+name from a list word. `is_decline` adds it as a third condition. Twins: `CLAUSE_COMMA_RE`
+in `claims/reading.ts` and in `claims_template.html` (both copies, byte-identical), using the
+aids' `W` class and `B_AFTER` in place of `\w` and `\b`.
+
+## Sentences the rule must decide
+
+| sentence | decision |
+|---|---|
+| the port, and the Fastify server listens on 8080 | clause |
+| without network access, and the normal configuration still expects Anthropic credentials | clause |
+| the port, and the server is 8080 | clause |
+| the port, and Fastify listens on 8080 | clause |
+| who approves an answer, how provenance is stored, or how cache entries are invalidated | list |
+| a measured performance, bundle-size, or maintenance comparison | list |
+| the build, the tests, or the deployment steps | list |
+| React, Vue, or Svelte as options | list |
+| the build, the tests, or the deployment steps for staging | list |
+| the build, or the deployment process for staging | list |
+| the fixtures, or the tests themselves in detail | list |
+| React, Vue, or Svelte plugins for this | list |
+| the timeout, or the 3 retries per minute | list |
+| the owner, or the teams that are on call | list |
+| the port, or the host which is used in staging | list |
+| the queue, or the files it writes to | list |
+| the owner, or the keys the service requires for signing | list |
+| the port, or the settings Fastify expects in production | list |
+| the hosts, or the ports each service listens on | list |
+| the refunds, or the webhooks Stripe sends on failure | list |
+| the roles, or the files users can read | list |
+| the defaults, or the settings admins can change | list |
+| the tests, or the data nobody has checked | list |
+| the cache, or the way caching is configured | list |
+| the host, or the port traffic runs on | list |
+| the flow, or the sign-up steps users must complete | list |
+| the files users can read in the workspace | list |
+| the settings admins can change at runtime | list |
+| the data nobody has checked since the migration | list |
+| the way caching is configured for staging | list |
+| the port traffic runs on in production | list |
+| the sign-up steps users must complete before checkout | list |
+| Postgres users can connect with | list |
+| the build, or the test runs for staging | list |
+| the files users can see when I share them | list |
+
+## Pins
+
+- `tests/unit/test_grounding.py`: the thirty-one list sentences join the decline parametrize, the
+  four clause sentences join the second-clause parametrize; the benchmark pin moves 83 to 84.
+  `GROUNDING_RULE_VERSION` is `grounding-v3`, so rows scored before and after never share a
+  calibration population.
+- `claims-reading.spec.ts`: the same thirty-five through `isDecline`.
+- `fixtures-gate-rules.json`: a tenth sentence, rule `clause comma`, tint `fail`, reason
+  "passage 3 carries 29% of its words; number 8080 appears in no passage", read by the
+  console spec, the bench spec in Chromium and `test_claims_benchmark.py` against `ground()`.
+- Mutation: the third condition removed from `is_decline`, red observed, restored, green.
+- `ground_rows.py`: recall 9 of 10, passes 10 of 30, flagged 84 of 260.
+
+## Out of scope
+
+A clause the rule misses stays a decline, as before this change: a pronoun subject ("and it
+listens on 8080"), "there is", a past-tense verb, a verb outside the named list, a subject of
+four or more words, a comma alone or `, so`, a clause with no number or name within three
+words of its verb ("and the tests would say so"). None appears in the benchmark. A list item
+whose contact clause or noun-used-as-verb is followed by a number or a name ("the files users
+can read in Slack") is read as a clause and the decline scored on its words; the benchmark
+holds no such sentence.

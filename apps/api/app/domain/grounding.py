@@ -57,7 +57,7 @@ from app.domain.judge_identity import JudgeIdentity
 #: the rule so a calibration reader can tell it from a Judge; the version moves
 #: whenever a number below moves, so rows scored under two rules never share a
 #: calibration population.
-GROUNDING_RULE_VERSION = "grounding-v2"
+GROUNDING_RULE_VERSION = "grounding-v3"
 GROUNDING_MODEL = "rule:grounding"
 GROUNDING_IDENTITY = JudgeIdentity(
     model=GROUNDING_MODEL, reasoning_effort="none", prompt_version=GROUNDING_RULE_VERSION
@@ -114,6 +114,42 @@ _DECLINE_RE = re.compile(
     re.IGNORECASE,
 )
 _SECOND_CLAUSE_RE = re.compile(r";|\s(?:but|yet|although|though|whereas)\s|\bit does\b|\bit is\b", re.IGNORECASE)
+# A comma before "and" or "or" joins a list item or a second clause. The rule reads a clause when
+# a subject (a determiner and one to three plain words, or a capitalised word and up to two) is followed
+# by an auxiliary or one of the named verbs, then a number or a name within three words. The verb is named rather than
+# guessed from its ending, because a list item after a determiner ("the deployment steps for
+# staging", "the deployment process for staging") ends in s as often as a verb does, and a decline
+# wrongly withdrawn is scored on words the documents cannot carry. A clause whose verb is not on
+# the list stays a decline, as it did before. "...port, and the Fastify server listens on 8080"
+# is a clause; "who approves, how provenance is stored, or how cache entries are invalidated" is a
+# list. Case-sensitive so the capitalised branch can tell a name from a list word.
+# The words between the determiner and the verb are plain lowercase words: a determiner, a pronoun
+# or a relative pronoun among them means a list item carrying its own clause ("the teams that are
+# on call", "the keys the service requires", "the files it writes to"), and a capitalised name may
+# sit only right after the determiner ("the Fastify server listens", never "the settings Fastify
+# expects").
+_PLAIN_WORD = r"(?!(?:the|a|an|this|that|these|those|its|our|my|their|your|which|who|whom|whose|where|when|it|they|we|each|every|all|and|or)\b)[a-z][\w-]*"
+_CLAUSE_SUBJECT = (
+    r"(?:the|this|that|these|those|a|an|its|our|my|their|your)\s+(?:[A-Z][\w-]*\s+){0,2}(?:" + _PLAIN_WORD + r"\s+){1,3}?"
+    r"|[A-Z][\w-]*\s+(?:" + _PLAIN_WORD + r"\s+){0,2}?"
+)
+_CLAUSE_VERBS = (
+    "listens|runs|expects|requires|serves|writes|sends|provides|includes|contains|allows|"
+    "keeps|takes|makes|gives|says|specifies|describes|fails|starts|stops|opens|closes|"
+    "connects|accepts|exposes|depends|refers|applies|exists|follows|holds|validates|deploys|"
+    "migrates|publishes|subscribes|emits|waits|throws|raises|wraps|saves|adds|removes|deletes|"
+    "creates|generates|produces|consumes|reaches|sits|lives|goes|comes|gets|becomes|belongs|"
+    "behaves|responds"
+)
+_AUXILIARIES = "is|are|was|were|has|have|had|does|do|did|will|would|can|cannot|could|should|must|may|might|shall"
+# After the verb, within three words, a number or a capitalised name: "listens on 8080", "is
+# 8080", "expects Anthropic credentials". The gate exists to check figures and names against the
+# passages, so a clause carrying neither loses little by staying a decline, and a list item's
+# contact clause ("the files users can read in the workspace") is never mistaken for one on its
+# length alone.
+# The pronoun "I" is a capital and no name, so a lone I is no trigger.
+_FINITE_VERB = r"(?:" + _AUXILIARIES + "|" + _CLAUSE_VERBS + r")\b\s+(?:[\w-]+\s+){0,3}?(?:\d|[A-HJ-Z]|I\w)"
+_CLAUSE_COMMA_RE = re.compile(r",\s*(?:and|or)\s+(?:" + _CLAUSE_SUBJECT + r")" + _FINITE_VERB)
 
 
 def _number_key(raw: str) -> str:
@@ -123,7 +159,11 @@ def _number_key(raw: str) -> str:
 
 def is_decline(sentence: str) -> bool:
     """True when the whole sentence says the documents do not say."""
-    return _DECLINE_RE.match(sentence) is not None and _SECOND_CLAUSE_RE.search(sentence) is None
+    return (
+        _DECLINE_RE.match(sentence) is not None
+        and _SECOND_CLAUSE_RE.search(sentence) is None
+        and _CLAUSE_COMMA_RE.search(sentence) is None
+    )
 _LIST_RE = re.compile(r"^\s*([-*•]|\d+[.)])\s+")
 _CITATIONS_RE = re.compile(r"(^|\n)\s*CITATIONS\s*:")
 _SOURCE_MARK_RE = re.compile(r"\*\(([^()]*)\)\*")

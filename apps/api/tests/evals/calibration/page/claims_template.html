@@ -157,7 +157,7 @@
   const TOTAL = items.length;
   const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  // ── the reading aid: the faithfulness gate's rules (apps/api/app/domain/grounding.py, grounding-v2),
+  // ── the reading aid: the faithfulness gate's rules (apps/api/app/domain/grounding.py, grounding-v3),
   // each named for its Python twin. It lights the passages the gate read and says why; it never labels ──
   const STOP = new Set(("the and for that with this from are was were has have had not but all any can you your they them " +
     "their there then than when what which who whom how why into onto over under out off per via about after before " +
@@ -210,7 +210,13 @@
     String.raw`|no (?:information|documentation|record|mention) (?:is|was|exists|about|on|of|in)` + B_AFTER + ")", "iu");
   // _SECOND_CLAUSE_RE
   const SECOND_CLAUSE_RE = new RegExp(String.raw`;|\s(?:but|yet|although|though|whereas)\s|` + `${B_BEFORE}it does${B_AFTER}|${B_BEFORE}it is${B_AFTER}`, "iu");
-  const isDecline = t => DECLINE_RE.test(t) && !SECOND_CLAUSE_RE.test(t); // is_decline
+  // _CLAUSE_COMMA_RE: a comma before and/or joins a clause (a subject and a finite verb follow), not a list item
+  const PLAIN_WORD = String.raw`(?!(?:the|a|an|this|that|these|those|its|our|my|their|your|which|who|whom|whose|where|when|it|they|we|each|every|all|and|or)` + B_AFTER + String.raw`)[a-z](?:${W}|-)*`; // _PLAIN_WORD
+  const CLAUSE_SUBJECT = String.raw`(?:the|this|that|these|those|a|an|its|our|my|their|your)\s+(?:[A-Z](?:${W}|-)*\s+){0,2}(?:` + PLAIN_WORD + String.raw`\s+){1,3}?` + String.raw`|[A-Z](?:${W}|-)*\s+(?:` + PLAIN_WORD + String.raw`\s+){0,2}?`;
+  const CLAUSE_VERBS = 'listens|runs|expects|requires|serves|writes|sends|provides|includes|contains|allows|keeps|takes|makes|gives|says|specifies|describes|fails|starts|stops|opens|closes|connects|accepts|exposes|depends|refers|applies|exists|follows|holds|validates|deploys|migrates|publishes|subscribes|emits|waits|throws|raises|wraps|saves|adds|removes|deletes|creates|generates|produces|consumes|reaches|sits|lives|goes|comes|gets|becomes|belongs|behaves|responds'; // _CLAUSE_VERBS: named, never guessed from an s ending
+  const FINITE_VERB = '(?:is|are|was|were|has|have|had|does|do|did|will|would|can|cannot|could|should|must|may|might|shall|' + CLAUSE_VERBS + ')' + B_AFTER + String.raw`\s+(?:(?:${W}|-)+\s+){0,3}?(?:\p{Nd}|[A-HJ-Z]|I${W})`;
+  const CLAUSE_COMMA_RE = new RegExp(String.raw`,\s*(?:and|or)\s+(?:` + CLAUSE_SUBJECT + ')' + FINITE_VERB, 'u');
+  const isDecline = t => DECLINE_RE.test(t) && !SECOND_CLAUSE_RE.test(t) && !CLAUSE_COMMA_RE.test(t); // is_decline
   // _INFERENCE_RE: a reason, a consequence or a purpose gets no second reading
   const INFERENCE_RE = new RegExp(B_BEFORE + "(because|therefore|thus|hence|consequently|so that|which means|this means|that means|as a result|in order to|favou?rs?|why)" + B_AFTER, "iu");
   const SECOND_PASSAGE_MIN_WORDS = 2; // SECOND_PASSAGE_MIN_WORDS

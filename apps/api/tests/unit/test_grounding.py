@@ -106,6 +106,39 @@ class TestTheRule:
         "The corpus does not specify the preview port.",
         "However, the documentation does not establish that every feature works offline.",
         "I don't have more specific post-launch information in my knowledge base.",
+        # a list comma, not a clause comma (#319): no subject with an auxiliary or a named verb
+        # follows the comma, or the item carries its own relative clause
+        "The corpus does not state who approves an answer, how provenance is stored, or how cache entries are invalidated.",
+        "The documentation does not include a measured performance, bundle-size, or maintenance comparison.",
+        "The corpus does not document the build, the tests, or the deployment steps.",
+        "The documentation does not name React, Vue, or Svelte as options.",
+        "The corpus does not document the build, the tests, or the deployment steps for staging.",
+        "The corpus does not document the build, or the deployment process for staging.",
+        "The corpus does not name the fixtures, or the tests themselves in detail.",
+        "The documentation does not name React, Vue, or Svelte plugins for this.",
+        "The corpus does not give the timeout, or the 3 retries per minute.",
+        "The documentation does not describe the owner, or the teams that are on call.",
+        "The documentation does not describe the port, or the host which is used in staging.",
+        "The documentation does not describe the queue, or the files it writes to.",
+        "The documentation does not describe the owner, or the keys the service requires for signing.",
+        "The documentation does not describe the port, or the settings Fastify expects in production.",
+        "The documentation does not describe the hosts, or the ports each service listens on.",
+        "The documentation does not describe the refunds, or the webhooks Stripe sends on failure.",
+        "The documentation does not describe the roles, or the files users can read.",
+        "The documentation does not describe the defaults, or the settings admins can change.",
+        "The documentation does not describe the tests, or the data nobody has checked.",
+        "The documentation does not describe the cache, or the way caching is configured.",
+        "The documentation does not describe the host, or the port traffic runs on.",
+        "The documentation does not describe the flow, or the sign-up steps users must complete.",
+        "The documentation does not describe the roles, or the files users can read in the workspace.",
+        "The documentation does not describe the defaults, or the settings admins can change at runtime.",
+        "The documentation does not describe the tests, or the data nobody has checked since the migration.",
+        "The documentation does not describe the cache, or the way caching is configured for staging.",
+        "The documentation does not describe the host, or the port traffic runs on in production.",
+        "The documentation does not describe the flow, or the sign-up steps users must complete before checkout.",
+        "The documentation does not describe the roles, or Postgres users can connect with.",
+        "The documentation does not describe the build, or the test runs for staging.",
+        "The documentation does not describe the roles, or the files users can see when I share them.",
     ])
     def test_a_whole_sentence_decline_about_the_documents_is_grounded(self, sentence):
         s = ground(sentence, [RETURNS]).sentences[0]
@@ -118,6 +151,11 @@ class TestTheRule:
         "The deploy workflow does not roll the control database back when a tenant migration fails.",
         "The repository does not use Memgraph for the server tests.",
         "That means the repository cannot provide a reliable monthly order count.",
+        # a clause after the comma (#319): a subject and a finite verb, so the number is checked
+        "The documentation does not specify the port, and the Fastify server listens on 8080.",
+        "The documentation does not establish that all agent functionality works without network access, and the normal configuration still expects Anthropic credentials.",
+        "The corpus does not specify the port, and the server is 8080.",
+        "The corpus does not specify the port, and Fastify listens on 8080.",
     ])
     def test_a_claim_about_the_system_or_a_second_clause_is_scored_on_its_words(self, sentence):
         s = ground(sentence, [RETURNS]).sentences[0]
@@ -154,7 +192,7 @@ def _measure():
 
 
 class TestTheBenchmark:
-    """PUBLISHED for grounding-v2, measured 2026-09-24 (#306). A moved number is a moved rule.
+    """PUBLISHED for grounding-v3, measured 2026-09-25 (#319). A moved number is a moved rule.
 
     grounding-v1, 2026-09-23, read 8 of 30 passing and 103 of 260 sentences flagged. v2 reads a
     sentence under the floor once more against its best passage joined with the passage that
@@ -171,7 +209,7 @@ class TestTheBenchmark:
 
     def test_the_real_answers_read_as_measured_on_the_day(self):
         m = _measure()
-        assert (m["real_answers"], m["pass_at_threshold"], m["sentences"], m["sentences_flagged"]) == (30, 10, 260, 83)
+        assert (m["real_answers"], m["pass_at_threshold"], m["sentences"], m["sentences_flagged"]) == (30, 10, 260, 84)
 
     def test_every_truth_claim_sits_in_its_answer(self):
         rows = {r["scenario_id"]: r for r in csv.DictReader((BENCH / "rows.csv").open(encoding="utf-8", newline=""))}

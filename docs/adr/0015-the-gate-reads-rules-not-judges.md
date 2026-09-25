@@ -17,7 +17,7 @@ port") asserts nothing the documents could carry and is grounded with its reason
 a negated claim about the system, a doing verb or a second clause is scored on its words. The score is
 the grounded share, the claims column carries one row per sentence with a reason a person
 can read, and `eval_results.judge_identity` names the rule (`rule:grounding`, `grounding-v1`, `grounding-v2`
-since #306).
+since #306, `grounding-v3` since #319).
 
 The eval task scores nothing else. `METRIC_KEYS` is faithfulness alone since #296, so a run
 writes one `eval_results` row per scenario. The question resolver is gone.
@@ -101,6 +101,15 @@ benchmark are unlabelled.
   never for a sentence asserting a reason or a consequence. The planted recall held at 9 of 10,
   eight by words as before; the stored benchmark moved from 8 to 10 of 30 passing and 103 to 83
   sentences flagged (`.dev/reference/260924-grounding-two-passages.md`).
+- `grounding-v3` (#319): a decline followed by a comma and a second clause is scored on its
+  words. The rule reads a clause after ", and" or ", or" when a subject (a determiner and one
+  to three plain words, or a capitalised word and up to two) is followed by an auxiliary or a named
+  verb and, within three words, a number or a capitalised name, the things the gate checks. The verb is named, never guessed from an s ending, because a list
+  item after a determiner ends in s as often as a verb does and a decline wrongly withdrawn
+  costs more than a clause missed. "the port, and the Fastify server listens on 8080" has its
+  number checked; "the build, the tests, or the deployment steps for staging" stays a decline.
+  Both aids carry the twin. Stored benchmark: 83 to 84 sentences flagged, passes and the
+  planted recall unchanged.
 - The conversational red-team probe drove a stand-in persona over the direct API until #309;
   it drives the deployed agent's own turn in recorded mode now, the same seam the transactional
   probe used. With the served prompt in hand, #307 put a rule between a report and the block
