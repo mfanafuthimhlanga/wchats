@@ -1,7 +1,7 @@
 // reading.ts is the reading aid on the review page: the response split into
 // sentences, the retrieved text split into passages, and each sentence read by
 // the faithfulness gate's own rules (apps/api/app/domain/grounding.py,
-// grounding-v2): word overlap against the best passage, a second reading
+// grounding-v3): word overlap against the best passage, a second reading
 // against two, every number in the retrieved text, a decline grounded. It tints
 // an edge, lights the passages the gate read and says why in the gate's words.
 // It never labels; the Tenant does. Each rule names its Python twin, so an edit
@@ -292,16 +292,23 @@ export const SECOND_CLAUSE_RE = new RegExp(
 )
 
 /** _CLAUSE_COMMA_RE in grounding.py: a comma before "and" or "or" joins a clause, not a list item,
- *  when a subject (a determiner and one to three words, or a capitalised word and up to two) and a
- *  finite verb with a word after it follow. Case-sensitive, as the gate is, so a name is told from a list word. */
+ *  when a subject (a determiner and one to three words, or a capitalised word and up to two), an
+ *  auxiliary or a named verb, and one more word follow. Case-sensitive, as the gate is. */
 const CLAUSE_SUBJECT =
   String.raw`(?:the|this|that|these|those|a|an|its|our|my|their|your)\s+(?:(?:${W}|-)+\s+){1,3}?` +
   String.raw`|[A-Z](?:${W}|-)*\s+(?:(?:${W}|-)+\s+){0,2}?`
+/** _CLAUSE_VERBS in grounding.py: the verb is named, never guessed from an s ending. */
+const CLAUSE_VERBS =
+  'listens|runs|expects|requires|serves|writes|sends|provides|includes|contains|allows|' +
+  'keeps|takes|makes|gives|says|specifies|describes|fails|starts|stops|opens|closes|' +
+  'connects|accepts|exposes|depends|refers|applies|exists|follows|holds|validates|deploys|' +
+  'migrates|publishes|subscribes|emits|waits|throws|raises|wraps|saves|adds|removes|deletes|' +
+  'creates|generates|produces|consumes|reaches|sits|lives|goes|comes|gets|becomes|belongs|' +
+  'behaves|responds'
 const FINITE_VERB =
-  String.raw`(?:is|are|was|were|has|have|had|does|do|did|will|would|can|cannot|could|should|must|may|might|shall` +
-  String.raw`|(?!(?:this|its|thus|plus|across|always|perhaps|less|unless|various|previous|serious|obvious)` +
-  B_AFTER +
-  String.raw`)${W}{2,}s)` +
+  '(?:is|are|was|were|has|have|had|does|do|did|will|would|can|cannot|could|should|must|may|might|shall|' +
+  CLAUSE_VERBS +
+  ')' +
   B_AFTER +
   String.raw`\s+${W}`
 export const CLAUSE_COMMA_RE = new RegExp(String.raw`,\s*(?:and|or)\s+(?:` + CLAUSE_SUBJECT + ')' + FINITE_VERB, 'u')

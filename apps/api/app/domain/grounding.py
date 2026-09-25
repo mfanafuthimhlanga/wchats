@@ -57,7 +57,7 @@ from app.domain.judge_identity import JudgeIdentity
 #: the rule so a calibration reader can tell it from a Judge; the version moves
 #: whenever a number below moves, so rows scored under two rules never share a
 #: calibration population.
-GROUNDING_RULE_VERSION = "grounding-v2"
+GROUNDING_RULE_VERSION = "grounding-v3"
 GROUNDING_MODEL = "rule:grounding"
 GROUNDING_IDENTITY = JudgeIdentity(
     model=GROUNDING_MODEL, reasoning_effort="none", prompt_version=GROUNDING_RULE_VERSION
@@ -114,19 +114,29 @@ _DECLINE_RE = re.compile(
     re.IGNORECASE,
 )
 _SECOND_CLAUSE_RE = re.compile(r";|\s(?:but|yet|although|though|whereas)\s|\bit does\b|\bit is\b", re.IGNORECASE)
-# A comma before "and" or "or" joins a list item or a second clause. A clause carries its own
-# subject (a determiner and one to three words, or a capitalised word and up to two) and a finite
-# verb with a word after it; a list item has neither. "...port, and the Fastify server listens on
-# 8080" is a clause; "who approves, how provenance is stored, or how cache entries are invalidated"
-# is a list. Case-sensitive so the capitalised branch can tell a name from a list word.
+# A comma before "and" or "or" joins a list item or a second clause. The rule reads a clause when
+# a subject (a determiner and one to three words, or a capitalised word and up to two) is followed
+# by an auxiliary or one of the named verbs, with a word after it. The verb is named rather than
+# guessed from its ending, because a list item after a determiner ("the deployment steps for
+# staging", "the deployment process for staging") ends in s as often as a verb does, and a decline
+# wrongly withdrawn is scored on words the documents cannot carry. A clause whose verb is not on
+# the list stays a decline, as it did before. "...port, and the Fastify server listens on 8080"
+# is a clause; "who approves, how provenance is stored, or how cache entries are invalidated" is a
+# list. Case-sensitive so the capitalised branch can tell a name from a list word.
 _CLAUSE_SUBJECT = (
     r"(?:the|this|that|these|those|a|an|its|our|my|their|your)\s+(?:[\w-]+\s+){1,3}?"
     r"|[A-Z][\w-]*\s+(?:[\w-]+\s+){0,2}?"
 )
-_FINITE_VERB = (
-    r"(?:is|are|was|were|has|have|had|does|do|did|will|would|can|cannot|could|should|must|may|might|shall"
-    r"|(?!(?:this|its|thus|plus|across|always|perhaps|less|unless|various|previous|serious|obvious)\b)\w{2,}s)\b\s+\w"
+_CLAUSE_VERBS = (
+    "listens|runs|expects|requires|serves|writes|sends|provides|includes|contains|allows|"
+    "keeps|takes|makes|gives|says|specifies|describes|fails|starts|stops|opens|closes|"
+    "connects|accepts|exposes|depends|refers|applies|exists|follows|holds|validates|deploys|"
+    "migrates|publishes|subscribes|emits|waits|throws|raises|wraps|saves|adds|removes|deletes|"
+    "creates|generates|produces|consumes|reaches|sits|lives|goes|comes|gets|becomes|belongs|"
+    "behaves|responds"
 )
+_AUXILIARIES = "is|are|was|were|has|have|had|does|do|did|will|would|can|cannot|could|should|must|may|might|shall"
+_FINITE_VERB = r"(?:" + _AUXILIARIES + "|" + _CLAUSE_VERBS + r")\b\s+\w"
 _CLAUSE_COMMA_RE = re.compile(r",\s*(?:and|or)\s+(?:" + _CLAUSE_SUBJECT + r")" + _FINITE_VERB)
 
 

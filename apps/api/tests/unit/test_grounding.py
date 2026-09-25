@@ -106,11 +106,16 @@ class TestTheRule:
         "The corpus does not specify the preview port.",
         "However, the documentation does not establish that every feature works offline.",
         "I don't have more specific post-launch information in my knowledge base.",
-        # a list comma, not a clause comma (#319): the items carry no subject and finite verb
+        # a list comma, not a clause comma (#319): no auxiliary or named verb follows the last item
         "The corpus does not state who approves an answer, how provenance is stored, or how cache entries are invalidated.",
         "The documentation does not include a measured performance, bundle-size, or maintenance comparison.",
         "The corpus does not document the build, the tests, or the deployment steps.",
         "The documentation does not name React, Vue, or Svelte as options.",
+        "The corpus does not document the build, the tests, or the deployment steps for staging.",
+        "The corpus does not document the build, or the deployment process for staging.",
+        "The corpus does not name the fixtures, or the tests themselves in detail.",
+        "The documentation does not name React, Vue, or Svelte plugins for this.",
+        "The corpus does not give the timeout, or the 3 retries per minute.",
     ])
     def test_a_whole_sentence_decline_about_the_documents_is_grounded(self, sentence):
         s = ground(sentence, [RETURNS]).sentences[0]
@@ -127,6 +132,7 @@ class TestTheRule:
         "The documentation does not specify the port, and the Fastify server listens on 8080.",
         "The documentation does not establish that all agent functionality works without network access, and the normal configuration still expects Anthropic credentials.",
         "The corpus does not specify a retry count, or the tests would say so.",
+        "The corpus does not specify the port, and Fastify listens on 8080.",
     ])
     def test_a_claim_about_the_system_or_a_second_clause_is_scored_on_its_words(self, sentence):
         s = ground(sentence, [RETURNS]).sentences[0]
@@ -163,7 +169,7 @@ def _measure():
 
 
 class TestTheBenchmark:
-    """PUBLISHED for grounding-v2, measured 2026-09-24 (#306). A moved number is a moved rule.
+    """PUBLISHED for grounding-v3, measured 2026-09-25 (#319). A moved number is a moved rule.
 
     grounding-v1, 2026-09-23, read 8 of 30 passing and 103 of 260 sentences flagged. v2 reads a
     sentence under the floor once more against its best passage joined with the passage that

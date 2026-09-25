@@ -131,7 +131,7 @@ test('stem folds inflections and never cuts below four letters', () => {
   expect(stem('fees')).toBe('fees') // "fee" would be three letters
 })
 
-// ── the gate's rules (grounding.py, grounding-v2), ported so the aid lights what the gate scored ──
+// ── the gate's rules (grounding.py, grounding-v3), ported so the aid lights what the gate scored ──
 // fixtures-gate-rules.json holds ten sentences over three passages and two over none, each
 // decided by one rule, and the table of what the gate says of each: ground() produced every
 // tint and reason in it, and test_claims_benchmark.py checks it against ground() still.
@@ -311,6 +311,11 @@ test('isDecline takes a decline about the documents and refuses a claim about th
     'The documentation does not include a measured performance, bundle-size, or maintenance comparison.',
     'The corpus does not document the build, the tests, or the deployment steps.',
     'The documentation does not name React, Vue, or Svelte as options.',
+    'The corpus does not document the build, the tests, or the deployment steps for staging.',
+    'The corpus does not document the build, or the deployment process for staging.',
+    'The corpus does not name the fixtures, or the tests themselves in detail.',
+    'The documentation does not name React, Vue, or Svelte plugins for this.',
+    'The corpus does not give the timeout, or the 3 retries per minute.',
   ])
     expect(isDecline(s), s).toBe(true)
   for (const s of [
@@ -323,6 +328,7 @@ test('isDecline takes a decline about the documents and refuses a claim about th
     'The documentation does not specify the port, and the Fastify server listens on 8080.',
     'The documentation does not establish that all agent functionality works without network access, and the normal configuration still expects Anthropic credentials.',
     'The corpus does not specify a retry count, or the tests would say so.',
+    'The corpus does not specify the port, and Fastify listens on 8080.',
   ])
     expect(isDecline(s), s).toBe(false)
 })
