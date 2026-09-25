@@ -325,16 +325,24 @@ def response_units(response: str) -> list[tuple[str, bool]]:
     return units
 
 
+#: The most content words a lead-in line may carry; a longer line ending in a colon states
+#: something and is scored.
+LEAD_IN_MAX_WORDS = 3
+
+
 def is_lead_in(line: str, after: Sequence[str]) -> bool:
     """True for a whole line that introduces the list under it and asserts nothing of its own.
 
-    The line is one sentence ending in a colon, states no figure, and the next non-blank
-    line is a list item or a code fence. Anything else ending in a colon is a claim and is
-    scored: "The server listens on port:" with nothing under it, or a claim with "Here is
-    how:" appended.
+    The line is one sentence of at most LEAD_IN_MAX_WORDS content words ending in a colon,
+    states no figure, and the next non-blank line is a list item or a code fence. Anything
+    else ending in a colon is a claim and is scored: "The server listens on port:" with
+    nothing under it, a claim with "Here is how:" appended, or "Our founder personally
+    approves every refund request:" above a list.
     """
     text = line.strip().rstrip(" *_`")
     if not text.endswith(":") or _NUMBER_RE.search(text):
+        return False
+    if len(tokens_of(_score_text(text))) > LEAD_IN_MAX_WORDS:
         return False
     if len([part for part in _SENT_RE.split(text) if part.strip()]) != 1:
         return False

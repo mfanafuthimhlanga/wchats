@@ -143,10 +143,14 @@ export function splitSentences(text: string): string[] {
 export const VIEW_MARKER = 'My view:'
 export const VIEW_RE = /^\s*(?:>\s*)*(?:#{1,6}\s+)?[*_]{0,2}\s*My view\s*[*_]{0,2}\s*:\s*[*_]{0,2}/i
 
+/** LEAD_IN_MAX_WORDS in grounding.py. */
+export const LEAD_IN_MAX_WORDS = 3
+
 /** is_lead_in in grounding.py: a whole line ending in a colon, with no figure, before a list or fence. */
 export function isLeadIn(line: string, after: readonly string[]): boolean {
   const text = line.trim().replace(/[\s*_`]+$/, '')
   if (!text.endsWith(':') || numbersIn(text).length) return false
+  if (tokensOf(scoreText(text)).size > LEAD_IN_MAX_WORDS) return false
   if (text.split(SENT_RE()).filter((p) => p.trim()).length !== 1) return false
   const following = after.find((l) => l.trim()) ?? ''
   return /^\s*([-*•]|\d+[.)])\s+/.test(following) || following.trim().startsWith('```')

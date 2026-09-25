@@ -192,7 +192,7 @@ def _measure():
 
 class TestTheBenchmark:
     """PUBLISHED for grounding-v5, measured 2026-09-25. v4 read 10 of 30 passing and 84 of 260
-    flagged; v5 leaves 22 list lead-in lines unscored and grounds referrals and the declines
+    flagged; v5 leaves 8 short list lead-in lines unscored and grounds referrals and the declines
     v4 missed. A moved number is a moved rule.
 
     grounding-v1, 2026-09-23, read 8 of 30 passing and 103 of 260 sentences flagged. v2 reads a
@@ -210,7 +210,7 @@ class TestTheBenchmark:
 
     def test_the_real_answers_read_as_measured_on_the_day(self):
         m = _measure()
-        assert (m["real_answers"], m["pass_at_threshold"], m["sentences"], m["sentences_flagged"]) == (30, 14, 238, 69)
+        assert (m["real_answers"], m["pass_at_threshold"], m["sentences"], m["sentences_flagged"]) == (30, 13, 252, 77)
 
     def test_every_truth_claim_sits_in_its_answer(self):
         rows = {r["scenario_id"]: r for r in csv.DictReader((BENCH / "rows.csv").open(encoding="utf-8", newline=""))}
@@ -485,3 +485,10 @@ class TestReferralsDeclinesAndLeadIns:
     def test_a_colon_is_a_lead_in_only_on_a_whole_line_before_a_list(self, answer):
         first = answer.split("\n")[0]
         assert ground(answer, [RETURNS]).sentences[0].statement == first
+
+    @pytest.mark.parametrize("answer", [
+        "Every Growth customer also gets a dedicated account manager, and the tier includes:\n- Refunds.",
+        "Our founder personally approves every refund request:\n1. Open Billing",
+    ])
+    def test_a_long_line_ending_in_a_colon_is_a_claim_even_above_a_list(self, answer):
+        assert ground(answer, [RETURNS]).sentences[0].statement == answer.split("\n")[0]
