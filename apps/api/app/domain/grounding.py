@@ -164,13 +164,17 @@ def _number_key(raw: str) -> str:
 #: tenant's own do-list often asks for beside a decline ("point to the contact section").
 #: It asserts nothing the documents would carry. A number in it, or a second clause, makes
 #: it a sentence like any other.
+#: The short object a referral may name: up to five words, none of them a joiner that
+#: could carry a second claim.
+_REFERRAL_OBJECT = r"(?:(?!(?:and|or|which|who|that|with|including|plus)\b)[\w'-]+\s+){0,4}?(?!(?:and|or|which|who|that|with|including|plus)\b)[\w'-]+"
+_CONTACT_ROUTE = r"(?:the\s+)?contact\s+(?:section|page|form)"
 _REFERRAL_RE = re.compile(
     r"^\W*(?:"
-    r"(?:please\s+)?(?:use|see|check|visit|try)\s+(?:the\s+)?contact\b"
-    r"|for\s+[^,;]{1,120},\s*(?:please\s+)?(?:use|see|check|visit)\s+(?:the\s+)?contact\b"
-    r"|(?:the\s+)?contact\s+(?:section|page|form)\s+(?:is|would be)\s+(?:the\s+)?(?:appropriate|best|right)\s+(?:place|route|channel)\b"
-    r"|(?:please\s+)?(?:contact|reach out to|get in touch with)\s+(?:us|the (?:owner|team|author))\b"
-    r")",
+    r"(?:please\s+)?(?:use|see|check|visit)\s+" + _CONTACT_ROUTE + r"(?:\s+for\s+" + _REFERRAL_OBJECT + r")?"
+    r"|for\s+" + _REFERRAL_OBJECT + r",\s*(?:please\s+)?(?:use|see|check|visit)\s+" + _CONTACT_ROUTE
+    + r"|" + _CONTACT_ROUTE + r"\s+(?:is|would be)\s+(?:the\s+)?(?:appropriate|best|right)\s+(?:place|route|channel)"
+    r"(?:\s+(?:to|for)\s+" + _REFERRAL_OBJECT + r")?"
+    r")[\s*_]*[.!]?[\s*_]*$",
     re.IGNORECASE,
 )
 
@@ -183,20 +187,17 @@ def _straight_quotes(sentence: str) -> str:
 def is_referral(sentence: str) -> bool:
     """True when the whole sentence points to the contact route and states no figure."""
     sentence = _straight_quotes(sentence)
-    return (
-        _REFERRAL_RE.match(sentence) is not None
-        and _SECOND_CLAUSE_RE.search(sentence) is None
-        and _NUMBER_RE.search(sentence) is None
-    )
+    return _REFERRAL_RE.match(sentence) is not None and _NUMBER_RE.search(sentence) is None
 
 
 def is_decline(sentence: str) -> bool:
-    """True when the whole sentence says the documents do not say."""
+    """True when the whole sentence says the documents do not say, and states no figure."""
     sentence = _straight_quotes(sentence)
     return (
         _DECLINE_RE.match(sentence) is not None
         and _SECOND_CLAUSE_RE.search(sentence) is None
         and _CLAUSE_COMMA_RE.search(sentence) is None
+        and _NUMBER_RE.search(sentence) is None
     )
 _LIST_RE = re.compile(r"^\s*([-*•]|\d+[.)])\s+")
 #: A markdown rule line, `---`, `***` or `___`: it ends a paragraph, and the view with it.
@@ -296,7 +297,8 @@ def response_units(response: str) -> list[tuple[str, bool]]:
     in_view = False
     pending_view = False
     first_line = True
-    for line in body.split("\n"):
+    lines = body.split("\n")
+    for index, line in enumerate(lines):
         if line.strip().startswith("```"):
             in_fence = not in_fence
             in_view = pending_view = False
@@ -316,9 +318,28 @@ def response_units(response: str) -> list[tuple[str, bool]]:
             first_line = True
             continue
         first_line = False
+        if not marker and is_lead_in(line, lines[index + 1 :]):
+            continue
         rest = line[marker.end() :] if marker else line.strip()
         units.extend((sentence, in_view) for sentence in split_sentences(rest))
     return units
+
+
+def is_lead_in(line: str, after: Sequence[str]) -> bool:
+    """True for a whole line that introduces the list under it and asserts nothing of its own.
+
+    The line is one sentence ending in a colon, states no figure, and the next non-blank
+    line is a list item or a code fence. Anything else ending in a colon is a claim and is
+    scored: "The server listens on port:" with nothing under it, or a claim with "Here is
+    how:" appended.
+    """
+    text = line.strip().rstrip(" *_`")
+    if not text.endswith(":") or _NUMBER_RE.search(text):
+        return False
+    if len([part for part in _SENT_RE.split(text) if part.strip()]) != 1:
+        return False
+    following = next((candidate for candidate in after if candidate.strip()), "")
+    return bool(_LIST_RE.match(following)) or following.strip().startswith("```")
 
 
 def response_sentences(response: str) -> list[str]:
@@ -496,13 +517,9 @@ def _ground_sentence(
     carried_floor: float,
     view: bool = False,
 ) -> SentenceGrounding | None:
-    """One sentence's grounding, or None when it has nothing to score.
-
-    A line ending in a colon introduces a list and asserts nothing of its own; the
-    list items under it carry the facts and are scored.
-    """
+    """One sentence's grounding, or None when it has no content word to score."""
     tokens = tokens_of(_score_text(statement))
-    if not tokens or statement.rstrip(" *_`").endswith(":"):
+    if not tokens:
         return None
     best, carried = _best_passage(tokens, passage_tokens)
     if is_referral(statement):

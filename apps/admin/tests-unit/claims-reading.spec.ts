@@ -9,6 +9,7 @@ import {
   groundClaim,
   inlineParts,
   isDecline,
+  isReferral,
   litPassages,
   missingNumbers,
   passagesOf,
@@ -317,7 +318,6 @@ test('isDecline takes a decline about the documents and refuses a claim about th
     'The corpus does not document the build, or the deployment process for staging.',
     'The corpus does not name the fixtures, or the tests themselves in detail.',
     'The documentation does not name React, Vue, or Svelte plugins for this.',
-    'The corpus does not give the timeout, or the 3 retries per minute.',
     'The documentation does not describe the owner, or the teams that are on call.',
     'The documentation does not describe the port, or the host which is used in staging.',
     'The documentation does not describe the queue, or the files it writes to.',
@@ -442,4 +442,25 @@ test('a view with no grounded fact to rest on fails, beside a decline or alone',
 test('a rule line ends the view, and a fence cancels a view a bare marker handed on', () => {
   expect(viewFlags('My view: take the refund rather than the credit.\n---\nEvery order ships with a free llama plush toy.')).toEqual([true, false])
   expect(viewFlags('My view:\n```\ncode\n```\nEvery order ships with a free llama plush toy.')).toEqual([false])
+})
+
+// grounding-v5 review: a decline carrying a figure is scored; a referral ends at the contact
+// route; a colon is a lead-in only on a whole line before a list, as TestReferralsDeclinesAndLeadIns pins
+test('a figure-bearing decline, a referral with a claim, and a colon mid-claim are all scored', () => {
+  expect(isDecline('The corpus does not give the timeout, or the 3 retries per minute.')).toBe(false)
+  for (const s of [
+    'Use the contact section to book a Growth-tier demo.',
+    'See the contact section for pricing and a free trial.',
+    'Contact us for the enterprise plan, which includes SSO.',
+  ])
+    expect(isReferral(s), s).toBe(false)
+  expect(isReferral('Please use the contact section for the current Growth-tier price.')).toBe(true)
+  const scoredText = (answer: string) =>
+    analyse(answer, ['Returns are accepted within 30 days.']).units.filter((u) => u.tokens.size > 0).map((u) => u.text)
+  expect(scoredText('Refunds are paid within 90 days of cancellation, as follows:\n- Ask support.')[0]).toBe(
+    'Refunds are paid within 90 days of cancellation, as follows:',
+  )
+  expect(scoredText('Returns work like this:\n- Refunds are paid to the original payment method.')).toEqual([
+    'Refunds are paid to the original payment method.',
+  ])
 })

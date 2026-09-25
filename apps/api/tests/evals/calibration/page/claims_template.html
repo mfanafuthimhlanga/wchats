@@ -218,10 +218,13 @@
   const FINITE_VERB = '(?:is|are|was|were|has|have|had|does|do|did|will|would|can|cannot|could|should|must|may|might|shall|' + CLAUSE_VERBS + ')' + B_AFTER + String.raw`\s+(?:(?:${W}|-)+\s+){0,3}?(?:\p{Nd}|[A-HJ-Z]|I${W})`;
   const CLAUSE_COMMA_RE = new RegExp(String.raw`,\s*(?:and|or)\s+(?:` + CLAUSE_SUBJECT + ')' + FINITE_VERB, 'u');
   const straightQuotes = t => t.replace(/[\u2018\u2019]/g, "'"); // _straight_quotes
-  // _REFERRAL_RE / is_referral: a whole sentence pointing to the contact route, no figure, no second clause
-  const REFERRAL_RE = new RegExp(`^${NOT_W}*(?:` + String.raw`(?:please\s+)?(?:use|see|check|visit|try)\s+(?:the\s+)?contact` + B_AFTER + String.raw`|for\s+[^,;]{1,120},\s*(?:please\s+)?(?:use|see|check|visit)\s+(?:the\s+)?contact` + B_AFTER + String.raw`|(?:the\s+)?contact\s+(?:section|page|form)\s+(?:is|would be)\s+(?:the\s+)?(?:appropriate|best|right)\s+(?:place|route|channel)` + B_AFTER + String.raw`|(?:please\s+)?(?:contact|reach out to|get in touch with)\s+(?:us|the (?:owner|team|author))` + B_AFTER + ")", "iu");
-  const isReferral = t => { const s = straightQuotes(t); return REFERRAL_RE.test(s) && !SECOND_CLAUSE_RE.test(s) && !numbersIn(s).length; };
-  const isDecline = t => { const s = straightQuotes(t); return DECLINE_RE.test(s) && !SECOND_CLAUSE_RE.test(s) && !CLAUSE_COMMA_RE.test(s); }; // is_decline
+  const REFERRAL_OBJECT = String.raw`(?:(?!(?:and|or|which|who|that|with|including|plus)` + B_AFTER + String.raw`)(?:${W}|['-])+\s+){0,4}?(?!(?:and|or|which|who|that|with|including|plus)` + B_AFTER + String.raw`)(?:${W}|['-])+`, CONTACT_ROUTE = String.raw`(?:the\s+)?contact\s+(?:section|page|form)`; // _REFERRAL_OBJECT, _CONTACT_ROUTE
+  // _REFERRAL_RE / is_referral: a whole sentence ending at the contact route, a short object, no figure
+  const REFERRAL_RE = new RegExp(`^${NOT_W}*(?:` + String.raw`(?:please\s+)?(?:use|see|check|visit)\s+` + CONTACT_ROUTE + String.raw`(?:\s+for\s+` + REFERRAL_OBJECT + ")?" + String.raw`|for\s+` + REFERRAL_OBJECT + String.raw`,\s*(?:please\s+)?(?:use|see|check|visit)\s+` + CONTACT_ROUTE + "|" + CONTACT_ROUTE + String.raw`\s+(?:is|would be)\s+(?:the\s+)?(?:appropriate|best|right)\s+(?:place|route|channel)` + String.raw`(?:\s+(?:to|for)\s+` + REFERRAL_OBJECT + ")?" + String.raw`)[\s*_]*[.!]?[\s*_]*$`, "iu");
+  const isReferral = t => { const s = straightQuotes(t); return REFERRAL_RE.test(s) && !numbersIn(s).length; };
+  // is_lead_in: a whole line ending in a colon, with no figure, before a list item or a fence
+  const isLeadIn = (line, after) => { const text = line.trim().replace(/[\s*_`]+$/, ""); if (!text.endsWith(":") || numbersIn(text).length) return false; if (text.split(SENT_RE()).filter(p => p.trim()).length !== 1) return false; const following = after.find(l => l.trim()) || ""; return /^\s*([-*•]|\d+[.)])\s+/.test(following) || following.trim().startsWith("```"); };
+  const isDecline = t => { const s = straightQuotes(t); return DECLINE_RE.test(s) && !SECOND_CLAUSE_RE.test(s) && !CLAUSE_COMMA_RE.test(s) && !numbersIn(s).length; }; // is_decline
   // _INFERENCE_RE: a reason, a consequence or a purpose gets no second reading
   const INFERENCE_RE = new RegExp(B_BEFORE + "(because|therefore|thus|hence|consequently|so that|which means|this means|that means|as a result|in order to|favou?rs?|why)" + B_AFTER, "iu");
   const SECOND_PASSAGE_MIN_WORDS = 2; // SECOND_PASSAGE_MIN_WORDS
@@ -287,7 +290,8 @@
     const text = String(response || ""); const cut = text.search(/(^|\n)\s*CITATIONS\s*:/);
     const body = cut === -1 ? text : text.slice(0, cut); const cites = cut === -1 ? "" : text.slice(cut).trim();
     const units = []; let fence = null, para = false, view = false, pending = false, first = true;
-    for (const line of body.split("\n")) {
+    const lines = body.split("\n");
+    for (const [index, line] of lines.entries()) {
       if (/^\s*```/.test(line)) { view = false; pending = false; first = true; if (fence) { units.push({ kind: "code", text: fence.join("\n"), para: true, marker: "" }); fence = null; } else fence = []; continue; }
       if (fence) { fence.push(line); continue; }
       // _RULE_LINE_RE: a --- line ends the paragraph, the view and a handed-on view
@@ -298,7 +302,9 @@
       if (m) { view = false; pending = false; }
       else if (opened) { view = true; if (!line.slice(opened[0].length).trim()) { pending = true; first = true; continue; } }
       else if (first && pending) { view = true; pending = false; }
-      first = false; const rest = m ? line.slice(m[0].length) : line.trim();
+      first = false;
+      if (!m && isLeadIn(line, lines.slice(index + 1))) { units.push({ kind: "p", text: line.trim(), para, marker: "", view, leadIn: true }); para = false; continue; }
+      const rest = m ? line.slice(m[0].length) : line.trim();
       splitSentences(rest).forEach((s, i) => units.push({ kind: m ? (i === 0 ? "li" : "cont") : "p", text: s, para: para && i === 0, marker: (m && i === 0) ? m[1] : "", view }));
       para = false;
     }
@@ -339,7 +345,7 @@
     for (const u of units) {
       // the gate scores prose only: a code fence and the CITATIONS block never reach it (response_sentences)
       // _ground_sentence: a line ending in a colon introduces a list and is not scored
-      u.tokens = (u.kind === "cite" || u.kind === "code" || /:$/.test(u.text.replace(/[\s*_`]+$/, ""))) ? EMPTY : tokensOf(scoreText(u.text));
+      u.tokens = (u.kind === "cite" || u.kind === "code" || u.leadIn) ? EMPTY : tokensOf(scoreText(u.text));
       Object.assign(u, groundSentence(u.text, u.tokens, ptokens, numbers, !!u.view));
     }
     // _anchor_views: with no grounded fact but a decline, every view sentence fails

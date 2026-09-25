@@ -116,7 +116,6 @@ class TestTheRule:
         "The corpus does not document the build, or the deployment process for staging.",
         "The corpus does not name the fixtures, or the tests themselves in detail.",
         "The documentation does not name React, Vue, or Svelte plugins for this.",
-        "The corpus does not give the timeout, or the 3 retries per minute.",
         "The documentation does not describe the owner, or the teams that are on call.",
         "The documentation does not describe the port, or the host which is used in staging.",
         "The documentation does not describe the queue, or the files it writes to.",
@@ -193,7 +192,7 @@ def _measure():
 
 class TestTheBenchmark:
     """PUBLISHED for grounding-v5, measured 2026-09-25. v4 read 10 of 30 passing and 84 of 260
-    flagged; v5 leaves 28 list lead-in lines unscored and grounds referrals and the declines
+    flagged; v5 leaves 22 list lead-in lines unscored and grounds referrals and the declines
     v4 missed. A moved number is a moved rule.
 
     grounding-v1, 2026-09-23, read 8 of 30 passing and 103 of 260 sentences flagged. v2 reads a
@@ -211,7 +210,7 @@ class TestTheBenchmark:
 
     def test_the_real_answers_read_as_measured_on_the_day(self):
         m = _measure()
-        assert (m["real_answers"], m["pass_at_threshold"], m["sentences"], m["sentences_flagged"]) == (30, 14, 232, 65)
+        assert (m["real_answers"], m["pass_at_threshold"], m["sentences"], m["sentences_flagged"]) == (30, 14, 238, 69)
 
     def test_every_truth_claim_sits_in_its_answer(self):
         rows = {r["scenario_id"]: r for r in csv.DictReader((BENCH / "rows.csv").open(encoding="utf-8", newline=""))}
@@ -444,6 +443,12 @@ class TestReferralsDeclinesAndLeadIns:
         "For pricing, use the contact section; the Growth tier costs R500.",
         "See the contact section for the 2026 price list.",
         "Contact support to get a refund within 30 days.",
+        "Use the contact section to book a Growth-tier demo.",
+        "Contact us for the enterprise plan, which includes SSO.",
+        "See the contact section for pricing and a free trial.",
+        "Reach out to us and we will refund your first month in full.",
+        "Get in touch with the team, who reply within the hour.",
+        "Use contact tracing to find which agent answered.",
     ])
     def test_a_referral_carrying_a_fact_a_figure_or_a_second_clause_is_scored(self, sentence):
         assert ground(sentence, [RETURNS]).sentences[0].referral is False
@@ -463,3 +468,20 @@ class TestReferralsDeclinesAndLeadIns:
     def test_a_lead_in_line_is_not_scored_and_its_items_are(self):
         g = ground("Returns work like this:\n- Refunds are paid to the original payment method.", [RETURNS])
         assert [s.statement for s in g.sentences] == ["Refunds are paid to the original payment method."]
+
+    @pytest.mark.parametrize("sentence", [
+        "I don't have the 2019 price list in my knowledge base.",
+        "The corpus does not give the timeout, or the 3 retries per minute.",
+    ])
+    def test_a_decline_carrying_a_figure_is_scored(self, sentence):
+        assert ground(sentence, [RETURNS]).sentences[0].decline is False
+
+    @pytest.mark.parametrize("answer", [
+        "The Platinum tier includes lifetime repairs at every branch. Here is how:\n- Bring it in.",
+        "Refunds are paid within 90 days of cancellation, as follows:\n- Ask support.",
+        "The server listens on port:",
+        "It supports three databases:\n\nThat is all.",
+    ])
+    def test_a_colon_is_a_lead_in_only_on_a_whole_line_before_a_list(self, answer):
+        first = answer.split("\n")[0]
+        assert ground(answer, [RETURNS]).sentences[0].statement == first

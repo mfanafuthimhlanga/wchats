@@ -19,6 +19,8 @@ export interface Unit {
   marker: string
   /** The unit sits in the paragraph VIEW_RE opens: the agent's view (response_units). */
   view: boolean
+  /** A line introducing the list under it (is_lead_in): shown, never scored. */
+  leadIn?: boolean
 }
 
 export interface Passage {
@@ -141,6 +143,15 @@ export function splitSentences(text: string): string[] {
 export const VIEW_MARKER = 'My view:'
 export const VIEW_RE = /^\s*(?:>\s*)*(?:#{1,6}\s+)?[*_]{0,2}\s*My view\s*[*_]{0,2}\s*:\s*[*_]{0,2}/i
 
+/** is_lead_in in grounding.py: a whole line ending in a colon, with no figure, before a list or fence. */
+export function isLeadIn(line: string, after: readonly string[]): boolean {
+  const text = line.trim().replace(/[\s*_`]+$/, '')
+  if (!text.endsWith(':') || numbersIn(text).length) return false
+  if (text.split(SENT_RE()).filter((p) => p.trim()).length !== 1) return false
+  const following = after.find((l) => l.trim()) ?? ''
+  return /^\s*([-*•]|\d+[.)])\s+/.test(following) || following.trim().startsWith('```')
+}
+
 /** The response as sentences, bullets, code fences and a trailing CITATIONS block. */
 export function responseUnits(response: string): Unit[] {
   const text = String(response ?? '')
@@ -153,7 +164,8 @@ export function responseUnits(response: string): Unit[] {
   let view = false
   let pending = false
   let first = true
-  for (const line of body.split('\n')) {
+  const lines = body.split('\n')
+  for (const [index, line] of lines.entries()) {
     if (/^\s*```/.test(line)) {
       view = pending = false
       first = true
@@ -192,6 +204,11 @@ export function responseUnits(response: string): Unit[] {
       pending = false
     }
     first = false
+    if (!m && isLeadIn(line, lines.slice(index + 1))) {
+      units.push({ kind: 'p', text: line.trim(), para, marker: '', view, leadIn: true })
+      para = false
+      continue
+    }
     const rest = m ? line.slice(m[0].length) : line.trim()
     splitSentences(rest).forEach((s, i) =>
       units.push({
@@ -359,27 +376,30 @@ export const CLAUSE_COMMA_RE = new RegExp(String.raw`,\s*(?:and|or)\s+(?:` + CLA
 /** _straight_quotes in grounding.py: curly apostrophes as straight ones, so "don’t" reads as "don't". */
 export const straightQuotes = (text: string) => text.replace(/[\u2018\u2019]/g, "'")
 
-/** _REFERRAL_RE in grounding.py: a whole sentence pointing the customer to the contact route. */
+/** _REFERRAL_OBJECT and _CONTACT_ROUTE in grounding.py: a short object with no joiner, and the route. */
+const REFERRAL_OBJECT = String.raw`(?:(?!(?:and|or|which|who|that|with|including|plus)` + B_AFTER + String.raw`)(?:${W}|['-])+\s+){0,4}?(?!(?:and|or|which|who|that|with|including|plus)` + B_AFTER + String.raw`)(?:${W}|['-])+`
+const CONTACT_ROUTE = String.raw`(?:the\s+)?contact\s+(?:section|page|form)`
+/** _REFERRAL_RE in grounding.py: a whole sentence that ends at the contact route. */
 export const REFERRAL_RE = new RegExp(
   `^${NOT_W}*(?:` +
-    String.raw`(?:please\s+)?(?:use|see|check|visit|try)\s+(?:the\s+)?contact` + B_AFTER +
-    String.raw`|for\s+[^,;]{1,120},\s*(?:please\s+)?(?:use|see|check|visit)\s+(?:the\s+)?contact` + B_AFTER +
-    String.raw`|(?:the\s+)?contact\s+(?:section|page|form)\s+(?:is|would be)\s+(?:the\s+)?(?:appropriate|best|right)\s+(?:place|route|channel)` + B_AFTER +
-    String.raw`|(?:please\s+)?(?:contact|reach out to|get in touch with)\s+(?:us|the (?:owner|team|author))` + B_AFTER +
-    ')',
+    String.raw`(?:please\s+)?(?:use|see|check|visit)\s+` + CONTACT_ROUTE + String.raw`(?:\s+for\s+` + REFERRAL_OBJECT + ')?' +
+    String.raw`|for\s+` + REFERRAL_OBJECT + String.raw`,\s*(?:please\s+)?(?:use|see|check|visit)\s+` + CONTACT_ROUTE +
+    '|' + CONTACT_ROUTE + String.raw`\s+(?:is|would be)\s+(?:the\s+)?(?:appropriate|best|right)\s+(?:place|route|channel)` +
+    String.raw`(?:\s+(?:to|for)\s+` + REFERRAL_OBJECT + ')?' +
+    String.raw`)[\s*_]*[.!]?[\s*_]*$`,
   'iu',
 )
 
 /** is_referral in grounding.py: the whole sentence points to the contact route and states no figure. */
 export function isReferral(sentence: string): boolean {
   const s = straightQuotes(sentence)
-  return REFERRAL_RE.test(s) && !SECOND_CLAUSE_RE.test(s) && !numbersIn(s).length
+  return REFERRAL_RE.test(s) && !numbersIn(s).length
 }
 
 /** is_decline in grounding.py: true when the whole sentence says the documents do not say. */
 export function isDecline(sentence: string): boolean {
   const s = straightQuotes(sentence)
-  return DECLINE_RE.test(s) && !SECOND_CLAUSE_RE.test(s) && !CLAUSE_COMMA_RE.test(s)
+  return DECLINE_RE.test(s) && !SECOND_CLAUSE_RE.test(s) && !CLAUSE_COMMA_RE.test(s) && !numbersIn(s).length
 }
 
 /** _INFERENCE_RE in grounding.py: a reason, a consequence or a purpose. Such a sentence gets no second reading. */
@@ -508,8 +528,7 @@ export function analyse(response: string, contexts: readonly string[]): Reading 
   const units = responseUnits(response).map((u): ReadUnit => {
     // the gate scores prose only: a code fence and the CITATIONS block never reach it (response_sentences)
     // _ground_sentence: a line ending in a colon introduces a list and is not scored
-    const leadIn = /:$/.test(u.text.replace(/[\s*_`]+$/, ''))
-    const tokens = u.kind === 'cite' || u.kind === 'code' || leadIn ? new Set<string>() : tokensOf(scoreText(u.text))
+    const tokens = u.kind === 'cite' || u.kind === 'code' || u.leadIn ? new Set<string>() : tokensOf(scoreText(u.text))
     const g = groundSentence(u.text, tokens, passageTokens, numbers, u.view)
     return { ...u, ...g, tokens, tint: tintOf(tokens.size, g.match.score, g) }
   })
