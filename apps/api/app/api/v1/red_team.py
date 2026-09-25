@@ -10,6 +10,7 @@ Routes:
     POST /agents/{agent_id}/red-team-runs             — dispatch run_red_team manually (202)
     GET  /agents/{agent_id}/red-team/programme        — OPS-13: strategies/probes/coverage rollup
     POST /agents/{agent_id}/red-team/findings/{finding_id}/contain
+    POST /agents/{agent_id}/red-team/findings/{finding_id}/retest    — replay one finding's attack (202)
         — OPS-14: contain/close a finding; a critical finding files a
           source='red_team' regression scenario via the shared
           insert_provenance_scenario path (21-06).
@@ -33,6 +34,7 @@ from app.models.tenant import Tenant
 from app.services.redteam_programme_service import read_programme
 from app.services.scenario_service import insert_provenance_scenario
 from app.worker.tasks.runtime.red_team import run_red_team
+from app.worker.tasks.runtime.red_team_retest import retest_red_team_finding
 
 router = APIRouter(tags=["red_team"])
 log = structlog.get_logger(__name__)
@@ -554,3 +556,63 @@ async def contain_red_team_finding(
         scenario_filed=result["scenario_filed"],
     )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Route 6: POST /agents/{agent_id}/red-team/findings/{finding_id}/retest
+# ---------------------------------------------------------------------------
+
+#: One finding of THIS agent's, by id, and its status (#162: a finding is scoped to
+#: the agent through its run's kind, never read by primary key alone).
+_RETEST_SELECT_SQL = (
+    "SELECT f.status FROM red_team_findings f "
+    "JOIN red_team_runs r ON r.id = f.run_id "
+    "WHERE f.id = %s AND r.kind = %s"
+)
+
+
+def _finding_status_sync(conn_str: str, finding_id: str, agent_id: str) -> str | None:
+    """The finding's status, or None when this agent has no such finding."""
+    conn = psycopg2.connect(conn_str, connect_timeout=10)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_RETEST_SELECT_SQL, (finding_id, f"m7:{agent_id}"))
+            row = cur.fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+@router.post("/agents/{agent_id}/red-team/findings/{finding_id}/retest", status_code=202)
+async def retest_red_team_finding_route(
+    agent_id: UUID,
+    finding_id: UUID,
+    db: AsyncSession = Depends(get_async_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> dict:
+    """Queue a re-test of one open finding against the agent as it is now.
+
+    The owner's way to clear a finding: change the agent, then replay the attack.
+    `retest_red_team_finding` runs on the runtime queue with the agent and finding
+    ids only (CLAUDE.md rules 1 and 7) and writes the outcome to the finding's
+    `retest` column; a resolved finding leaves every gate.
+
+    Responses: 202 {"finding_id", "queued": true}; 404 for an agent or finding this
+    tenant does not own; 409 when the finding is not open.
+    """
+    agent = await db.get(Agent, agent_id)
+    if agent is None or agent.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if not agent.neon_connection_string:
+        raise HTTPException(status_code=404, detail="Agent database not provisioned")
+    conn_str = fernet_decrypt(agent.neon_connection_string)
+    status = await asyncio.to_thread(_finding_status_sync, conn_str, str(finding_id), str(agent_id))
+    if status is None:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    if status != "open":
+        raise HTTPException(status_code=409, detail=f"Finding is {status}, not open")
+    retest_red_team_finding.apply_async(
+        kwargs={"agent_id": str(agent_id), "finding_id": str(finding_id)}, queue="runtime"
+    )
+    log.info("retest_red_team_finding.queued", agent_id=str(agent_id), finding_id=str(finding_id))
+    return {"finding_id": str(finding_id), "queued": True}

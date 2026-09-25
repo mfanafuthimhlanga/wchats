@@ -172,6 +172,8 @@ celery_app.conf.update(
         "app.worker.tasks.runtime.rejudge",
         # M7: red team tasks (runtime queue)
         "app.worker.tasks.runtime.red_team",
+        # an owner re-tests one red-team finding against the current agent
+        "app.worker.tasks.runtime.red_team_retest",
         # M8: deployment checklist task (runtime queue)
         "app.worker.tasks.runtime.deployment",
         # M9: retrieval strategy synthesis (pipeline queue)

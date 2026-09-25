@@ -425,7 +425,7 @@ async def _refuse_if_a_critical_finding_is_open(agent: Agent) -> None:
             status_code=422,
             detail=(
                 f"Cannot approve: {critical} critical red-team finding(s) are open "
-                "against this agent right now. Contain them and re-run the checklist."
+                "against this agent right now. Change the agent, re-test each finding, and re-run the checklist."
             ),
         )
 
