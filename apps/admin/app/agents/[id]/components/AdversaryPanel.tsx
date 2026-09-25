@@ -13,6 +13,7 @@ import {
   formatInteger,
   formatPercent,
   latestRunLine,
+  retestStamp,
   retestIsRunning,
 } from './opsFormat'
 import FindingRow from './FindingRow'
@@ -115,11 +116,10 @@ export default function AdversaryPanel({
   // savingConfirmations. Never a shared boolean: two findings must never
   // share a busy state (T-23-ADV-06).
   const [busy, setBusy] = useState<Record<string, boolean>>({})
-  // A per-finding note carrying the API's refusal (a 409's detail). It stays
-  // until the owner re-tests that finding again: "A conversation cannot
-  // reproduce this finding; re-run the red team to clear it" is standing
-  // advice, not a transient blip, so it does not self-clear on a timer.
-  const [notes, setNotes] = useState<Record<string, string>>({})
+  // A per-finding note carrying the API's refusal (a 409's detail), stamped with the
+  // re-test state it answered (retestStamp). It shows while that state holds and goes
+  // once the finding's re-test moves on, never on a timer.
+  const [notes, setNotes] = useState<Record<string, { message: string; stamp: string }>>({})
 
   // The one error path this region reports into — the page's shared
   // callback, folded into its single existing banner. This is the query's
@@ -162,6 +162,11 @@ export default function AdversaryPanel({
       return next
     })
 
+  const noteFor = (finding: OpenFinding): string | undefined => {
+    const note = notes[finding.id]
+    return note && note.stamp === retestStamp(finding.retest) ? note.message : undefined
+  }
+
   const retestMutation = useMutation({
     mutationFn: async (findingId: string) => {
       const token = await getToken()
@@ -184,7 +189,8 @@ export default function AdversaryPanel({
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['red-team-programme', agentId] }),
     onError: (err: unknown, findingId) => {
       const message = (err as Error).message || 'The re-test did not start.'
-      setNotes((prev) => ({ ...prev, [findingId]: message }))
+      const finding = openFindings.find((f) => f.id === findingId)
+      setNotes((prev) => ({ ...prev, [findingId]: { message, stamp: retestStamp(finding?.retest) } }))
       // A 409 such as "Finding is resolved, not open" means this list is
       // behind the server; refetch so it catches up.
       queryClient.invalidateQueries({ queryKey: ['red-team-programme', agentId] })
@@ -297,7 +303,7 @@ export default function AdversaryPanel({
           finding={critical}
           banner
           busy={!!busy[critical.id]}
-          note={notes[critical.id]}
+          note={noteFor(critical)}
           onRetest={handleRetest}
         />
       )}
@@ -305,7 +311,7 @@ export default function AdversaryPanel({
       {remaining.length > 0 && (
         <div style={{ marginTop: 18, display: 'flex', flexDirection: 'column' }}>
           {remaining.map((f) => (
-            <FindingRow key={f.id} finding={f} busy={!!busy[f.id]} note={notes[f.id]} onRetest={handleRetest} />
+            <FindingRow key={f.id} finding={f} busy={!!busy[f.id]} note={noteFor(f)} onRetest={handleRetest} />
           ))}
         </div>
       )}

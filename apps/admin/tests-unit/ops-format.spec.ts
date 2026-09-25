@@ -28,6 +28,7 @@ import {
   latestRunLine,
   retestIsRunning,
   retestLine,
+  retestStamp,
   formatAttackVector,
   UNREPRODUCIBLE_FINDING,
   type FindingRetest,
@@ -718,6 +719,14 @@ test('an unreproducible finding reads the same sentence as the API refusal', () 
 
 test('formatAttackVector reads a vector the way the coverage ledger and the Re-test label do', () => {
   expect(formatAttackVector('prompt_injection')).toBe('Prompt Injection')
-  expect(formatAttackVector('pii_extraction_multi_turn')).toBe('Pii Extraction Multi Turn')
+  expect(formatAttackVector('pii_extraction_multi_turn')).toBe('PII Extraction Multi Turn')
   expect(formatAttackVector('jailbreak')).toBe('Jailbreak')
+})
+
+test('a refusal note answers one re-test state, and an acronym stays in capitals', () => {
+  expect(retestStamp(null)).toBe(':')
+  expect(retestStamp({ id: 'r1', status: 'running', started_at: null })).toBe('r1:running')
+  expect(retestStamp({ id: 'r1', status: 'failed', error_type: null })).not.toBe(retestStamp({ id: 'r1', status: 'running', started_at: null }))
+  expect(formatAttackVector('pii_extraction')).toBe('PII Extraction')
+  expect(formatAttackVector('prompt_injection')).toBe('Prompt Injection')
 })

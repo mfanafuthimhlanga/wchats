@@ -457,8 +457,22 @@ export function retestLine(retest: FindingRetest | null | undefined): string | n
 }
 
 /** "prompt_injection" -> "Prompt Injection", as the coverage ledger and the Re-test button's label read an attack vector. */
+/** Words a vector name carries as an acronym, spoken letter by letter. */
+const VECTOR_ACRONYMS = new Set(['pii', 'api', 'sso', 'sql', 'llm', 'rag', 'rtx'])
+
 export function formatAttackVector(vector: string): string {
-  return vector.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+  return vector
+    .split('_')
+    .map((word) => (VECTOR_ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1)))
+    .join(' ')
+}
+
+/**
+ * The re-test state a refusal note answered: the re-test's id and status. A note shows only
+ * while the finding's re-test still has this stamp, so it goes once that re-test moves on.
+ */
+export function retestStamp(retest: FindingRetest | null | undefined): string {
+  return `${retest?.id ?? ''}:${retest?.status ?? ''}`
 }
 
 function countNoun(count: number, singular: string, plural: string): string {
