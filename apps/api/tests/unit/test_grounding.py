@@ -192,7 +192,8 @@ def _measure():
 
 
 class TestTheBenchmark:
-    """PUBLISHED for grounding-v3, measured 2026-09-25 (#319). A moved number is a moved rule.
+    """PUBLISHED for grounding-v4, measured 2026-09-25; unchanged from v3 (#319), since no
+    stored answer carries a view. A moved number is a moved rule.
 
     grounding-v1, 2026-09-23, read 8 of 30 passing and 103 of 260 sentences flagged. v2 reads a
     sentence under the floor once more against its best passage joined with the passage that
@@ -314,13 +315,25 @@ class TestTheView:
         "and costs nothing to hold on to."
     )
 
-    def test_a_view_the_passages_share_no_words_with_is_grounded(self):
+    def test_a_view_the_passages_share_no_words_with_is_grounded_and_left_out_of_the_score(self):
         g = ground(self.FACT + "\n\n" + self.VIEW, [RETURNS])
         fact, view = g.sentences[0], g.sentences[-1]
         assert fact.view is False and view.view is True
-        assert view.supported is True
+        assert view.supported is True and view.passage == -1
         assert view.reason == "the agent's view, read for its numbers only"
-        assert g.score == 1.0
+        assert g.score == ground(self.FACT, [RETURNS]).score
+
+    def test_an_answer_that_is_all_view_has_no_fact_to_score(self):
+        assert ground(self.VIEW, [RETURNS]).score is None
+        assert ground(self.VIEW, []).score is None
+
+    def test_a_view_cannot_pad_an_invented_fact_past_the_threshold(self):
+        answer = "Every order ships with a free llama plush toy.\n\n" + "\n\n".join([self.VIEW] * 4)
+        assert ground(answer, [RETURNS]).score == 0.0
+
+    def test_a_view_with_an_invented_number_is_a_failed_fact_in_the_score(self):
+        answer = self.FACT + "\n\nMy view: wait 45 days before chasing it, because couriers run late."
+        assert ground(answer, [RETURNS]).score == 0.5
 
     def test_a_number_in_the_view_is_still_checked(self):
         view = "My view: wait 45 days before chasing it, because couriers run late."
@@ -344,9 +357,33 @@ class TestTheView:
         "In my view, returns take too long to process for most customers today.",
         "Returns take too long. My view: nothing here opens a paragraph mid-line.",
         "- My view: a list item is a fact line, not the view paragraph.",
+        "Refunds arrive in five days.\nMy view: a marker on a paragraph's second line opens nothing.",
     ])
     def test_only_a_paragraph_opening_with_the_marker_is_the_view(self, answer):
         assert not any(s.view for s in ground(answer, [RETURNS]).sentences)
+
+    @pytest.mark.parametrize("opening", [
+        "my view:", "MY VIEW:", "**My view**:", "*My view:*", "__My view:__", "> My view:", "### My view:",
+    ])
+    def test_the_markdown_a_model_wraps_the_marker_in_still_opens_the_view(self, opening):
+        assert ground(f"{opening} narrow it first, since a smaller scope tests well.", [RETURNS]).sentences[0].view
+
+    def test_a_list_line_ends_the_view(self):
+        answer = "My view: take the refund rather than the credit.\n- Every order ships with a free llama plush toy."
+        assert [s.view for s in ground(answer, [RETURNS]).sentences] == [True, False]
+
+    def test_a_code_fence_ends_the_view(self):
+        answer = "My view: take the refund rather than the credit.\n```\ncode\n```\nEvery order ships with a free llama plush toy."
+        assert [s.view for s in ground(answer, [RETURNS]).sentences] == [True, False]
+
+    def test_a_bare_marker_line_hands_the_view_to_the_next_paragraph(self):
+        answer = "**My view:**\n\nTake the refund rather than the credit, since it settles sooner."
+        [s] = ground(answer, [RETURNS]).sentences
+        assert s.view is True
+
+    def test_crlf_line_ends_read_the_same(self):
+        answer = "Returns are accepted within 30 days.\r\n\r\nMy view: keep the receipt anyway.\r\n"
+        assert [s.view for s in ground(answer, [RETURNS]).sentences] == [False, True]
 
     def test_the_prompt_asks_for_the_marker_this_rule_reads(self):
         from app.domain.grounding import VIEW_MARKER

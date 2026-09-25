@@ -17,7 +17,7 @@ port") asserts nothing the documents could carry and is grounded with its reason
 a negated claim about the system, a doing verb or a second clause is scored on its words. The score is
 the grounded share, the claims column carries one row per sentence with a reason a person
 can read, and `eval_results.judge_identity` names the rule (`rule:grounding`, `grounding-v1`, `grounding-v2`
-since #306, `grounding-v3` since #319, `grounding-v4` since the view paragraph).
+since #306, `grounding-v3` since #319, `grounding-v4` since #326).
 
 The eval task scores nothing else. `METRIC_KEYS` is faithfulness alone since #296, so a run
 writes one `eval_results` row per scenario. The question resolver is gone.
@@ -110,13 +110,16 @@ benchmark are unlabelled.
   number checked; "the build, the tests, or the deployment steps for staging" stays a decline.
   Both aids carry the twin. Stored benchmark: 83 to 84 sentences flagged, passes and the
   planted recall unchanged.
-- `grounding-v4`: the agent gives its view. When the customer asks for a view, a reason, a
+- `grounding-v4` (#326): the agent gives its view. When the customer asks for a view, a
   comparison or a recommendation, the platform prompt asks for the facts first and then one
-  paragraph opening `My view:` that reasons from them. The rule reads that paragraph for its
-  numbers only and holds every other sentence to the floor. `VIEW_MARKER` lives in
-  `grounding.py` and the prompt imports it, so the words the agent is told to write are the
-  words the rule reads. A name or a claim inside the view is not checked, as a name is not
-  checked anywhere else; a figure is.
+  paragraph opening `My view:`, before the CITATIONS block, that reasons from them. The view
+  is the paragraph whose first line opens with the marker, to the next blank line, list line
+  or code fence. The rule reads it for its numbers only, and a clean view sentence is left
+  out of the score, so the score is the grounded share of the answer's facts: an answer that
+  is all view has no fact to score and reads unmeasured, and a view cannot pad an invented
+  fact past the threshold. `VIEW_MARKER` lives in `grounding.py` and the prompt imports it.
+  Inside the view the words are not checked against the passages, only the figures, and a
+  figure passes when any passage states it.
 - The conversational red-team probe drove a stand-in persona over the direct API until #309;
   it drives the deployed agent's own turn in recorded mode now, the same seam the transactional
   probe used. With the served prompt in hand, #307 put a rule between a report and the block

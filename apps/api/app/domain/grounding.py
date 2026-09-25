@@ -8,8 +8,10 @@ WHAT IT MEASURES
     words at least, and never for a sentence asserting a reason or a
     consequence), plus every number in the sentence having to appear somewhere
     in the retrieved text. A sentence at or above the carried floor with no
-    missing number is grounded. The answer's score is the grounded
-    share of its scoreable sentences, and that share is what `eval_results`
+    missing number is grounded. A sentence in the paragraph VIEW_MARKER opens is
+    the agent's own reasoning: it is read for its numbers only and left out of the
+    score unless a number fails it. The answer's score is the grounded share of
+    its scoreable sentences, and that share is what `eval_results`
     stores under `faithfulness` (ADR 0015): the column keeps its name and its
     gate, the instrument behind it is this rule.
 
@@ -171,8 +173,16 @@ _LIST_RE = re.compile(r"^\s*([-*•]|\d+[.)])\s+")
 #: open is reasoning: it is not held to the word-overlap floor, because a view is the
 #: agent's own sentence rather than one the documents carry, and it still fails on any
 #: number the passages lack, because a figure is a fact wherever it is written.
+#:
+#: A clean view sentence counts neither for nor against the score (Grounding.score):
+#: the score is the grounded share of the answer's facts. An answer that is all view,
+#: or all view beside retrieved text that says nothing, has no fact to score and reads
+#: unmeasured, never grounded.
 VIEW_MARKER = "My view:"
-_VIEW_RE = re.compile(r"^\s*(?:\*\*|__)?\s*My view\s*:", re.IGNORECASE)
+#: The marker opening a paragraph's first line, with the markdown a model wraps it in:
+#: a quote mark, a heading, bold or italic on either side of the colon. A list item
+#: never opens the view; a list line is a fact line.
+_VIEW_RE = re.compile(r"^\s*(?:>\s*)*(?:#{1,6}\s+)?[*_]{0,2}\s*My view\s*[*_]{0,2}\s*:\s*[*_]{0,2}", re.IGNORECASE)
 _CITATIONS_RE = re.compile(r"(^|\n)\s*CITATIONS\s*:")
 _SOURCE_MARK_RE = re.compile(r"\*\(([^()]*)\)\*")
 
@@ -217,11 +227,32 @@ def split_sentences(text: str) -> list[str]:
     return out
 
 
+def _view_after(
+    line: str, listed: bool, first_line: bool, in_view: bool, pending: bool
+) -> tuple[bool, bool, bool]:
+    """(in the view, view handed to the next paragraph, a bare marker line) after one non-blank line.
+
+    A list line ends the view. The marker opens it only on a paragraph's first line,
+    and a marker with nothing after it hands the view to the next paragraph.
+    """
+    if listed:
+        return False, False, False
+    opened = _VIEW_RE.match(line) if first_line else None
+    if opened:
+        bare = not line[opened.end() :].strip()
+        return True, bare, bare
+    if first_line and pending:
+        return True, False, False
+    return in_view, pending, False
+
+
 def response_units(response: str) -> list[tuple[str, bool]]:
     """The answer's prose sentences, each with whether it sits in the agent's view.
 
-    Bullets are kept, code fences and the CITATIONS block dropped. A paragraph whose
-    first line opens with VIEW_MARKER is the view, to the next blank line.
+    Bullets are kept, code fences and the CITATIONS block dropped. The view is the
+    paragraph whose FIRST line opens with VIEW_MARKER, and it ends at the next blank
+    line, list line or code fence. A marker line with nothing after the marker hands
+    the view to the next paragraph and is not a sentence itself.
     """
     text = response or ""
     cut = _CITATIONS_RE.search(text)
@@ -229,19 +260,26 @@ def response_units(response: str) -> list[tuple[str, bool]]:
     units: list[tuple[str, bool]] = []
     in_fence = False
     in_view = False
+    pending_view = False
+    first_line = True
     for line in body.split("\n"):
         if line.strip().startswith("```"):
             in_fence = not in_fence
             in_view = False
-            continue
-        if not line.strip():
-            in_view = False
+            first_line = True
             continue
         if in_fence:
             continue
-        if _VIEW_RE.match(line):
-            in_view = True
+        if not line.strip():
+            in_view = False
+            first_line = True
+            continue
         marker = _LIST_RE.match(line)
+        in_view, pending_view, bare = _view_after(line, bool(marker), first_line, in_view, pending_view)
+        if bare:
+            first_line = True
+            continue
+        first_line = False
         rest = line[marker.end() :] if marker else line.strip()
         units.extend((sentence, in_view) for sentence in split_sentences(rest))
     return units
@@ -321,10 +359,16 @@ class Grounding:
 
     @property
     def score(self) -> float | None:
-        """The grounded share, or None when the answer had no scoreable sentence."""
-        if not self.sentences:
+        """The grounded share of the answer's facts, or None when it had none to score.
+
+        A clean view sentence is left out: it is reasoning, checked for its numbers
+        only, so it may neither pass an answer nor pad one. A view sentence carrying a
+        number no passage has is a failed fact and counts.
+        """
+        scored = [s for s in self.sentences if not (s.view and s.supported)]
+        if not scored:
             return None
-        return sum(1 for s in self.sentences if s.supported) / len(self.sentences)
+        return sum(1 for s in scored if s.supported) / len(scored)
 
     @property
     def claims(self) -> list[dict]:
@@ -408,7 +452,7 @@ def _ground_sentence(
         return SentenceGrounding(statement, best, carried, (), True, decline=True)
     missing = tuple(n for n in _NUMBER_RE.findall(statement) if _number_key(n) not in all_numbers)
     if view:
-        return SentenceGrounding(statement, best, carried, missing, not missing, view=True)
+        return SentenceGrounding(statement, -1, 0.0, missing, not missing, view=True)
     spanned_with = -1
     if 0 <= best and carried < carried_floor and not _INFERENCE_RE.search(statement):
         carried, spanned_with = _second_reading(tokens, best, carried, passage_tokens, carried_floor)

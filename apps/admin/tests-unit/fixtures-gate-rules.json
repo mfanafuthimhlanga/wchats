@@ -1,6 +1,6 @@
 {
  "question": "How does the storefront serve the catalog and where do orders go?",
- "response": "React Router handles the catalog, the product pages and the cart.\n\nReact Router handles the catalog and the cart, the audit log keeps every step, nothing is sent to a server, and the app writes no database.\n\nReact Router serves the catalog and the cart from port 4173 on every build.\n\nThe documentation does not specify which port the Fastify server listens on.\n\nReact Router handles the catalog and the cart because the audit log keeps every step, nothing is sent to a server, and the app writes no database.\n\nReact Router handles the catalog, and the ledger, the invoices, the refunds and the server all live elsewhere.\n\nPayments settle through Stripe within fourteen working days.\n\nThe café documentation does not specify the opening hours.\n\nReact Router handles the catalog and the cart in ٣ steps.\n\nThe documentation does not specify the port, and the Fastify server listens on 8080.\n\nMy view: React Router suits a storefront this small, since the catalog and the cart share one browser session. A cache of 4096 entries would be generous for a shop of this size.",
+ "response": "React Router handles the catalog, the product pages and the cart.\n\nReact Router handles the catalog and the cart, the audit log keeps every step, nothing is sent to a server, and the app writes no database.\n\nReact Router serves the catalog and the cart from port 4173 on every build.\n\nThe documentation does not specify which port the Fastify server listens on.\n\nReact Router handles the catalog and the cart because the audit log keeps every step, nothing is sent to a server, and the app writes no database.\n\nReact Router handles the catalog, and the ledger, the invoices, the refunds and the server all live elsewhere.\n\nPayments settle through Stripe within fourteen working days.\n\nThe café documentation does not specify the opening hours.\n\nReact Router handles the catalog and the cart in ٣ steps.\n\nThe documentation does not specify the port, and the Fastify server listens on 8080.\n\nMy view: React Router suits a storefront this small, since the catalog and the cart share one browser session. A cache of 4096 entries would be generous for a shop of this size.\n\n**My view:**\n\nThe storefront stays simple for as long as nothing leaves the browser session.\n\nMy view: the cart could live in the browser for good.\n- Every order ships with a free llama plush toy.",
  "retrieved_contexts": [
   "The storefront runs React Router for the catalog, the product pages and the cart.",
   "Orders are never sent to a server; the app reads and writes no database at all.",
@@ -54,6 +54,18 @@
   {
    "position": 11,
    "statement": "A cache of 4096 entries would be generous for a shop of this size."
+  },
+  {
+   "position": 12,
+   "statement": "The storefront stays simple for as long as nothing leaves the browser session."
+  },
+  {
+   "position": 13,
+   "statement": "My view: the cart could live in the browser for good."
+  },
+  {
+   "position": 14,
+   "statement": "Every order ships with a free llama plush toy."
   }
  ],
  "expect": [
@@ -149,9 +161,7 @@
    "sentence": "My view: React Router suits a storefront this small, since the catalog and the cart share one browser session.",
    "tint": "bone",
    "reason": "the agent's view, read for its numbers only",
-   "lit": [
-    0
-   ]
+   "lit": []
   },
   {
    "rule": "view, a number",
@@ -159,6 +169,29 @@
    "tint": "fail",
    "reason": "the agent's view; number 4096 appears in no passage",
    "lit": []
+  },
+  {
+   "rule": "view, after a bare marker",
+   "sentence": "The storefront stays simple for as long as nothing leaves the browser session.",
+   "tint": "bone",
+   "reason": "the agent's view, read for its numbers only",
+   "lit": []
+  },
+  {
+   "rule": "view, then a list line",
+   "sentence": "My view: the cart could live in the browser for good.",
+   "tint": "bone",
+   "reason": "the agent's view, read for its numbers only",
+   "lit": []
+  },
+  {
+   "rule": "list line after the view",
+   "sentence": "Every order ships with a free llama plush toy.",
+   "tint": "grey",
+   "reason": "passage 2 carries 20% of its words",
+   "lit": [
+    1
+   ]
   }
  ],
  "no_passages": {

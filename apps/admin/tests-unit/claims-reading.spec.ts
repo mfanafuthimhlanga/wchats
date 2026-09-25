@@ -132,7 +132,7 @@ test('stem folds inflections and never cuts below four letters', () => {
 })
 
 // ── the gate's rules (grounding.py, grounding-v4), ported so the aid lights what the gate scored ──
-// fixtures-gate-rules.json holds twelve sentences over three passages and two over none, each
+// fixtures-gate-rules.json holds fifteen sentences over three passages and two over none, each
 // decided by one rule, and the table of what the gate says of each: ground() produced every
 // tint and reason in it, and test_claims_benchmark.py checks it against ground() still.
 // claims-bench.spec.ts reads the same table, so the console aid and the bench cannot drift
@@ -385,10 +385,39 @@ test('tintOf with the gate decision: bone when grounded, red on a missing number
 // grounding-v4: a claim card grounds the stored sentence on its own, so its paragraph
 // has to come from the answer. The view sentence reads as the view; the same words
 // written outside a view paragraph are held to the overlap floor.
-test('a claim card reads a sentence of the view paragraph as the view', () => {
+test('a claim card reads a sentence of the view paragraph as the view, by its position', () => {
   const view = GATE.expect.find((c) => c.rule === 'view')!
   const r = gateReading()
-  expect(groundClaim(view.sentence, r).reason).toBe("the agent's view, read for its numbers only")
+  const position = GATE.expect.indexOf(view)
+  expect(groundClaim(view.sentence, r, position).reason).toBe("the agent's view, read for its numbers only")
+  expect(groundClaim(view.sentence, r, position).match.passage).toBe(-1)
   const bare = analyse(view.sentence.replace(/^My view:\s*/, ''), GATE.retrieved_contexts)
-  expect(groundClaim(bare.units[0].text, bare).view).toBe(false)
+  expect(groundClaim(bare.units[0].text, bare, 0).view).toBe(false)
 })
+
+// #326 review F8: the same words once as a fact and once in the view. The fact's card
+// must read the fact, which a lookup by text alone got wrong.
+test('a fact repeated inside the view keeps its own card', () => {
+  const fact = 'Every order ships with a free llama plush toy.'
+  const r = analyse(`${fact}\n\nMy view: take the refund.\n${fact}`, ['Refunds arrive within 5 days.'])
+  expect(groundClaim(fact, r, 0).view).toBe(false)
+  expect(groundClaim(fact, r, 0).supported).toBe(false)
+  expect(groundClaim(fact, r, 2).view).toBe(true)
+})
+
+// response_units in grounding.py, case for case with TestTheView in test_grounding.py
+const viewFlags = (answer: string) =>
+  analyse(answer, ['Refunds arrive within 5 days.']).units.filter((u) => u.tokens.size > 0).map((u) => u.view)
+
+test('the view opens only on a paragraph first line and ends at a list line or a fence', () => {
+  expect(viewFlags('Refunds arrive in five days.\nMy view: a marker on a second line opens nothing.')).toEqual([false, false])
+  expect(viewFlags('- My view: a list item is a fact line, not the view paragraph.')).toEqual([false])
+  expect(viewFlags('My view: take the refund rather than the credit.\n- Every order ships with a free llama plush toy.')).toEqual([true, false])
+  expect(viewFlags('My view: take the refund rather than the credit.\n```\ncode\n```\nEvery order ships with a free llama plush toy.')).toEqual([true, false])
+  expect(viewFlags('**My view:**\n\nTake the refund rather than the credit, since it settles sooner.')).toEqual([true])
+})
+
+for (const opening of ['my view:', 'MY VIEW:', '**My view**:', '*My view:*', '__My view:__', '> My view:', '### My view:'])
+  test(`the marker written as ${opening} opens the view`, () => {
+    expect(viewFlags(`${opening} narrow it first, since a smaller scope tests well.`)).toEqual([true])
+  })

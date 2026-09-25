@@ -135,7 +135,7 @@ export function splitSentences(text: string): string[] {
 
 /** VIEW_MARKER and _VIEW_RE in grounding.py: the words that open the agent's own view. */
 export const VIEW_MARKER = 'My view:'
-export const VIEW_RE = /^\s*(?:\*\*|__)?\s*My view\s*:/i
+export const VIEW_RE = /^\s*(?:>\s*)*(?:#{1,6}\s+)?[*_]{0,2}\s*My view\s*[*_]{0,2}\s*:\s*[*_]{0,2}/i
 
 /** The response as sentences, bullets, code fences and a trailing CITATIONS block. */
 export function responseUnits(response: string): Unit[] {
@@ -147,9 +147,12 @@ export function responseUnits(response: string): Unit[] {
   let fence: string[] | null = null
   let para = false
   let view = false
+  let pending = false
+  let first = true
   for (const line of body.split('\n')) {
     if (/^\s*```/.test(line)) {
       view = false
+      first = true
       if (fence) {
         units.push({ kind: 'code', text: fence.join('\n'), para: true, marker: '', view: false })
         fence = null
@@ -163,10 +166,26 @@ export function responseUnits(response: string): Unit[] {
     if (!line.trim()) {
       para = true
       view = false
+      first = true
       continue
     }
-    if (VIEW_RE.test(line)) view = true
     const m = line.match(/^\s*([-*•]|\d+[.)])\s+/)
+    // response_units in grounding.py: the marker opens the view on a paragraph's first line only;
+    // a list line ends it, and a bare marker line hands it to the next paragraph
+    const opened = first && !m ? line.match(VIEW_RE) : null
+    if (m) view = pending = false
+    else if (opened) {
+      view = true
+      if (!line.slice(opened[0].length).trim()) {
+        pending = true
+        first = true
+        continue
+      }
+    } else if (first && pending) {
+      view = true
+      pending = false
+    }
+    first = false
     const rest = m ? line.slice(m[0].length) : line.trim()
     splitSentences(rest).forEach((s, i) =>
       units.push({
@@ -237,7 +256,7 @@ export const CARRIED_FLOOR = 0.4
 
 /**
  * Red is reserved for a sentence with no word any passage shares, or a number
- * no passage states; with no passages at all, every sentence but a decline is
+ * no passage states; with no passages at all, every sentence but a decline or a clean view is
  * red, as the gate flags it. A unit with no content word is not scored. Given
  * the gate's decision, bone means the gate grounds the sentence (a decline
  * included); without it, the tint falls back to overlap against the floor.
@@ -428,7 +447,8 @@ export function groundSentence(
   }
   const missing = missingNumbers(statement, allNumbers)
   if (view) {
-    const g = { ...base, missing, view: true }
+    // a view is read for its numbers only, so it lights no passage
+    const g = { ...base, match: NO_MATCH, carried: 0, missing, view: true }
     return { ...g, supported: !missing.length, reason: reasonOf(g) }
   }
   let carried = match.score
@@ -457,10 +477,16 @@ export function analyse(response: string, contexts: readonly string[]): Reading 
 }
 
 /** A claim's own grounding against the reading's passages, with its tint and words: what the claim card says. */
-export function groundClaim(statement: string, reading: Reading): Grounding & { tint: Tint; tokens: Set<string> } {
+export function groundClaim(
+  statement: string,
+  reading: Reading,
+  position?: number,
+): Grounding & { tint: Tint; tokens: Set<string> } {
   const tokens = tokensOf(scoreText(statement))
-  // a claim is one of the gate's sentences word for word, so its paragraph decides whether it is the view
-  const view = reading.units.some((u) => u.view && u.text === statement)
+  // a claim's position indexes the gate's scored sentences, so its own sentence decides whether it is
+  // the view; the same words elsewhere in the answer never do
+  const own = position === undefined ? undefined : reading.units.filter((u) => u.tokens.size > 0)[position]
+  const view = !!own && own.view && own.text === statement
   const g = groundSentence(statement, tokens, reading.passageTokens, reading.numbers, view)
   return { ...g, tokens, tint: tintOf(tokens.size, g.match.score, g) }
 }
@@ -498,8 +524,8 @@ export interface ClaimFocus {
  * its own grounding read lit, so the card's reason and the lit passages come
  * from one reading of the claim statement, as the bench's focusClaim does.
  */
-export function claimFocus(statement: string, reading: Reading): ClaimFocus {
-  const grounding = groundClaim(statement, reading)
+export function claimFocus(statement: string, reading: Reading, position?: number): ClaimFocus {
+  const grounding = groundClaim(statement, reading, position)
   return {
     unit: carryingUnit(statement, reading.units),
     grounding,
