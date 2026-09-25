@@ -234,7 +234,7 @@
   // SentenceGrounding.reason, word for word
   function reasonOf(g) {
     if (g.decline) return "a decline asserts nothing the documents would carry";
-    if (g.view) return g.missing.length ? "the agent's view; number " + g.missing.join(", ") + " appears in no passage" : "the agent\'s view, read for its numbers only";
+    if (g.view) return g.missing.length ? "the agent's view; number " + g.missing.join(", ") + " appears in no passage" : g.anchored === false ? "the agent's view, and the answer grounds no fact for it to rest on" : "the agent's view, read for its numbers only";
     if (g.pi < 0) return "no passage shares a word with it";
     const parts = [g.span >= 0 ? `passages ${g.pi + 1} and ${g.span + 1} together carry ${percent(g.carried)} of its words` : `passage ${g.pi + 1} carries ${percent(g.carried)} of its words`];
     if (g.missing.length) parts.push("number " + g.missing.join(", ") + " appears in no passage");
@@ -281,9 +281,10 @@
     const body = cut === -1 ? text : text.slice(0, cut); const cites = cut === -1 ? "" : text.slice(cut).trim();
     const units = []; let fence = null, para = false, view = false, pending = false, first = true;
     for (const line of body.split("\n")) {
-      if (/^\s*```/.test(line)) { view = false; first = true; if (fence) { units.push({ kind: "code", text: fence.join("\n"), para: true, marker: "" }); fence = null; } else fence = []; continue; }
+      if (/^\s*```/.test(line)) { view = false; pending = false; first = true; if (fence) { units.push({ kind: "code", text: fence.join("\n"), para: true, marker: "" }); fence = null; } else fence = []; continue; }
       if (fence) { fence.push(line); continue; }
-      if (!line.trim()) { para = true; view = false; first = true; continue; }
+      // _RULE_LINE_RE: a --- line ends the paragraph, the view and a handed-on view
+      if (!line.trim() || /^\s*([-*_])(?:\s*\1){2,}\s*$/.test(line)) { para = true; view = false; if (line.trim()) pending = false; first = true; continue; }
       const m = line.match(/^\s*([-*•]|\d+[.)])\s+/);
       // response_units: the marker opens the view on a paragraph's first line only; a list line ends it; a bare marker hands it on
       const opened = first && !m ? line.match(VIEW_RE) : null;
@@ -333,6 +334,9 @@
       u.tokens = (u.kind === "cite" || u.kind === "code") ? EMPTY : tokensOf(scoreText(u.text));
       Object.assign(u, groundSentence(u.text, u.tokens, ptokens, numbers, !!u.view));
     }
+    // _anchor_views: with no grounded fact but a decline, every view sentence fails
+    if (!units.some(u => u.tokens && u.tokens.size && u.supported && !u.view && !u.decline))
+      for (const u of units) if (u.view) { u.supported = false; u.anchored = false; u.reason = reasonOf(u); u.tint = u.missing.length || u.score <= 0 ? "t-fail" : "t-grey"; }
     const plain = pane.passages.map(p => windowHtml(p, null));
     it.an = { units, passages: pane.passages, ptokens, numbers, plain, html: unitsHtml(units),
       paneHtml: pane.passages.length ? pane.groups.map(g => '<div class="ctxblock">' + g.map(i => `<p class="pw" data-i="${i}">${plain[i]}</p>`).join("") + "</div>").join("")
@@ -371,7 +375,7 @@
   // the CLAIM's own grounding, by the gate's rules, so the card says what the gate would say of it
   // a claim is one of the gate's sentences word for word, so its paragraph decides whether it is the view
   // a claim's position indexes the gate's scored sentences, so its own sentence decides whether it is the view
-  const claimGround = (statement, an, position) => { const own = an.units.filter(u => u.tokens && u.tokens.size)[position]; return groundSentence(statement, tokensOf(scoreText(statement)), an.ptokens, an.numbers, !!own && !!own.view && own.text === statement); };
+  const claimGround = (statement, an, position) => { const own = an.units.filter(u => u.tokens && u.tokens.size)[position]; return own && own.text === statement ? own : groundSentence(statement, tokensOf(scoreText(statement)), an.ptokens, an.numbers, false); };
   function moveSentence(d) {
     const els = sentEls(); if (!els.length) return;
     let i = els.findIndex(e => Number(e.dataset.s) === sel);

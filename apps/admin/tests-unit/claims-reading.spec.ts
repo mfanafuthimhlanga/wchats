@@ -421,3 +421,23 @@ for (const opening of ['my view:', 'MY VIEW:', '**My view**:', '*My view:*', '__
   test(`the marker written as ${opening} opens the view`, () => {
     expect(viewFlags(`${opening} narrow it first, since a smaller scope tests well.`)).toEqual([true])
   })
+
+// _anchor_views in grounding.py: a view with no grounded fact but a decline beside it fails,
+// and its card says so, as TestTheView pins for the gate
+test('a view with no grounded fact to rest on fails, beside a decline or alone', () => {
+  const view = 'My view: keep the receipt anyway, since it settles any argument quickly.'
+  for (const answer of [view, `The documentation does not describe the returns process.\n\n${view}`]) {
+    const r = analyse(answer, [])
+    const u = r.units.find((x) => x.view)!
+    expect([u.supported, u.tint, u.reason]).toEqual([
+      false, 'fail', "the agent's view, and the answer grounds no fact for it to rest on",
+    ])
+    const position = r.units.filter((x) => x.tokens.size > 0).indexOf(u)
+    expect(groundClaim(u.text, r, position).reason).toBe(u.reason)
+  }
+})
+
+test('a rule line ends the view, and a fence cancels a view a bare marker handed on', () => {
+  expect(viewFlags('My view: take the refund rather than the credit.\n---\nEvery order ships with a free llama plush toy.')).toEqual([true, false])
+  expect(viewFlags('My view:\n```\ncode\n```\nEvery order ships with a free llama plush toy.')).toEqual([false])
+})
