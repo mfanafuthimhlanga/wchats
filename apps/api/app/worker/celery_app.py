@@ -60,6 +60,10 @@ log = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 # How long the broker waits before deciding a delivered message was lost
 # ---------------------------------------------------------------------------
+# 10800 s since 2026-09-25: the eval ceiling rose from 60 to 100 turns so a
+# golden set plus the exploratory sample can reach the coverage floor, and 100
+# turns at 90 s is 9000 s of worst case.
+#
 # THE LONGEST TASK IN THIS SYSTEM IS NO LONGER PROVISIONING. It was 3600 s with
 # a comment reasoning about "provision + migrations can take ~60 s". D1/P2 made
 # `run_eval_suite` invoke the customer agent once per scenario: sixty turns at a
@@ -75,7 +79,7 @@ log = structlog.get_logger(__name__)
 # tests/unit/test_eval_agent_invocation.py asserts this exceeds
 # AGENT_INVOCATION_MAX_CALLS_PER_RUN x AGENT_TURN_TIMEOUT_S, so the two cannot
 # drift apart silently the way a copied number would.
-BROKER_VISIBILITY_TIMEOUT_S = 7200
+BROKER_VISIBILITY_TIMEOUT_S = 10800
 
 #: Seconds between BRPOP reissues on an idle worker (#237). Ten cuts an idle
 #: worker from 57 polls a minute to 6; with the heartbeat, gossip and mingle

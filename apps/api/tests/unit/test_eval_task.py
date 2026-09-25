@@ -1697,7 +1697,9 @@ class TestTheEvalRunBound:
         """The other term. More scenarios invoked is more wall clock spent."""
         before = mod.eval_run_bound_s()
 
-        with patch.object(mod, "AGENT_INVOCATION_MAX_CALLS_PER_RUN", 120):
+        with patch.object(
+            mod, "AGENT_INVOCATION_MAX_CALLS_PER_RUN", 2 * mod.AGENT_INVOCATION_MAX_CALLS_PER_RUN
+        ):
             after = mod.eval_run_bound_s()
 
         assert after == before * 2, (

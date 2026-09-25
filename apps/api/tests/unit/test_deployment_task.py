@@ -3406,7 +3406,8 @@ class TestTheIdempotencyGuardKeysOnTheRunNotTheClock:
     ):
         """The other direction: an abandoned row must not block the agent forever."""
         agent_id = uuid.uuid4()
-        run = self._row(session, agent_id, age_s=4 * 3600, beat_age_s=4 * 3600)
+        silent = self._stale_s()
+        run = self._row(session, agent_id, age_s=silent, beat_age_s=silent)
 
         assert self._guard(session, agent_id) is False
         session.refresh(run)
@@ -3428,7 +3429,7 @@ class TestTheIdempotencyGuardKeysOnTheRunNotTheClock:
         self, session
     ):
         agent_id = uuid.uuid4()
-        run = self._row(session, agent_id, age_s=5 * 3600, beat_age_s=None)
+        run = self._row(session, agent_id, age_s=self._stale_s(), beat_age_s=None)
 
         assert self._guard(session, agent_id) is False
         session.refresh(run)
@@ -3610,7 +3611,8 @@ class TestTheIdempotencyGuardKeysOnTheRunNotTheClock:
         from app.worker.tasks.runtime import deployment as deployment_task
 
         agent_id = uuid.uuid4()
-        run = self._row(session, agent_id, age_s=5 * 3600, beat_age_s=5 * 3600)
+        silent = self._stale_s()
+        run = self._row(session, agent_id, age_s=silent, beat_age_s=silent)
         # The trigger that got here first reaped this row and inserted its own,
         # which holds the index now. This trigger is still carrying the row it
         # read before any of that happened.

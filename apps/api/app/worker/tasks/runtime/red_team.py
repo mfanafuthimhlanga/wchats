@@ -88,7 +88,7 @@ log = structlog.get_logger(__name__)
 #: second trigger finds no recent row, skips nothing, and puts two red-team runs
 #: on one agent: double-billing the tenant and racing the RTX probes over one
 #: Redis rate counter. It also has to expire before BROKER_VISIBILITY_TIMEOUT_S,
-#: or a message the broker genuinely redelivers after two hours is refused by a
+#: or a message the broker genuinely redelivers after three hours is refused by a
 #: guard still holding a dead run's row.
 #:
 #: The longest run: seven vectors, k attempts each, every attempt spending its

@@ -236,7 +236,7 @@ def _purge_unacked_messages_mentioning(agent_id: uuid.UUID) -> int:
     ever acks it, because the resumption is dispatched explicitly rather than
     waited for (see the test docstring), so without this the entry survives the
     run. It is not inert: kombu restores unacked messages once
-    ``visibility_timeout`` expires, which this app sets to 7200s, so each run
+    ``visibility_timeout`` expires, which this app sets to 10800s, so each run
     would arm a stray ``provision_neon`` two hours later against a tenant whose
     rows the teardown has already deleted. Four such entries had accumulated
     while this fix was being developed, and were purged by hand.
@@ -297,7 +297,7 @@ def test_worker_kill_9_chain_completes(neon_stub_worker_factory):
     WHY REDELIVERY IS DISPATCHED BY THE TEST, NOT WAITED FOR. With acks_late the
     killed message stays in kombu's `unacked` hash and the broker re-queues it
     only after `visibility_timeout` — which this application sets to
-    BROKER_VISIBILITY_TIMEOUT_S = 7200 (celery_app.py:75), because a full eval
+    BROKER_VISIBILITY_TIMEOUT_S = 10800 (celery_app.py), because a full eval
     run can legitimately hold a task for 90 minutes. Waiting for the real
     redelivery therefore means waiting two hours, so the original form of this
     test — poll 60s for job.complete after the restart — could never have passed
