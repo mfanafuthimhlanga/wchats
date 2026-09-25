@@ -29,14 +29,14 @@ def eval_step() -> dict:
 
 
 def collected(step: dict) -> set[str]:
-    line = next(l for l in step["run"].splitlines() if "pytest" in l)
+    line = next(text for text in step["run"].splitlines() if "pytest" in text)
     args = shlex.split(line)
     k = args[args.index("-k") + 1]
     out = subprocess.run(
         [sys.executable, "-m", "pytest", "tests/evals/run_evals.py", "--collect-only", "-q", "-k", k],
         cwd=API, capture_output=True, text=True, check=False,
     )
-    return {l.split("::")[-1] for l in out.stdout.splitlines() if "::" in l}
+    return {row.split("::")[-1] for row in out.stdout.splitlines() if "::" in row}
 
 
 def test_the_eval_job_collects_the_checks_that_read_committed_files():
