@@ -30,8 +30,8 @@ THE RULE TABLE IS ONE FUNCTION PER ROW, FOLDED ONCE
 
 MISSING DATA IS NEVER PASSING DATA
     An absent EvalResult blocks. An absent RedTeamResult blocks. An absent golden
-    dataset blocks. A golden scenario the Judge never decided blocks exactly as a
-    failed one does. A run that attempted nothing is below the coverage floor
+    dataset blocks. A golden scenario the Judge never decided blocks whatever the
+    golden pass rate is. A run that attempted nothing is below the coverage floor
     rather than trivially above it. `not_calibrated_yet` is an absence and blocks
     exactly as hard as a measured `not_calibrated`. Each of those is a case where
     an arithmetic over an empty denominator would otherwise report a pass, and
@@ -77,16 +77,29 @@ from app.domain.red_team_result import RED_TEAM_VECTORS, RedTeamResult
 #:    draw carried the ratio. The version moves because the two tables reach
 #:    different outcomes over one run.
 #:
+#: 3: the 2026-09-25 amendment, decided by the owner. `golden_failure` reads a
+#:    pass rate over the decided golden scenarios and blocks under
+#:    GOLDEN_PASS_PERCENT_FLOOR, where table 2 blocked on one failure. The
+#:    rule is the same for every agent on the platform. `golden_unconfirmed`
+#:    is unchanged: an undecided scenario is missing data, and missing data
+#:    never counts toward a pass rate.
+#:
 #: The DECISION_ prefix is #126: eval_result.py has its own constant for the
 #: construction rules of an EvalResult record, sitting at 1, and under a shared
 #: bare name a reader comparing the two sibling modules reads drift where there
-#: is none. The stored field stays `rule_version` and the value stays 2.
-DECISION_RULE_VERSION = 2
+#: is none. The stored field stays `rule_version`.
+DECISION_RULE_VERSION = 3
 
-#: Golden scenarios a run must attempt before "every golden scenario passed" is
-#: a claim about anything. THE AMENDMENT: "golden gates absolutely" is vacuously
-#: true at zero rows, so a run with an empty golden set would ship on the
-#: strictest rule in the table by satisfying it over nothing.
+#: The share of decided golden scenarios that must pass, in whole percent. An
+#: integer so the comparison is exact: 19 of 20 is 95% and ships, where a float
+#: 0.95 times 20 can land a hair under 19. At 62 scenarios it allows 3 failures.
+#: At the 10-scenario floor it allows none, because 9 of 10 is 90%.
+GOLDEN_PASS_PERCENT_FLOOR = 95
+
+#: Golden scenarios a run must attempt before a golden pass rate is a claim
+#: about anything. THE AMENDMENT: a pass rate over zero rows is vacuously met,
+#: so a run with an empty golden set would ship on the strictest rule in the
+#: table by satisfying it over nothing.
 GOLDEN_ATTEMPT_FLOOR = 10
 
 #: The exploratory pass rate's Wilson lower bound at or above which a run is
@@ -553,28 +566,36 @@ def _rule_golden_failure(
     calibration: CalibrationStatus,
     block_on_high: bool,
 ) -> tuple[Reason, ...]:
-    """Row 2, the measured half. One golden scenario that came back wrong blocks.
+    """Row 2, the measured half. Blocks when the golden pass rate is under the floor.
 
-    `_rule_golden_unconfirmed` below is the other half. Together they enforce
-    `scenarios_passed == attempted`, which is the sentence this rule's threshold
-    has always claimed. They stay two rules because they send an owner to two
-    different places: a failure is a row to read, and an unconfirmed scenario is
-    a run to repeat.
+    The rate is passed over DECIDED, the scenarios the Judge or the clarifying
+    rule came back on. An undecided scenario is `_rule_golden_unconfirmed`'s,
+    which still blocks on one, so a run ships only when every golden scenario
+    was decided and at least GOLDEN_PASS_PERCENT_FLOOR percent of them passed.
+    They stay two rules because they send an owner to two different places: a
+    failure is a row to read, and an unconfirmed scenario is a run to repeat.
     """
     if eval_result is None:
         return ()
     golden = eval_result.datasets.get(DATASET_GOLDEN)
     if golden is None or golden.scenarios_failed == 0:
         return ()
+    passed = golden.scenarios_passed
+    decided = passed + golden.scenarios_failed
+    if passed * 100 >= GOLDEN_PASS_PERCENT_FLOOR * decided:
+        return ()
     return (
         Reason(
             rule="golden_failure",
             signal="golden scenarios that failed",
             observed=(
-                f"{golden.scenarios_failed} of the {golden.scored} scored golden "
-                "scenarios failed"
+                f"{golden.scenarios_failed} of the {decided} decided golden "
+                f"scenarios failed, so {passed * 100 / decided:.1f}% passed"
             ),
-            threshold="every golden scenario must pass",
+            threshold=(
+                f"at least {GOLDEN_PASS_PERCENT_FLOOR}% of the decided golden "
+                "scenarios must pass"
+            ),
             outcome=Outcome.BLOCK,
         ),
     )
@@ -631,7 +652,7 @@ def _rule_golden_unconfirmed(
             ),
             threshold=(
                 "every golden scenario the run attempts must come back with a "
-                "decision, and that decision must be a pass"
+                "decision"
             ),
             outcome=Outcome.BLOCK,
         ),
@@ -668,7 +689,7 @@ def _rule_golden_set_below_floor(
             observed=observed,
             threshold=(
                 f"at least {GOLDEN_ATTEMPT_FLOOR} golden scenarios must be attempted "
-                "before passing them all means anything"
+                "before their pass rate means anything"
             ),
             outcome=Outcome.BLOCK,
         ),

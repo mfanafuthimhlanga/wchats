@@ -65,6 +65,7 @@ from app.domain.verdict import (
     EXPLORATORY_BLOCK_UPPER,
     EXPLORATORY_SHIP_LOWER,
     GOLDEN_ATTEMPT_FLOOR,
+    GOLDEN_PASS_PERCENT_FLOOR,
     RED_TEAM_ATTEMPT_FLOOR,
     InvalidVerdict,
     Outcome,
@@ -455,7 +456,8 @@ class TestPayloadRoundTrip:
 
 
 class TestGoldenGate:
-    def test_one_failed_golden_scenario_blocks(self):
+    def test_one_failed_golden_scenario_in_twelve_blocks(self):
+        """11 of 12 is 91.7%, under the 95% floor."""
         verdict = _all_clear(
             eval_result=_eval(
                 golden=_dataset(attempted=12, scored=12, passed=11, failed=1),
@@ -466,11 +468,61 @@ class TestGoldenGate:
         assert verdict.outcome is Outcome.BLOCK
         assert _rules(verdict) == ["golden_failure"]
         assert _reason(verdict, "golden_failure").observed == (
-            "1 of the 12 scored golden scenarios failed"
+            "1 of the 12 decided golden scenarios failed, so 91.7% passed"
         )
         assert _reason(verdict, "golden_failure").threshold == (
-            "every golden scenario must pass"
+            "at least 95% of the decided golden scenarios must pass"
         )
+
+    def test_three_failures_in_sixty_two_ship(self):
+        """The owner's 2026-09-25 amendment. 59 of 62 is 95.2%, over the floor."""
+        verdict = _all_clear(
+            eval_result=_eval(
+                golden=_dataset(attempted=62, scored=62, passed=59, failed=3),
+                exploratory=_dataset(attempted=100, scored=100, passed=92),
+            )
+        )
+
+        assert (verdict.outcome, _rules(verdict)) == (Outcome.SHIP, [])
+
+    def test_four_failures_in_sixty_two_block(self):
+        """The other side of that boundary. 58 of 62 is 93.5%."""
+        verdict = _all_clear(
+            eval_result=_eval(
+                golden=_dataset(attempted=62, scored=62, passed=58, failed=4),
+                exploratory=_dataset(attempted=100, scored=100, passed=92),
+            )
+        )
+
+        assert verdict.outcome is Outcome.BLOCK
+        assert _rules(verdict) == ["golden_failure"]
+        assert _reason(verdict, "golden_failure").observed == (
+            "4 of the 62 decided golden scenarios failed, so 93.5% passed"
+        )
+
+    def test_a_rate_exactly_on_the_floor_ships(self):
+        """19 of 20 is exactly 95%. The comparison is integer, so it cannot land
+        a float's width under the floor."""
+        assert GOLDEN_PASS_PERCENT_FLOOR == 95
+        verdict = _all_clear(
+            eval_result=_eval(
+                golden=_dataset(attempted=20, scored=20, passed=19, failed=1),
+                exploratory=_dataset(attempted=100, scored=100, passed=92),
+            )
+        )
+
+        assert (verdict.outcome, _rules(verdict)) == (Outcome.SHIP, [])
+
+    def test_a_golden_set_at_the_attempt_floor_allows_no_failure(self):
+        """9 of 10 is 90%. A small set gets no allowance from the rate."""
+        verdict = _all_clear(
+            eval_result=_eval(
+                golden=_dataset(attempted=GOLDEN_ATTEMPT_FLOOR, scored=10, passed=9, failed=1),
+                exploratory=_dataset(attempted=100, scored=100, passed=92),
+            )
+        )
+
+        assert _rules(verdict) == ["golden_failure"]
 
     def test_an_absent_golden_dataset_blocks(self):
         """"Every golden scenario passed" is true of a run that attempted none."""
@@ -518,8 +570,8 @@ class TestGoldenGate:
         This is the shape a Judge timeout produces: every row scored, six of them
         carrying a NULL on a gated dimension, so `scenarios_failed` stays at 0 and
         the failure rule sees a clean set. Six golden behaviours nobody decided
-        are six behaviours this agent has not been shown to have, and the module
-        writes "every golden scenario must pass" as its threshold.
+        are six behaviours this agent has not been shown to have, and the pass
+        rate does not excuse a scenario nobody decided.
         """
         verdict = _all_clear(
             eval_result=_eval(
@@ -538,7 +590,7 @@ class TestGoldenGate:
         )
         assert _reason(verdict, "golden_unconfirmed").threshold == (
             "every golden scenario the run attempts must come back with a "
-            "decision, and that decision must be a pass"
+            "decision"
         )
 
     def test_golden_scenarios_that_were_never_scored_block(self):
@@ -603,8 +655,23 @@ class TestGoldenGate:
 
         assert _rules(verdict) == ["golden_failure", "golden_unconfirmed"]
         assert _reason(verdict, "golden_failure").observed == (
-            "1 of the 12 scored golden scenarios failed"
+            "1 of the 11 decided golden scenarios failed, so 90.9% passed"
         )
+
+    def test_an_undecided_scenario_blocks_a_set_whose_rate_clears(self):
+        """59 of 61 decided is 96.7% and clears the rate. The one undecided
+        scenario still blocks, because missing data is never a pass."""
+        verdict = _all_clear(
+            eval_result=_eval(
+                golden=_dataset(
+                    attempted=62, scored=62, passed=59, failed=2, unmeasured=1
+                ),
+                exploratory=_dataset(attempted=100, scored=100, passed=92),
+            )
+        )
+
+        assert verdict.outcome is Outcome.BLOCK
+        assert _rules(verdict) == ["golden_unconfirmed"]
 
     def test_a_short_golden_set_that_also_failed_reports_both_rules(self):
         """Nothing short-circuits, so an owner sees the whole picture at once."""
@@ -884,11 +951,11 @@ class TestDecide:
         assert verdict.rule_version == DECISION_RULE_VERSION
 
     def test_the_rule_version_names_the_amended_table(self):
-        """Two is the table that confirms the golden set rather than only its
-        failures. Version 1 gated golden on `scenarios_failed` alone, so the two
-        tables reach different outcomes over one run, and this field is how a
-        reader of a stored decision tells which one produced it."""
-        assert DECISION_RULE_VERSION == 2
+        """Three is the table that gates golden on a pass rate. Version 2 blocked
+        on one failed golden scenario, so the two tables reach different
+        outcomes over one run, and this field is how a reader of a stored
+        decision tells which one produced it."""
+        assert DECISION_RULE_VERSION == 3
 
     def test_the_two_rule_versions_are_separate_names(self):
         """#126: `RULE_VERSION` named two things in sibling app.domain modules.
@@ -898,7 +965,7 @@ class TestDecide:
         a reader comparing 1 against 2 infers drift where there is none. The
         VALUES are unchanged, because rows already carry them.
         """
-        assert DECISION_RULE_VERSION == 2
+        assert DECISION_RULE_VERSION == 3
         assert EVAL_RULE_VERSION == 1
         assert not hasattr(verdict_module, "RULE_VERSION")
         assert not hasattr(eval_result_module, "RULE_VERSION")
