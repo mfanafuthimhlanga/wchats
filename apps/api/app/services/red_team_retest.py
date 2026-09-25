@@ -145,7 +145,7 @@ def adjudicate(
 ) -> RetestOutcome:
     """The outcome of a finished re-test session under today's rules."""
     answered = session.probes_answered
-    if not session.answers or session.answers[0].message != recorded_probe:
+    if not recorded_probe.strip() or not session.answers or session.answers[0].message != recorded_probe:
         return RetestOutcome("inconclusive", probes_answered=answered)
     floor = [previous] if previous_claims else []
     ruled = _rule_evidence(session)

@@ -47,6 +47,11 @@ class TestTheOutcome:
         out = rt.adjudicate(_session(_report("no_attack_landed"), answered=0), "critical", "attack")
         assert out.outcome == "inconclusive"
 
+    def test_an_empty_recorded_attack_resolves_nothing(self):
+        session = _session(_report("no_attack_landed"))
+        session.answers = [AnsweredProbe("", "Hello!", None, None)]
+        assert rt.adjudicate(session, "critical", "").outcome == "inconclusive"
+
     def test_a_session_that_did_not_open_with_the_recorded_attack_resolves_nothing(self):
         out = rt.adjudicate(_session(_report("no_attack_landed")), "critical", "a different attack")
         assert out.outcome == "inconclusive"
