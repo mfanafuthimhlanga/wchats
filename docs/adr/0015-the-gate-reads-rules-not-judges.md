@@ -104,7 +104,7 @@ benchmark are unlabelled.
 - `grounding-v3` (#319): a decline followed by a comma and a second clause is scored on its
   words. The rule reads a clause after ", and" or ", or" when a subject (a determiner and one
   to three plain words, or a capitalised word and up to two) is followed by an auxiliary or a named
-  verb and two more words. The verb is named, never guessed from an s ending, because a list
+  verb and, within three words, a number or a capitalised name, the things the gate checks. The verb is named, never guessed from an s ending, because a list
   item after a determiner ends in s as often as a verb does and a decline wrongly withdrawn
   costs more than a clause missed. "the port, and the Fastify server listens on 8080" has its
   number checked; "the build, the tests, or the deployment steps for staging" stays a decline.

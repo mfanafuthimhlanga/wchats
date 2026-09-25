@@ -10,7 +10,7 @@ reverted because it failed two real declines whose comma is a list comma.
 ## The rule
 
 A comma before `and` or `or` joins a clause when what follows carries a subject, an auxiliary
-or a named verb, and two more words. The rule prefers a missed clause, which is the behaviour
+or a named verb, then a number or a name within three words. The rule prefers a missed clause, which is the behaviour
 before this change, to a decline wrongly withdrawn, which scores a true sentence on words the
 documents cannot carry.
 
@@ -25,9 +25,11 @@ finite verb  is|are|was|were|has|have|had|does|do|did|will|would|can|cannot|coul
              requires, serves, exposes, ...). Named rather than guessed from an s ending: a
              list item after a determiner ("the deployment steps for staging") ends in s as
              often as a verb does
-then         two more words: a clause states something ("listens on 8080"), where a list
-             item's contact clause ends on its verb or one word after ("the files users can
-             read", "the port traffic runs on")
+then         within three words, a number or a capitalised name ("listens on 8080", "is
+             8080", "expects Anthropic credentials"). The gate exists to check figures and
+             names, so a clause carrying neither loses little by staying a decline, and a list
+             item's contact clause ("the files users can read in the workspace") is never
+             mistaken for one on its length
 ```
 
 `_CLAUSE_COMMA_RE` in `grounding.py` is case-sensitive so the capitalised branch can tell a
@@ -41,7 +43,7 @@ aids' `W` class and `B_AFTER` in place of `\w` and `\b`.
 |---|---|
 | the port, and the Fastify server listens on 8080 | clause |
 | without network access, and the normal configuration still expects Anthropic credentials | clause |
-| a retry count, or the tests would say so | clause |
+| the port, and the server is 8080 | clause |
 | the port, and Fastify listens on 8080 | clause |
 | who approves an answer, how provenance is stored, or how cache entries are invalidated | list |
 | a measured performance, bundle-size, or maintenance comparison | list |
@@ -65,14 +67,22 @@ aids' `W` class and `B_AFTER` in place of `\w` and `\b`.
 | the cache, or the way caching is configured | list |
 | the host, or the port traffic runs on | list |
 | the flow, or the sign-up steps users must complete | list |
+| the files users can read in the workspace | list |
+| the settings admins can change at runtime | list |
+| the data nobody has checked since the migration | list |
+| the way caching is configured for staging | list |
+| the port traffic runs on in production | list |
+| the sign-up steps users must complete before checkout | list |
+| Postgres users can connect with | list |
+| the build, or the test runs for staging | list |
 
 ## Pins
 
-- `tests/unit/test_grounding.py`: the twenty-two list sentences join the decline parametrize, the
+- `tests/unit/test_grounding.py`: the thirty list sentences join the decline parametrize, the
   four clause sentences join the second-clause parametrize; the benchmark pin moves 83 to 84.
   `GROUNDING_RULE_VERSION` is `grounding-v3`, so rows scored before and after never share a
   calibration population.
-- `claims-reading.spec.ts`: the same twenty-six through `isDecline`.
+- `claims-reading.spec.ts`: the same thirty-four through `isDecline`.
 - `fixtures-gate-rules.json`: a tenth sentence, rule `clause comma`, tint `fail`, reason
   "passage 3 carries 29% of its words; number 8080 appears in no passage", read by the
   console spec, the bench spec in Chromium and `test_claims_benchmark.py` against `ground()`.
@@ -83,7 +93,8 @@ aids' `W` class and `B_AFTER` in place of `\w` and `\b`.
 
 A clause the rule misses stays a decline, as before this change: a pronoun subject ("and it
 listens on 8080"), "there is", a past-tense verb, a verb outside the named list, a subject of
-four or more words, a comma alone or `, so`. None appears in the benchmark. A named verb used
-as a noun after a determiner ("the build, or the test runs for staging"), or a contact clause
-running two words past its verb ("the roles, or Postgres users can connect with"), is read as
-a clause and the decline scored on its words; the benchmark holds no such sentence.
+four or more words, a comma alone or `, so`, a clause with no number or name within three
+words of its verb ("and the tests would say so"). None appears in the benchmark. A list item
+whose contact clause or noun-used-as-verb is followed by a number or a name ("the files users
+can read in Slack") is read as a clause and the decline scored on its words; the benchmark
+holds no such sentence.

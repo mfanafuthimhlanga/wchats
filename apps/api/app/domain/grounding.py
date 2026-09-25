@@ -116,7 +116,7 @@ _DECLINE_RE = re.compile(
 _SECOND_CLAUSE_RE = re.compile(r";|\s(?:but|yet|although|though|whereas)\s|\bit does\b|\bit is\b", re.IGNORECASE)
 # A comma before "and" or "or" joins a list item or a second clause. The rule reads a clause when
 # a subject (a determiner and one to three plain words, or a capitalised word and up to two) is followed
-# by an auxiliary or one of the named verbs, with two words after it. The verb is named rather than
+# by an auxiliary or one of the named verbs, then a number or a name within three words. The verb is named rather than
 # guessed from its ending, because a list item after a determiner ("the deployment steps for
 # staging", "the deployment process for staging") ends in s as often as a verb does, and a decline
 # wrongly withdrawn is scored on words the documents cannot carry. A clause whose verb is not on
@@ -142,10 +142,12 @@ _CLAUSE_VERBS = (
     "behaves|responds"
 )
 _AUXILIARIES = "is|are|was|were|has|have|had|does|do|did|will|would|can|cannot|could|should|must|may|might|shall"
-# Two words after the verb: a clause states something ("listens on 8080", "expects Anthropic
-# credentials"), where a list item's contact clause ends on its verb or one word after ("the
-# files users can read", "the port traffic runs on").
-_FINITE_VERB = r"(?:" + _AUXILIARIES + "|" + _CLAUSE_VERBS + r")\b\s+[\w-]+\s+\w"
+# After the verb, within three words, a number or a capitalised name: "listens on 8080", "is
+# 8080", "expects Anthropic credentials". The gate exists to check figures and names against the
+# passages, so a clause carrying neither loses little by staying a decline, and a list item's
+# contact clause ("the files users can read in the workspace") is never mistaken for one on its
+# length alone.
+_FINITE_VERB = r"(?:" + _AUXILIARIES + "|" + _CLAUSE_VERBS + r")\b\s+(?:[\w-]+\s+){0,3}?(?:\d|[A-Z])"
 _CLAUSE_COMMA_RE = re.compile(r",\s*(?:and|or)\s+(?:" + _CLAUSE_SUBJECT + r")" + _FINITE_VERB)
 
 

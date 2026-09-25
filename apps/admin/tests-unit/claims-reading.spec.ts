@@ -329,6 +329,14 @@ test('isDecline takes a decline about the documents and refuses a claim about th
     'The documentation does not describe the cache, or the way caching is configured.',
     'The documentation does not describe the host, or the port traffic runs on.',
     'The documentation does not describe the flow, or the sign-up steps users must complete.',
+    'The documentation does not describe the roles, or the files users can read in the workspace.',
+    'The documentation does not describe the defaults, or the settings admins can change at runtime.',
+    'The documentation does not describe the tests, or the data nobody has checked since the migration.',
+    'The documentation does not describe the cache, or the way caching is configured for staging.',
+    'The documentation does not describe the host, or the port traffic runs on in production.',
+    'The documentation does not describe the flow, or the sign-up steps users must complete before checkout.',
+    'The documentation does not describe the roles, or Postgres users can connect with.',
+    'The documentation does not describe the build, or the test runs for staging.',
   ])
     expect(isDecline(s), s).toBe(true)
   for (const s of [
@@ -340,7 +348,7 @@ test('isDecline takes a decline about the documents and refuses a claim about th
     // a clause after the comma (#319)
     'The documentation does not specify the port, and the Fastify server listens on 8080.',
     'The documentation does not establish that all agent functionality works without network access, and the normal configuration still expects Anthropic credentials.',
-    'The corpus does not specify a retry count, or the tests would say so.',
+    'The corpus does not specify the port, and the server is 8080.',
     'The corpus does not specify the port, and Fastify listens on 8080.',
   ])
     expect(isDecline(s), s).toBe(false)
