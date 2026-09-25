@@ -115,7 +115,7 @@ _DECLINE_RE = re.compile(
 )
 _SECOND_CLAUSE_RE = re.compile(r";|\s(?:but|yet|although|though|whereas)\s|\bit does\b|\bit is\b", re.IGNORECASE)
 # A comma before "and" or "or" joins a list item or a second clause. The rule reads a clause when
-# a subject (a determiner and one to three words, or a capitalised word and up to two) is followed
+# a subject (a determiner and one to three plain words, or a capitalised word and up to two) is followed
 # by an auxiliary or one of the named verbs, with a word after it. The verb is named rather than
 # guessed from its ending, because a list item after a determiner ("the deployment steps for
 # staging", "the deployment process for staging") ends in s as often as a verb does, and a decline
@@ -123,9 +123,15 @@ _SECOND_CLAUSE_RE = re.compile(r";|\s(?:but|yet|although|though|whereas)\s|\bit 
 # the list stays a decline, as it did before. "...port, and the Fastify server listens on 8080"
 # is a clause; "who approves, how provenance is stored, or how cache entries are invalidated" is a
 # list. Case-sensitive so the capitalised branch can tell a name from a list word.
+# The words between the determiner and the verb are plain lowercase words: a determiner, a pronoun
+# or a relative pronoun among them means a list item carrying its own clause ("the teams that are
+# on call", "the keys the service requires", "the files it writes to"), and a capitalised name may
+# sit only right after the determiner ("the Fastify server listens", never "the settings Fastify
+# expects").
+_PLAIN_WORD = r"(?!(?:the|a|an|this|that|these|those|its|our|my|their|your|which|who|whom|whose|where|when|it|they|we|each|every|all|and|or)\b)[a-z][\w-]*"
 _CLAUSE_SUBJECT = (
-    r"(?:the|this|that|these|those|a|an|its|our|my|their|your)\s+(?:[\w-]+\s+){1,3}?"
-    r"|[A-Z][\w-]*\s+(?:[\w-]+\s+){0,2}?"
+    r"(?:the|this|that|these|those|a|an|its|our|my|their|your)\s+(?:[A-Z][\w-]*\s+){0,2}(?:" + _PLAIN_WORD + r"\s+){1,3}?"
+    r"|[A-Z][\w-]*\s+(?:" + _PLAIN_WORD + r"\s+){0,2}?"
 )
 _CLAUSE_VERBS = (
     "listens|runs|expects|requires|serves|writes|sends|provides|includes|contains|allows|"

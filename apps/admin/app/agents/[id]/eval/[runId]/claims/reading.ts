@@ -294,9 +294,11 @@ export const SECOND_CLAUSE_RE = new RegExp(
 /** _CLAUSE_COMMA_RE in grounding.py: a comma before "and" or "or" joins a clause, not a list item,
  *  when a subject (a determiner and one to three words, or a capitalised word and up to two), an
  *  auxiliary or a named verb, and one more word follow. Case-sensitive, as the gate is. */
+/** _PLAIN_WORD in grounding.py: a lowercase word that is no determiner, pronoun or relative pronoun. */
+const PLAIN_WORD = String.raw`(?!(?:the|a|an|this|that|these|those|its|our|my|their|your|which|who|whom|whose|where|when|it|they|we|each|every|all|and|or)` + B_AFTER + String.raw`)[a-z](?:${W}|-)*`
 const CLAUSE_SUBJECT =
-  String.raw`(?:the|this|that|these|those|a|an|its|our|my|their|your)\s+(?:(?:${W}|-)+\s+){1,3}?` +
-  String.raw`|[A-Z](?:${W}|-)*\s+(?:(?:${W}|-)+\s+){0,2}?`
+  String.raw`(?:the|this|that|these|those|a|an|its|our|my|their|your)\s+(?:[A-Z](?:${W}|-)*\s+){0,2}(?:` + PLAIN_WORD + String.raw`\s+){1,3}?` +
+  String.raw`|[A-Z](?:${W}|-)*\s+(?:` + PLAIN_WORD + String.raw`\s+){0,2}?`
 /** _CLAUSE_VERBS in grounding.py: the verb is named, never guessed from an s ending. */
 const CLAUSE_VERBS =
   'listens|runs|expects|requires|serves|writes|sends|provides|includes|contains|allows|' +

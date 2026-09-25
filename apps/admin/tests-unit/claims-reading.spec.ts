@@ -316,6 +316,13 @@ test('isDecline takes a decline about the documents and refuses a claim about th
     'The corpus does not name the fixtures, or the tests themselves in detail.',
     'The documentation does not name React, Vue, or Svelte plugins for this.',
     'The corpus does not give the timeout, or the 3 retries per minute.',
+    'The documentation does not describe the owner, or the teams that are on call.',
+    'The documentation does not describe the port, or the host which is used in staging.',
+    'The documentation does not describe the queue, or the files it writes to.',
+    'The documentation does not describe the owner, or the keys the service requires for signing.',
+    'The documentation does not describe the port, or the settings Fastify expects in production.',
+    'The documentation does not describe the hosts, or the ports each service listens on.',
+    'The documentation does not describe the refunds, or the webhooks Stripe sends on failure.',
   ])
     expect(isDecline(s), s).toBe(true)
   for (const s of [

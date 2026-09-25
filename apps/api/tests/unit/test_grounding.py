@@ -106,7 +106,8 @@ class TestTheRule:
         "The corpus does not specify the preview port.",
         "However, the documentation does not establish that every feature works offline.",
         "I don't have more specific post-launch information in my knowledge base.",
-        # a list comma, not a clause comma (#319): no auxiliary or named verb follows the last item
+        # a list comma, not a clause comma (#319): no subject with an auxiliary or a named verb
+        # follows the comma, or the item carries its own relative clause
         "The corpus does not state who approves an answer, how provenance is stored, or how cache entries are invalidated.",
         "The documentation does not include a measured performance, bundle-size, or maintenance comparison.",
         "The corpus does not document the build, the tests, or the deployment steps.",
@@ -116,6 +117,13 @@ class TestTheRule:
         "The corpus does not name the fixtures, or the tests themselves in detail.",
         "The documentation does not name React, Vue, or Svelte plugins for this.",
         "The corpus does not give the timeout, or the 3 retries per minute.",
+        "The documentation does not describe the owner, or the teams that are on call.",
+        "The documentation does not describe the port, or the host which is used in staging.",
+        "The documentation does not describe the queue, or the files it writes to.",
+        "The documentation does not describe the owner, or the keys the service requires for signing.",
+        "The documentation does not describe the port, or the settings Fastify expects in production.",
+        "The documentation does not describe the hosts, or the ports each service listens on.",
+        "The documentation does not describe the refunds, or the webhooks Stripe sends on failure.",
     ])
     def test_a_whole_sentence_decline_about_the_documents_is_grounded(self, sentence):
         s = ground(sentence, [RETURNS]).sentences[0]
