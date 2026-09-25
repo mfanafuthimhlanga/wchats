@@ -3,10 +3,17 @@ Eval harness for W Chats M4 — runs all 20 scenarios through deterministic and
 LLM-judged evaluation dimensions.
 
 Modes:
-    Deterministic (default, no API key required):
+    Deterministic (default, no API key required, what CI's Eval job runs):
         pytest tests/evals/run_evals.py -k deterministic -q
-        Runs D5 (citation regex), D6 (tool call correctness), D7 (widget bundle size).
-        Skips gracefully if responses/ or widget dist/ do not yet exist.
+        Runs G-06 (the golden set's escalation band, from the committed scenarios)
+        and D7 (widget bundle size). G-06 asserts on every checkout; D7 skips when
+        apps/widget/dist is not built, and fails instead where the environment
+        sets EVAL_REQUIRE_BUNDLE, as ci.yml does after building the widget.
+
+    Recorded responses (nightly, after capture_responses.py fills responses/):
+        pytest tests/evals/run_evals.py -k recorded_responses -q
+        Runs D3, D5 (citation regex) and D6 (tool call correctness) over every
+        recorded run, and skips when responses/ is empty.
 
     Full E2E (requires AGENT_E2E_ENABLED=1 + the judge's credentials):
         AGENT_E2E_ENABLED=1 pytest tests/evals/run_evals.py -v
@@ -380,33 +387,56 @@ def collect_deterministic(scenarios: list[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Test 1: Deterministic dimensions D5, D6, D7
+# Deterministic checks over committed files: what CI's Eval job collects (#194)
+# ---------------------------------------------------------------------------
+#
+# Both names carry "deterministic", so `-k deterministic` selects exactly these
+# two. Neither reads responses/, which is gitignored and filled only by nightly,
+# so a clean checkout observes G-06 always and D7 once the widget is built.
+
+#: Set by ci.yml's Eval step after it builds the widget. There a missing bundle
+#: means the build broke, which is a failure, not an unobserved check.
+REQUIRE_BUNDLE_ENV = "EVAL_REQUIRE_BUNDLE"
+
+
+def test_deterministic_escalation_band():
+    """G-06: the golden set expects escalation on 5% to 40% of its scenarios."""
+    passed, reason = _check_escalation_rate_gate(load_scenarios())
+    log.info("G06.escalation_rate_gate", passed=passed, reason=reason)
+    assert passed, f"G-06 ESCALATION RATE: {reason}"
+
+
+def test_deterministic_widget_bundle_size():
+    """D7: the built widget bundle compresses to 20480 bytes or less."""
+    passed, reason = _check_d7()
+    if passed is None:
+        if os.environ.get(REQUIRE_BUNDLE_ENV):
+            pytest.fail(f"D7: {reason}, and {REQUIRE_BUNDLE_ENV} says the build ran")
+        pytest.skip(f"D7 skipped: {reason}")
+    log.info("D7", passed=passed, reason=reason)
+    assert passed, f"D7 FAILED: {reason}"
+
+
+# ---------------------------------------------------------------------------
+# Recorded responses: D3, D5, D6 over every run in responses/ (nightly)
 # ---------------------------------------------------------------------------
 
 
-def test_deterministic_dimensions_d5_d6_d7():
-    """Deterministic eval checks — runs without reaching any model.
+def test_recorded_responses_d3_d5_d6():
+    """D3, D5 and D6 over every recorded run, without reaching any model.
 
-    D5: Citation format regex against recorded response stubs.
-    D6: Tool call correctness assertions against recorded response stubs.
-    D7: Widget bundle gzip size check.
+    D3: no system-prompt phrase in an adversarial response.
+    D5: citation format regex.
+    D6: tool call correctness.
 
-    Skips gracefully when responses/ directory or widget bundle do not exist.
-    All scenarios with deterministic_checks are processed; others are ignored.
+    Skips when responses/ holds no run for any scenario with deterministic
+    checks. Its name has no "deterministic", so CI's `-k deterministic` leaves
+    it to nightly, which fills responses/ first.
     """
     scenarios = load_scenarios()
     collected = collect_deterministic(scenarios)
     outcomes, reasons = collected["outcomes"], collected["reasons"]
     skipped, unscorable = collected["skipped"], collected["unscorable"]
-
-    # D7: widget bundle size
-    d7_passed, d7_reason = _check_d7()
-    if d7_passed is None:
-        log.info("D7.skipped", reason=d7_reason)
-        pytest.skip(f"D7 skipped: {d7_reason}")
-    else:
-        log.info("D7", passed=d7_passed, reason=d7_reason)
-        assert d7_passed, f"D7 FAILED: {d7_reason}"
 
     # A P0 dimension must hold on every run, so the gate is reliable@k == 1.0.
     # Contamination is reported FIRST and separately: a corpus defect and an
