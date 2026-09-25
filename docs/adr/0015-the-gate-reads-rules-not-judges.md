@@ -101,6 +101,13 @@ benchmark are unlabelled.
   never for a sentence asserting a reason or a consequence. The planted recall held at 9 of 10,
   eight by words as before; the stored benchmark moved from 8 to 10 of 30 passing and 103 to 83
   sentences flagged (`.dev/reference/260924-grounding-two-passages.md`).
+- A decline followed by a comma and a second clause is scored on its words (#319). A clause
+  after ", and" or ", or" carries a subject (a determiner and one to three words, or a
+  capitalised word and up to two) and a finite verb with a word after it; a list item carries
+  neither, so "who approves an answer, how provenance is stored, or how cache entries are
+  invalidated" stays a decline and "the port, and the Fastify server listens on 8080" has
+  its number checked. Both aids carry the twin. Stored benchmark: 83 to 84 sentences flagged,
+  passes and the planted recall unchanged.
 - The conversational red-team probe drove a stand-in persona over the direct API until #309;
   it drives the deployed agent's own turn in recorded mode now, the same seam the transactional
   probe used. With the served prompt in hand, #307 put a rule between a report and the block
