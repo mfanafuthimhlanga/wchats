@@ -1,9 +1,8 @@
 """The deterministic check for an ambiguous scenario (#226, ADR 0012).
 
-Two rules, and the reason there are two is the first finding of the adversarial
-review: the agent has a `clarify` tool, so the agent's verdict is read off what
-it DID, and free text is read only for the owner's reference, which has no tool
-log.
+The agent's verdict is read off what it DID, a `clarify` call, or off a reply
+that opens with a short question (the owner's decision, 2026-09-25). The
+owner's reference has no tool log and is held to its own text rule.
 """
 
 from __future__ import annotations
@@ -13,11 +12,81 @@ import pytest
 from app.services.clarifying_check import (
     CLARIFYING_CHECK_KEY,
     CLARIFYING_MAX_WORDS,
+    asked_to_clarify,
     clarifying_verdicts,
     is_clarifying_question,
+    reply_asks_to_clarify,
     split_checked_rows,
     turn_asked_to_clarify,
 )
+
+#: Replies from eval run 2944b802, verbatim apart from the curly apostrophe.
+ASKED_ABOVE_A_LIST = (
+    "Which project do you mean?\n\n- W Chats\n- Mellow's Earth Elements\n- Beekeeper\n\n"
+    "CITATIONS:\n- Document: W Chats | Section: What it is\n"
+    "- Document: Mellow's Earth Elements | Section: What it is\n"
+    "- Document: Beekeeper | Section: Stack"
+)
+ASKED_THEN_NAMED_THE_OPTIONS = (
+    "Which product or project do you mean? The knowledge base includes pricing "
+    "information for Beekeeper, Mellow's Earth Elements, and W Chats."
+)
+GUESSED_TWO_PROJECTS = (
+    "W Chats uses Neon Postgres as its data store, with `pgvector` HNSW indexes. It has a "
+    "control database and a separate Neon project for each tenant. Redis is used as the "
+    "broker and pub/sub layer. (W Chats, Stack; W Chats, Architecture)\n\n"
+    "Sentinel OHS uses Memgraph for persistence, reached through the Bolt port `7687`. "
+    "(Sentinel OHS, Stack)\n\nCITATIONS:\n- Document: W Chats | Section: Stack"
+)
+GUESSED_ONE_PROJECT = (
+    "The checkout code is in **Mellow's Earth Elements**:\n\n- `src/pages/Checkout.tsx`\n"
+    "- `src/components/checkout/PaymentInfo.tsx`\n\nCITATIONS:\n"
+    "- Document: Mellow's Earth Elements | Section: What it is"
+)
+
+
+class TestTheReplyRule:
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            ASKED_ABOVE_A_LIST,
+            ASKED_THEN_NAMED_THE_OPTIONS,
+            "Which project are you asking about: Mellow's Earth Elements, Sentinel OHS, or W Chats?",
+            "**Which project do you mean?** W Chats or Beekeeper.",
+            "Which project, v1.2 or v2? The docs cover both.",
+            "أي مشروع؟ W Chats أو Beekeeper.",
+        ],
+    )
+    def test_a_short_reply_that_opens_by_asking_passes(self, reply):
+        assert reply_asks_to_clarify(reply) is True
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "",
+            "   ",
+            GUESSED_TWO_PROJECTS,
+            GUESSED_ONE_PROJECT,
+            "Nine to five. Anything else?",
+            "Run pnpm dev. Which project was that for?",
+            "CITATIONS:\n- Document: W Chats | Section: Stack",
+        ],
+    )
+    def test_a_reply_that_answers_first_or_runs_long_fails(self, reply):
+        assert reply_asks_to_clarify(reply) is False
+
+    def test_the_citations_block_does_not_count_toward_the_cap(self):
+        question = " ".join(["which"] * (CLARIFYING_MAX_WORDS - 1)) + " one?"
+        cited = question + "\n\nCITATIONS:\n" + "- Document: W Chats | Section: Stack\n" * 5
+        assert reply_asks_to_clarify(cited) is True
+        assert reply_asks_to_clarify("which " + question) is False
+
+    def test_either_rule_is_enough_for_the_verdict(self):
+        clarify = [{"tool_name": "clarify", "result": "?"}]
+        retrieve = [{"tool_name": "retrieve", "result": "..."}]
+        assert asked_to_clarify(clarify, GUESSED_ONE_PROJECT) is True
+        assert asked_to_clarify(retrieve, ASKED_ABOVE_A_LIST) is True
+        assert asked_to_clarify(retrieve, GUESSED_ONE_PROJECT) is False
 
 
 class TestTheAgentsVerdictComesOffTheToolLog:

@@ -118,9 +118,9 @@ from app.core.security import fernet_decrypt
 from app.models.agent import Agent, select_beat_fanout_agents
 from app.services.clarifying_check import (
     CLARIFYING_CHECK_KEY,
+    asked_to_clarify,
     clarifying_verdicts,
     split_checked_rows,
-    turn_asked_to_clarify,
 )
 from app.services.eval_service import (
     AGENT_INVOCATION_CONCURRENCY,
@@ -597,8 +597,9 @@ def _measured_row(
     Its correct reply is a clarifying question, which retrieves nothing, so the
     ordinary rule below would drop it as `no_retrieval`, and faithfulness would
     measure the wrong thing if it did retrieve. Its row carries the
-    rule's verdict under `CLARIFYING_CHECK_KEY`, read off the turn's TOOL LOG:
-    the agent asked when it called `clarify` and did not retrieve. That key is
+    rule's verdict under `CLARIFYING_CHECK_KEY`: the agent asked when its last
+    tool call was `clarify`, or when its reply opens with a short question
+    (`asked_to_clarify`). That key is
     what keeps the row out of the scored set in `_score_run`, and such a row is
     NOT `scorable` in the invocation record: `scorable` stays the count of rows
     faithfulness was computed over.
@@ -625,7 +626,9 @@ def _measured_row(
             **scenario,
             "agent_response": response_text,
             "retrieved_contexts": contexts,
-            CLARIFYING_CHECK_KEY: turn_asked_to_clarify(turn.get("tool_calls_log", [])),
+            CLARIFYING_CHECK_KEY: asked_to_clarify(
+                turn.get("tool_calls_log", []), response_text
+            ),
         }
     if not contexts:
         return None

@@ -32,6 +32,20 @@ same per-dataset counts `decide()` already reads. So an ambiguous golden that an
 `golden_failure` and an ambiguous exploratory row that answered lowers the exploratory pass
 rate, with no new rule and no fifth metric.
 
+## Amendment, 2026-09-25: a reply that opens with a question also asks
+
+The owner decided that a clarifying question the agent writes as its reply counts. Run
+2944b802 showed why. The agent retrieved, saw several projects, and replied "Which project
+do you mean?" above a bulleted list of them, without calling `clarify`. The tool rule failed
+that row, although the customer saw a clarifying question.
+
+`asked_to_clarify` is now the agent's verdict: the tool rule, or `reply_asks_to_clarify`.
+The reply rule cuts the CITATIONS block, then passes a reply whose first sentence ends in a
+question mark and whose length is at most `CLARIFYING_MAX_WORDS`. It reads the opening
+sentence, so "Nine to five. Anything else?" still fails. It reads shape and not meaning, so
+a short question followed by a short answer passes, as a `clarify` call carrying the same
+text always did.
+
 ## Why a rule
 
 - ADR 0008 makes a Judge one typed tool call, and ADR 0009 measured the four existing
@@ -54,7 +68,8 @@ conversation and the rewrite, so the owner, the sheet and the gate read one row.
 
 ## Consequences a reader will meet
 
-- `CLARIFYING_MAX_WORDS` is 40 and untuned, and it bounds references only. The first
+- `CLARIFYING_MAX_WORDS` is 40 and untuned. It bounds references and, since the
+  amendment, the agent's reply. The first
   ambiguous run's rows are what tunes it, on the same sheet #58 labels.
 - An ambiguous row is not `scorable` in the invocation record and does not count toward
   the measurement floor. A run below that floor discards the rule's verdicts as it

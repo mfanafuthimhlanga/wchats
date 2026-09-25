@@ -2528,7 +2528,7 @@ def test_the_scored_text_is_written_before_scoring_and_is_what_the_scorer_gets(
 
 
 class TestAnAmbiguousScenarioIsDecidedInTheLoop:
-    """#226, ADR 0012: the rule decides off the tool log, the Judge never sees the row."""
+    """#226, ADR 0012: the rule decides off the tool log or the reply, the Judge never sees the row."""
 
     def _run(self, scenarios, respond):
         def _turn_for(*, agent_id, conn_str, run_id, question, turns, scenario_id, prompt_version_id):
@@ -2567,11 +2567,19 @@ class TestAnAmbiguousScenarioIsDecidedInTheLoop:
         assert rows[0][mod.CLARIFYING_CHECK_KEY] is False
         assert summary["scorable"] == 0
 
-    def test_a_question_in_the_text_without_the_tool_is_not_asking(self):
-        """'Anything else?' on the end of an answer is the case the text rule got wrong."""
+    def test_a_question_on_the_end_of_an_answer_is_not_asking(self):
+        """'Anything else?' on the end of an answer is the case a text rule can get wrong."""
         rows, _ = self._run([self._ambiguous(0)], lambda q: ("Nine to five. Anything else?", [], False))
 
         assert rows[0][mod.CLARIFYING_CHECK_KEY] is False
+
+    def test_a_reply_that_opens_by_asking_is_asking_without_the_tool(self):
+        """Run 2944b802: the agent retrieved, then wrote the question as its reply."""
+        reply = "Which project do you mean?\n\n- W Chats\n- Beekeeper\n\nCITATIONS:\n- Document: W Chats"
+        rows, summary = self._run([self._ambiguous(0)], lambda q: (reply, ["CTX"], False))
+
+        assert rows[0][mod.CLARIFYING_CHECK_KEY] is True
+        assert summary["scorable"] == 0
 
     def test_an_ordinary_scenario_never_carries_the_key_and_stays_scorable(self):
         plain = {**self._ambiguous(1), "ambiguous": False, "reference_answer": "pnpm dev"}
