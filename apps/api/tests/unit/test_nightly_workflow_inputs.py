@@ -380,7 +380,7 @@ def test_no_step_gates_itself_on_whether_a_target_was_found() -> None:
 #: after checks they claim to perform, which is what makes an empty run there a
 #: false reading rather than a quiet one.
 EVAL_STEPS = [
-    (CI, "eval-deterministic", "Run deterministic evals (D3, D5, D6, D7, G-06)"),
+    (CI, "eval-deterministic", "Run deterministic evals (G-06, D7)"),
     (NIGHTLY, "eval-full", "Run full eval suite (LLM-judged D1/D2/D3/D4/D8 + deterministic)"),
 ]
 
