@@ -254,3 +254,14 @@ class TestTheTaskStatements:
                 "outcome": "resolved", "grade": None, "payload": "{}", "finding_id": fid, "retest_id": "someone-else",
             })
         assert _row(probe_conn, fid)[0] == "open"
+
+
+def test_the_console_reads_a_running_retest_as_stopped_at_the_same_window():
+    """opsFormat.ts RETEST_STALE_MINUTES must equal the task's claim window, or the console
+    offers a re-test the API refuses as running, or hides one the API would take."""
+    import pathlib
+    import re
+
+    ops = pathlib.Path(__file__).resolve().parents[3] / "admin" / "app" / "agents" / "[id]" / "components" / "opsFormat.ts"
+    [minutes] = re.findall(r"export const RETEST_STALE_MINUTES = (\d+)", ops.read_text(encoding="utf-8"))
+    assert int(minutes) == task.RETEST_IDEMPOTENCY_WINDOW_MINUTES

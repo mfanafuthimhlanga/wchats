@@ -2055,7 +2055,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
   // ---- Live open findings (v1.2 milestone audit, 2026-08-04) -------------
   // This page derived its entire gate from `latestRun` — a checklist-run row
   // whose `report.red_team_summary` is computed once at run time
-  // (deployment_service.py:253) and never updated by a contain action. The
+  // (deployment_service.py:253) and never updated when a finding closes. The
   // operations room was fixed in 23-06 to derive from the live
   // `open_findings` list; this page was byte-unchanged, so the two surfaces
   // could report opposite answers about one gate. That is the same
@@ -2521,7 +2521,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
   // (DEP_BLOCK_ON_HIGH_RED_TEAM, default true) and on any eval pass_rate below
   // 0.70. Scoping this to `snapshotBlocked` would tell an operator whose block
   // came from a still-open HIGH finding, or from a failing eval, that "the
-  // findings have been contained" — false, and the exact false-status class
+  // findings are no longer open", which is false, and the exact false-status class
   // this whole change exists to remove.
   const staleBlock = redTeamBlockedSignal && liveSignalKnown && !liveBlocked
   // staleClear — a critical finding exists NOW that the checklist never saw.
@@ -2941,7 +2941,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                 )}
                 {staleBlock && (
                   <p className="help" id="stale-block-reason">
-                    The critical findings this checklist recorded have since been contained.
+                    The critical findings this checklist recorded are no longer open.
                     Re-run the checklist for a current read.
                   </p>
                 )}
@@ -2950,7 +2950,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                   {staleClear
                     ? 'The gate is shut. A critical finding was raised after this checklist ran. Re-run the checklist before approving.'
                     : staleBlock
-                      ? 'The critical findings this checklist recorded have since been contained. Re-run the checklist for a current read.'
+                      ? 'The critical findings this checklist recorded are no longer open. Re-run the checklist for a current read.'
                       : gateBlocked
                         ? 'The gate is shut. A blocking finding is open and no new build reaches a customer.'
                         : isApprovable

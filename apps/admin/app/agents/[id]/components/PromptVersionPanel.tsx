@@ -26,8 +26,8 @@ import { renderCanaryPercent } from './opsFormat'
  * Both actions route real customer turns the instant they are confirmed
  * (percent routing and the active prompt are both chosen at turn dispatch,
  * prompt_version_service.py:249-293's resolve_prompt_version), so both stage
- * behind the house `.cap-confirm` shape (deploy/page.tsx:1746-1889),
- * identically to AdversaryPanel's contain action. Busy state is keyed per
+ * behind the house `.cap-confirm` shape (deploy/page.tsx:1746-1889).
+ * Busy state is keyed per
  * version identifier, never a shared flag, so one version's action in
  * flight never disables another's.
  *
@@ -427,7 +427,7 @@ export default function PromptVersionPanel({
 
 // Per-version staged actions — the local `staged`/`percent` state lives
 // here, per version, exactly as PendingConfirmationRow (deploy/page.tsx)
-// and AdversaryPanel's FindingContain keep their own `staged` local to each
+// keeps its own `staged` local to each
 // row rather than a page-level map. Only busy/note are lifted to the
 // parent, keyed by identifier.
 function VersionActions({

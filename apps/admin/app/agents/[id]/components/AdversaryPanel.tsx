@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '@clerk/nextjs'
 import Btn from '../../../components/gotham/Btn'
@@ -15,28 +15,38 @@ import {
   formatPercent,
   gateMessage,
   latestRunLine,
+  retestIsRunning,
 } from './opsFormat'
 import FindingMeta from './FindingMeta'
 
 /**
- * The Adversary region (WIRE-01, WIRE-03, WIRE-04, 23-06) —
- * GET /agents/{id}/red-team/programme (redteam_programme_service.py:147-245)
- * for the coverage rollup and the live open-findings list, and
- * POST /agents/{id}/red-team/findings/{finding_id}/contain (red_team.py:414-461)
- * for the staged contain action. House query shape, same as
+ * The Adversary region (WIRE-01, WIRE-03, WIRE-04, 23-06):
+ * GET /agents/{id}/red-team/programme (redteam_programme_service.py) for the
+ * coverage rollup and the live open-findings list, and
+ * POST /agents/{id}/red-team/findings/{finding_id}/retest (red_team.py) for
+ * the Re-test action. House query shape, same as
  * LivePanel/RetrievalHealthPanel.
+ *
+ * The owner clears a finding by changing the agent and re-testing it: the
+ * platform replays the finding's recorded attack against the agent as it is
+ * now, and today's red-team rules decide (red_team_retest.py). The POST
+ * answers 202 and the re-test runs on the worker for about a minute, so the
+ * programme query polls every five seconds while any open finding's re-test
+ * is running. A resolved finding leaves `open_findings`: the tiles recount,
+ * the lifted array changes and the page's gate recomputes, and that change
+ * is the confirmation. A finding that stays open says what the re-test found
+ * in its re-test line (FindingMeta, retestLine).
  *
  * This component never calls the red-team run-history endpoint (the
  * per-run snapshot whose blocked flag and findings JSONB are frozen the
- * moment a run completes and never updated by contain, 23-UI-SPEC.md
- * §3.3). Severity counts and the first-critical selection
- * come from the shared, proven pure functions in opsFormat.ts, over the
- * live `open_findings` array this query returns — the structural form of
- * that correctness fix: a component that never fetches the runs endpoint
- * cannot accidentally read a snapshot from it.
+ * moment a run completes, 23-UI-SPEC.md §3.3). Severity counts and the
+ * first-critical selection come from the shared, proven pure functions in
+ * opsFormat.ts, over the live `open_findings` array this query returns. A
+ * component that never fetches the runs endpoint cannot accidentally read a
+ * snapshot from it.
  *
  * open_findings is also lifted to the page (onOpenFindingsChange), the same
- * callback-up idiom AlertsBanner already established (onAlertsChange) — the
+ * callback-up idiom AlertsBanner already established (onAlertsChange). The
  * page's own deploy-gate computation (Task 2, 23-06) reads the same array
  * this component's tiles do, so the two can never disagree.
  */
@@ -106,28 +116,26 @@ export default function AdversaryPanel({
     },
     enabled,
     staleTime: 15_000,
+    // A re-test runs for about a minute after its 202. Poll while one is
+    // running so its outcome, or the finding leaving the list, shows up
+    // without a reload; stop the moment none is.
+    refetchInterval: (query) =>
+      query.state.data?.open_findings.some((f) => retestIsRunning(f.retest)) ? 5_000 : false,
   })
 
-  // Per-finding busy state, keyed by identifier — mirrors deploy/page.tsx's
-  // savingConfirmations exactly (2147-2150). Never a shared boolean: two
-  // findings must never share a busy state (T-23-ADV-06).
+  // Per-finding busy state, keyed by identifier, mirroring deploy/page.tsx's
+  // savingConfirmations. Never a shared boolean: two findings must never
+  // share a busy state (T-23-ADV-06).
   const [busy, setBusy] = useState<Record<string, boolean>>({})
-  // A transient, per-finding failure note — mirrors resolveNotes/
-  // resolveNoteTimers (deploy/page.tsx:2154-2227): six-second self-clear,
-  // cleared immediately on the next successful contain for that id.
+  // A per-finding note carrying the API's refusal (a 409's detail). It stays
+  // until the owner re-tests that finding again: "A conversation cannot
+  // reproduce this finding; re-run the red team to clear it" is standing
+  // advice, not a transient blip, so it does not self-clear on a timer.
   const [notes, setNotes] = useState<Record<string, string>>({})
-  const noteTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
-
-  useEffect(
-    () => () => {
-      for (const t of Object.values(noteTimers.current)) clearTimeout(t)
-    },
-    [],
-  )
 
   // The one error path this region reports into — the page's shared
   // callback, folded into its single existing banner. This is the query's
-  // own failure only; contain failures get the per-finding note below, not
+  // own failure only; re-test refusals get the per-finding note below, not
   // this region-level surface.
   useEffect(() => {
     if (programmeQuery.isError) {
@@ -158,55 +166,40 @@ export default function AdversaryPanel({
     }
   }, [data, onCoverageChange])
 
-  const containMutation = useMutation({
+  const clearNote = (findingId: string) =>
+    setNotes((prev) => {
+      if (!(findingId in prev)) return prev
+      const next = { ...prev }
+      delete next[findingId]
+      return next
+    })
+
+  const retestMutation = useMutation({
     mutationFn: async (findingId: string) => {
       const token = await getToken()
       if (!token) throw new Error('Not authenticated')
       const r = await fetch(
-        `${apiBase}/api/v1/agents/${agentId}/red-team/findings/${findingId}/contain`,
+        `${apiBase}/api/v1/agents/${agentId}/red-team/findings/${findingId}/retest`,
         { method: 'POST', headers: { Authorization: `Bearer ${token}` } },
       )
       if (!r.ok) {
         const body = await r.json().catch(() => ({}))
-        const detail = (body as { detail?: string }).detail ?? `HTTP ${r.status}`
-        throw Object.assign(new Error(detail), { findingId })
+        const detail = (body as { detail?: unknown }).detail
+        throw new Error(typeof detail === 'string' && detail ? detail : `HTTP ${r.status}`)
       }
       return r.json()
     },
-    // On success the finding disappears from the refetched open_findings
-    // list — the tiles recount, the lifted array changes, and the page's
-    // gate effect re-fires. That chain IS the confirmation
-    // (20-UI-SPEC.md §8.1, "the room changes temperature"). No success
-    // message, toast, or "recently contained" list is added: 23-UI-SPEC.md
-    // §4.5 locks a "Filed as a regression scenario." note only for the
-    // variant that KEEPS a contained row visible in a recently-contained
-    // list, and that section's own text defaults to the opposite, simpler
-    // branch it also offers ("If the row simply disappears... this line is
-    // unnecessary; default to disappearing") — the branch 23-06-PLAN.md's
-    // action text picks explicitly ("Add no success message, no toast, and
-    // no recently-contained list"). So that note is deliberately never
-    // rendered by this component.
-    onSuccess: (_result, findingId) => {
-      queryClient.invalidateQueries({ queryKey: ['red-team-programme', agentId] })
-      setNotes((prev) => {
-        if (!(findingId in prev)) return prev
-        const next = { ...prev }
-        delete next[findingId]
-        return next
-      })
-    },
+    onMutate: (findingId) => clearNote(findingId),
+    // Returning the refetch keeps the mutation pending, and the button
+    // disabled, until the list carries the running re-test. Without it the
+    // button would re-enable for the length of one round trip.
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['red-team-programme', agentId] }),
     onError: (err: unknown, findingId) => {
-      const message = (err as Error).message || 'Failed to contain this finding.'
+      const message = (err as Error).message || 'The re-test did not start.'
       setNotes((prev) => ({ ...prev, [findingId]: message }))
-      clearTimeout(noteTimers.current[findingId])
-      noteTimers.current[findingId] = setTimeout(() => {
-        setNotes((prev) => {
-          const next = { ...prev }
-          delete next[findingId]
-          return next
-        })
-        delete noteTimers.current[findingId]
-      }, 6000)
+      // A 409 such as "Finding is resolved, not open" means this list is
+      // behind the server; refetch so it catches up.
+      queryClient.invalidateQueries({ queryKey: ['red-team-programme', agentId] })
     },
     onSettled: (_result, _err, findingId) => {
       setBusy((prev) => {
@@ -217,9 +210,9 @@ export default function AdversaryPanel({
     },
   })
 
-  const handleContain = (findingId: string) => {
+  const handleRetest = (findingId: string) => {
     setBusy((prev) => ({ ...prev, [findingId]: true }))
-    containMutation.mutate(findingId)
+    retestMutation.mutate(findingId)
   }
 
   const severityCounts = useMemo(() => computeSeverityCounts(openFindings), [openFindings])
@@ -328,18 +321,14 @@ export default function AdversaryPanel({
                 the same locked fallback (OD-5) the page's own gatebar
                 already uses for this exact situation — reused here rather
                 than inventing a second apologetic string. attack_vector's
-                fallback matches FindingContain's own aria-label three lines
-                below, which already guarded it; turn_count's clause is
-                omitted entirely rather than rendered empty. */}
+                fallback matches RetestAction's own aria-label below, which
+                already guarded it; turn_count's clause is omitted entirely
+                rather than rendered empty. */}
             {gateMessage(critical)}
             <FindingMeta finding={critical} />
           </p>
-          <FindingContain
-            finding={critical}
-            busy={!!busy[critical.id]}
-            note={notes[critical.id] ?? null}
-            onContain={handleContain}
-          />
+          <RetestAction finding={critical} busy={!!busy[critical.id]} onRetest={handleRetest} />
+          <RetestNote note={notes[critical.id]} />
         </div>
       )}
 
@@ -351,9 +340,9 @@ export default function AdversaryPanel({
               style={{
                 display: 'flex',
                 // flex-start, not center (23-09 adversarial review): the same
-                // reasoning as the .critical banner above — a staged contain
-                // confirmation is taller than the resting Chip/description
-                // and centering against it misaligns the shorter siblings.
+                // reasoning as the .critical banner above. The description
+                // column is the tallest item, and centering the chip and the
+                // button against it floats them mid-row.
                 alignItems: 'flex-start',
                 gap: 14,
                 flexWrap: 'wrap',
@@ -370,12 +359,8 @@ export default function AdversaryPanel({
                 {f.description || 'No description recorded.'}
                 <FindingMeta finding={f} />
               </p>
-              <FindingContain
-                finding={f}
-                busy={!!busy[f.id]}
-                note={notes[f.id] ?? null}
-                onContain={handleContain}
-              />
+              <RetestAction finding={f} busy={!!busy[f.id]} onRetest={handleRetest} />
+              <RetestNote note={notes[f.id]} />
             </div>
           ))}
         </div>
@@ -384,69 +369,41 @@ export default function AdversaryPanel({
   )
 }
 
-// Per-finding staged confirmation — the local `staged` state lives here,
-// per finding, exactly as PendingConfirmationRow (deploy/page.tsx:1746-1889)
-// keeps its own `staged` local to each row rather than a page-level map.
-// Only the busy/note state is lifted to the parent (keyed by identifier),
-// matching that file's own split between per-row local UI state and
-// parent-level per-id request state.
-function FindingContain({
+// One click, no staged confirmation: a re-test changes nothing about the
+// agent and at worst leaves the finding open with a fresh reading. Disabled
+// while this finding's re-test runs or its request is in flight. The
+// aria-label names the vector so a screen reader can tell one finding's
+// button from the next, and starts with the visible label (WCAG 2.5.3).
+function RetestAction({
   finding,
   busy,
-  note,
-  onContain,
+  onRetest,
 }: {
   finding: OpenFinding
   busy: boolean
-  note: string | null
-  onContain: (findingId: string) => void
+  onRetest: (findingId: string) => void
 }) {
-  const [staged, setStaged] = useState(false)
-  const isCritical = finding.severity === 'critical'
-  const questionId = `finding-${finding.id}-confirm-q`
-
+  const running = retestIsRunning(finding.retest)
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      {note && (
-        <p className="help" role="status">
-          {note}
-        </p>
-      )}
-      {!staged ? (
-        <Btn
-          variant="ghost"
-          disabled={busy}
-          aria-label={`Contain finding: ${finding.attack_vector ?? 'unrecorded attack vector'}`}
-          onClick={() => setStaged(true)}
-        >
-          {busy ? 'Containing…' : 'Contain'}
-        </Btn>
-      ) : (
-        <div className="cap-confirm">
-          <p className="cap-confirm-q" id={questionId}>
-            {isCritical
-              ? 'Contain this finding? This clears the deployment block if it was the only open critical finding.'
-              : 'Contain this finding?'}
-          </p>
-          <div className="cap-confirm-actions">
-            <Btn
-              variant="ghost"
-              autoFocus
-              disabled={busy}
-              aria-describedby={questionId}
-              onClick={() => {
-                setStaged(false)
-                onContain(finding.id)
-              }}
-            >
-              Yes, contain
-            </Btn>
-            <Btn variant="ghost" disabled={busy} onClick={() => setStaged(false)}>
-              Cancel
-            </Btn>
-          </div>
-        </div>
-      )}
-    </div>
+    <Btn
+      variant="ghost"
+      disabled={busy || running}
+      aria-label={`Re-test finding: ${finding.attack_vector ?? 'unrecorded attack vector'}`}
+      onClick={() => onRetest(finding.id)}
+    >
+      Re-test
+    </Btn>
+  )
+}
+
+// The API's refusal for one finding, on its own row under the finding: a
+// full-width flex item, so it wraps below the chip, the description and the
+// button in the banner and the list alike.
+function RetestNote({ note }: { note: string | undefined }) {
+  if (!note) return null
+  return (
+    <p className="help" role="status" style={{ flexBasis: '100%', margin: 0 }}>
+      {note}
+    </p>
   )
 }
