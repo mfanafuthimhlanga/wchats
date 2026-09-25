@@ -115,3 +115,16 @@ class TestTheCountReadFailsShort:
         assert "eval_scenarios" in sql
         assert deployment_service.SELECTOR_ELIGIBILITY_PREDICATE in sql
         conn.close.assert_called_once()
+
+
+def test_a_fully_covered_golden_set_reaches_the_coverage_floor():
+    """A ceiling below golden plus sample makes eval_coverage_below_floor unavoidable:
+    at 60 turns the Bantuson agent scored 60 of 82 on every run."""
+    from app.domain.verdict import EVAL_COVERAGE_FLOOR
+    from app.services.eval_service import EXPLORATORY_SAMPLE_SIZE, GOLDEN_SET_FULLY_COVERED
+
+    attempted = GOLDEN_SET_FULLY_COVERED + EXPLORATORY_SAMPLE_SIZE
+    assert AGENT_INVOCATION_MAX_CALLS_PER_RUN / attempted >= EVAL_COVERAGE_FLOOR
+    assert AGENT_INVOCATION_MAX_CALLS_PER_RUN / (attempted + 2) < EVAL_COVERAGE_FLOOR, (
+        "GOLDEN_SET_FULLY_COVERED undersells the ceiling; name the real largest set"
+    )

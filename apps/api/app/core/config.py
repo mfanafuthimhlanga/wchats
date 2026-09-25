@@ -342,7 +342,7 @@ class Settings(BaseSettings):
     # vectors overrun, twelve attempts, so they take at most
     # 12 x (240 + 140) = 4560 s, 76 minutes. That sits under
     # RUN_IDEMPOTENCY_WINDOW_MINUTES (90, 5400 s) and BROKER_VISIBILITY_TIMEOUT_S
-    # (7200 s) while the three deterministic vectors, which ignore this budget,
+    # (10800 s) while the three deterministic vectors, which ignore this budget,
     # spend under 840 s across their nine attempts. Charging every vector the
     # full budget and the four the overrun, 5040 + 12 x 140 = 6720 s sits under
     # the visibility timeout and over the idempotency window.

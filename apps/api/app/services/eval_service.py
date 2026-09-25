@@ -626,15 +626,23 @@ AGENT_INVOCATION_CONCURRENCY = 1
 #: The per-run ceiling on live agent turns. The binding cost control: worst-case
 #: wall clock for a run is this times the per-turn timeout.
 #:
-#: It sits BELOW GOLDEN_SET_SOFT_CEILING (200) on purpose, and the two disagree
-#: on purpose. The golden set is unsampled because a paired per-item delta is the
-#: only regression signal available at n=30; a tenant who designates more golden
-#: rows than this gets the first AGENT_INVOCATION_MAX_CALLS_PER_RUN of them
-#: invoked and the remainder reported as `ceiling_skipped`, golden-first, never
-#: silently. Truncating the golden set breaks the pairing, so the breakage is
-#: made loud (a warning and a counter) rather than resolved by guessing which of
-#: the two ceilings the owner meant.
-AGENT_INVOCATION_MAX_CALLS_PER_RUN = 60
+#: `decide()` blocks below EVAL_COVERAGE_FLOOR (90%) and counts a ceiling-skipped
+#: scenario as unscored, so the ceiling decides the largest golden set that can
+#: ship: GOLDEN_SET_FULLY_COVERED. At 60 the floor was out of reach for any tenant
+#: whose golden set plus sample passed 66: the Bantuson agent's 62 golden and 20
+#: exploratory scored 60 of 82, 73.2%, on every run. A row past the ceiling is
+#: still reported as `ceiling_skipped`, golden-first, never silently.
+#:
+#: Its worst case, times the per-turn timeout, must stay under the broker's
+#: visibility timeout in celery_app.py, or Redis redelivers a run that is still
+#: working; test_eval_agent_invocation.py pins that relation.
+AGENT_INVOCATION_MAX_CALLS_PER_RUN = 100
+
+#: The largest golden set that reaches the coverage floor beside a full
+#: exploratory sample under AGENT_INVOCATION_MAX_CALLS_PER_RUN. Above it a run
+#: blocks on coverage however well the agent answers; GOLDEN_SET_SOFT_CEILING
+#: still allows designating more (#324).
+GOLDEN_SET_FULLY_COVERED = 80
 
 #: The floor under a response rate, same shape and same value as
 #: tests/evals/calibration/compute_correlation.py's MIN_PAIR_RATE (0.8) — and
