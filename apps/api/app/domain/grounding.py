@@ -59,7 +59,7 @@ from app.domain.judge_identity import JudgeIdentity
 #: the rule so a calibration reader can tell it from a Judge; the version moves
 #: whenever a number below moves, so rows scored under two rules never share a
 #: calibration population.
-GROUNDING_RULE_VERSION = "grounding-v4"
+GROUNDING_RULE_VERSION = "grounding-v5"
 GROUNDING_MODEL = "rule:grounding"
 GROUNDING_IDENTITY = JudgeIdentity(
     model=GROUNDING_MODEL, reasoning_effort="none", prompt_version=GROUNDING_RULE_VERSION
@@ -104,12 +104,13 @@ _SENT_RE = re.compile("(?:(?<=[.!?])|(?<=[.!?][\"')\\]\u201d\u2019]))\\s+(?=[*`\
 _NUMBER_RE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
 #: A whole sentence that declines rather than asserts: the documents, as subject,
 #: do not SAY something. A system noun, a doing verb or a second clause is not one.
-_DOC_NOUN = r"(?:corpus|documentation|documents?|docs|material|knowledge base|sources?|readmes?|portfolio documentation|retrieved (?:text|material|documentation|context))"
+_DOC_NOUN = r"(?:corpus|documentation|documents?|docs|material|knowledge base|sources?|readmes?|passages?|portfolio documentation|retrieved (?:text|material|documentation|context|passages?))"
 _SAY_VERB = r"(?:specify|specifies|say|says|state|states|mention|mentions|cover|covers|document|documents|describe|describes|address|addresses|provide|provides|name|names|list|lists|show|shows|explain|explains|detail|details|confirm|confirms|establish|establishes|define|defines|indicate|indicates|record|records|give|gives|include|includes|contain|contains)"
 _DECLINE_RE = re.compile(
     r"^\W*(?:(?:however|but|also|note that|based on [^,;]{1,40}|according to [^,;]{1,40}),?\s*)?(?:\*\*[^*]+\*\*\s*)?(?:"
-    r"(?:the|this|our|my|that|these|its)\s+(?:\w+\s+){0,2}?" + _DOC_NOUN + r"\s+(?:does not|doesn't|did not|didn't|do not|don't|never)\s+(?:\w+\s+)?" + _SAY_VERB + r"\b"
+    r"(?:the|this|our|my|that|these|its)\s+(?:[\w-]+\s+){0,3}?" + _DOC_NOUN + r"\s+(?:does not|doesn't|did not|didn't|do not|don't|never)\s+(?:\w+\s+)?" + _SAY_VERB + r"\b"
     r"|i (?:don't|do not) have (?:[\w-]+\s+){0,3}?(?:information|documentation|record|details?)\b"
+    r"|i (?:don't|do not) have (?:[\w'\u2019`.-]+\s+){1,8}?in my knowledge base\W*$"
     r"|(?:there is|there's) no (?:documented|recorded|stated|documentation|mention|information|record)\b"
     r"|no (?:information|documentation|record|mention) (?:is|was|exists|about|on|of|in)\b"
     r")",
@@ -159,8 +160,39 @@ def _number_key(raw: str) -> str:
     return raw.replace(",", "")
 
 
+#: A whole sentence pointing the customer to the business's contact route, the answer the
+#: tenant's own do-list often asks for beside a decline ("point to the contact section").
+#: It asserts nothing the documents would carry. A number in it, or a second clause, makes
+#: it a sentence like any other.
+_REFERRAL_RE = re.compile(
+    r"^\W*(?:"
+    r"(?:please\s+)?(?:use|see|check|visit|try)\s+(?:the\s+)?contact\b"
+    r"|for\s+[^,;]{1,120},\s*(?:please\s+)?(?:use|see|check|visit)\s+(?:the\s+)?contact\b"
+    r"|(?:the\s+)?contact\s+(?:section|page|form)\s+(?:is|would be)\s+(?:the\s+)?(?:appropriate|best|right)\s+(?:place|route|channel)\b"
+    r"|(?:please\s+)?(?:contact|reach out to|get in touch with)\s+(?:us|the (?:owner|team|author))\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _straight_quotes(sentence: str) -> str:
+    """Curly apostrophes as straight ones, so "don’t" reads as the patterns' "don't"."""
+    return sentence.replace("\u2019", "'").replace("\u2018", "'")
+
+
+def is_referral(sentence: str) -> bool:
+    """True when the whole sentence points to the contact route and states no figure."""
+    sentence = _straight_quotes(sentence)
+    return (
+        _REFERRAL_RE.match(sentence) is not None
+        and _SECOND_CLAUSE_RE.search(sentence) is None
+        and _NUMBER_RE.search(sentence) is None
+    )
+
+
 def is_decline(sentence: str) -> bool:
     """True when the whole sentence says the documents do not say."""
+    sentence = _straight_quotes(sentence)
     return (
         _DECLINE_RE.match(sentence) is not None
         and _SECOND_CLAUSE_RE.search(sentence) is None
@@ -177,9 +209,9 @@ _RULE_LINE_RE = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
 #: number the passages lack, because a figure is a fact wherever it is written.
 #:
 #: A clean view sentence counts neither for nor against the score (Grounding.score):
-#: the score is the grounded share of the answer's facts. An answer that is all view,
-#: or all view beside retrieved text that says nothing, has no fact to score and reads
-#: unmeasured, never grounded.
+#: the score is the grounded share of the answer's facts. A view rests on the facts
+#: beside it: an answer that grounds nothing but a decline fails every view sentence
+#: (_anchor_views).
 VIEW_MARKER = "My view:"
 #: The marker opening a paragraph's first line, with the markdown a model wraps it in:
 #: a quote mark, a heading, bold or italic on either side of the colon. A list item
@@ -332,12 +364,16 @@ class SentenceGrounding:
     spanned_with: int = -1
     #: The sentence sits in the paragraph VIEW_MARKER opens, so only its numbers were read.
     view: bool = False
+    #: A whole sentence pointing to the contact route (is_referral). Grounded, like a decline.
+    referral: bool = False
     #: A view is exempt only beside a grounded fact it can rest on. False when the answer
     #: grounds no sentence other than a decline, so the view is the answer's only content.
     anchored: bool = True
 
     @property
     def reason(self) -> str:
+        if self.referral:
+            return "a referral to the contact route asserts nothing the documents would carry"
         if self.decline:
             return "a decline asserts nothing the documents would carry"
         if self.view:
@@ -460,11 +496,17 @@ def _ground_sentence(
     carried_floor: float,
     view: bool = False,
 ) -> SentenceGrounding | None:
-    """One sentence's grounding, or None when it has no content word to score."""
+    """One sentence's grounding, or None when it has nothing to score.
+
+    A line ending in a colon introduces a list and asserts nothing of its own; the
+    list items under it carry the facts and are scored.
+    """
     tokens = tokens_of(_score_text(statement))
-    if not tokens:
+    if not tokens or statement.rstrip(" *_`").endswith(":"):
         return None
     best, carried = _best_passage(tokens, passage_tokens)
+    if is_referral(statement):
+        return SentenceGrounding(statement, best, carried, (), True, decline=True, referral=True)
     if is_decline(statement):
         return SentenceGrounding(statement, best, carried, (), True, decline=True)
     missing = tuple(n for n in _NUMBER_RE.findall(statement) if _number_key(n) not in all_numbers)

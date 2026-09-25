@@ -192,8 +192,9 @@ def _measure():
 
 
 class TestTheBenchmark:
-    """PUBLISHED for grounding-v4, measured 2026-09-25; unchanged from v3 (#319), since no
-    stored answer carries a view. A moved number is a moved rule.
+    """PUBLISHED for grounding-v5, measured 2026-09-25. v4 read 10 of 30 passing and 84 of 260
+    flagged; v5 leaves 28 list lead-in lines unscored and grounds referrals and the declines
+    v4 missed. A moved number is a moved rule.
 
     grounding-v1, 2026-09-23, read 8 of 30 passing and 103 of 260 sentences flagged. v2 reads a
     sentence under the floor once more against its best passage joined with the passage that
@@ -210,7 +211,7 @@ class TestTheBenchmark:
 
     def test_the_real_answers_read_as_measured_on_the_day(self):
         m = _measure()
-        assert (m["real_answers"], m["pass_at_threshold"], m["sentences"], m["sentences_flagged"]) == (30, 10, 260, 84)
+        assert (m["real_answers"], m["pass_at_threshold"], m["sentences"], m["sentences_flagged"]) == (30, 14, 232, 65)
 
     def test_every_truth_claim_sits_in_its_answer(self):
         rows = {r["scenario_id"]: r for r in csv.DictReader((BENCH / "rows.csv").open(encoding="utf-8", newline=""))}
@@ -420,3 +421,45 @@ class TestTheView:
         from app.services.agent_prompt import _TEMPLATE
 
         assert f'one paragraph \nthat opens "{VIEW_MARKER}"' in _TEMPLATE
+
+
+class TestReferralsDeclinesAndLeadIns:
+    """grounding-v5: a referral to the contact route asserts nothing, declines phrased the way
+    agents phrase them are declines, and a line ending in a colon introduces a list."""
+
+    @pytest.mark.parametrize("sentence", [
+        "See the contact section for a definitive timeline.",
+        "The contact section is the appropriate place to request those measurements.",
+        "For the verified harness list, use the contact section.",
+        "Please use the contact section for the current Growth-tier price.",
+    ])
+    def test_a_referral_to_the_contact_route_is_grounded_and_says_why(self, sentence):
+        s = ground(sentence, [RETURNS]).sentences[0]
+        assert (s.supported, s.referral, s.decline) == (True, True, True)
+        assert s.reason == "a referral to the contact route asserts nothing the documents would carry"
+
+    @pytest.mark.parametrize("sentence", [
+        "The contact section lists an email address and a phone number.",
+        "Use the contact section, since the Growth tier costs R500 a month.",
+        "For pricing, use the contact section; the Growth tier costs R500.",
+        "See the contact section for the 2026 price list.",
+        "Contact support to get a refund within 30 days.",
+    ])
+    def test_a_referral_carrying_a_fact_a_figure_or_a_second_clause_is_scored(self, sentence):
+        assert ground(sentence, [RETURNS]).sentences[0].referral is False
+
+    @pytest.mark.parametrize("sentence", [
+        "I don\u2019t have the first ship date for Beekeeper in my knowledge base.",
+        "The passages do not specify the exact ordering when multiple cards are due.",
+        "The retrieved W Chats documentation does not describe the promotion workflow.",
+    ])
+    def test_declines_as_agents_phrase_them_are_declines(self, sentence):
+        assert ground(sentence, [RETURNS]).sentences[0].decline is True
+
+    def test_a_knowledge_base_decline_ends_the_sentence(self):
+        s = ground("I don't have to restart the server after a deploy in my knowledge base setup.", [RETURNS])
+        assert s.sentences[0].decline is False
+
+    def test_a_lead_in_line_is_not_scored_and_its_items_are(self):
+        g = ground("Returns work like this:\n- Refunds are paid to the original payment method.", [RETURNS])
+        assert [s.statement for s in g.sentences] == ["Refunds are paid to the original payment method."]

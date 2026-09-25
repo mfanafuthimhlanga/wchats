@@ -46,7 +46,7 @@ test('the bench lights the Deploy passage for the widget claim and gives the gat
   expect(says).toBe(groundClaim(fx.claims[0].statement, analyse(fx.response, fx.retrieved_contexts)).reason)
 })
 
-// The fifteen gate-rule sentences of fixtures-gate-rules.json through the built bench: the edge
+// The nineteen gate-rule sentences of fixtures-gate-rules.json through the built bench: the edge
 // tint and the card reason per sentence, read from the DOM, against the table claims-reading.spec.ts
 // holds the console aid to, and against the console module run on the same fixture. Then the
 // spanned sentence, selected, lights both of its passages.
@@ -61,9 +61,10 @@ test('the bench gives every gate-rule sentence the tint and reason the gate and 
   page.on('pageerror', (e) => errors.push(e.message))
   await page.goto('file:///' + file.replace(/\\/g, '/'))
   await page.waitForSelector('.card.active')
-  const tints = await page.$$eval('.response .sent', (els) =>
-    els.map((e) => (e.className.match(/\bt-(\w+)/) ?? ['', ''])[1]),
-  )
+  // the gate's sentences are the units it scores; a list lead-in line is shown untinted
+  const tints = (
+    await page.$$eval('.response .sent', (els) => els.map((e) => (e.className.match(/\bt-(\w+)/) ?? ['', ''])[1]))
+  ).filter((t) => t !== 'none')
   const cards = await page.$$eval('.card[data-i] .overlap', (els) => els.map((e) => [e.textContent ?? '', e.className]))
   const spanned = want.findIndex((c) => c.rule === 'two passages')
   await page.click(`.sent[data-s="${spanned}"]`)
@@ -73,12 +74,12 @@ test('the bench gives every gate-rule sentence the tint and reason the gate and 
   await browser.close()
 
   expect(errors).toEqual([])
-  const console_ = analyse(fx.response, fx.retrieved_contexts)
+  const consoleScored = analyse(fx.response, fx.retrieved_contexts).units.filter((u) => u.tokens.size > 0)
   want.forEach((c, i) => {
     expect({ rule: c.rule, tint: tints[i], reason: cards[i][0] }).toEqual({ rule: c.rule, tint: c.tint, reason: c.reason })
     expect(cards[i][1]).toBe(`overlap k-${c.tint}`)
     // parity: the console aid on the same fixture says the same
-    expect({ rule: c.rule, tint: console_.units[i].tint, reason: console_.units[i].reason }).toEqual({ rule: c.rule, tint: c.tint, reason: c.reason })
+    expect({ rule: c.rule, tint: consoleScored[i].tint, reason: consoleScored[i].reason }).toEqual({ rule: c.rule, tint: c.tint, reason: c.reason })
   })
   expect(tints).toHaveLength(want.length)
   expect(litOnSentence.sort()).toEqual([...want[spanned].lit].sort())

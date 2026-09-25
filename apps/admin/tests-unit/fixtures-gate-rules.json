@@ -1,6 +1,6 @@
 {
  "question": "How does the storefront serve the catalog and where do orders go?",
- "response": "React Router handles the catalog, the product pages and the cart.\n\nReact Router handles the catalog and the cart, the audit log keeps every step, nothing is sent to a server, and the app writes no database.\n\nReact Router serves the catalog and the cart from port 4173 on every build.\n\nThe documentation does not specify which port the Fastify server listens on.\n\nReact Router handles the catalog and the cart because the audit log keeps every step, nothing is sent to a server, and the app writes no database.\n\nReact Router handles the catalog, and the ledger, the invoices, the refunds and the server all live elsewhere.\n\nPayments settle through Stripe within fourteen working days.\n\nThe café documentation does not specify the opening hours.\n\nReact Router handles the catalog and the cart in ٣ steps.\n\nThe documentation does not specify the port, and the Fastify server listens on 8080.\n\nMy view: React Router suits a storefront this small, since the catalog and the cart share one browser session. A cache of 4096 entries would be generous for a shop of this size.\n\n**My view:**\n\nThe storefront stays simple for as long as nothing leaves the browser session.\n\nMy view: the cart could live in the browser for good.\n- Every order ships with a free llama plush toy.",
+ "response": "React Router handles the catalog, the product pages and the cart.\n\nReact Router handles the catalog and the cart, the audit log keeps every step, nothing is sent to a server, and the app writes no database.\n\nReact Router serves the catalog and the cart from port 4173 on every build.\n\nThe documentation does not specify which port the Fastify server listens on.\n\nReact Router handles the catalog and the cart because the audit log keeps every step, nothing is sent to a server, and the app writes no database.\n\nReact Router handles the catalog, and the ledger, the invoices, the refunds and the server all live elsewhere.\n\nPayments settle through Stripe within fourteen working days.\n\nThe café documentation does not specify the opening hours.\n\nReact Router handles the catalog and the cart in ٣ steps.\n\nThe documentation does not specify the port, and the Fastify server listens on 8080.\n\nMy view: React Router suits a storefront this small, since the catalog and the cart share one browser session. A cache of 4096 entries would be generous for a shop of this size.\n\n**My view:**\n\nThe storefront stays simple for as long as nothing leaves the browser session.\n\nMy view: the cart could live in the browser for good.\n- Every order ships with a free llama plush toy.\n\nPlease use the contact section for the current catalog prices.\n\nI don’t have the storefront's launch date in my knowledge base.\n\nThe passages do not specify which port the Fastify server listens on.\n\nThe storefront's cart covers:\n- React Router handles the catalog and the cart.",
  "retrieved_contexts": [
   "The storefront runs React Router for the catalog, the product pages and the cart.",
   "Orders are never sent to a server; the app reads and writes no database at all.",
@@ -66,6 +66,22 @@
   {
    "position": 14,
    "statement": "Every order ships with a free llama plush toy."
+  },
+  {
+   "position": 15,
+   "statement": "Please use the contact section for the current catalog prices."
+  },
+  {
+   "position": 16,
+   "statement": "I don’t have the storefront's launch date in my knowledge base."
+  },
+  {
+   "position": 17,
+   "statement": "The passages do not specify which port the Fastify server listens on."
+  },
+  {
+   "position": 18,
+   "statement": "React Router handles the catalog and the cart."
   }
  ],
  "expect": [
@@ -191,6 +207,42 @@
    "reason": "passage 2 carries 20% of its words",
    "lit": [
     1
+   ]
+  },
+  {
+   "rule": "referral",
+   "sentence": "Please use the contact section for the current catalog prices.",
+   "tint": "bone",
+   "reason": "a referral to the contact route asserts nothing the documents would carry",
+   "lit": [
+    0
+   ]
+  },
+  {
+   "rule": "curly-quote decline",
+   "sentence": "I don’t have the storefront's launch date in my knowledge base.",
+   "tint": "bone",
+   "reason": "a decline asserts nothing the documents would carry",
+   "lit": [
+    0
+   ]
+  },
+  {
+   "rule": "passages decline",
+   "sentence": "The passages do not specify which port the Fastify server listens on.",
+   "tint": "bone",
+   "reason": "a decline asserts nothing the documents would carry",
+   "lit": [
+    2
+   ]
+  },
+  {
+   "rule": "list item after a lead-in",
+   "sentence": "React Router handles the catalog and the cart.",
+   "tint": "bone",
+   "reason": "passage 1 carries 80% of its words",
+   "lit": [
+    0
    ]
   }
  ],

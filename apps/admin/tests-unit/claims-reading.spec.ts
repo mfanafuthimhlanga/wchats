@@ -132,7 +132,7 @@ test('stem folds inflections and never cuts below four letters', () => {
 })
 
 // ── the gate's rules (grounding.py, grounding-v4), ported so the aid lights what the gate scored ──
-// fixtures-gate-rules.json holds fifteen sentences over three passages and two over none, each
+// fixtures-gate-rules.json holds nineteen sentences over three passages and two over none, each
 // decided by one rule, and the table of what the gate says of each: ground() produced every
 // tint and reason in it, and test_claims_benchmark.py checks it against ground() still.
 // claims-bench.spec.ts reads the same table, so the console aid and the bench cannot drift
@@ -163,9 +163,11 @@ const gateUnit = (rule: string) => {
 for (const [name, sc] of [['with passages', GATE], ['with no retrieved text', GATE.no_passages]] as const) {
   test(`every fixture sentence ${name} takes the tint, the reason and the lit passages the gate gives it`, () => {
     const r = analyse(sc.response, sc.retrieved_contexts)
-    expect(r.units.map((u) => u.text)).toEqual(sc.expect.map((c) => c.sentence))
+    // the gate's sentences are the units it scores; a list lead-in line is shown and not scored
+    const scored = r.units.filter((u) => u.tokens.size > 0)
+    expect(scored.map((u) => u.text)).toEqual(sc.expect.map((c) => c.sentence))
     for (const [i, c] of sc.expect.entries()) {
-      const u = r.units[i]
+      const u = scored[i]
       expect({ rule: c.rule, tint: u.tint, reason: u.reason }).toEqual({ rule: c.rule, tint: c.tint, reason: c.reason })
       expect(litPassages(u, u.tokens, r.passageTokens).map((l) => l.passage)).toEqual(c.lit)
     }

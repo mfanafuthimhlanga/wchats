@@ -157,7 +157,7 @@
   const TOTAL = items.length;
   const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  // ── the reading aid: the faithfulness gate's rules (apps/api/app/domain/grounding.py, grounding-v4),
+  // ── the reading aid: the faithfulness gate's rules (apps/api/app/domain/grounding.py, grounding-v5),
   // each named for its Python twin. It lights the passages the gate read and says why; it never labels ──
   const STOP = new Set(("the and for that with this from are was were has have had not but all any can you your they them " +
     "their there then than when what which who whom how why into onto over under out off per via about after before " +
@@ -201,11 +201,12 @@
   const numberKey = raw => raw.replace(/,/g, ""); // _number_key: 20,480 and 20480 are one number
   const numbersIn = text => text.match(NUMBER_RE()) || [];
   // _DECLINE_RE, _DOC_NOUN, _SAY_VERB: the documents, as subject, do not SAY something. Anchored, as re.match is
-  const DOC_NOUN = "(?:corpus|documentation|documents?|docs|material|knowledge base|sources?|readmes?|portfolio documentation|retrieved (?:text|material|documentation|context))";
+  const DOC_NOUN = "(?:corpus|documentation|documents?|docs|material|knowledge base|sources?|readmes?|passages?|portfolio documentation|retrieved (?:text|material|documentation|context|passages?))";
   const SAY_VERB = "(?:specify|specifies|say|says|state|states|mention|mentions|cover|covers|document|documents|describe|describes|address|addresses|provide|provides|name|names|list|lists|show|shows|explain|explains|detail|details|confirm|confirms|establish|establishes|define|defines|indicate|indicates|record|records|give|gives|include|includes|contain|contains)";
   const DECLINE_RE = new RegExp(`^${NOT_W}*` + String.raw`(?:(?:however|but|also|note that|based on [^,;]{1,40}|according to [^,;]{1,40}),?\s*)?(?:\*\*[^*]+\*\*\s*)?(?:` +
-    String.raw`(?:the|this|our|my|that|these|its)\s+(?:${W}+\s+){0,2}?` + DOC_NOUN + String.raw`\s+(?:does not|doesn't|did not|didn't|do not|don't|never)\s+` + String.raw`(?:${W}+\s+)?` + SAY_VERB + B_AFTER +
+    String.raw`(?:the|this|our|my|that|these|its)\s+(?:(?:${W}|-)+\s+){0,3}?` + DOC_NOUN + String.raw`\s+(?:does not|doesn't|did not|didn't|do not|don't|never)\s+` + String.raw`(?:${W}+\s+)?` + SAY_VERB + B_AFTER +
     String.raw`|i (?:don't|do not) have (?:[\p{L}\p{N}_-]+\s+){0,3}?(?:information|documentation|record|details?)` + B_AFTER +
+    String.raw`|i (?:don't|do not) have (?:(?:${W}|['.\u0060-])+\s+){1,8}?in my knowledge base` + `${NOT_W}*$` +
     String.raw`|(?:there is|there's) no (?:documented|recorded|stated|documentation|mention|information|record)` + B_AFTER +
     String.raw`|no (?:information|documentation|record|mention) (?:is|was|exists|about|on|of|in)` + B_AFTER + ")", "iu");
   // _SECOND_CLAUSE_RE
@@ -216,7 +217,11 @@
   const CLAUSE_VERBS = 'listens|runs|expects|requires|serves|writes|sends|provides|includes|contains|allows|keeps|takes|makes|gives|says|specifies|describes|fails|starts|stops|opens|closes|connects|accepts|exposes|depends|refers|applies|exists|follows|holds|validates|deploys|migrates|publishes|subscribes|emits|waits|throws|raises|wraps|saves|adds|removes|deletes|creates|generates|produces|consumes|reaches|sits|lives|goes|comes|gets|becomes|belongs|behaves|responds'; // _CLAUSE_VERBS: named, never guessed from an s ending
   const FINITE_VERB = '(?:is|are|was|were|has|have|had|does|do|did|will|would|can|cannot|could|should|must|may|might|shall|' + CLAUSE_VERBS + ')' + B_AFTER + String.raw`\s+(?:(?:${W}|-)+\s+){0,3}?(?:\p{Nd}|[A-HJ-Z]|I${W})`;
   const CLAUSE_COMMA_RE = new RegExp(String.raw`,\s*(?:and|or)\s+(?:` + CLAUSE_SUBJECT + ')' + FINITE_VERB, 'u');
-  const isDecline = t => DECLINE_RE.test(t) && !SECOND_CLAUSE_RE.test(t) && !CLAUSE_COMMA_RE.test(t); // is_decline
+  const straightQuotes = t => t.replace(/[\u2018\u2019]/g, "'"); // _straight_quotes
+  // _REFERRAL_RE / is_referral: a whole sentence pointing to the contact route, no figure, no second clause
+  const REFERRAL_RE = new RegExp(`^${NOT_W}*(?:` + String.raw`(?:please\s+)?(?:use|see|check|visit|try)\s+(?:the\s+)?contact` + B_AFTER + String.raw`|for\s+[^,;]{1,120},\s*(?:please\s+)?(?:use|see|check|visit)\s+(?:the\s+)?contact` + B_AFTER + String.raw`|(?:the\s+)?contact\s+(?:section|page|form)\s+(?:is|would be)\s+(?:the\s+)?(?:appropriate|best|right)\s+(?:place|route|channel)` + B_AFTER + String.raw`|(?:please\s+)?(?:contact|reach out to|get in touch with)\s+(?:us|the (?:owner|team|author))` + B_AFTER + ")", "iu");
+  const isReferral = t => { const s = straightQuotes(t); return REFERRAL_RE.test(s) && !SECOND_CLAUSE_RE.test(s) && !numbersIn(s).length; };
+  const isDecline = t => { const s = straightQuotes(t); return DECLINE_RE.test(s) && !SECOND_CLAUSE_RE.test(s) && !CLAUSE_COMMA_RE.test(s); }; // is_decline
   // _INFERENCE_RE: a reason, a consequence or a purpose gets no second reading
   const INFERENCE_RE = new RegExp(B_BEFORE + "(because|therefore|thus|hence|consequently|so that|which means|this means|that means|as a result|in order to|favou?rs?|why)" + B_AFTER, "iu");
   const SECOND_PASSAGE_MIN_WORDS = 2; // SECOND_PASSAGE_MIN_WORDS
@@ -233,6 +238,7 @@
   function percent(x) { const v = x * 100, f = Math.floor(v), d = v - f; return (d > 0.5 || (d === 0.5 && f % 2 === 1) ? f + 1 : f) + "%"; }
   // SentenceGrounding.reason, word for word
   function reasonOf(g) {
+    if (g.referral) return "a referral to the contact route asserts nothing the documents would carry";
     if (g.decline) return "a decline asserts nothing the documents would carry";
     if (g.view) return g.missing.length ? "the agent's view; number " + g.missing.join(", ") + " appears in no passage" : g.anchored === false ? "the agent's view, and the answer grounds no fact for it to rest on" : "the agent's view, read for its numbers only";
     if (g.pi < 0) return "no passage shares a word with it";
@@ -251,7 +257,8 @@
     }
     g.carried = g.score;
     if (!tokens.size) return g;
-    if (isDecline(statement)) g.decline = true;
+    if (isReferral(statement)) { g.decline = true; g.referral = true; }
+    else if (isDecline(statement)) g.decline = true;
     else if (view) { g.view = true; g.pi = -1; g.shared = EMPTY; g.score = 0; g.carried = 0; g.missing = numbersIn(statement).filter(n => !numbers.has(numberKey(n))); }
     else {
       g.missing = numbersIn(statement).filter(n => !numbers.has(numberKey(n)));
@@ -331,7 +338,8 @@
     const units = responseUnits(it.response);
     for (const u of units) {
       // the gate scores prose only: a code fence and the CITATIONS block never reach it (response_sentences)
-      u.tokens = (u.kind === "cite" || u.kind === "code") ? EMPTY : tokensOf(scoreText(u.text));
+      // _ground_sentence: a line ending in a colon introduces a list and is not scored
+      u.tokens = (u.kind === "cite" || u.kind === "code" || /:$/.test(u.text.replace(/[\s*_`]+$/, ""))) ? EMPTY : tokensOf(scoreText(u.text));
       Object.assign(u, groundSentence(u.text, u.tokens, ptokens, numbers, !!u.view));
     }
     // _anchor_views: with no grounded fact but a decline, every view sentence fails
