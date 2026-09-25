@@ -297,15 +297,48 @@ export interface OpenFinding {
   agent_response: string | null
   turn_count: number | null
   created_at: string | null
-  /** Recovered by the backend from the finding's own run's JSONB snapshot; null on a correlation miss. Never required — a finding with no description is still fully containable. */
+  /** Recovered by the backend from the finding's own run's JSONB snapshot; null on a correlation miss. Never required: a finding with no description can still be re-tested. */
   description: string | null
   /** What put the finding there: a rule over the probe's record, or the attacker's report alone. */
   evidence: FindingEvidence | null
   /** The claim kinds that stood. Attacker-labelled text: read only through claimLabels. */
   claims: string[] | null
+  /** The newest re-test of this finding, or null when the owner never ran one. Read through retestLine. */
+  retest: FindingRetest | null
+  /** False when no conversation can reproduce the finding, so a re-test cannot clear it; only a new programme run can. */
+  retestable: boolean
 }
 
 export type FindingEvidence = 'recorded_prompt_run' | 'landed_verdict_tag' | 'attacker_report'
+
+export type FindingSeverity = OpenFinding['severity']
+
+/**
+ * The `retest` object on an open finding (red_team_retest.py). The platform
+ * replays the finding's recorded attack against the agent as it is now and
+ * today's red-team rules decide. A `resolved` outcome closes the finding, so
+ * an open finding only ever carries `still_lands` or `inconclusive`.
+ */
+export type FindingRetest =
+  | { id: string; status: 'running' | 'stopped'; started_at: string | null }
+  | {
+      id: string
+      status: 'complete'
+      started_at?: string | null
+      outcome: 'resolved' | 'still_lands' | 'inconclusive'
+      grade: FindingSeverity | null
+      evidence: FindingEvidence | null
+      claims: string[] | null
+      probe_message: string | null
+      agent_response: string | null
+      probes_answered: number
+      reports_no_attack: number | null
+      reports_dropped: number | null
+      loop_error: string | null
+      previous_severity: FindingSeverity | null
+      finished_at: string | null
+    }
+  | { id: string; status: 'failed'; started_at?: string | null; error_type: string | null }
 
 /**
  * The agent's newest run, whatever its status; `latest_run` on the programme
@@ -385,6 +418,61 @@ export function evidenceSentence(finding: Pick<OpenFinding, 'evidence' | 'claims
     return hasSubject || followsVerbPhrase ? label : `it ${label}`
   })
   return `${opening}: ${joinWithAnd(clauses)}.`
+}
+
+/** A re-test the server still reports as running. Past its window the server reports `stopped`. */
+export function retestIsRunning(retest: FindingRetest | null | undefined): boolean {
+  return retest?.status === 'running'
+}
+
+/** The sentence a finding no conversation can reproduce shows in place of a Re-test button. The API's 409 for it reads the same. */
+export const UNREPRODUCIBLE_FINDING = 'A conversation cannot reproduce this finding. Run the programme again to clear it.'
+
+/**
+ * The one sentence a finding shows about its newest re-test, or null when
+ * there is nothing to say: no re-test, a resolved one (the finding has left
+ * the open list), or a status this console does not know.
+ *
+ *   "Re-test running."
+ *   "Last re-test: the attack still lands. Graded high now, critical before."
+ *   "Last re-test was inconclusive: the attack drew no reply."
+ */
+export function retestLine(retest: FindingRetest | null | undefined): string | null {
+  if (!retest) return null
+  if (retest.status === 'running') return 'Re-test running.'
+  if (retest.status === 'stopped') return 'Last re-test stopped without an outcome.'
+  if (retest.status === 'failed') return 'Last re-test failed.'
+  if (retest.status !== 'complete') return null
+  if (retest.outcome === 'inconclusive') {
+    return retest.probes_answered === 0
+      ? 'Last re-test was inconclusive: the attack drew no reply.'
+      : 'Last re-test was inconclusive: the attacker reported nothing.'
+  }
+  if (retest.outcome === 'still_lands') {
+    const { grade, previous_severity: before } = retest
+    const regraded = grade && before && grade !== before ? ` Graded ${grade} now, ${before} before.` : ''
+    return `Last re-test: the attack still lands.${regraded}`
+  }
+  return null
+}
+
+/** "prompt_injection" -> "Prompt Injection", as the coverage ledger and the Re-test button's label read an attack vector. */
+/** Words a vector name carries as an acronym, spoken letter by letter. */
+const VECTOR_ACRONYMS = new Set(['pii', 'api', 'sso', 'sql', 'llm', 'rag', 'rtx'])
+
+export function formatAttackVector(vector: string): string {
+  return vector
+    .split('_')
+    .map((word) => (VECTOR_ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1)))
+    .join(' ')
+}
+
+/**
+ * The re-test state a refusal note answered: the re-test's id and status. A note shows only
+ * while the finding's re-test still has this stamp, so it goes once that re-test moves on.
+ */
+export function retestStamp(retest: FindingRetest | null | undefined): string {
+  return `${retest?.id ?? ''}:${retest?.status ?? ''}`
 }
 
 function countNoun(count: number, singular: string, plural: string): string {

@@ -31,14 +31,11 @@ from app.core.database import get_async_db
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.models.tenant import Tenant
-from app.services.red_team_service import INVALID_MARKER_PROBE_MESSAGE_PATTERN, POISONED_CHUNK_PROBE_QUESTION
+from app.services.red_team_retest import RETEST_IDEMPOTENCY_WINDOW_MINUTES, conversation_can_reproduce
 from app.services.redteam_programme_service import read_programme
 from app.services.scenario_service import insert_provenance_scenario
 from app.worker.tasks.runtime.red_team import run_red_team
-from app.worker.tasks.runtime.red_team_retest import (
-    RETEST_IDEMPOTENCY_WINDOW_MINUTES,
-    retest_red_team_finding,
-)
+from app.worker.tasks.runtime.red_team_retest import retest_red_team_finding
 
 router = APIRouter(tags=["red_team"])
 log = structlog.get_logger(__name__)
@@ -572,7 +569,7 @@ _RETEST_SELECT_SQL = (
     "SELECT f.status, "
     "f.retest->>'status' = 'running' AND (f.retest->>'started_at')::timestamptz "
     "> now() - make_interval(mins => %s), "
-    "f.evidence = 'landed_verdict_tag' OR f.probe_message LIKE %s OR f.probe_message = %s "
+    "f.evidence, f.probe_message "
     "FROM red_team_findings f "
     "JOIN red_team_runs r ON r.id = f.run_id "
     "WHERE f.id = %s AND r.kind = %s"
@@ -591,10 +588,13 @@ def _finding_state_sync(conn_str: str, finding_id: str, agent_id: str) -> tuple 
     try:
         with conn.cursor() as cur:
             cur.execute(_RETEST_SELECT_SQL, (
-                RETEST_IDEMPOTENCY_WINDOW_MINUTES, INVALID_MARKER_PROBE_MESSAGE_PATTERN,
-                POISONED_CHUNK_PROBE_QUESTION, finding_id, f"m7:{agent_id}",
+                RETEST_IDEMPOTENCY_WINDOW_MINUTES, finding_id, f"m7:{agent_id}",
             ))
-            return cur.fetchone()
+            row = cur.fetchone()
+        if row is None:
+            return None
+        status, running, evidence, probe_message = row
+        return status, running, not conversation_can_reproduce(evidence, probe_message)
     finally:
         conn.close()
 
@@ -628,13 +628,13 @@ async def retest_red_team_finding_route(
         raise HTTPException(status_code=404, detail="Finding not found")
     status, running, run_only = state
     if status != "open":
-        raise HTTPException(status_code=409, detail=f"Finding is {status}, not open")
+        raise HTTPException(status_code=409, detail=f"This finding is {status}, not open.")
     if running:
-        raise HTTPException(status_code=409, detail="A re-test of this finding is already running")
+        raise HTTPException(status_code=409, detail="A re-test of this finding is already running.")
     if run_only:
         raise HTTPException(
             status_code=409,
-            detail="A conversation cannot reproduce this finding; re-run the red team to clear it",
+            detail="A conversation cannot reproduce this finding. Run the programme again to clear it.",
         )
     retest_red_team_finding.apply_async(
         kwargs={"agent_id": str(agent_id), "finding_id": str(finding_id)}, queue="runtime"

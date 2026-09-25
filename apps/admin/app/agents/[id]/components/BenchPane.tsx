@@ -25,7 +25,7 @@ import { judgeVerdictToChip, gradeToChip } from './opsFormat'
  * and the P/H/X grade shortcuts acting on the selected trace from anywhere
  * within the region. Filing is irrevocable (TERRARIUM law, traces.py:142-145)
  * and, since the 23-09 adversarial design review, stages behind the same
- * `.cap-confirm` shape Adversary's Contain action uses (see
+ * `.cap-confirm` shape the room's other one-way actions use (see
  * stagedFileTraceId/confirmationOpen below) — Hold and Dismiss stay
  * immediate, single-click actions. §4.3 was silent on this, not opposed to
  * it: it locks the post-filed disabled state, not whether filing itself
@@ -143,7 +143,7 @@ export default function BenchPane({
   // A transient, per-trace note — the concurrent-grade 409's locked
   // sentence, or any other grade failure — self-clearing after six
   // seconds, mirroring deploy/page.tsx's resolveNotes/resolveNoteTimers
-  // pattern (2154-2227) that AdversaryPanel already reuses for contain.
+  // pattern (2154-2227).
   const [notes, setNotes] = useState<Record<string, string>>({})
   const noteTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
   useEffect(
@@ -157,8 +157,8 @@ export default function BenchPane({
 
   // 23-09 adversarial review (UI-2): File is server-enforced irrevocable
   // (bench_service.py refuses any transition away from 'filed', the route
-  // answers 409) exactly like Adversary's Contain action, which correctly
-  // got a staged .cap-confirm in 23-06. File shipped without one — all
+  // answers 409), the kind of one-way action the house stages behind a
+  // .cap-confirm. File shipped without one: all
   // three grade buttons rendered as equal-weight, immediately-firing
   // controls, so the one-way action was the easiest to hit by accident.
   // Keyed by trace id (not a bare boolean) so switching traces can never
@@ -455,7 +455,7 @@ export default function BenchPane({
                               // 23-09 adversarial review (UI-2): File is the
                               // one irrevocable grade (409 on any re-grade
                               // attempt, server-enforced) — it now stages
-                              // exactly like Adversary's Contain action
+                              // behind a .cap-confirm
                               // instead of firing on the first click.
                               if (grade === 'filed') {
                                 setStagedFileTraceId(traceId)

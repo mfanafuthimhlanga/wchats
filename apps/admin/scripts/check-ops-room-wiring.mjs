@@ -370,10 +370,10 @@ const REACHABILITY_CHECKS = [
     fragments: ['born_in_production_count', 'authored_count'],
   },
   {
-    id: 'adversary-programme-and-contain-wired',
+    id: 'adversary-programme-and-retest-wired',
     region: 'Adversary',
     flippedBy: '23-06',
-    fragments: ['red-team/programme', '/contain'],
+    fragments: ['red-team/programme', '/retest'],
   },
   {
     id: 'prompt-versions-wired',

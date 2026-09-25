@@ -23,15 +23,11 @@ from app.core.database import get_sync_db
 from app.core.log_bounds import log_failure
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
-from app.services.red_team_retest import run_retest
+from app.services.red_team_retest import RETEST_IDEMPOTENCY_WINDOW_MINUTES, run_retest
 from app.worker.celery_app import celery_app
 from app.worker.tasks.runtime.red_team import _build_probe_fn, _run_ledger
 
 log = structlog.get_logger(__name__)
-
-#: How long a running re-test holds its claim. One attacker sequence spends at most
-#: RED_TEAM_ATTEMPT_BUDGET_S (240 s) plus the victim turns inside it.
-RETEST_IDEMPOTENCY_WINDOW_MINUTES = 15
 
 #: Claims one open finding of this agent for a re-test, or matches nothing.
 _CLAIM_SQL = """

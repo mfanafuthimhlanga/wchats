@@ -51,22 +51,34 @@ export const PAGE_CSS = `
     border: 1px solid color-mix(in oklch, var(--seal) 32%, transparent);
     border-radius: var(--r-panel);
     padding: 14px 16px;
-    /* flex-start, not center (23-09 adversarial review): once the contain
-       action's staged confirm expands to a multi-line question plus two
-       buttons, centering against that taller sibling pulls the chip and
-       description text down into an odd mid-row float. Top-aligned reads
-       correctly in both the resting and staged states. */
+    /* flex-start, not center (23-09 adversarial review): the description
+       column grows with its meta, evidence and re-test lines, and centering
+       the chip and the Re-test button against that taller sibling floats
+       them mid-row. Top-aligned reads correctly at every height. */
     display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap;
   }
-  .critical p { flex: 1; min-width: 220px; font-size: 13.5px; margin: 0; }
   .critical .mono { font-size: 11px; color: var(--ink-2); }
 
-  /* A finding's meta line and the evidence sentence under it (FindingMeta.tsx).
-     The meta wraps anywhere so a long attack vector cannot push the page wider
-     than a phone. The evidence line reads --ink-2 in the banner and the list
-     alike; .critical .mono above lifts only the banner's meta line. */
+  /* A list row (FindingRow.tsx), top-aligned for the same reason as the banner. */
+  .finding-row {
+    display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap;
+    padding: 12px 0; border-top: 1px solid var(--hairline-soft);
+  }
+  /* The text column, banner and list alike: the finding's sentence with its
+     FindingMeta lines, then the API's refusal note, which starts where the
+     text starts. The note is a div carrying .help, so it reads 12.5px in
+     both and no paragraph rule reaches it. */
+  .finding-body { flex: 1; min-width: 220px; }
+  .finding-text { font-size: 13.5px; margin: 0; }
+  .finding-row .finding-text { color: var(--ink-2); }
+
+  /* A finding's meta line, the evidence sentence under it, the re-test
+     sentence under that and the unreproducible sentence last (FindingMeta.tsx).
+     The meta wraps anywhere so a long attack vector cannot push the page
+     wider than a phone. The sentence lines read --ink-2 in the banner and the
+     list alike; .critical .mono above lifts only the banner's meta line. */
   .finding-meta { font-size: 11px; color: var(--ink-3); overflow-wrap: anywhere; }
-  .finding-evidence { display: block; margin-top: 4px; font-size: 12px; color: var(--ink-2); }
+  .finding-evidence, .finding-retest, .finding-unreproducible { display: block; margin-top: 4px; font-size: 12px; color: var(--ink-2); }
 
   .foot-note { margin-top: 10px; font-size: 11.5px; color: var(--ink-3); }
   .prompt-acts { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }

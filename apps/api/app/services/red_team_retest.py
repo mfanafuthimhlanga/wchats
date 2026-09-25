@@ -35,7 +35,9 @@ from app.domain.red_team_finding import Evidence
 from app.services.red_team_service import (
     CLAIM_GRADES,
     GRADE_ORDER,
+    INVALID_MARKER_PROBE_MESSAGE_PATTERN,
     PERSONA_REPORT_RULES,
+    POISONED_CHUNK_PROBE_QUESTION,
     Grade,
     ProbeSession,
     _drive_attacker_loop,
@@ -46,6 +48,32 @@ from app.services.red_team_service import (
     reports_no_attack,
     severity_for,
 )
+
+#: How long a running re-test holds its claim. One attacker sequence spends at most
+#: RED_TEAM_ATTEMPT_BUDGET_S (240 s) plus the victim turns inside it. Past it the claim
+#: belongs to a dead worker: a new re-test takes it over, and the programme route reports
+#: it as stopped.
+RETEST_IDEMPOTENCY_WINDOW_MINUTES = 15
+
+#: The invalid-run marker's fixed words, from its SQL LIKE pattern.
+_INVALID_MARKER_WORDS = INVALID_MARKER_PROBE_MESSAGE_PATTERN.strip("%").strip()
+
+
+def conversation_can_reproduce(evidence: str | None, probe_message: str | None) -> bool:
+    """False for a finding a run's own machinery filed, which only a new run clears.
+
+    A landed mutating call (the transactional vectors), an invalid-run marker (retired by a
+    run that observes its vector) and the poisoned-chunk canary (content injection seeds
+    the corpus) cannot be replayed as a conversation. The route refuses them and the
+    console offers no re-test for them, off this one rule.
+    """
+    message = probe_message or ""
+    return (
+        evidence != "landed_verdict_tag"
+        and message != POISONED_CHUNK_PROBE_QUESTION
+        and _INVALID_MARKER_WORDS not in message
+    )
+
 
 #: Messages the attacker may send after the recorded attack.
 RETEST_MAX_TURNS = 6
