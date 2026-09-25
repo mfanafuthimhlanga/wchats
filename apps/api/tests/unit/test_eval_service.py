@@ -2159,7 +2159,7 @@ class TestDatasetVerdictCounts:
 class TestAFailedFaithfulnessRowBlocks:
     """The gate end to end, from the score rows into the rule that blocks.
 
-    `golden_failure` turns one wrong golden scenario into a block and reads
+    `golden_failure` turns a golden set under the pass-rate floor into a block and reads
     `scenarios_failed`, which `dataset_verdict_counts` fills from the gated
     verdicts.
     """

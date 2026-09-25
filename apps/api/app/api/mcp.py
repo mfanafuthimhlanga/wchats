@@ -239,8 +239,8 @@ TOOLS: tuple[_Tool, ...] = (
     _Tool(
         "register_golden_scenarios",
         "Register owner-authored golden pairs for an Agent. The golden set "
-        "gates every deploy absolutely and needs at least ten pairs before "
-        "ship is possible. Re-registering a known question is skipped, so "
+        "gates every deploy: at least 95% must pass, and it needs at least "
+        "ten pairs before ship is possible. Re-registering a known question is skipped, so "
         "re-running a file is safe.",
         "POST",
         "/api/v1/agents/{agent_id}/golden-scenarios",

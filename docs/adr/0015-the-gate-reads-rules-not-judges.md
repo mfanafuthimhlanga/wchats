@@ -66,8 +66,9 @@ benchmark's split.
 
 The rule is stricter than the judge. On the benchmark's 30 real answers, 22 fail the 0.80
 gate under it where the judge passed 17. A paraphrase with no shared words fails; a summary
-drawing on two passages scores against one. The golden rule blocks a deploy on one failed
-golden scenario, so until the agent quotes and cites, deploys block. That is the pressure the
+drawing on two passages scores against one. The golden rule blocked a deploy on one failed
+golden scenario (a 95% pass rate since DECISION_RULE_VERSION 3), so until the agent quotes and
+cites, deploys block. That is the pressure the
 owner chose, and the speculation the judge found is now a red scenario in the suite instead
 of 38 questions for him.
 
