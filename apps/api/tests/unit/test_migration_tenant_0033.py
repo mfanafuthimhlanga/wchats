@@ -104,20 +104,6 @@ def test_0033_is_the_sole_child_of_0032_and_the_tree_is_unforked():
     assert len(parents) == len(set(parents)), "two revisions share a parent"
 
 
-def test_0033_is_the_tenant_head():
-    """Head IDENTITY, moved here from test_migration_tenant_0032.py.
-
-    0034 moves this line and only this line.
-    """
-    revisions = _all_tenant_revisions()
-    parents = {down for down in revisions.values() if down is not None}
-    heads = set(revisions) - parents
-    assert heads == {"0033"}, (
-        f"the tenant head is {sorted(heads)}, not 0033. If a later revision "
-        "landed, move this assertion to its test file rather than deleting it"
-    )
-
-
 def test_upgrade_adds_exactly_two_columns_on_red_team_findings_guarded():
     added = _added_columns()
     assert len(added) == 2

@@ -50,6 +50,8 @@ from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # PRE-EXISTING INFRA NOTE (not a regression introduced by this plan):
 #   app.main transitively imports app.api.v1.evals -> app.worker.tasks.runtime.eval
@@ -591,3 +593,71 @@ class TestContainRedTeamFinding:
             _contain_test_app.dependency_overrides.clear()
 
         assert response.status_code == 404
+
+
+class TestRetestRedTeamFinding:
+    """POST /agents/{id}/red-team/findings/{finding_id}/retest: the owner's way to clear a finding."""
+
+    async def _post(self, agent, tenant, finding_id, status_row):
+        fake_cursor = MagicMock()
+        fake_cursor.__enter__ = MagicMock(return_value=fake_cursor)
+        fake_cursor.__exit__ = MagicMock(return_value=False)
+        fake_cursor.fetchone.return_value = status_row
+        fake_conn = MagicMock()
+        fake_conn.cursor.return_value = fake_cursor
+        dispatched = MagicMock()
+        _contain_test_app.dependency_overrides[get_current_tenant] = lambda: tenant
+        _contain_test_app.dependency_overrides[get_async_db] = lambda: _make_mock_db_returning_agent(agent)
+        try:
+            with patch(
+                "app.api.v1.red_team.fernet_decrypt", return_value="postgresql://fake/tenant"
+            ), patch(
+                "app.api.v1.red_team.psycopg2.connect", return_value=fake_conn
+            ), patch.object(red_team_module.retest_red_team_finding, "apply_async", dispatched):
+                async with AsyncClient(
+                    transport=ASGITransport(app=_contain_test_app), base_url="http://test"
+                ) as client:
+                    response = await client.post(
+                        f"/api/v1/agents/{agent.id}/red-team/findings/{finding_id}/retest"
+                    )
+        finally:
+            _contain_test_app.dependency_overrides.clear()
+        return response, dispatched, fake_cursor
+
+    async def test_an_open_finding_is_queued_with_ids_only(self):
+        tenant = _make_fake_tenant()
+        agent = _make_ready_agent(tenant)
+        finding_id = uuid4()
+        response, dispatched, cursor = await self._post(agent, tenant, finding_id, ("open", False, False))
+        assert response.status_code == 202
+        assert response.json() == {"finding_id": str(finding_id), "queued": True}
+        dispatched.assert_called_once_with(
+            kwargs={"agent_id": str(agent.id), "finding_id": str(finding_id)}, queue="runtime"
+        )
+        sql, params = cursor.execute.call_args[0]
+        assert "r.kind = %s" in sql and params[-2:] == (str(finding_id), f"m7:{agent.id}")
+
+    @pytest.mark.parametrize("state", [("open", True, False), ("open", False, True)])
+    async def test_a_running_retest_or_a_finding_no_conversation_reproduces_is_refused(self, state):
+        tenant = _make_fake_tenant()
+        response, dispatched, _ = await self._post(_make_ready_agent(tenant), tenant, uuid4(), state)
+        assert response.status_code == 409
+        dispatched.assert_not_called()
+
+    async def test_a_finding_that_is_not_open_is_refused_and_nothing_is_queued(self):
+        tenant = _make_fake_tenant()
+        response, dispatched, _ = await self._post(_make_ready_agent(tenant), tenant, uuid4(), ("resolved", False, False))
+        assert response.status_code == 409
+        dispatched.assert_not_called()
+
+    async def test_a_finding_this_agent_does_not_own_reads_as_absent(self):
+        tenant = _make_fake_tenant()
+        response, dispatched, _ = await self._post(_make_ready_agent(tenant), tenant, uuid4(), None)
+        assert response.status_code == 404
+        dispatched.assert_not_called()
+
+    async def test_another_tenants_agent_reads_as_absent(self):
+        owner, caller = _make_fake_tenant(), _make_fake_tenant()
+        response, dispatched, _ = await self._post(_make_ready_agent(owner), caller, uuid4(), ("open", False, False))
+        assert response.status_code == 404
+        dispatched.assert_not_called()

@@ -2818,9 +2818,9 @@ def _red_team_finding_warnings(
                 category="security",
                 message=(
                     "The security check found a critical problem that is still "
-                    "open, so this agent cannot be approved for launch. Fix it, "
-                    "then mark it contained on the Security page and run this "
-                    "check again."
+                    "open, so this agent cannot be approved for launch. Change "
+                    "the agent, re-test the finding on the Security page, and run "
+                    "this check again."
                 ),
                 severity_level="warning",
             )
