@@ -132,7 +132,7 @@ test('stem folds inflections and never cuts below four letters', () => {
 })
 
 // ── the gate's rules (grounding.py, grounding-v2), ported so the aid lights what the gate scored ──
-// fixtures-gate-rules.json holds nine sentences over three passages and two over none, each
+// fixtures-gate-rules.json holds ten sentences over three passages and two over none, each
 // decided by one rule, and the table of what the gate says of each: ground() produced every
 // tint and reason in it, and test_claims_benchmark.py checks it against ground() still.
 // claims-bench.spec.ts reads the same table, so the console aid and the bench cannot drift
@@ -306,6 +306,11 @@ test('isDecline takes a decline about the documents and refuses a claim about th
     'The corpus does not specify the preview port.',
     'However, the documentation does not establish that every feature works offline.',
     "I don't have more specific post-launch information in my knowledge base.",
+    // a list comma, not a clause comma (#319)
+    'The corpus does not state who approves an answer, how provenance is stored, or how cache entries are invalidated.',
+    'The documentation does not include a measured performance, bundle-size, or maintenance comparison.',
+    'The corpus does not document the build, the tests, or the deployment steps.',
+    'The documentation does not name React, Vue, or Svelte as options.',
   ])
     expect(isDecline(s), s).toBe(true)
   for (const s of [
@@ -314,6 +319,10 @@ test('isDecline takes a decline about the documents and refuses a claim about th
     'The deploy workflow does not roll the control database back when a tenant migration fails.',
     'The repository does not use Memgraph for the server tests.',
     'That means the repository cannot provide a reliable monthly order count.',
+    // a clause after the comma (#319)
+    'The documentation does not specify the port, and the Fastify server listens on 8080.',
+    'The documentation does not establish that all agent functionality works without network access, and the normal configuration still expects Anthropic credentials.',
+    'The corpus does not specify a retry count, or the tests would say so.',
   ])
     expect(isDecline(s), s).toBe(false)
 })

@@ -1,6 +1,6 @@
 {
  "question": "How does the storefront serve the catalog and where do orders go?",
- "response": "React Router handles the catalog, the product pages and the cart.\n\nReact Router handles the catalog and the cart, the audit log keeps every step, nothing is sent to a server, and the app writes no database.\n\nReact Router serves the catalog and the cart from port 4173 on every build.\n\nThe documentation does not specify which port the Fastify server listens on.\n\nReact Router handles the catalog and the cart because the audit log keeps every step, nothing is sent to a server, and the app writes no database.\n\nReact Router handles the catalog, and the ledger, the invoices, the refunds and the server all live elsewhere.\n\nPayments settle through Stripe within fourteen working days.\n\nThe café documentation does not specify the opening hours.\n\nReact Router handles the catalog and the cart in ٣ steps.",
+ "response": "React Router handles the catalog, the product pages and the cart.\n\nReact Router handles the catalog and the cart, the audit log keeps every step, nothing is sent to a server, and the app writes no database.\n\nReact Router serves the catalog and the cart from port 4173 on every build.\n\nThe documentation does not specify which port the Fastify server listens on.\n\nReact Router handles the catalog and the cart because the audit log keeps every step, nothing is sent to a server, and the app writes no database.\n\nReact Router handles the catalog, and the ledger, the invoices, the refunds and the server all live elsewhere.\n\nPayments settle through Stripe within fourteen working days.\n\nThe café documentation does not specify the opening hours.\n\nReact Router handles the catalog and the cart in ٣ steps.\n\nThe documentation does not specify the port, and the Fastify server listens on 8080.",
  "retrieved_contexts": [
   "The storefront runs React Router for the catalog, the product pages and the cart.",
   "Orders are never sent to a server; the app reads and writes no database at all.",
@@ -42,6 +42,10 @@
   {
    "position": 8,
    "statement": "React Router handles the catalog and the cart in ٣ steps."
+  },
+  {
+   "position": 9,
+   "statement": "The documentation does not specify the port, and the Fastify server listens on 8080."
   }
  ],
  "expect": [
@@ -121,6 +125,15 @@
    "reason": "passage 1 carries 67% of its words; number ٣ appears in no passage",
    "lit": [
     0
+   ]
+  },
+  {
+   "rule": "clause comma",
+   "sentence": "The documentation does not specify the port, and the Fastify server listens on 8080.",
+   "tint": "fail",
+   "reason": "passage 3 carries 29% of its words; number 8080 appears in no passage",
+   "lit": [
+    2
    ]
   }
  ],

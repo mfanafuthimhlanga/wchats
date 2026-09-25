@@ -106,6 +106,11 @@ class TestTheRule:
         "The corpus does not specify the preview port.",
         "However, the documentation does not establish that every feature works offline.",
         "I don't have more specific post-launch information in my knowledge base.",
+        # a list comma, not a clause comma (#319): the items carry no subject and finite verb
+        "The corpus does not state who approves an answer, how provenance is stored, or how cache entries are invalidated.",
+        "The documentation does not include a measured performance, bundle-size, or maintenance comparison.",
+        "The corpus does not document the build, the tests, or the deployment steps.",
+        "The documentation does not name React, Vue, or Svelte as options.",
     ])
     def test_a_whole_sentence_decline_about_the_documents_is_grounded(self, sentence):
         s = ground(sentence, [RETURNS]).sentences[0]
@@ -118,6 +123,10 @@ class TestTheRule:
         "The deploy workflow does not roll the control database back when a tenant migration fails.",
         "The repository does not use Memgraph for the server tests.",
         "That means the repository cannot provide a reliable monthly order count.",
+        # a clause after the comma (#319): a subject and a finite verb, so the number is checked
+        "The documentation does not specify the port, and the Fastify server listens on 8080.",
+        "The documentation does not establish that all agent functionality works without network access, and the normal configuration still expects Anthropic credentials.",
+        "The corpus does not specify a retry count, or the tests would say so.",
     ])
     def test_a_claim_about_the_system_or_a_second_clause_is_scored_on_its_words(self, sentence):
         s = ground(sentence, [RETURNS]).sentences[0]
@@ -171,7 +180,7 @@ class TestTheBenchmark:
 
     def test_the_real_answers_read_as_measured_on_the_day(self):
         m = _measure()
-        assert (m["real_answers"], m["pass_at_threshold"], m["sentences"], m["sentences_flagged"]) == (30, 10, 260, 83)
+        assert (m["real_answers"], m["pass_at_threshold"], m["sentences"], m["sentences_flagged"]) == (30, 10, 260, 84)
 
     def test_every_truth_claim_sits_in_its_answer(self):
         rows = {r["scenario_id"]: r for r in csv.DictReader((BENCH / "rows.csv").open(encoding="utf-8", newline=""))}

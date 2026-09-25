@@ -114,6 +114,20 @@ _DECLINE_RE = re.compile(
     re.IGNORECASE,
 )
 _SECOND_CLAUSE_RE = re.compile(r";|\s(?:but|yet|although|though|whereas)\s|\bit does\b|\bit is\b", re.IGNORECASE)
+# A comma before "and" or "or" joins a list item or a second clause. A clause carries its own
+# subject (a determiner and one to three words, or a capitalised word and up to two) and a finite
+# verb with a word after it; a list item has neither. "...port, and the Fastify server listens on
+# 8080" is a clause; "who approves, how provenance is stored, or how cache entries are invalidated"
+# is a list. Case-sensitive so the capitalised branch can tell a name from a list word.
+_CLAUSE_SUBJECT = (
+    r"(?:the|this|that|these|those|a|an|its|our|my|their|your)\s+(?:[\w-]+\s+){1,3}?"
+    r"|[A-Z][\w-]*\s+(?:[\w-]+\s+){0,2}?"
+)
+_FINITE_VERB = (
+    r"(?:is|are|was|were|has|have|had|does|do|did|will|would|can|cannot|could|should|must|may|might|shall"
+    r"|(?!(?:this|its|thus|plus|across|always|perhaps|less|unless|various|previous|serious|obvious)\b)\w{2,}s)\b\s+\w"
+)
+_CLAUSE_COMMA_RE = re.compile(r",\s*(?:and|or)\s+(?:" + _CLAUSE_SUBJECT + r")" + _FINITE_VERB)
 
 
 def _number_key(raw: str) -> str:
@@ -123,7 +137,11 @@ def _number_key(raw: str) -> str:
 
 def is_decline(sentence: str) -> bool:
     """True when the whole sentence says the documents do not say."""
-    return _DECLINE_RE.match(sentence) is not None and _SECOND_CLAUSE_RE.search(sentence) is None
+    return (
+        _DECLINE_RE.match(sentence) is not None
+        and _SECOND_CLAUSE_RE.search(sentence) is None
+        and _CLAUSE_COMMA_RE.search(sentence) is None
+    )
 _LIST_RE = re.compile(r"^\s*([-*•]|\d+[.)])\s+")
 _CITATIONS_RE = re.compile(r"(^|\n)\s*CITATIONS\s*:")
 _SOURCE_MARK_RE = re.compile(r"\*\(([^()]*)\)\*")

@@ -291,9 +291,24 @@ export const SECOND_CLAUSE_RE = new RegExp(
   'iu',
 )
 
+/** _CLAUSE_COMMA_RE in grounding.py: a comma before "and" or "or" joins a clause, not a list item,
+ *  when a subject (a determiner and one to three words, or a capitalised word and up to two) and a
+ *  finite verb with a word after it follow. Case-sensitive, as the gate is, so a name is told from a list word. */
+const CLAUSE_SUBJECT =
+  String.raw`(?:the|this|that|these|those|a|an|its|our|my|their|your)\s+(?:(?:${W}|-)+\s+){1,3}?` +
+  String.raw`|[A-Z](?:${W}|-)*\s+(?:(?:${W}|-)+\s+){0,2}?`
+const FINITE_VERB =
+  String.raw`(?:is|are|was|were|has|have|had|does|do|did|will|would|can|cannot|could|should|must|may|might|shall` +
+  String.raw`|(?!(?:this|its|thus|plus|across|always|perhaps|less|unless|various|previous|serious|obvious)` +
+  B_AFTER +
+  String.raw`)${W}{2,}s)` +
+  B_AFTER +
+  String.raw`\s+${W}`
+export const CLAUSE_COMMA_RE = new RegExp(String.raw`,\s*(?:and|or)\s+(?:` + CLAUSE_SUBJECT + ')' + FINITE_VERB, 'u')
+
 /** is_decline in grounding.py: true when the whole sentence says the documents do not say. */
 export function isDecline(sentence: string): boolean {
-  return DECLINE_RE.test(sentence) && !SECOND_CLAUSE_RE.test(sentence)
+  return DECLINE_RE.test(sentence) && !SECOND_CLAUSE_RE.test(sentence) && !CLAUSE_COMMA_RE.test(sentence)
 }
 
 /** _INFERENCE_RE in grounding.py: a reason, a consequence or a purpose. Such a sentence gets no second reading. */
