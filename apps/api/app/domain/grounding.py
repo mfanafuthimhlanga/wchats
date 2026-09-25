@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from app.domain.judge_identity import JudgeIdentity
 
@@ -167,6 +167,8 @@ def is_decline(sentence: str) -> bool:
         and _CLAUSE_COMMA_RE.search(sentence) is None
     )
 _LIST_RE = re.compile(r"^\s*([-*•]|\d+[.)])\s+")
+#: A markdown rule line, `---`, `***` or `___`: it ends a paragraph, and the view with it.
+_RULE_LINE_RE = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
 
 #: The words that open the agent's own view. The platform prompt imports this, so the
 #: words the agent is told to write are the words this rule reads. The paragraph they
@@ -265,13 +267,15 @@ def response_units(response: str) -> list[tuple[str, bool]]:
     for line in body.split("\n"):
         if line.strip().startswith("```"):
             in_fence = not in_fence
-            in_view = False
+            in_view = pending_view = False
             first_line = True
             continue
         if in_fence:
             continue
-        if not line.strip():
+        if not line.strip() or _RULE_LINE_RE.match(line):
             in_view = False
+            if line.strip():
+                pending_view = False
             first_line = True
             continue
         marker = _LIST_RE.match(line)
@@ -328,6 +332,9 @@ class SentenceGrounding:
     spanned_with: int = -1
     #: The sentence sits in the paragraph VIEW_MARKER opens, so only its numbers were read.
     view: bool = False
+    #: A view is exempt only beside a grounded fact it can rest on. False when the answer
+    #: grounds no sentence other than a decline, so the view is the answer's only content.
+    anchored: bool = True
 
     @property
     def reason(self) -> str:
@@ -336,6 +343,8 @@ class SentenceGrounding:
         if self.view:
             if self.missing_numbers:
                 return "the agent's view; number " + ", ".join(self.missing_numbers) + " appears in no passage"
+            if not self.anchored:
+                return "the agent's view, and the answer grounds no fact for it to rest on"
             return "the agent's view, read for its numbers only"
         if self.passage < 0:
             return "no passage shares a word with it"
@@ -372,8 +381,16 @@ class Grounding:
 
     @property
     def claims(self) -> list[dict]:
-        """The `Claim` payloads `eval_results.claims` stores: one per sentence, in answer order."""
-        return [{"statement": s.statement, "supported": s.supported, "reason": s.reason} for s in self.sentences]
+        """The `Claim` payloads `eval_results.claims` stores: one per sentence, in answer order.
+
+        A clean view sentence carries `"scored": False`, so the supported share over the
+        scored claims reproduces `score`, which is what JudgeRecord checks.
+        """
+        return [
+            {"statement": s.statement, "supported": s.supported, "reason": s.reason}
+            | ({"scored": False} if s.view and s.supported else {})
+            for s in self.sentences
+        ]
 
 
 def _ranked_passages(
@@ -472,8 +489,21 @@ def ground(response: str, contexts: Sequence[str], *, carried_floor: float = CAR
     passages = passages_of(contexts)
     passage_tokens = [tokens_of(p) for p in passages]
     all_numbers = frozenset(_number_key(m.group(0)) for p in passages for m in _NUMBER_RE.finditer(p))
-    graded = (
-        _ground_sentence(statement, passage_tokens, all_numbers, carried_floor, view)
+    graded = [
+        g
         for statement, view in response_units(response)
-    )
-    return Grounding(tuple(g for g in graded if g is not None))
+        if (g := _ground_sentence(statement, passage_tokens, all_numbers, carried_floor, view)) is not None
+    ]
+    return Grounding(_anchor_views(graded))
+
+
+def _anchor_views(graded: list[SentenceGrounding]) -> tuple[SentenceGrounding, ...]:
+    """Fail every view sentence when the answer grounds no fact other than a decline.
+
+    A view is reasoning from the facts above it. With none, it is the answer's only
+    content, and an answer of invented reasoning, or a decline beside it, is not
+    grounded however clean its figures are.
+    """
+    if any(s.supported and not s.view and not s.decline for s in graded):
+        return tuple(graded)
+    return tuple(replace(s, supported=False, anchored=False) if s.view else s for s in graded)

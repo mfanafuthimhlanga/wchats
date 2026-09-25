@@ -148,6 +148,9 @@ class Claim:
     statement: str
     supported: bool
     reason: str
+    #: False for a sentence the score leaves out: the agent's view, grounded for its
+    #: numbers only. The supported share over scored claims is the score.
+    scored: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.statement, str) or not self.statement.strip():
@@ -158,10 +161,13 @@ class Claim:
             )
         if not isinstance(self.reason, str):
             raise InvalidJudgeRecord(f"Claim needs reason as a string, got {self.reason!r}")
+        if not isinstance(self.scored, bool):
+            raise InvalidJudgeRecord(f"Claim needs scored as a bool, got {self.scored!r}")
 
     @property
     def payload(self) -> dict:
-        return {"statement": self.statement, "supported": self.supported, "reason": self.reason}
+        payload = {"statement": self.statement, "supported": self.supported, "reason": self.reason}
+        return payload if self.scored else payload | {"scored": False}
 
     @classmethod
     def from_payload(cls, payload: Mapping) -> Claim:
@@ -171,6 +177,7 @@ class Claim:
             statement=payload.get("statement"),  # type: ignore[arg-type]
             supported=payload.get("supported"),  # type: ignore[arg-type]
             reason=payload.get("reason", ""),
+            scored=payload.get("scored", True),  # type: ignore[arg-type]
         )
 
 
@@ -195,11 +202,17 @@ def _as_claims(value: Any, score: float | None) -> tuple[Claim, ...] | None:
             "JudgeRecord refuses claims on a row with no score. The claims are the "
             "score's working, and there is no score here to explain"
         )
-    supported = sum(1 for claim in claims if claim.supported)
-    share = supported / len(claims)
+    scored = [claim for claim in claims if claim.scored]
+    if not scored:
+        raise InvalidJudgeRecord(
+            "JudgeRecord refuses claims none of which is scored: a score over no claim "
+            "is not the working of the number beside it"
+        )
+    supported = sum(1 for claim in scored if claim.supported)
+    share = supported / len(scored)
     if not math.isclose(share, score, abs_tol=1e-9):
         raise InvalidJudgeRecord(
-            f"JudgeRecord carries {len(claims)} claims of which {supported} are "
+            f"JudgeRecord carries {len(scored)} scored claims of which {supported} are "
             f"supported, a share of {share:.4f}, beside a score of {score!r}. Claims "
             "that do not reproduce their own score belong to some other row"
         )

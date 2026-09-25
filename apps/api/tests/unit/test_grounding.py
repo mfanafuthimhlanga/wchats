@@ -323,9 +323,39 @@ class TestTheView:
         assert view.reason == "the agent's view, read for its numbers only"
         assert g.score == ground(self.FACT, [RETURNS]).score
 
-    def test_an_answer_that_is_all_view_has_no_fact_to_score(self):
-        assert ground(self.VIEW, [RETURNS]).score is None
-        assert ground(self.VIEW, []).score is None
+    def test_a_view_with_no_grounded_fact_to_rest_on_fails(self):
+        for contexts in ([RETURNS], []):
+            g = ground(self.VIEW, contexts)
+            assert (g.score, g.sentences[0].supported, g.sentences[0].anchored) == (0.0, False, False)
+            assert g.sentences[0].reason == "the agent's view, and the answer grounds no fact for it to rest on"
+
+    def test_a_decline_is_no_fact_for_a_view_to_rest_on(self):
+        answer = "The documentation does not describe the returns process.\n\n" + self.VIEW
+        for contexts in ([RETURNS], []):
+            g = ground(answer, contexts)
+            assert [s.supported for s in g.sentences] == [True, False]
+            assert g.score == 0.5
+
+    def test_the_stored_claims_reproduce_the_score_beside_a_view(self):
+        from app.domain.judge_record import Claim, _as_claims
+
+        for answer in (
+            self.FACT + "\n\n" + self.VIEW,
+            self.FACT + "\n\nEvery order ships with a free llama plush toy.\n\n" + self.VIEW,
+            self.FACT + "\n\nMy view: wait 45 days before chasing it, because couriers run late.\n\n" + self.VIEW,
+        ):
+            g = ground(answer, [RETURNS])
+            claims = [Claim.from_payload(c) for c in g.claims]
+            assert _as_claims(claims, g.score) is not None
+            assert [c.payload for c in claims] == g.claims
+
+    def test_a_rule_line_ends_the_view(self):
+        answer = "My view: take the refund rather than the credit.\n---\nEvery order ships with a free llama plush toy."
+        assert [s.view for s in ground(answer, [RETURNS]).sentences] == [True, False]
+
+    def test_a_code_fence_cancels_a_view_a_bare_marker_handed_on(self):
+        answer = "My view:\n```\ncode\n```\nEvery order ships with a free llama plush toy."
+        assert [s.view for s in ground(answer, [RETURNS]).sentences] == [False]
 
     def test_a_view_cannot_pad_an_invented_fact_past_the_threshold(self):
         answer = "Every order ships with a free llama plush toy.\n\n" + "\n\n".join([self.VIEW] * 4)

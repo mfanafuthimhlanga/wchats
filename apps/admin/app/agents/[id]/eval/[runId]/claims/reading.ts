@@ -45,6 +45,8 @@ export interface Grounding {
   decline: boolean
   /** In the agent's view, so only its numbers were read. */
   view: boolean
+  /** A view beside a grounded fact it can rest on (_anchor_views). False fails the view. */
+  anchored?: boolean
   /** The second passage read with the best one when the best alone fell under the floor, or -1. */
   spannedWith: number
   /** The share of the sentence's words the gate counted: the best passage's, or the two passages' together. */
@@ -151,7 +153,7 @@ export function responseUnits(response: string): Unit[] {
   let first = true
   for (const line of body.split('\n')) {
     if (/^\s*```/.test(line)) {
-      view = false
+      view = pending = false
       first = true
       if (fence) {
         units.push({ kind: 'code', text: fence.join('\n'), para: true, marker: '', view: false })
@@ -163,9 +165,11 @@ export function responseUnits(response: string): Unit[] {
       fence.push(line)
       continue
     }
-    if (!line.trim()) {
+    // _RULE_LINE_RE in grounding.py: a --- line ends the paragraph, the view and a handed-on view
+    if (!line.trim() || /^\s*([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
       para = true
       view = false
+      if (line.trim()) pending = false
       first = true
       continue
     }
@@ -410,11 +414,12 @@ export function percent(share: number): string {
 
 /** SentenceGrounding.reason in grounding.py, word for word. */
 export function reasonOf(
-  g: Pick<Grounding, 'match' | 'missing' | 'decline' | 'spannedWith' | 'carried'> & { view?: boolean },
+  g: Pick<Grounding, 'match' | 'missing' | 'decline' | 'spannedWith' | 'carried'> & { view?: boolean; anchored?: boolean },
 ): string {
   if (g.decline) return 'a decline asserts nothing the documents would carry'
   if (g.view) {
     if (g.missing.length) return "the agent's view; number " + g.missing.join(', ') + ' appears in no passage'
+    if (g.anchored === false) return "the agent's view, and the answer grounds no fact for it to rest on"
     return "the agent's view, read for its numbers only"
   }
   if (g.match.passage < 0) return 'no passage shares a word with it'
@@ -473,7 +478,17 @@ export function analyse(response: string, contexts: readonly string[]): Reading 
     const g = groundSentence(u.text, tokens, passageTokens, numbers, u.view)
     return { ...u, ...g, tokens, tint: tintOf(tokens.size, g.match.score, g) }
   })
-  return { units, passages, passageTokens, numbers }
+  return { units: anchorViews(units), passages, passageTokens, numbers }
+}
+
+/** _anchor_views in grounding.py: with no grounded fact but a decline, every view sentence fails. */
+function anchorViews(units: ReadUnit[]): ReadUnit[] {
+  if (units.some((u) => u.tokens.size > 0 && u.supported && !u.view && !u.decline)) return units
+  return units.map((u) => {
+    if (!u.view) return u
+    const g = { ...u, supported: false, anchored: false }
+    return { ...g, reason: reasonOf(g), tint: tintOf(u.tokens.size, u.match.score, g) }
+  })
 }
 
 /** A claim's own grounding against the reading's passages, with its tint and words: what the claim card says. */
@@ -482,12 +497,12 @@ export function groundClaim(
   reading: Reading,
   position?: number,
 ): Grounding & { tint: Tint; tokens: Set<string> } {
-  const tokens = tokensOf(scoreText(statement))
-  // a claim's position indexes the gate's scored sentences, so its own sentence decides whether it is
-  // the view; the same words elsewhere in the answer never do
+  // a claim's position indexes the gate's scored sentences, so its own sentence, grounded in the
+  // whole answer, is the card; the same words elsewhere in the answer never are
   const own = position === undefined ? undefined : reading.units.filter((u) => u.tokens.size > 0)[position]
-  const view = !!own && own.view && own.text === statement
-  const g = groundSentence(statement, tokens, reading.passageTokens, reading.numbers, view)
+  if (own && own.text === statement) return own
+  const tokens = tokensOf(scoreText(statement))
+  const g = groundSentence(statement, tokens, reading.passageTokens, reading.numbers)
   return { ...g, tokens, tint: tintOf(tokens.size, g.match.score, g) }
 }
 
