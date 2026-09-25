@@ -74,8 +74,6 @@ record the output.
    fetches and decrypts from the control DB at runtime.
 2. **`acks_late=True` AND idempotency** on every task. Two requirements, both always.
 3. **Langfuse v4 API only.** `start_span()` and `start_generation()` are gone.
-4. **Faithfulness is scored by `app/domain/grounding.py`, never a model call** (ADR 0015). The
-   eval suite has no judge route; `test_no_eval_judge_has_a_route` pins the exact route set.
 5. **No pg_search or pgbm25**, deprecated on Neon March 2026. BM25 is native `tsvector` plus
    `ts_rank_cd`.
 6. **No Docker.** Local processes only: `redis-server`, PostgreSQL, `uvicorn`,
@@ -137,6 +135,14 @@ column that is not there (#64).
   injects the newest, and repo state lives in issues, ADRs and traces.
 - Commits are `type(scope): message`, and PowerShell breaks on a multi-line `-m`, so write the
   message to a file and `git commit -F`.
+
+## Approvals
+
+When a step doesn't need my input, keep going. Put status notes in the
+same message as your next action.
+Stop and ask only when you can't continue without me, or before anything
+destructive: deleting data, force-pushing, or changing anything outside
+this repository.
 
 These are good defaults for this repo, not laws. Global instructions set the standard; this file
 adds what is specific to this codebase. A developer's instruction in the moment overrides both.
