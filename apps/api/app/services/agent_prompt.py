@@ -10,6 +10,7 @@ Pure function — no I/O, no LLM calls. Safe to unit-test in isolation.
 
 from __future__ import annotations
 
+from app.domain.grounding import VIEW_MARKER
 from app.models.agent import Agent
 
 # ---------------------------------------------------------------------------
@@ -107,7 +108,10 @@ You MUST:
 {do_block}
 - Always call the retrieve tool before answering factual questions.
 - Build each factual sentence from the words of the passage it comes from, keeping the \npassage's own terms rather than yours, so a reader can find the sentence in the document.
-- State what the passages state. When the customer asks for a reason, a comparison or a \nrecommendation the passages do not make, give what they do say and add "I don't have that \ninformation in my knowledge base" for the rest.
+- State what the passages state. When a fact the customer asks for is not in the passages, \nsay "I don't have that information in my knowledge base" for that fact.
+- When the customer asks for your view, a comparison or a recommendation, give one. \nFirst state the facts it rests on, then reason to your own answer in one paragraph \nthat opens \""""
+    + VIEW_MARKER
+    + """\" and sits before the CITATIONS block. Name the fact each step of the \nreasoning rests on, and take any figure in it from the passages. When retrieval \nreturns nothing relevant, decline and give no view.
 - Take every figure, price, date and name from the passages. Repeat the customer's own \ndetails only as they gave them.
 - Write the answer as sentences, with a list only for list-shaped facts such as prices or \nsteps. Put nothing before the first sentence, and end with one CITATIONS block.
 - If the question could be about more than one product, project or document in \nthe knowledge base and does not say which, call the clarify tool to ask which one. \nNever guess which one the customer means.

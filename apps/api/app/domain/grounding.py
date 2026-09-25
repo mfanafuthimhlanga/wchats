@@ -8,8 +8,10 @@ WHAT IT MEASURES
     words at least, and never for a sentence asserting a reason or a
     consequence), plus every number in the sentence having to appear somewhere
     in the retrieved text. A sentence at or above the carried floor with no
-    missing number is grounded. The answer's score is the grounded
-    share of its scoreable sentences, and that share is what `eval_results`
+    missing number is grounded. A sentence in the paragraph VIEW_MARKER opens is
+    the agent's own reasoning: it is read for its numbers only and left out of the
+    score unless a number fails it. The answer's score is the grounded share of
+    its scoreable sentences, and that share is what `eval_results`
     stores under `faithfulness` (ADR 0015): the column keeps its name and its
     gate, the instrument behind it is this rule.
 
@@ -49,7 +51,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from app.domain.judge_identity import JudgeIdentity
 
@@ -57,7 +59,7 @@ from app.domain.judge_identity import JudgeIdentity
 #: the rule so a calibration reader can tell it from a Judge; the version moves
 #: whenever a number below moves, so rows scored under two rules never share a
 #: calibration population.
-GROUNDING_RULE_VERSION = "grounding-v3"
+GROUNDING_RULE_VERSION = "grounding-v4"
 GROUNDING_MODEL = "rule:grounding"
 GROUNDING_IDENTITY = JudgeIdentity(
     model=GROUNDING_MODEL, reasoning_effort="none", prompt_version=GROUNDING_RULE_VERSION
@@ -165,6 +167,24 @@ def is_decline(sentence: str) -> bool:
         and _CLAUSE_COMMA_RE.search(sentence) is None
     )
 _LIST_RE = re.compile(r"^\s*([-*•]|\d+[.)])\s+")
+#: A markdown rule line, `---`, `***` or `___`: it ends a paragraph, and the view with it.
+_RULE_LINE_RE = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
+
+#: The words that open the agent's own view. The platform prompt imports this, so the
+#: words the agent is told to write are the words this rule reads. The paragraph they
+#: open is reasoning: it is not held to the word-overlap floor, because a view is the
+#: agent's own sentence rather than one the documents carry, and it still fails on any
+#: number the passages lack, because a figure is a fact wherever it is written.
+#:
+#: A clean view sentence counts neither for nor against the score (Grounding.score):
+#: the score is the grounded share of the answer's facts. An answer that is all view,
+#: or all view beside retrieved text that says nothing, has no fact to score and reads
+#: unmeasured, never grounded.
+VIEW_MARKER = "My view:"
+#: The marker opening a paragraph's first line, with the markdown a model wraps it in:
+#: a quote mark, a heading, bold or italic on either side of the colon. A list item
+#: never opens the view; a list line is a fact line.
+_VIEW_RE = re.compile(r"^\s*(?:>\s*)*(?:#{1,6}\s+)?[*_]{0,2}\s*My view\s*[*_]{0,2}\s*:\s*[*_]{0,2}", re.IGNORECASE)
 _CITATIONS_RE = re.compile(r"(^|\n)\s*CITATIONS\s*:")
 _SOURCE_MARK_RE = re.compile(r"\*\(([^()]*)\)\*")
 
@@ -209,23 +229,69 @@ def split_sentences(text: str) -> list[str]:
     return out
 
 
-def response_sentences(response: str) -> list[str]:
-    """The answer's prose sentences: bullets kept, code fences and the CITATIONS block dropped."""
+def _view_after(
+    line: str, listed: bool, first_line: bool, in_view: bool, pending: bool
+) -> tuple[bool, bool, bool]:
+    """(in the view, view handed to the next paragraph, a bare marker line) after one non-blank line.
+
+    A list line ends the view. The marker opens it only on a paragraph's first line,
+    and a marker with nothing after it hands the view to the next paragraph.
+    """
+    if listed:
+        return False, False, False
+    opened = _VIEW_RE.match(line) if first_line else None
+    if opened:
+        bare = not line[opened.end() :].strip()
+        return True, bare, bare
+    if first_line and pending:
+        return True, False, False
+    return in_view, pending, False
+
+
+def response_units(response: str) -> list[tuple[str, bool]]:
+    """The answer's prose sentences, each with whether it sits in the agent's view.
+
+    Bullets are kept, code fences and the CITATIONS block dropped. The view is the
+    paragraph whose FIRST line opens with VIEW_MARKER, and it ends at the next blank
+    line, list line or code fence. A marker line with nothing after the marker hands
+    the view to the next paragraph and is not a sentence itself.
+    """
     text = response or ""
     cut = _CITATIONS_RE.search(text)
     body = text[: cut.start()] if cut else text
-    sentences: list[str] = []
+    units: list[tuple[str, bool]] = []
     in_fence = False
+    in_view = False
+    pending_view = False
+    first_line = True
     for line in body.split("\n"):
         if line.strip().startswith("```"):
             in_fence = not in_fence
+            in_view = pending_view = False
+            first_line = True
             continue
-        if in_fence or not line.strip():
+        if in_fence:
+            continue
+        if not line.strip() or _RULE_LINE_RE.match(line):
+            in_view = False
+            if line.strip():
+                pending_view = False
+            first_line = True
             continue
         marker = _LIST_RE.match(line)
+        in_view, pending_view, bare = _view_after(line, bool(marker), first_line, in_view, pending_view)
+        if bare:
+            first_line = True
+            continue
+        first_line = False
         rest = line[marker.end() :] if marker else line.strip()
-        sentences.extend(split_sentences(rest))
-    return sentences
+        units.extend((sentence, in_view) for sentence in split_sentences(rest))
+    return units
+
+
+def response_sentences(response: str) -> list[str]:
+    """The answer's prose sentences: bullets kept, code fences and the CITATIONS block dropped."""
+    return [sentence for sentence, _ in response_units(response)]
 
 
 def passages_of(contexts: Sequence[str]) -> list[str]:
@@ -264,11 +330,22 @@ class SentenceGrounding:
     #: The second passage the words were read against when the best alone fell
     #: below the floor, or -1 when one passage decided it.
     spanned_with: int = -1
+    #: The sentence sits in the paragraph VIEW_MARKER opens, so only its numbers were read.
+    view: bool = False
+    #: A view is exempt only beside a grounded fact it can rest on. False when the answer
+    #: grounds no sentence other than a decline, so the view is the answer's only content.
+    anchored: bool = True
 
     @property
     def reason(self) -> str:
         if self.decline:
             return "a decline asserts nothing the documents would carry"
+        if self.view:
+            if self.missing_numbers:
+                return "the agent's view; number " + ", ".join(self.missing_numbers) + " appears in no passage"
+            if not self.anchored:
+                return "the agent's view, and the answer grounds no fact for it to rest on"
+            return "the agent's view, read for its numbers only"
         if self.passage < 0:
             return "no passage shares a word with it"
         if self.spanned_with >= 0:
@@ -291,15 +368,29 @@ class Grounding:
 
     @property
     def score(self) -> float | None:
-        """The grounded share, or None when the answer had no scoreable sentence."""
-        if not self.sentences:
+        """The grounded share of the answer's facts, or None when it had none to score.
+
+        A clean view sentence is left out: it is reasoning, checked for its numbers
+        only, so it may neither pass an answer nor pad one. A view sentence carrying a
+        number no passage has is a failed fact and counts.
+        """
+        scored = [s for s in self.sentences if not (s.view and s.supported)]
+        if not scored:
             return None
-        return sum(1 for s in self.sentences if s.supported) / len(self.sentences)
+        return sum(1 for s in scored if s.supported) / len(scored)
 
     @property
     def claims(self) -> list[dict]:
-        """The `Claim` payloads `eval_results.claims` stores: one per sentence, in answer order."""
-        return [{"statement": s.statement, "supported": s.supported, "reason": s.reason} for s in self.sentences]
+        """The `Claim` payloads `eval_results.claims` stores: one per sentence, in answer order.
+
+        A clean view sentence carries `"scored": False`, so the supported share over the
+        scored claims reproduces `score`, which is what JudgeRecord checks.
+        """
+        return [
+            {"statement": s.statement, "supported": s.supported, "reason": s.reason}
+            | ({"scored": False} if s.view and s.supported else {})
+            for s in self.sentences
+        ]
 
 
 def _ranked_passages(
@@ -367,6 +458,7 @@ def _ground_sentence(
     passage_tokens: Sequence[frozenset[str]],
     all_numbers: frozenset[str],
     carried_floor: float,
+    view: bool = False,
 ) -> SentenceGrounding | None:
     """One sentence's grounding, or None when it has no content word to score."""
     tokens = tokens_of(_score_text(statement))
@@ -376,6 +468,8 @@ def _ground_sentence(
     if is_decline(statement):
         return SentenceGrounding(statement, best, carried, (), True, decline=True)
     missing = tuple(n for n in _NUMBER_RE.findall(statement) if _number_key(n) not in all_numbers)
+    if view:
+        return SentenceGrounding(statement, -1, 0.0, missing, not missing, view=True)
     spanned_with = -1
     if 0 <= best and carried < carried_floor and not _INFERENCE_RE.search(statement):
         carried, spanned_with = _second_reading(tokens, best, carried, passage_tokens, carried_floor)
@@ -395,8 +489,21 @@ def ground(response: str, contexts: Sequence[str], *, carried_floor: float = CAR
     passages = passages_of(contexts)
     passage_tokens = [tokens_of(p) for p in passages]
     all_numbers = frozenset(_number_key(m.group(0)) for p in passages for m in _NUMBER_RE.finditer(p))
-    graded = (
-        _ground_sentence(statement, passage_tokens, all_numbers, carried_floor)
-        for statement in response_sentences(response)
-    )
-    return Grounding(tuple(g for g in graded if g is not None))
+    graded = [
+        g
+        for statement, view in response_units(response)
+        if (g := _ground_sentence(statement, passage_tokens, all_numbers, carried_floor, view)) is not None
+    ]
+    return Grounding(_anchor_views(graded))
+
+
+def _anchor_views(graded: list[SentenceGrounding]) -> tuple[SentenceGrounding, ...]:
+    """Fail every view sentence when the answer grounds no fact other than a decline.
+
+    A view is reasoning from the facts above it. With none, it is the answer's only
+    content, and an answer of invented reasoning, or a decline beside it, is not
+    grounded however clean its figures are.
+    """
+    if any(s.supported and not s.view and not s.decline for s in graded):
+        return tuple(graded)
+    return tuple(replace(s, supported=False, anchored=False) if s.view else s for s in graded)

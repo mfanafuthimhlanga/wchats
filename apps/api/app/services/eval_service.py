@@ -572,11 +572,15 @@ def _claims_for(metric: str, score_row: Mapping) -> list[Claim] | None:
         supported = item.get("supported")
         if not isinstance(supported, bool):
             raise InvalidJudgeRecord(f"a claim's supported is not a bool, got {supported!r}")
+        scored = item.get("scored", True)
+        if not isinstance(scored, bool):
+            raise InvalidJudgeRecord(f"a claim's scored is not a bool, got {scored!r}")
         claims.append(
             Claim(
                 statement=_bounded_claim_text("statement", item.get("statement")),
                 supported=supported,
                 reason=_bounded_claim_text("reason", item.get("reason")),
+                scored=scored,
             )
         )
     return claims

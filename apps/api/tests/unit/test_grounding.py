@@ -192,7 +192,8 @@ def _measure():
 
 
 class TestTheBenchmark:
-    """PUBLISHED for grounding-v3, measured 2026-09-25 (#319). A moved number is a moved rule.
+    """PUBLISHED for grounding-v4, measured 2026-09-25; unchanged from v3 (#319), since no
+    stored answer carries a view. A moved number is a moved rule.
 
     grounding-v1, 2026-09-23, read 8 of 30 passing and 103 of 260 sentences flagged. v2 reads a
     sentence under the floor once more against its best passage joined with the passage that
@@ -298,3 +299,124 @@ class TestTwoPassages:
         (s,) = ground(sentence, [self.A, self.B]).sentences
         single = ground(sentence, [self.A]).sentences[0]
         assert s.spanned_with == -1 and s.carried == single.carried and not s.supported
+
+
+class TestTheView:
+    """grounding-v4: the paragraph VIEW_MARKER opens is the agent's reasoning.
+
+    It is not held to the word-overlap floor, and it still fails on a number no
+    passage carries. The platform prompt imports VIEW_MARKER, so the words the agent
+    is told to write are the words read here.
+    """
+
+    FACT = "Returns are accepted within 30 days of delivery with the original receipt."
+    VIEW = (
+        "My view: keep the receipt anyway, since it settles any argument quickly "
+        "and costs nothing to hold on to."
+    )
+
+    def test_a_view_the_passages_share_no_words_with_is_grounded_and_left_out_of_the_score(self):
+        g = ground(self.FACT + "\n\n" + self.VIEW, [RETURNS])
+        fact, view = g.sentences[0], g.sentences[-1]
+        assert fact.view is False and view.view is True
+        assert view.supported is True and view.passage == -1
+        assert view.reason == "the agent's view, read for its numbers only"
+        assert g.score == ground(self.FACT, [RETURNS]).score
+
+    def test_a_view_with_no_grounded_fact_to_rest_on_fails(self):
+        for contexts in ([RETURNS], []):
+            g = ground(self.VIEW, contexts)
+            assert (g.score, g.sentences[0].supported, g.sentences[0].anchored) == (0.0, False, False)
+            assert g.sentences[0].reason == "the agent's view, and the answer grounds no fact for it to rest on"
+
+    def test_a_decline_is_no_fact_for_a_view_to_rest_on(self):
+        answer = "The documentation does not describe the returns process.\n\n" + self.VIEW
+        for contexts in ([RETURNS], []):
+            g = ground(answer, contexts)
+            assert [s.supported for s in g.sentences] == [True, False]
+            assert g.score == 0.5
+
+    def test_the_stored_claims_reproduce_the_score_beside_a_view(self):
+        from app.domain.judge_record import Claim, _as_claims
+
+        for answer in (
+            self.FACT + "\n\n" + self.VIEW,
+            self.FACT + "\n\nEvery order ships with a free llama plush toy.\n\n" + self.VIEW,
+            self.FACT + "\n\nMy view: wait 45 days before chasing it, because couriers run late.\n\n" + self.VIEW,
+        ):
+            g = ground(answer, [RETURNS])
+            claims = [Claim.from_payload(c) for c in g.claims]
+            assert _as_claims(claims, g.score) is not None
+            assert [c.payload for c in claims] == g.claims
+
+    def test_a_rule_line_ends_the_view(self):
+        answer = "My view: take the refund rather than the credit.\n---\nEvery order ships with a free llama plush toy."
+        assert [s.view for s in ground(answer, [RETURNS]).sentences] == [True, False]
+
+    def test_a_code_fence_cancels_a_view_a_bare_marker_handed_on(self):
+        answer = "My view:\n```\ncode\n```\nEvery order ships with a free llama plush toy."
+        assert [s.view for s in ground(answer, [RETURNS]).sentences] == [False]
+
+    def test_a_view_cannot_pad_an_invented_fact_past_the_threshold(self):
+        answer = "Every order ships with a free llama plush toy.\n\n" + "\n\n".join([self.VIEW] * 4)
+        assert ground(answer, [RETURNS]).score == 0.0
+
+    def test_a_view_with_an_invented_number_is_a_failed_fact_in_the_score(self):
+        answer = self.FACT + "\n\nMy view: wait 45 days before chasing it, because couriers run late."
+        assert ground(answer, [RETURNS]).score == 0.5
+
+    def test_a_number_in_the_view_is_still_checked(self):
+        view = "My view: wait 45 days before chasing it, because couriers run late."
+        s = ground(view, [RETURNS]).sentences[0]
+        assert (s.view, s.supported, s.missing_numbers) == (True, False, ("45",))
+        assert s.reason == "the agent's view; number 45 appears in no passage"
+
+    def test_the_view_ends_at_the_blank_line(self):
+        answer = self.VIEW + "\n\nShipping is free on every order over 900 rand."
+        after = ground(answer, [RETURNS]).sentences[-1]
+        assert after.view is False and after.supported is False
+
+    def test_every_sentence_of_the_view_paragraph_is_the_view(self):
+        answer = "My view: narrow it first.\nA smaller scope is easier to test well. It also ships sooner."
+        assert [s.view for s in ground(answer, [RETURNS]).sentences] == [True, True]
+
+    def test_the_marker_in_bold_opens_the_view(self):
+        assert ground("**My view:** narrow it first, since a smaller scope tests well.", [RETURNS]).sentences[0].view
+
+    @pytest.mark.parametrize("answer", [
+        "In my view, returns take too long to process for most customers today.",
+        "Returns take too long. My view: nothing here opens a paragraph mid-line.",
+        "- My view: a list item is a fact line, not the view paragraph.",
+        "Refunds arrive in five days.\nMy view: a marker on a paragraph's second line opens nothing.",
+    ])
+    def test_only_a_paragraph_opening_with_the_marker_is_the_view(self, answer):
+        assert not any(s.view for s in ground(answer, [RETURNS]).sentences)
+
+    @pytest.mark.parametrize("opening", [
+        "my view:", "MY VIEW:", "**My view**:", "*My view:*", "__My view:__", "> My view:", "### My view:",
+    ])
+    def test_the_markdown_a_model_wraps_the_marker_in_still_opens_the_view(self, opening):
+        assert ground(f"{opening} narrow it first, since a smaller scope tests well.", [RETURNS]).sentences[0].view
+
+    def test_a_list_line_ends_the_view(self):
+        answer = "My view: take the refund rather than the credit.\n- Every order ships with a free llama plush toy."
+        assert [s.view for s in ground(answer, [RETURNS]).sentences] == [True, False]
+
+    def test_a_code_fence_ends_the_view(self):
+        answer = "My view: take the refund rather than the credit.\n```\ncode\n```\nEvery order ships with a free llama plush toy."
+        assert [s.view for s in ground(answer, [RETURNS]).sentences] == [True, False]
+
+    def test_a_bare_marker_line_hands_the_view_to_the_next_paragraph(self):
+        answer = "**My view:**\n\nTake the refund rather than the credit, since it settles sooner."
+        [s] = ground(answer, [RETURNS]).sentences
+        assert s.view is True
+
+    def test_crlf_line_ends_read_the_same(self):
+        answer = "Returns are accepted within 30 days.\r\n\r\nMy view: keep the receipt anyway.\r\n"
+        assert [s.view for s in ground(answer, [RETURNS]).sentences] == [False, True]
+
+    def test_the_prompt_asks_for_the_marker_this_rule_reads(self):
+        from app.domain.grounding import VIEW_MARKER
+        from app.services.agent_prompt import _TEMPLATE
+
+        assert f'one paragraph \nthat opens "{VIEW_MARKER}"' in _TEMPLATE

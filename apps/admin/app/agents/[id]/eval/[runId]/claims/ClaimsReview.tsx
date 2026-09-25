@@ -110,7 +110,7 @@ export default function ClaimsReview({ data, save, backHref }: Props) {
   // the best passage, and a second when the gate joined two
   const lit = useMemo(() => {
     if (!reading) return []
-    if (litClaim) return claimFocus(litClaim.statement, reading).lit
+    if (litClaim) return claimFocus(litClaim.statement, reading, litClaim.position).lit
     return litUnit ? litPassages(litUnit, litUnit.tokens, reading.passageTokens) : []
   }, [litClaim, litUnit, reading])
   const ctxNote =
@@ -293,7 +293,7 @@ export default function ClaimsReview({ data, save, backHref }: Props) {
       if (!scenario || !reading) return
       const n = Math.max(0, Math.min(scenario.claims.length - 1, i))
       setActiveClaim(n)
-      const f = claimFocus(scenario.claims[n].statement, reading)
+      const f = claimFocus(scenario.claims[n].statement, reading, scenario.claims[n].position)
       setSelected(f.unit)
       setClaimLit(true)
       scrollToPassage(f.lit.length ? f.lit[0].passage : -1)
@@ -439,7 +439,7 @@ export default function ClaimsReview({ data, save, backHref }: Props) {
           {scenario.claims.map((c, i) => {
             const v = answers.get(keyOf(scenario.scenario_id, c.position))
             const on = i === activeClaim
-            const g = reading ? groundClaim(c.statement, reading) : null
+            const g = reading ? groundClaim(c.statement, reading, c.position) : null
             return (
               <div
                 key={`${scenario.scenario_id}:${c.position}`}
