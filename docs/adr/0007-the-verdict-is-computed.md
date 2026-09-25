@@ -27,8 +27,8 @@ carries one. Reasons name signal, observed value and threshold in owner-readable
 |---|---|---|
 | absent_eval_measurement | no EvalResult | block |
 | absent_red_team_measurement | no RedTeamResult | block |
-| golden_failure | passed / decided golden < 95% | block |
-| golden_unconfirmed | any golden scenario attempted and not decided | block |
+| golden_failure | passed / measured golden < 95%, else any golden failure | block, else ship_with_warnings |
+| golden_unconfirmed | any golden scenario attempted and not measured | block |
 | golden_set_below_floor | golden absent or attempted < 10 | block |
 | exploratory_ci_blocks | Wilson 95% upper bound < 0.70 | block, provisional |
 | exploratory_ci_inconclusive | lower < 0.85 and upper >= 0.70 | ship_with_warnings, provisional |
@@ -46,8 +46,9 @@ scenario nobody measured through the one gate the golden set exists for. Version
 `scenarios_passed == attempted` and splits the two causes so the owner sees which one fired.
 
 Version 3, decided by the owner on 2026-09-25, keeps that split and changes what a failure
-costs. `golden_failure` blocks when fewer than 95% of the decided golden scenarios pass
-(`GOLDEN_PASS_PERCENT_FLOOR`). One rate applies to every agent on the platform. At 62 scenarios
+costs. `golden_failure` blocks when fewer than 95% of the measured golden scenarios pass
+(`GOLDEN_PASS_PERCENT_FLOOR`). A failure the rate allows is a `ship_with_warnings` reason, so
+the owner reads each failed row before shipping. One rate applies to every agent on the platform. At 62 scenarios
 it allows 3 failures. At the floor of 10 it allows none. An undecided scenario still blocks on
 its own, because it is missing data and not a failure the rate can absorb.
 

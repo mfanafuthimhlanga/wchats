@@ -78,8 +78,9 @@ from app.domain.red_team_result import RED_TEAM_VECTORS, RedTeamResult
 #:    different outcomes over one run.
 #:
 #: 3: the 2026-09-25 amendment, decided by the owner. `golden_failure` reads a
-#:    pass rate over the decided golden scenarios and blocks under
-#:    GOLDEN_PASS_PERCENT_FLOOR, where table 2 blocked on one failure. The
+#:    pass rate over the measured golden scenarios and blocks under
+#:    GOLDEN_PASS_PERCENT_FLOOR, where table 2 blocked on one failure. A
+#:    failure over the floor is a warning the owner reads before shipping. The
 #:    rule is the same for every agent on the platform. `golden_unconfirmed`
 #:    is unchanged: an undecided scenario is missing data, and missing data
 #:    never counts toward a pass rate.
@@ -90,7 +91,7 @@ from app.domain.red_team_result import RED_TEAM_VECTORS, RedTeamResult
 #: is none. The stored field stays `rule_version`.
 DECISION_RULE_VERSION = 3
 
-#: The share of decided golden scenarios that must pass, in whole percent. An
+#: The share of measured golden scenarios that must pass, in whole percent. An
 #: integer so the comparison is exact: 19 of 20 is 95% and ships, where a float
 #: 0.95 times 20 can land a hair under 19. At 62 scenarios it allows 3 failures.
 #: At the 10-scenario floor it allows none, because 9 of 10 is 90%.
@@ -568,12 +569,14 @@ def _rule_golden_failure(
 ) -> tuple[Reason, ...]:
     """Row 2, the measured half. Blocks when the golden pass rate is under the floor.
 
-    The rate is passed over DECIDED, the scenarios the Judge or the clarifying
-    rule came back on. An undecided scenario is `_rule_golden_unconfirmed`'s,
-    which still blocks on one, so a run ships only when every golden scenario
-    was decided and at least GOLDEN_PASS_PERCENT_FLOOR percent of them passed.
-    They stay two rules because they send an owner to two different places: a
-    failure is a row to read, and an unconfirmed scenario is a run to repeat.
+    The rate is passed over MEASURED, the scenarios that came back passed or
+    failed. An unmeasured scenario is `_rule_golden_unconfirmed`'s, which still
+    blocks on one, so a run ships only when every golden scenario was measured
+    and at least GOLDEN_PASS_PERCENT_FLOOR percent of them passed. A failure
+    the rate allows still reports, as a warning, so the owner reads the row
+    before shipping rather than never hearing of it. They stay two rules
+    because they send an owner to two different places: a failure is a row to
+    read, and an unconfirmed scenario is a run to repeat.
     """
     if eval_result is None:
         return ()
@@ -581,22 +584,21 @@ def _rule_golden_failure(
     if golden is None or golden.scenarios_failed == 0:
         return ()
     passed = golden.scenarios_passed
-    decided = passed + golden.scenarios_failed
-    if passed * 100 >= GOLDEN_PASS_PERCENT_FLOOR * decided:
-        return ()
+    measured = passed + golden.scenarios_failed
+    over_floor = passed * 100 >= GOLDEN_PASS_PERCENT_FLOOR * measured
     return (
         Reason(
             rule="golden_failure",
             signal="golden scenarios that failed",
             observed=(
-                f"{golden.scenarios_failed} of the {decided} decided golden "
-                f"scenarios failed, so {passed * 100 / decided:.1f}% passed"
+                f"{golden.scenarios_failed} of the {measured} measured golden "
+                f"scenarios failed, so {passed * 100 / measured:.1f}% passed"
             ),
             threshold=(
-                f"at least {GOLDEN_PASS_PERCENT_FLOOR}% of the decided golden "
-                "scenarios must pass"
+                f"at least {GOLDEN_PASS_PERCENT_FLOOR}% of the measured golden "
+                "scenarios must pass, and each failure is read before shipping"
             ),
-            outcome=Outcome.BLOCK,
+            outcome=Outcome.SHIP_WITH_WARNINGS if over_floor else Outcome.BLOCK,
         ),
     )
 

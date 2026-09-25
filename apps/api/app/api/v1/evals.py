@@ -1082,8 +1082,8 @@ async def register_golden_scenarios(
 ) -> GoldenScenariosRegisterResponse:
     """Register owner-authored golden pairs for an agent (#56).
 
-    The golden set is the tenant's own acceptance contract: `decide()` gates on
-    it absolutely and refuses to ship under ten attempted pairs, so this is a
+    The golden set is the tenant's own acceptance contract: `decide()` blocks
+    under a 95% golden pass rate and refuses to ship under ten attempted pairs, so this is a
     mandatory Provisioning step before the first deploy.
 
     The rows land with `source='authored'`, `dataset='golden'` and a provenance

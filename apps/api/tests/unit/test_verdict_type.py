@@ -468,14 +468,16 @@ class TestGoldenGate:
         assert verdict.outcome is Outcome.BLOCK
         assert _rules(verdict) == ["golden_failure"]
         assert _reason(verdict, "golden_failure").observed == (
-            "1 of the 12 decided golden scenarios failed, so 91.7% passed"
+            "1 of the 12 measured golden scenarios failed, so 91.7% passed"
         )
         assert _reason(verdict, "golden_failure").threshold == (
-            "at least 95% of the decided golden scenarios must pass"
+            "at least 95% of the measured golden scenarios must pass, and each failure "
+            "is read before shipping"
         )
 
-    def test_three_failures_in_sixty_two_ship(self):
-        """The owner's 2026-09-25 amendment. 59 of 62 is 95.2%, over the floor."""
+    def test_three_failures_in_sixty_two_ship_with_a_warning(self):
+        """The owner's 2026-09-25 amendment. 59 of 62 is 95.2%, over the floor,
+        and the three failures still reach the owner as a warning."""
         verdict = _all_clear(
             eval_result=_eval(
                 golden=_dataset(attempted=62, scored=62, passed=59, failed=3),
@@ -483,7 +485,11 @@ class TestGoldenGate:
             )
         )
 
-        assert (verdict.outcome, _rules(verdict)) == (Outcome.SHIP, [])
+        assert verdict.outcome is Outcome.SHIP_WITH_WARNINGS
+        assert _rules(verdict) == ["golden_failure"]
+        assert _reason(verdict, "golden_failure").observed == (
+            "3 of the 62 measured golden scenarios failed, so 95.2% passed"
+        )
 
     def test_four_failures_in_sixty_two_block(self):
         """The other side of that boundary. 58 of 62 is 93.5%."""
@@ -497,21 +503,28 @@ class TestGoldenGate:
         assert verdict.outcome is Outcome.BLOCK
         assert _rules(verdict) == ["golden_failure"]
         assert _reason(verdict, "golden_failure").observed == (
-            "4 of the 62 decided golden scenarios failed, so 93.5% passed"
+            "4 of the 62 measured golden scenarios failed, so 93.5% passed"
         )
 
     def test_a_rate_exactly_on_the_floor_ships(self):
         """19 of 20 is exactly 95%. The comparison is integer, so it cannot land
         a float's width under the floor."""
         assert GOLDEN_PASS_PERCENT_FLOOR == 95
-        verdict = _all_clear(
+        on_floor = _all_clear(
             eval_result=_eval(
                 golden=_dataset(attempted=20, scored=20, passed=19, failed=1),
                 exploratory=_dataset(attempted=100, scored=100, passed=92),
             )
         )
+        under = _all_clear(
+            eval_result=_eval(
+                golden=_dataset(attempted=19, scored=19, passed=18, failed=1),
+                exploratory=_dataset(attempted=100, scored=100, passed=92),
+            )
+        )
 
-        assert (verdict.outcome, _rules(verdict)) == (Outcome.SHIP, [])
+        assert on_floor.outcome is Outcome.SHIP_WITH_WARNINGS
+        assert under.outcome is Outcome.BLOCK
 
     def test_a_golden_set_at_the_attempt_floor_allows_no_failure(self):
         """9 of 10 is 90%. A small set gets no allowance from the rate."""
@@ -655,7 +668,7 @@ class TestGoldenGate:
 
         assert _rules(verdict) == ["golden_failure", "golden_unconfirmed"]
         assert _reason(verdict, "golden_failure").observed == (
-            "1 of the 11 decided golden scenarios failed, so 90.9% passed"
+            "1 of the 11 measured golden scenarios failed, so 90.9% passed"
         )
 
     def test_an_undecided_scenario_blocks_a_set_whose_rate_clears(self):
@@ -671,7 +684,8 @@ class TestGoldenGate:
         )
 
         assert verdict.outcome is Outcome.BLOCK
-        assert _rules(verdict) == ["golden_unconfirmed"]
+        assert _rules(verdict) == ["golden_failure", "golden_unconfirmed"]
+        assert _reason(verdict, "golden_failure").outcome is Outcome.SHIP_WITH_WARNINGS
 
     def test_a_short_golden_set_that_also_failed_reports_both_rules(self):
         """Nothing short-circuits, so an owner sees the whole picture at once."""
