@@ -313,7 +313,7 @@ const FINITE_VERB =
   CLAUSE_VERBS +
   ')' +
   B_AFTER +
-  String.raw`\s+(?:(?:${W}|-)+\s+){0,3}?(?:\p{Nd}|[A-Z])`
+  String.raw`\s+(?:(?:${W}|-)+\s+){0,3}?(?:\p{Nd}|[A-HJ-Z]|I${W})`
 export const CLAUSE_COMMA_RE = new RegExp(String.raw`,\s*(?:and|or)\s+(?:` + CLAUSE_SUBJECT + ')' + FINITE_VERB, 'u')
 
 /** is_decline in grounding.py: true when the whole sentence says the documents do not say. */

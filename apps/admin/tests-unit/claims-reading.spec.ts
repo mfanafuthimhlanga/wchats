@@ -337,6 +337,7 @@ test('isDecline takes a decline about the documents and refuses a claim about th
     'The documentation does not describe the flow, or the sign-up steps users must complete before checkout.',
     'The documentation does not describe the roles, or Postgres users can connect with.',
     'The documentation does not describe the build, or the test runs for staging.',
+    'The documentation does not describe the roles, or the files users can see when I share them.',
   ])
     expect(isDecline(s), s).toBe(true)
   for (const s of [

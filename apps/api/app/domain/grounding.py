@@ -147,7 +147,8 @@ _AUXILIARIES = "is|are|was|were|has|have|had|does|do|did|will|would|can|cannot|c
 # passages, so a clause carrying neither loses little by staying a decline, and a list item's
 # contact clause ("the files users can read in the workspace") is never mistaken for one on its
 # length alone.
-_FINITE_VERB = r"(?:" + _AUXILIARIES + "|" + _CLAUSE_VERBS + r")\b\s+(?:[\w-]+\s+){0,3}?(?:\d|[A-Z])"
+# The pronoun "I" is a capital and no name, so a lone I is no trigger.
+_FINITE_VERB = r"(?:" + _AUXILIARIES + "|" + _CLAUSE_VERBS + r")\b\s+(?:[\w-]+\s+){0,3}?(?:\d|[A-HJ-Z]|I\w)"
 _CLAUSE_COMMA_RE = re.compile(r",\s*(?:and|or)\s+(?:" + _CLAUSE_SUBJECT + r")" + _FINITE_VERB)
 
 

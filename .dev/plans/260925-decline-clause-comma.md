@@ -26,7 +26,7 @@ finite verb  is|are|was|were|has|have|had|does|do|did|will|would|can|cannot|coul
              list item after a determiner ("the deployment steps for staging") ends in s as
              often as a verb does
 then         within three words, a number or a capitalised name ("listens on 8080", "is
-             8080", "expects Anthropic credentials"). The gate exists to check figures and
+             8080", "expects Anthropic credentials"; a lone I is a pronoun, not a name). The gate exists to check figures and
              names, so a clause carrying neither loses little by staying a decline, and a list
              item's contact clause ("the files users can read in the workspace") is never
              mistaken for one on its length
@@ -75,14 +75,15 @@ aids' `W` class and `B_AFTER` in place of `\w` and `\b`.
 | the sign-up steps users must complete before checkout | list |
 | Postgres users can connect with | list |
 | the build, or the test runs for staging | list |
+| the files users can see when I share them | list |
 
 ## Pins
 
-- `tests/unit/test_grounding.py`: the thirty list sentences join the decline parametrize, the
+- `tests/unit/test_grounding.py`: the thirty-one list sentences join the decline parametrize, the
   four clause sentences join the second-clause parametrize; the benchmark pin moves 83 to 84.
   `GROUNDING_RULE_VERSION` is `grounding-v3`, so rows scored before and after never share a
   calibration population.
-- `claims-reading.spec.ts`: the same thirty-four through `isDecline`.
+- `claims-reading.spec.ts`: the same thirty-five through `isDecline`.
 - `fixtures-gate-rules.json`: a tenth sentence, rule `clause comma`, tint `fail`, reason
   "passage 3 carries 29% of its words; number 8080 appears in no passage", read by the
   console spec, the bench spec in Chromium and `test_claims_benchmark.py` against `ground()`.

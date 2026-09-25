@@ -138,6 +138,7 @@ class TestTheRule:
         "The documentation does not describe the flow, or the sign-up steps users must complete before checkout.",
         "The documentation does not describe the roles, or Postgres users can connect with.",
         "The documentation does not describe the build, or the test runs for staging.",
+        "The documentation does not describe the roles, or the files users can see when I share them.",
     ])
     def test_a_whole_sentence_decline_about_the_documents_is_grounded(self, sentence):
         s = ground(sentence, [RETURNS]).sentences[0]
