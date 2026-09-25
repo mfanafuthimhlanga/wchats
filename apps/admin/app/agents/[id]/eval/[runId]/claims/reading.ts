@@ -1,8 +1,9 @@
 // reading.ts is the reading aid on the review page: the response split into
 // sentences, the retrieved text split into passages, and each sentence read by
 // the faithfulness gate's own rules (apps/api/app/domain/grounding.py,
-// grounding-v3): word overlap against the best passage, a second reading
-// against two, every number in the retrieved text, a decline grounded. It tints
+// grounding-v4): word overlap against the best passage, a second reading
+// against two, every number in the retrieved text, a decline grounded, the
+// agent's view read for its numbers only. It tints
 // an edge, lights the passages the gate read and says why in the gate's words.
 // It never labels; the Tenant does. Each rule names its Python twin, so an edit
 // to one has a named place to land in the other.
@@ -16,6 +17,8 @@ export interface Unit {
   para: boolean
   /** The list marker the line carried, "-" or "1.", or "". */
   marker: string
+  /** The unit sits in the paragraph VIEW_RE opens: the agent's view (response_units). */
+  view: boolean
 }
 
 export interface Passage {
@@ -40,6 +43,8 @@ export interface Grounding {
   /** Every number in the sentence the retrieved text never states, as written, in order. */
   missing: string[]
   decline: boolean
+  /** In the agent's view, so only its numbers were read. */
+  view: boolean
   /** The second passage read with the best one when the best alone fell under the floor, or -1. */
   spannedWith: number
   /** The share of the sentence's words the gate counted: the best passage's, or the two passages' together. */
@@ -128,6 +133,10 @@ export function splitSentences(text: string): string[] {
   return out
 }
 
+/** VIEW_MARKER and _VIEW_RE in grounding.py: the words that open the agent's own view. */
+export const VIEW_MARKER = 'My view:'
+export const VIEW_RE = /^\s*(?:\*\*|__)?\s*My view\s*:/i
+
 /** The response as sentences, bullets, code fences and a trailing CITATIONS block. */
 export function responseUnits(response: string): Unit[] {
   const text = String(response ?? '')
@@ -137,10 +146,12 @@ export function responseUnits(response: string): Unit[] {
   const units: Unit[] = []
   let fence: string[] | null = null
   let para = false
+  let view = false
   for (const line of body.split('\n')) {
     if (/^\s*```/.test(line)) {
+      view = false
       if (fence) {
-        units.push({ kind: 'code', text: fence.join('\n'), para: true, marker: '' })
+        units.push({ kind: 'code', text: fence.join('\n'), para: true, marker: '', view: false })
         fence = null
       } else fence = []
       continue
@@ -151,8 +162,10 @@ export function responseUnits(response: string): Unit[] {
     }
     if (!line.trim()) {
       para = true
+      view = false
       continue
     }
+    if (VIEW_RE.test(line)) view = true
     const m = line.match(/^\s*([-*•]|\d+[.)])\s+/)
     const rest = m ? line.slice(m[0].length) : line.trim()
     splitSentences(rest).forEach((s, i) =>
@@ -161,12 +174,13 @@ export function responseUnits(response: string): Unit[] {
         text: s,
         para: para && i === 0,
         marker: m && i === 0 ? m[1] : '',
+        view,
       }),
     )
     para = false
   }
-  if (fence) units.push({ kind: 'code', text: fence.join('\n'), para: true, marker: '' })
-  if (cites) units.push({ kind: 'cite', text: cites, para: true, marker: '' })
+  if (fence) units.push({ kind: 'code', text: fence.join('\n'), para: true, marker: '', view: false })
+  if (cites) units.push({ kind: 'cite', text: cites, para: true, marker: '', view: false })
   return units
 }
 
@@ -376,8 +390,14 @@ export function percent(share: number): string {
 }
 
 /** SentenceGrounding.reason in grounding.py, word for word. */
-export function reasonOf(g: Pick<Grounding, 'match' | 'missing' | 'decline' | 'spannedWith' | 'carried'>): string {
+export function reasonOf(
+  g: Pick<Grounding, 'match' | 'missing' | 'decline' | 'spannedWith' | 'carried'> & { view?: boolean },
+): string {
   if (g.decline) return 'a decline asserts nothing the documents would carry'
+  if (g.view) {
+    if (g.missing.length) return "the agent's view; number " + g.missing.join(', ') + ' appears in no passage'
+    return "the agent's view, read for its numbers only"
+  }
   if (g.match.passage < 0) return 'no passage shares a word with it'
   const parts =
     g.spannedWith >= 0
@@ -397,15 +417,20 @@ export function groundSentence(
   tokens: ReadonlySet<string>,
   passageTokens: readonly ReadonlySet<string>[],
   allNumbers: ReadonlySet<string>,
+  view = false,
 ): Grounding {
   const match = bestPassage(tokens, passageTokens)
-  const base = { match, missing: [] as string[], decline: false, spannedWith: -1, carried: match.score }
+  const base = { match, missing: [] as string[], decline: false, view: false, spannedWith: -1, carried: match.score }
   if (!tokens.size) return { ...base, supported: false, reason: '' }
   if (isDecline(statement)) {
     const g = { ...base, decline: true }
     return { ...g, supported: true, reason: reasonOf(g) }
   }
   const missing = missingNumbers(statement, allNumbers)
+  if (view) {
+    const g = { ...base, missing, view: true }
+    return { ...g, supported: !missing.length, reason: reasonOf(g) }
+  }
   let carried = match.score
   let spannedWith = -1
   if (match.passage >= 0 && carried < CARRIED_FLOOR && !INFERENCE_RE.test(statement)) {
@@ -413,7 +438,7 @@ export function groundSentence(
     carried = r.carried
     spannedWith = r.second
   }
-  const g = { match, missing, decline: false, spannedWith, carried }
+  const g = { match, missing, decline: false, view: false, spannedWith, carried }
   return { ...g, supported: match.passage >= 0 && carried >= CARRIED_FLOOR && !missing.length, reason: reasonOf(g) }
 }
 
@@ -425,7 +450,7 @@ export function analyse(response: string, contexts: readonly string[]): Reading 
   const units = responseUnits(response).map((u): ReadUnit => {
     // the gate scores prose only: a code fence and the CITATIONS block never reach it (response_sentences)
     const tokens = u.kind === 'cite' || u.kind === 'code' ? new Set<string>() : tokensOf(scoreText(u.text))
-    const g = groundSentence(u.text, tokens, passageTokens, numbers)
+    const g = groundSentence(u.text, tokens, passageTokens, numbers, u.view)
     return { ...u, ...g, tokens, tint: tintOf(tokens.size, g.match.score, g) }
   })
   return { units, passages, passageTokens, numbers }
@@ -434,7 +459,9 @@ export function analyse(response: string, contexts: readonly string[]): Reading 
 /** A claim's own grounding against the reading's passages, with its tint and words: what the claim card says. */
 export function groundClaim(statement: string, reading: Reading): Grounding & { tint: Tint; tokens: Set<string> } {
   const tokens = tokensOf(scoreText(statement))
-  const g = groundSentence(statement, tokens, reading.passageTokens, reading.numbers)
+  // a claim is one of the gate's sentences word for word, so its paragraph decides whether it is the view
+  const view = reading.units.some((u) => u.view && u.text === statement)
+  const g = groundSentence(statement, tokens, reading.passageTokens, reading.numbers, view)
   return { ...g, tokens, tint: tintOf(tokens.size, g.match.score, g) }
 }
 

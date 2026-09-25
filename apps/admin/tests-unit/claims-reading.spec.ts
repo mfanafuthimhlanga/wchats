@@ -131,8 +131,8 @@ test('stem folds inflections and never cuts below four letters', () => {
   expect(stem('fees')).toBe('fees') // "fee" would be three letters
 })
 
-// ── the gate's rules (grounding.py, grounding-v3), ported so the aid lights what the gate scored ──
-// fixtures-gate-rules.json holds ten sentences over three passages and two over none, each
+// ── the gate's rules (grounding.py, grounding-v4), ported so the aid lights what the gate scored ──
+// fixtures-gate-rules.json holds twelve sentences over three passages and two over none, each
 // decided by one rule, and the table of what the gate says of each: ground() produced every
 // tint and reason in it, and test_claims_benchmark.py checks it against ground() still.
 // claims-bench.spec.ts reads the same table, so the console aid and the bench cannot drift
@@ -380,4 +380,15 @@ test('tintOf with the gate decision: bone when grounded, red on a missing number
   expect(tintOf(5, 0.2, { supported: false, missing: [] })).toBe('grey')
   expect(tintOf(5, 0, { supported: false, missing: [] })).toBe('fail')
   expect(tintOf(0, 0.9, { supported: false, missing: [] })).toBe('none')
+})
+
+// grounding-v4: a claim card grounds the stored sentence on its own, so its paragraph
+// has to come from the answer. The view sentence reads as the view; the same words
+// written outside a view paragraph are held to the overlap floor.
+test('a claim card reads a sentence of the view paragraph as the view', () => {
+  const view = GATE.expect.find((c) => c.rule === 'view')!
+  const r = gateReading()
+  expect(groundClaim(view.sentence, r).reason).toBe("the agent's view, read for its numbers only")
+  const bare = analyse(view.sentence.replace(/^My view:\s*/, ''), GATE.retrieved_contexts)
+  expect(groundClaim(bare.units[0].text, bare).view).toBe(false)
 })

@@ -298,3 +298,58 @@ class TestTwoPassages:
         (s,) = ground(sentence, [self.A, self.B]).sentences
         single = ground(sentence, [self.A]).sentences[0]
         assert s.spanned_with == -1 and s.carried == single.carried and not s.supported
+
+
+class TestTheView:
+    """grounding-v4: the paragraph VIEW_MARKER opens is the agent's reasoning.
+
+    It is not held to the word-overlap floor, and it still fails on a number no
+    passage carries. The platform prompt imports VIEW_MARKER, so the words the agent
+    is told to write are the words read here.
+    """
+
+    FACT = "Returns are accepted within 30 days of delivery with the original receipt."
+    VIEW = (
+        "My view: keep the receipt anyway, since it settles any argument quickly "
+        "and costs nothing to hold on to."
+    )
+
+    def test_a_view_the_passages_share_no_words_with_is_grounded(self):
+        g = ground(self.FACT + "\n\n" + self.VIEW, [RETURNS])
+        fact, view = g.sentences[0], g.sentences[-1]
+        assert fact.view is False and view.view is True
+        assert view.supported is True
+        assert view.reason == "the agent's view, read for its numbers only"
+        assert g.score == 1.0
+
+    def test_a_number_in_the_view_is_still_checked(self):
+        view = "My view: wait 45 days before chasing it, because couriers run late."
+        s = ground(view, [RETURNS]).sentences[0]
+        assert (s.view, s.supported, s.missing_numbers) == (True, False, ("45",))
+        assert s.reason == "the agent's view; number 45 appears in no passage"
+
+    def test_the_view_ends_at_the_blank_line(self):
+        answer = self.VIEW + "\n\nShipping is free on every order over 900 rand."
+        after = ground(answer, [RETURNS]).sentences[-1]
+        assert after.view is False and after.supported is False
+
+    def test_every_sentence_of_the_view_paragraph_is_the_view(self):
+        answer = "My view: narrow it first.\nA smaller scope is easier to test well. It also ships sooner."
+        assert [s.view for s in ground(answer, [RETURNS]).sentences] == [True, True]
+
+    def test_the_marker_in_bold_opens_the_view(self):
+        assert ground("**My view:** narrow it first, since a smaller scope tests well.", [RETURNS]).sentences[0].view
+
+    @pytest.mark.parametrize("answer", [
+        "In my view, returns take too long to process for most customers today.",
+        "Returns take too long. My view: nothing here opens a paragraph mid-line.",
+        "- My view: a list item is a fact line, not the view paragraph.",
+    ])
+    def test_only_a_paragraph_opening_with_the_marker_is_the_view(self, answer):
+        assert not any(s.view for s in ground(answer, [RETURNS]).sentences)
+
+    def test_the_prompt_asks_for_the_marker_this_rule_reads(self):
+        from app.domain.grounding import VIEW_MARKER
+        from app.services.agent_prompt import _TEMPLATE
+
+        assert f'one paragraph \nthat opens "{VIEW_MARKER}"' in _TEMPLATE

@@ -1,6 +1,6 @@
 {
  "question": "How does the storefront serve the catalog and where do orders go?",
- "response": "React Router handles the catalog, the product pages and the cart.\n\nReact Router handles the catalog and the cart, the audit log keeps every step, nothing is sent to a server, and the app writes no database.\n\nReact Router serves the catalog and the cart from port 4173 on every build.\n\nThe documentation does not specify which port the Fastify server listens on.\n\nReact Router handles the catalog and the cart because the audit log keeps every step, nothing is sent to a server, and the app writes no database.\n\nReact Router handles the catalog, and the ledger, the invoices, the refunds and the server all live elsewhere.\n\nPayments settle through Stripe within fourteen working days.\n\nThe café documentation does not specify the opening hours.\n\nReact Router handles the catalog and the cart in ٣ steps.\n\nThe documentation does not specify the port, and the Fastify server listens on 8080.",
+ "response": "React Router handles the catalog, the product pages and the cart.\n\nReact Router handles the catalog and the cart, the audit log keeps every step, nothing is sent to a server, and the app writes no database.\n\nReact Router serves the catalog and the cart from port 4173 on every build.\n\nThe documentation does not specify which port the Fastify server listens on.\n\nReact Router handles the catalog and the cart because the audit log keeps every step, nothing is sent to a server, and the app writes no database.\n\nReact Router handles the catalog, and the ledger, the invoices, the refunds and the server all live elsewhere.\n\nPayments settle through Stripe within fourteen working days.\n\nThe café documentation does not specify the opening hours.\n\nReact Router handles the catalog and the cart in ٣ steps.\n\nThe documentation does not specify the port, and the Fastify server listens on 8080.\n\nMy view: React Router suits a storefront this small, since the catalog and the cart share one browser session. A cache of 4096 entries would be generous for a shop of this size.",
  "retrieved_contexts": [
   "The storefront runs React Router for the catalog, the product pages and the cart.",
   "Orders are never sent to a server; the app reads and writes no database at all.",
@@ -46,6 +46,14 @@
   {
    "position": 9,
    "statement": "The documentation does not specify the port, and the Fastify server listens on 8080."
+  },
+  {
+   "position": 10,
+   "statement": "My view: React Router suits a storefront this small, since the catalog and the cart share one browser session."
+  },
+  {
+   "position": 11,
+   "statement": "A cache of 4096 entries would be generous for a shop of this size."
   }
  ],
  "expect": [
@@ -135,6 +143,22 @@
    "lit": [
     2
    ]
+  },
+  {
+   "rule": "view",
+   "sentence": "My view: React Router suits a storefront this small, since the catalog and the cart share one browser session.",
+   "tint": "bone",
+   "reason": "the agent's view, read for its numbers only",
+   "lit": [
+    0
+   ]
+  },
+  {
+   "rule": "view, a number",
+   "sentence": "A cache of 4096 entries would be generous for a shop of this size.",
+   "tint": "fail",
+   "reason": "the agent's view; number 4096 appears in no passage",
+   "lit": []
   }
  ],
  "no_passages": {

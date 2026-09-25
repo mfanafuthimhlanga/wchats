@@ -157,7 +157,7 @@
   const TOTAL = items.length;
   const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  // ── the reading aid: the faithfulness gate's rules (apps/api/app/domain/grounding.py, grounding-v3),
+  // ── the reading aid: the faithfulness gate's rules (apps/api/app/domain/grounding.py, grounding-v4),
   // each named for its Python twin. It lights the passages the gate read and says why; it never labels ──
   const STOP = new Set(("the and for that with this from are was were has have had not but all any can you your they them " +
     "their there then than when what which who whom how why into onto over under out off per via about after before " +
@@ -234,14 +234,15 @@
   // SentenceGrounding.reason, word for word
   function reasonOf(g) {
     if (g.decline) return "a decline asserts nothing the documents would carry";
+    if (g.view) return g.missing.length ? "the agent's view; number " + g.missing.join(", ") + " appears in no passage" : "the agent\'s view, read for its numbers only";
     if (g.pi < 0) return "no passage shares a word with it";
     const parts = [g.span >= 0 ? `passages ${g.pi + 1} and ${g.span + 1} together carry ${percent(g.carried)} of its words` : `passage ${g.pi + 1} carries ${percent(g.carried)} of its words`];
     if (g.missing.length) parts.push("number " + g.missing.join(", ") + " appears in no passage");
     return parts.join("; ");
   }
   // _ground_sentence: the best passage (a tie to the denser one), the decline rule, the number rule, the second reading
-  function groundSentence(statement, tokens, ptokens, numbers) {
-    const g = { pi: -1, shared: EMPTY, score: 0, missing: [], decline: false, span: -1, spanShared: EMPTY, carried: 0, supported: false, reason: "", tint: "t-none" };
+  function groundSentence(statement, tokens, ptokens, numbers, view) {
+    const g = { pi: -1, shared: EMPTY, score: 0, missing: [], decline: false, view: false, span: -1, spanShared: EMPTY, carried: 0, supported: false, reason: "", tint: "t-none" };
     let dens = 0;
     for (let i = 0; i < ptokens.length && tokens.size; i++) {
       const sh = new Set(); for (const tk of tokens) if (ptokens[i].has(tk)) sh.add(tk);
@@ -251,6 +252,7 @@
     g.carried = g.score;
     if (!tokens.size) return g;
     if (isDecline(statement)) g.decline = true;
+    else if (view) { g.view = true; g.missing = numbersIn(statement).filter(n => !numbers.has(numberKey(n))); }
     else {
       g.missing = numbersIn(statement).filter(n => !numbers.has(numberKey(n)));
       if (g.pi >= 0 && g.carried < CARRIED_FLOOR && !INFERENCE_RE.test(statement)) {
@@ -258,7 +260,7 @@
         if (g.span >= 0) { const sh = new Set(); for (const tk of tokens) if (ptokens[g.span].has(tk)) sh.add(tk); g.spanShared = sh; }
       }
     }
-    g.supported = g.decline || (g.pi >= 0 && g.carried >= CARRIED_FLOOR && !g.missing.length);
+    g.supported = g.decline || (g.view ? !g.missing.length : g.pi >= 0 && g.carried >= CARRIED_FLOOR && !g.missing.length);
     g.reason = reasonOf(g);
     // with no passages at all, a decline is bone and every other sentence red, as the gate flags it
     g.tint = g.supported ? "t-bone" : (g.score > 0 && !g.missing.length ? "t-grey" : "t-fail");
@@ -272,16 +274,19 @@
     for (const p of parts) { const s = p.trim(); if (!s) continue; if (out.length && (s.length < 28 || out[out.length - 1].length < 28)) out[out.length - 1] += " " + s; else out.push(s); }
     return out;
   }
+  // VIEW_MARKER / _VIEW_RE: a paragraph opening "My view:" is the agent's view, read for its numbers only
+  const VIEW_RE = /^\s*(?:\*\*|__)?\s*My view\s*:/i;
   function responseUnits(response) {
     const text = String(response || ""); const cut = text.search(/(^|\n)\s*CITATIONS\s*:/);
     const body = cut === -1 ? text : text.slice(0, cut); const cites = cut === -1 ? "" : text.slice(cut).trim();
-    const units = []; let fence = null, para = false;
+    const units = []; let fence = null, para = false, view = false;
     for (const line of body.split("\n")) {
-      if (/^\s*```/.test(line)) { if (fence) { units.push({ kind: "code", text: fence.join("\n"), para: true, marker: "" }); fence = null; } else fence = []; continue; }
+      if (/^\s*```/.test(line)) { view = false; if (fence) { units.push({ kind: "code", text: fence.join("\n"), para: true, marker: "" }); fence = null; } else fence = []; continue; }
       if (fence) { fence.push(line); continue; }
-      if (!line.trim()) { para = true; continue; }
+      if (!line.trim()) { para = true; view = false; continue; }
+      if (VIEW_RE.test(line)) view = true;
       const m = line.match(/^\s*([-*•]|\d+[.)])\s+/); const rest = m ? line.slice(m[0].length) : line.trim();
-      splitSentences(rest).forEach((s, i) => units.push({ kind: m ? (i === 0 ? "li" : "cont") : "p", text: s, para: para && i === 0, marker: (m && i === 0) ? m[1] : "" }));
+      splitSentences(rest).forEach((s, i) => units.push({ kind: m ? (i === 0 ? "li" : "cont") : "p", text: s, para: para && i === 0, marker: (m && i === 0) ? m[1] : "", view }));
       para = false;
     }
     if (fence) units.push({ kind: "code", text: fence.join("\n"), para: true, marker: "" });
@@ -321,7 +326,7 @@
     for (const u of units) {
       // the gate scores prose only: a code fence and the CITATIONS block never reach it (response_sentences)
       u.tokens = (u.kind === "cite" || u.kind === "code") ? EMPTY : tokensOf(scoreText(u.text));
-      Object.assign(u, groundSentence(u.text, u.tokens, ptokens, numbers));
+      Object.assign(u, groundSentence(u.text, u.tokens, ptokens, numbers, !!u.view));
     }
     const plain = pane.passages.map(p => windowHtml(p, null));
     it.an = { units, passages: pane.passages, ptokens, numbers, plain, html: unitsHtml(units),
@@ -359,7 +364,8 @@
     lightPassage(u, scroll, "no passage shares words with that sentence");
   }
   // the CLAIM's own grounding, by the gate's rules, so the card says what the gate would say of it
-  const claimGround = (statement, an) => groundSentence(statement, tokensOf(scoreText(statement)), an.ptokens, an.numbers);
+  // a claim is one of the gate's sentences word for word, so its paragraph decides whether it is the view
+  const claimGround = (statement, an) => groundSentence(statement, tokensOf(scoreText(statement)), an.ptokens, an.numbers, an.units.some(u => u.view && u.text === statement));
   function moveSentence(d) {
     const els = sentEls(); if (!els.length) return;
     let i = els.findIndex(e => Number(e.dataset.s) === sel);

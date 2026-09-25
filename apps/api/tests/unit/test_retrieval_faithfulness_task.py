@@ -322,7 +322,7 @@ class TestTheRuleIsIdentified:
         assert updates[0][4] == {
             "model": "rule:grounding",
             "reasoning_effort": "none",
-            "prompt_version": "grounding-v3",
+            "prompt_version": "grounding-v4",
         }
 
     def test_the_identity_is_absent_when_no_verdict_was_produced(self, monkeypatch):

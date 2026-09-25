@@ -46,7 +46,7 @@ test('the bench lights the Deploy passage for the widget claim and gives the gat
   expect(says).toBe(groundClaim(fx.claims[0].statement, analyse(fx.response, fx.retrieved_contexts)).reason)
 })
 
-// The ten gate-rule sentences of fixtures-gate-rules.json through the built bench: the edge
+// The twelve gate-rule sentences of fixtures-gate-rules.json through the built bench: the edge
 // tint and the card reason per sentence, read from the DOM, against the table claims-reading.spec.ts
 // holds the console aid to, and against the console module run on the same fixture. Then the
 // spanned sentence, selected, lights both of its passages.
