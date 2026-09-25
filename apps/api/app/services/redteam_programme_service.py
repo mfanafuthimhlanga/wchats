@@ -110,6 +110,7 @@ _OPEN_FINDING_COLUMNS: tuple[str, ...] = (
     "f.created_at",
     "f.evidence",
     "f.claims",
+    "f.retest",
     "r.findings",
 )
 
@@ -263,6 +264,9 @@ def _open_finding(row: tuple) -> dict:
         # (0033). A row from before 0033 reads attacker_report and [].
         "evidence": f["evidence"],
         "claims": list(f["claims"]),
+        # What the latest owner re-test did (0034): its status, outcome and, when it
+        # still lands, the reply it stood on. None until a re-test is queued.
+        "retest": f["retest"],
     }
 
 

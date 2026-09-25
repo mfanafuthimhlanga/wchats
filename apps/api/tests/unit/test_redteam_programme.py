@@ -482,6 +482,7 @@ class TestOpenFindings:
             None,
             "attacker_report",
             [],
+            None,  # retest: none queued
             [
                 {
                     "severity": "high",
@@ -539,6 +540,7 @@ class TestOpenFindings:
             None,
             finding.evidence,
             list(finding.claims),  # what red_team.py Step 7c inserts
+            None,  # retest: none queued
             [finding.model_dump()],  # exactly what red_team.py Step 7 stores
         )
         mock_conn, _ = _make_programme_cursor(open_finding_rows=[row])
@@ -573,7 +575,7 @@ class TestOpenFindings:
         row = (
             uuid4(), uuid4(), None, finding.severity, finding.attack_vector,
             finding.probe_message, finding.agent_response, finding.turn_count, None,
-            finding.evidence, list(finding.claims),
+            finding.evidence, list(finding.claims), None,
             [],  # the run's snapshot holds no entry for this row
         )
         mock_conn, _ = _make_programme_cursor(open_finding_rows=[row])
@@ -618,7 +620,7 @@ class TestOpenFindings:
             "f.id": uuid4(), "f.run_id": None, "f.strategy_id": None, "f.severity": "high",
             "f.attack_vector": "data_leakage", "f.probe_message": "p",
             "f.agent_response": "r", "f.turn_count": 1, "f.created_at": None,
-            "f.evidence": "landed_verdict_tag", "f.claims": ["mutating_call_landed"],
+            "f.evidence": "landed_verdict_tag", "f.claims": ["mutating_call_landed"], "f.retest": None,
             "r.findings": [],
         }
         finding = svc._open_finding(tuple(values[c] for c in columns))
@@ -626,6 +628,18 @@ class TestOpenFindings:
         assert finding["evidence"] == "landed_verdict_tag"
         assert finding["claims"] == ["mutating_call_landed"]
         assert finding["severity"] == "high"
+
+    def test_an_open_finding_carries_its_latest_retest(self):
+        """0034: the console reads what the owner's re-test did from the row."""
+        from app.services import redteam_programme_service as svc
+
+        retest = {"id": "r1", "status": "complete", "outcome": "inconclusive", "probes_answered": 0}
+        values = {c: None for c in svc._OPEN_FINDING_COLUMNS} | {
+            "f.id": uuid4(), "f.severity": "critical", "f.evidence": "attacker_report",
+            "f.claims": [], "f.retest": retest, "r.findings": [],
+        }
+        finding = svc._open_finding(tuple(values[c] for c in svc._OPEN_FINDING_COLUMNS))
+        assert finding["retest"] == retest
 
     def test_correlation_miss_on_turn_count_returns_finding_with_null_description(self):
         """The snapshot entry differs from the finding row in turn_count only —
@@ -647,6 +661,7 @@ class TestOpenFindings:
             None,
             "attacker_report",
             [],
+            None,  # retest: none queued
             [
                 {
                     "severity": "high",
@@ -686,6 +701,7 @@ class TestOpenFindings:
             None,
             "attacker_report",
             [],
+            None,  # retest: none queued
             None,  # run_findings snapshot is NULL
         )
         mock_conn, _ = _make_programme_cursor(open_finding_rows=[row])
@@ -714,7 +730,7 @@ class TestOpenFindings:
         rows = [
             (
                 ids[i], None, None, severities[i], "prompt_injection", f"probe-{i}",
-                f"resp-{i}", i, None, "attacker_report", [], None,
+                f"resp-{i}", i, None, "attacker_report", [], None, None,
             )
             for i in range(4)
         ]
