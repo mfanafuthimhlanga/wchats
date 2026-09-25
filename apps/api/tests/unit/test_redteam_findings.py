@@ -628,7 +628,7 @@ class TestRetestRedTeamFinding:
         tenant = _make_fake_tenant()
         agent = _make_ready_agent(tenant)
         finding_id = uuid4()
-        response, dispatched, cursor = await self._post(agent, tenant, finding_id, ("open", False, False))
+        response, dispatched, cursor = await self._post(agent, tenant, finding_id, ("open", False, "attacker_report", "attack"))
         assert response.status_code == 202
         assert response.json() == {"finding_id": str(finding_id), "queued": True}
         dispatched.assert_called_once_with(
@@ -637,7 +637,7 @@ class TestRetestRedTeamFinding:
         sql, params = cursor.execute.call_args[0]
         assert "r.kind = %s" in sql and params[-2:] == (str(finding_id), f"m7:{agent.id}")
 
-    @pytest.mark.parametrize("state", [("open", True, False), ("open", False, True)])
+    @pytest.mark.parametrize("state", [("open", True, "attacker_report", "attack"), ("open", False, "landed_verdict_tag", "attack")])
     async def test_a_running_retest_or_a_finding_no_conversation_reproduces_is_refused(self, state):
         tenant = _make_fake_tenant()
         response, dispatched, _ = await self._post(_make_ready_agent(tenant), tenant, uuid4(), state)
@@ -646,7 +646,7 @@ class TestRetestRedTeamFinding:
 
     async def test_a_finding_that_is_not_open_is_refused_and_nothing_is_queued(self):
         tenant = _make_fake_tenant()
-        response, dispatched, _ = await self._post(_make_ready_agent(tenant), tenant, uuid4(), ("resolved", False, False))
+        response, dispatched, _ = await self._post(_make_ready_agent(tenant), tenant, uuid4(), ("resolved", False, "attacker_report", "attack"))
         assert response.status_code == 409
         dispatched.assert_not_called()
 
@@ -658,6 +658,6 @@ class TestRetestRedTeamFinding:
 
     async def test_another_tenants_agent_reads_as_absent(self):
         owner, caller = _make_fake_tenant(), _make_fake_tenant()
-        response, dispatched, _ = await self._post(_make_ready_agent(owner), caller, uuid4(), ("open", False, False))
+        response, dispatched, _ = await self._post(_make_ready_agent(owner), caller, uuid4(), ("open", False, "attacker_report", "attack"))
         assert response.status_code == 404
         dispatched.assert_not_called()

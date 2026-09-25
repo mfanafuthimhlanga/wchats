@@ -47,8 +47,12 @@ keys, which is every run written before the counters existed.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import psycopg2
 import structlog
+
+from app.services.red_team_retest import RETEST_IDEMPOTENCY_WINDOW_MINUTES, conversation_can_reproduce
 
 log = structlog.get_logger(__name__)
 
@@ -240,6 +244,27 @@ def _correlated_text(entry: dict | None, key: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _retest_as_read(retest: object, now: datetime | None = None) -> object:
+    """The finding's re-test, with a running claim past its window reported as `stopped`.
+
+    The worker that held it died without writing an outcome; a new re-test takes the
+    claim over. Deciding it here keeps the window in one place, and a console polling a
+    running re-test sees it stop without a clock of its own.
+    """
+    if not isinstance(retest, dict) or retest.get("status") != "running":
+        return retest
+    try:
+        started = datetime.fromisoformat(str(retest.get("started_at")))
+    except ValueError:
+        return retest
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    if now - started < timedelta(minutes=RETEST_IDEMPOTENCY_WINDOW_MINUTES):
+        return retest
+    return {**retest, "status": "stopped"}
+
+
 def _open_finding(row: tuple) -> dict:
     """One open red_team_findings row, with the description its run's snapshot adds.
 
@@ -266,7 +291,10 @@ def _open_finding(row: tuple) -> dict:
         "claims": list(f["claims"]),
         # What the latest owner re-test did (0034): its status, outcome and, when it
         # still lands, the reply it stood on. None until a re-test is queued.
-        "retest": f["retest"],
+        "retest": _retest_as_read(f["retest"]),
+        # Whether a conversation can replay the finding; the console offers a re-test
+        # only when it can, off the rule the re-test route refuses by.
+        "retestable": conversation_can_reproduce(f["evidence"], f["probe_message"]),
     }
 
 

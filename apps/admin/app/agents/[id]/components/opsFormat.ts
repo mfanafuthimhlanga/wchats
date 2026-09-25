@@ -305,6 +305,8 @@ export interface OpenFinding {
   claims: string[] | null
   /** The newest re-test of this finding, or null when the owner never ran one. Read through retestLine. */
   retest: FindingRetest | null
+  /** False when no conversation can reproduce the finding, so a re-test cannot clear it; only a new programme run can. */
+  retestable: boolean
 }
 
 export type FindingEvidence = 'recorded_prompt_run' | 'landed_verdict_tag' | 'attacker_report'
@@ -318,7 +320,7 @@ export type FindingSeverity = OpenFinding['severity']
  * an open finding only ever carries `still_lands` or `inconclusive`.
  */
 export type FindingRetest =
-  | { id: string; status: 'running'; started_at: string | null }
+  | { id: string; status: 'running' | 'stopped'; started_at: string | null }
   | {
       id: string
       status: 'complete'
@@ -418,6 +420,14 @@ export function evidenceSentence(finding: Pick<OpenFinding, 'evidence' | 'claims
   return `${opening}: ${joinWithAnd(clauses)}.`
 }
 
+/** A re-test the server still reports as running. Past its window the server reports `stopped`. */
+export function retestIsRunning(retest: FindingRetest | null | undefined): boolean {
+  return retest?.status === 'running'
+}
+
+/** The sentence a finding no conversation can reproduce shows in place of a Re-test button. The API's 409 for it reads the same. */
+export const UNREPRODUCIBLE_FINDING = 'A conversation cannot reproduce this finding. Run the programme again to clear it.'
+
 /**
  * The one sentence a finding shows about its newest re-test, or null when
  * there is nothing to say: no re-test, a resolved one (the finding has left
@@ -427,25 +437,10 @@ export function evidenceSentence(finding: Pick<OpenFinding, 'evidence' | 'claims
  *   "Last re-test: the attack still lands. Graded high now, critical before."
  *   "Last re-test was inconclusive: the attack drew no reply."
  */
-/**
- * RETEST_IDEMPOTENCY_WINDOW_MINUTES in red_team_retest.py: a running claim older than this
- * belongs to a worker that died, and the API takes a new re-test over it.
- * tests/unit/test_red_team_retest.py pins the two numbers together.
- */
-export const RETEST_STALE_MINUTES = 15
-
-/** A re-test still inside its window. A claim past it stopped without an outcome. */
-export function retestIsRunning(retest: FindingRetest | null | undefined, now: number = Date.now()): boolean {
-  if (!retest || retest.status !== 'running') return false
-  const started = retest.started_at ? Date.parse(retest.started_at) : NaN
-  return Number.isNaN(started) || now - started < RETEST_STALE_MINUTES * 60_000
-}
-
-export function retestLine(retest: FindingRetest | null | undefined, now: number = Date.now()): string | null {
+export function retestLine(retest: FindingRetest | null | undefined): string | null {
   if (!retest) return null
-  if (retest.status === 'running') {
-    return retestIsRunning(retest, now) ? 'Re-test running.' : 'Last re-test stopped without an outcome.'
-  }
+  if (retest.status === 'running') return 'Re-test running.'
+  if (retest.status === 'stopped') return 'Last re-test stopped without an outcome.'
   if (retest.status === 'failed') return 'Last re-test failed.'
   if (retest.status !== 'complete') return null
   if (retest.outcome === 'inconclusive') {
@@ -459,6 +454,11 @@ export function retestLine(retest: FindingRetest | null | undefined, now: number
     return `Last re-test: the attack still lands.${regraded}`
   }
   return null
+}
+
+/** "prompt_injection" -> "Prompt Injection", as the coverage ledger and the Re-test button's label read an attack vector. */
+export function formatAttackVector(vector: string): string {
+  return vector.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
 function countNoun(count: number, singular: string, plural: string): string {

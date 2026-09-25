@@ -57,16 +57,28 @@ export const PAGE_CSS = `
        them mid-row. Top-aligned reads correctly at every height. */
     display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap;
   }
-  .critical p { flex: 1; min-width: 220px; font-size: 13.5px; margin: 0; }
   .critical .mono { font-size: 11px; color: var(--ink-2); }
 
-  /* A finding's meta line, the evidence sentence under it and the re-test
-     sentence under that (FindingMeta.tsx). The meta wraps anywhere so a long
-     attack vector cannot push the page wider than a phone. The evidence and
-     re-test lines read --ink-2 in the banner and the list alike; .critical
-     .mono above lifts only the banner's meta line. */
+  /* A list row (FindingRow.tsx), top-aligned for the same reason as the banner. */
+  .finding-row {
+    display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap;
+    padding: 12px 0; border-top: 1px solid var(--hairline-soft);
+  }
+  /* The text column, banner and list alike: the finding's sentence with its
+     FindingMeta lines, then the API's refusal note, which starts where the
+     text starts. The note is a div carrying .help, so it reads 12.5px in
+     both and no paragraph rule reaches it. */
+  .finding-body { flex: 1; min-width: 220px; }
+  .finding-text { font-size: 13.5px; margin: 0; }
+  .finding-row .finding-text { color: var(--ink-2); }
+
+  /* A finding's meta line, the evidence sentence under it, the re-test
+     sentence under that and the unreproducible sentence last (FindingMeta.tsx).
+     The meta wraps anywhere so a long attack vector cannot push the page
+     wider than a phone. The sentence lines read --ink-2 in the banner and the
+     list alike; .critical .mono above lifts only the banner's meta line. */
   .finding-meta { font-size: 11px; color: var(--ink-3); overflow-wrap: anywhere; }
-  .finding-evidence, .finding-retest { display: block; margin-top: 4px; font-size: 12px; color: var(--ink-2); }
+  .finding-evidence, .finding-retest, .finding-unreproducible { display: block; margin-top: 4px; font-size: 12px; color: var(--ink-2); }
 
   .foot-note { margin-top: 10px; font-size: 11.5px; color: var(--ink-3); }
   .prompt-acts { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }

@@ -2,8 +2,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '@clerk/nextjs'
-import Btn from '../../../components/gotham/Btn'
-import Chip from '../../../components/gotham/Chip'
 import EmptyState from '../../../components/gotham/EmptyState'
 import Ledger, { LedgerCell, LedgerColHead, LedgerRowHead } from '../../../components/gotham/Ledger'
 import {
@@ -11,13 +9,13 @@ import {
   type OpenFinding,
   computeSeverityCounts,
   firstCriticalFinding,
+  formatAttackVector,
   formatInteger,
   formatPercent,
-  gateMessage,
   latestRunLine,
   retestIsRunning,
 } from './opsFormat'
-import FindingMeta from './FindingMeta'
+import FindingRow from './FindingRow'
 
 /**
  * The Adversary region (WIRE-01, WIRE-03, WIRE-04, 23-06):
@@ -70,16 +68,6 @@ interface RedTeamProgrammeResponse {
 // render while the query is still pending — a fresh `[]` literal would be a
 // new array identity each time, even though its content never changes.
 const EMPTY_OPEN_FINDINGS: OpenFinding[] = []
-
-/** "prompt_injection" -> "Prompt Injection" — the existing originLabel()-style
- * sentence/title-case convention this page already uses elsewhere
- * (23-UI-SPEC.md §4.5: "title-cased for display"). Kept local: this is a
- * display-only string transform, not a sentinel/derivation decision, so it
- * does not belong in opsFormat.ts alongside the functions this plan does
- * not touch. */
-function formatAttackVector(vector: string): string {
-  return vector.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
-}
 
 export default function AdversaryPanel({
   agentId,
@@ -191,8 +179,8 @@ export default function AdversaryPanel({
     },
     onMutate: (findingId) => clearNote(findingId),
     // Returning the refetch keeps the mutation pending, and the button
-    // disabled, until the list carries the running re-test. Without it the
-    // button would re-enable for the length of one round trip.
+    // inert, until the list carries the running re-test. Without it the
+    // button would come back for the length of one round trip.
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['red-team-programme', agentId] }),
     onError: (err: unknown, findingId) => {
       const message = (err as Error).message || 'The re-test did not start.'
@@ -305,105 +293,22 @@ export default function AdversaryPanel({
       </div>
 
       {critical && (
-        <div className="critical">
-          <Chip verdict="seal">Critical</Chip>
-          <p>
-            {/* 23-09 adversarial review (finding 15): description,
-                attack_vector and turn_count are all typed nullable
-                (OpenFinding, opsFormat.ts) — description can miss its JSONB
-                correlation, attack_vector/turn_count come straight from the
-                findings table's own nullable columns. This banner rendered
-                all three raw with no fallback, so a null description could
-                blank the single most consequential sentence on this page
-                (the one explaining the deployment block) while the metadata
-                span below it rendered a stray " · turn 4" with no vector, or
-                "prompt_injection · turn " with no count. gateMessage() is
-                the same locked fallback (OD-5) the page's own gatebar
-                already uses for this exact situation — reused here rather
-                than inventing a second apologetic string. attack_vector's
-                fallback matches RetestAction's own aria-label below, which
-                already guarded it; turn_count's clause is omitted entirely
-                rather than rendered empty. */}
-            {gateMessage(critical)}
-            <FindingMeta finding={critical} />
-          </p>
-          <RetestAction finding={critical} busy={!!busy[critical.id]} onRetest={handleRetest} />
-          <RetestNote note={notes[critical.id]} />
-        </div>
+        <FindingRow
+          finding={critical}
+          banner
+          busy={!!busy[critical.id]}
+          note={notes[critical.id]}
+          onRetest={handleRetest}
+        />
       )}
 
       {remaining.length > 0 && (
         <div style={{ marginTop: 18, display: 'flex', flexDirection: 'column' }}>
           {remaining.map((f) => (
-            <div
-              key={f.id}
-              style={{
-                display: 'flex',
-                // flex-start, not center (23-09 adversarial review): the same
-                // reasoning as the .critical banner above. The description
-                // column is the tallest item, and centering the chip and the
-                // button against it floats them mid-row.
-                alignItems: 'flex-start',
-                gap: 14,
-                flexWrap: 'wrap',
-                padding: '12px 0',
-                borderTop: '1px solid var(--hairline-soft)',
-              }}
-            >
-              <Chip verdict={f.severity === 'critical' ? 'seal' : 'mute'}>{f.severity}</Chip>
-              <p style={{ flex: 1, minWidth: 220, fontSize: 13.5, margin: 0, color: 'var(--ink-2)' }}>
-                {/* Same null-guard as the critical banner above (finding 15).
-                    This list's findings are not necessarily critical, so
-                    gateMessage()'s "a blocking signal is open" text would be
-                    inaccurate here — a plain, honest fallback instead. */}
-                {f.description || 'No description recorded.'}
-                <FindingMeta finding={f} />
-              </p>
-              <RetestAction finding={f} busy={!!busy[f.id]} onRetest={handleRetest} />
-              <RetestNote note={notes[f.id]} />
-            </div>
+            <FindingRow key={f.id} finding={f} busy={!!busy[f.id]} note={notes[f.id]} onRetest={handleRetest} />
           ))}
         </div>
       )}
     </>
-  )
-}
-
-// One click, no staged confirmation: a re-test changes nothing about the
-// agent and at worst leaves the finding open with a fresh reading. Disabled
-// while this finding's re-test runs or its request is in flight. The
-// aria-label names the vector so a screen reader can tell one finding's
-// button from the next, and starts with the visible label (WCAG 2.5.3).
-function RetestAction({
-  finding,
-  busy,
-  onRetest,
-}: {
-  finding: OpenFinding
-  busy: boolean
-  onRetest: (findingId: string) => void
-}) {
-  const running = retestIsRunning(finding.retest)
-  return (
-    <Btn
-      variant="ghost"
-      disabled={busy || running}
-      aria-label={`Re-test finding: ${finding.attack_vector ?? 'unrecorded attack vector'}`}
-      onClick={() => onRetest(finding.id)}
-    >
-      Re-test
-    </Btn>
-  )
-}
-
-// The API's refusal for one finding, on its own row under the finding: a
-// full-width flex item, so it wraps below the chip, the description and the
-// button in the banner and the list alike.
-function RetestNote({ note }: { note: string | undefined }) {
-  if (!note) return null
-  return (
-    <p className="help" role="status" style={{ flexBasis: '100%', margin: 0 }}>
-      {note}
-    </p>
   )
 }

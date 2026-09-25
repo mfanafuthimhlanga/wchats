@@ -26,9 +26,10 @@ import {
   evidenceSentence,
   claimLabels,
   latestRunLine,
-  RETEST_STALE_MINUTES,
   retestIsRunning,
   retestLine,
+  formatAttackVector,
+  UNREPRODUCIBLE_FINDING,
   type FindingRetest,
   type OpenFinding,
   type LatestRun,
@@ -83,6 +84,7 @@ function makeFinding(
     evidence: 'recorded_prompt_run',
     claims: ['system_prompt_disclosure'],
     retest: null,
+    retestable: true,
   }
 }
 
@@ -635,7 +637,7 @@ test.describe('retestLine', () => {
   })
 
   test('a running re-test says so', () => {
-    expect(retestLine({ id: 'rt-1', status: 'running', started_at: '2026-09-25T10:00:00+00:00' }, Date.parse('2026-09-25T10:05:00Z'))).toBe(
+    expect(retestLine({ id: 'rt-1', status: 'running', started_at: '2026-09-25T10:00:00+00:00' })).toBe(
       'Re-test running.',
     )
   })
@@ -698,20 +700,24 @@ test.describe('retestLine', () => {
   })
 })
 
-// a running claim past the backend's window belongs to a dead worker: the API takes a new
-// re-test over it, so the console stops saying it is running and offers the button again
-test.describe('a re-test that stopped without an outcome', () => {
-  const started = '2026-09-25T12:00:00Z'
-  const at = (minutes: number) => Date.parse(started) + minutes * 60_000
-  const running = { id: 'r1', status: 'running' as const, started_at: started }
+// a running claim past the backend's window belongs to a dead worker; the programme route
+// reports it as stopped, and the console offers the button again
+test('a re-test the server reports as stopped says so and is not running', () => {
+  const stopped = { id: 'r1', status: 'stopped' as const, started_at: '2026-09-25T12:00:00Z' }
+  expect(retestIsRunning(stopped)).toBe(false)
+  expect(retestLine(stopped)).toBe('Last re-test stopped without an outcome.')
+  expect(retestIsRunning({ id: 'r2', status: 'running', started_at: null })).toBe(true)
+})
 
-  test('inside the window it is running', () => {
-    expect(retestIsRunning(running, at(14))).toBe(true)
-    expect(retestLine(running, at(14))).toBe('Re-test running.')
-  })
+// the sentence a finding no conversation can reproduce shows in place of its button; the API's
+// 409 for a re-test of it reads the same words
+test('an unreproducible finding reads the same sentence as the API refusal', () => {
+  expect(UNREPRODUCIBLE_FINDING).toBe('A conversation cannot reproduce this finding. Run the programme again to clear it.')
+  expect(makeFinding('high').retestable).toBe(true)
+})
 
-  test('past the window it stopped', () => {
-    expect(retestIsRunning(running, at(RETEST_STALE_MINUTES))).toBe(false)
-    expect(retestLine(running, at(20))).toBe('Last re-test stopped without an outcome.')
-  })
+test('formatAttackVector reads a vector the way the coverage ledger and the Re-test label do', () => {
+  expect(formatAttackVector('prompt_injection')).toBe('Prompt Injection')
+  expect(formatAttackVector('pii_extraction_multi_turn')).toBe('Pii Extraction Multi Turn')
+  expect(formatAttackVector('jailbreak')).toBe('Jailbreak')
 })
