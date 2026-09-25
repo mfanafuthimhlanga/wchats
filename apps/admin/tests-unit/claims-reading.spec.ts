@@ -323,6 +323,12 @@ test('isDecline takes a decline about the documents and refuses a claim about th
     'The documentation does not describe the port, or the settings Fastify expects in production.',
     'The documentation does not describe the hosts, or the ports each service listens on.',
     'The documentation does not describe the refunds, or the webhooks Stripe sends on failure.',
+    'The documentation does not describe the roles, or the files users can read.',
+    'The documentation does not describe the defaults, or the settings admins can change.',
+    'The documentation does not describe the tests, or the data nobody has checked.',
+    'The documentation does not describe the cache, or the way caching is configured.',
+    'The documentation does not describe the host, or the port traffic runs on.',
+    'The documentation does not describe the flow, or the sign-up steps users must complete.',
   ])
     expect(isDecline(s), s).toBe(true)
   for (const s of [

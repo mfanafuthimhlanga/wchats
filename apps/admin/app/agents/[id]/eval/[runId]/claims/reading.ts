@@ -293,7 +293,7 @@ export const SECOND_CLAUSE_RE = new RegExp(
 
 /** _CLAUSE_COMMA_RE in grounding.py: a comma before "and" or "or" joins a clause, not a list item,
  *  when a subject (a determiner and one to three words, or a capitalised word and up to two), an
- *  auxiliary or a named verb, and one more word follow. Case-sensitive, as the gate is. */
+ *  auxiliary or a named verb, and two more words follow. Case-sensitive, as the gate is. */
 /** _PLAIN_WORD in grounding.py: a lowercase word that is no determiner, pronoun or relative pronoun. */
 const PLAIN_WORD = String.raw`(?!(?:the|a|an|this|that|these|those|its|our|my|their|your|which|who|whom|whose|where|when|it|they|we|each|every|all|and|or)` + B_AFTER + String.raw`)[a-z](?:${W}|-)*`
 const CLAUSE_SUBJECT =
@@ -312,7 +312,7 @@ const FINITE_VERB =
   CLAUSE_VERBS +
   ')' +
   B_AFTER +
-  String.raw`\s+${W}`
+  String.raw`\s+(?:${W}|-)+\s+${W}`
 export const CLAUSE_COMMA_RE = new RegExp(String.raw`,\s*(?:and|or)\s+(?:` + CLAUSE_SUBJECT + ')' + FINITE_VERB, 'u')
 
 /** is_decline in grounding.py: true when the whole sentence says the documents do not say. */

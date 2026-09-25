@@ -10,7 +10,7 @@ reverted because it failed two real declines whose comma is a list comma.
 ## The rule
 
 A comma before `and` or `or` joins a clause when what follows carries a subject, an auxiliary
-or a named verb, and one more word. The rule prefers a missed clause, which is the behaviour
+or a named verb, and two more words. The rule prefers a missed clause, which is the behaviour
 before this change, to a decline wrongly withdrawn, which scores a true sentence on words the
 documents cannot carry.
 
@@ -25,7 +25,9 @@ finite verb  is|are|was|were|has|have|had|does|do|did|will|would|can|cannot|coul
              requires, serves, exposes, ...). Named rather than guessed from an s ending: a
              list item after a determiner ("the deployment steps for staging") ends in s as
              often as a verb does
-then         a space and one more word
+then         two more words: a clause states something ("listens on 8080"), where a list
+             item's contact clause ends on its verb or one word after ("the files users can
+             read", "the port traffic runs on")
 ```
 
 `_CLAUSE_COMMA_RE` in `grounding.py` is case-sensitive so the capitalised branch can tell a
@@ -57,14 +59,20 @@ aids' `W` class and `B_AFTER` in place of `\w` and `\b`.
 | the port, or the settings Fastify expects in production | list |
 | the hosts, or the ports each service listens on | list |
 | the refunds, or the webhooks Stripe sends on failure | list |
+| the roles, or the files users can read | list |
+| the defaults, or the settings admins can change | list |
+| the tests, or the data nobody has checked | list |
+| the cache, or the way caching is configured | list |
+| the host, or the port traffic runs on | list |
+| the flow, or the sign-up steps users must complete | list |
 
 ## Pins
 
-- `tests/unit/test_grounding.py`: the sixteen list sentences join the decline parametrize, the
+- `tests/unit/test_grounding.py`: the twenty-two list sentences join the decline parametrize, the
   four clause sentences join the second-clause parametrize; the benchmark pin moves 83 to 84.
   `GROUNDING_RULE_VERSION` is `grounding-v3`, so rows scored before and after never share a
   calibration population.
-- `claims-reading.spec.ts`: the same twenty through `isDecline`.
+- `claims-reading.spec.ts`: the same twenty-six through `isDecline`.
 - `fixtures-gate-rules.json`: a tenth sentence, rule `clause comma`, tint `fail`, reason
   "passage 3 carries 29% of its words; number 8080 appears in no passage", read by the
   console spec, the bench spec in Chromium and `test_claims_benchmark.py` against `ground()`.
@@ -76,5 +84,6 @@ aids' `W` class and `B_AFTER` in place of `\w` and `\b`.
 A clause the rule misses stays a decline, as before this change: a pronoun subject ("and it
 listens on 8080"), "there is", a past-tense verb, a verb outside the named list, a subject of
 four or more words, a comma alone or `, so`. None appears in the benchmark. A named verb used
-as a noun after a determiner ("the build, or the test runs for staging") is read as a clause
-and the decline scored on its words; the benchmark holds no such sentence.
+as a noun after a determiner ("the build, or the test runs for staging"), or a contact clause
+running two words past its verb ("the roles, or Postgres users can connect with"), is read as
+a clause and the decline scored on its words; the benchmark holds no such sentence.
