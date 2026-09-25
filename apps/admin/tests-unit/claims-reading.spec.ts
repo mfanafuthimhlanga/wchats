@@ -9,6 +9,7 @@ import {
   groundClaim,
   inlineParts,
   isDecline,
+  isReferral,
   litPassages,
   missingNumbers,
   passagesOf,
@@ -132,7 +133,7 @@ test('stem folds inflections and never cuts below four letters', () => {
 })
 
 // ── the gate's rules (grounding.py, grounding-v4), ported so the aid lights what the gate scored ──
-// fixtures-gate-rules.json holds fifteen sentences over three passages and two over none, each
+// fixtures-gate-rules.json holds nineteen sentences over three passages and two over none, each
 // decided by one rule, and the table of what the gate says of each: ground() produced every
 // tint and reason in it, and test_claims_benchmark.py checks it against ground() still.
 // claims-bench.spec.ts reads the same table, so the console aid and the bench cannot drift
@@ -163,9 +164,11 @@ const gateUnit = (rule: string) => {
 for (const [name, sc] of [['with passages', GATE], ['with no retrieved text', GATE.no_passages]] as const) {
   test(`every fixture sentence ${name} takes the tint, the reason and the lit passages the gate gives it`, () => {
     const r = analyse(sc.response, sc.retrieved_contexts)
-    expect(r.units.map((u) => u.text)).toEqual(sc.expect.map((c) => c.sentence))
+    // the gate's sentences are the units it scores; a list lead-in line is shown and not scored
+    const scored = r.units.filter((u) => u.tokens.size > 0)
+    expect(scored.map((u) => u.text)).toEqual(sc.expect.map((c) => c.sentence))
     for (const [i, c] of sc.expect.entries()) {
-      const u = r.units[i]
+      const u = scored[i]
       expect({ rule: c.rule, tint: u.tint, reason: u.reason }).toEqual({ rule: c.rule, tint: c.tint, reason: c.reason })
       expect(litPassages(u, u.tokens, r.passageTokens).map((l) => l.passage)).toEqual(c.lit)
     }
@@ -315,7 +318,6 @@ test('isDecline takes a decline about the documents and refuses a claim about th
     'The corpus does not document the build, or the deployment process for staging.',
     'The corpus does not name the fixtures, or the tests themselves in detail.',
     'The documentation does not name React, Vue, or Svelte plugins for this.',
-    'The corpus does not give the timeout, or the 3 retries per minute.',
     'The documentation does not describe the owner, or the teams that are on call.',
     'The documentation does not describe the port, or the host which is used in staging.',
     'The documentation does not describe the queue, or the files it writes to.',
@@ -440,4 +442,25 @@ test('a view with no grounded fact to rest on fails, beside a decline or alone',
 test('a rule line ends the view, and a fence cancels a view a bare marker handed on', () => {
   expect(viewFlags('My view: take the refund rather than the credit.\n---\nEvery order ships with a free llama plush toy.')).toEqual([true, false])
   expect(viewFlags('My view:\n```\ncode\n```\nEvery order ships with a free llama plush toy.')).toEqual([false])
+})
+
+// grounding-v5 review: a decline carrying a figure is scored; a referral ends at the contact
+// route; a colon is a lead-in only on a whole line before a list, as TestReferralsDeclinesAndLeadIns pins
+test('a figure-bearing decline, a referral with a claim, and a colon mid-claim are all scored', () => {
+  expect(isDecline('The corpus does not give the timeout, or the 3 retries per minute.')).toBe(false)
+  for (const s of [
+    'Use the contact section to book a Growth-tier demo.',
+    'See the contact section for pricing and a free trial.',
+    'Contact us for the enterprise plan, which includes SSO.',
+  ])
+    expect(isReferral(s), s).toBe(false)
+  expect(isReferral('Please use the contact section for the current Growth-tier price.')).toBe(true)
+  const scoredText = (answer: string) =>
+    analyse(answer, ['Returns are accepted within 30 days.']).units.filter((u) => u.tokens.size > 0).map((u) => u.text)
+  expect(scoredText('Refunds are paid within 90 days of cancellation, as follows:\n- Ask support.')[0]).toBe(
+    'Refunds are paid within 90 days of cancellation, as follows:',
+  )
+  expect(scoredText('Returns work like this:\n- Refunds are paid to the original payment method.')).toEqual([
+    'Refunds are paid to the original payment method.',
+  ])
 })
