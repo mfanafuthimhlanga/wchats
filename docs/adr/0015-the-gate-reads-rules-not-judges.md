@@ -17,7 +17,7 @@ port") asserts nothing the documents could carry and is grounded with its reason
 a negated claim about the system, a doing verb or a second clause is scored on its words. The score is
 the grounded share, the claims column carries one row per sentence with a reason a person
 can read, and `eval_results.judge_identity` names the rule (`rule:grounding`, `grounding-v1`, `grounding-v2`
-since #306, `grounding-v3` since #319).
+since #306, `grounding-v3` since #319, `grounding-v4` since the view paragraph).
 
 The eval task scores nothing else. `METRIC_KEYS` is faithfulness alone since #296, so a run
 writes one `eval_results` row per scenario. The question resolver is gone.
@@ -110,6 +110,13 @@ benchmark are unlabelled.
   number checked; "the build, the tests, or the deployment steps for staging" stays a decline.
   Both aids carry the twin. Stored benchmark: 83 to 84 sentences flagged, passes and the
   planted recall unchanged.
+- `grounding-v4`: the agent gives its view. When the customer asks for a view, a reason, a
+  comparison or a recommendation, the platform prompt asks for the facts first and then one
+  paragraph opening `My view:` that reasons from them. The rule reads that paragraph for its
+  numbers only and holds every other sentence to the floor. `VIEW_MARKER` lives in
+  `grounding.py` and the prompt imports it, so the words the agent is told to write are the
+  words the rule reads. A name or a claim inside the view is not checked, as a name is not
+  checked anywhere else; a figure is.
 - The conversational red-team probe drove a stand-in persona over the direct API until #309;
   it drives the deployed agent's own turn in recorded mode now, the same seam the transactional
   probe used. With the served prompt in hand, #307 put a rule between a report and the block
